@@ -1,0 +1,61 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: alembic
+    env:
+      RUSTFLAGS: "-C debuginfo=0"
+      CARGO_TARGET_DIR: target/ci
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: set up rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v0-rust-release
+          cache-targets: true
+          workspaces: alembic
+
+      - name: doc build
+        env:
+          RUSTDOCFLAGS: "--cfg docsrs"
+          CARGO_PROFILE_DEV_DEBUG: 0
+        run: cargo doc --workspace --all-features --no-deps
+
+      - name: run tests
+        run: cargo test --workspace --all-features
+
+      - name: publish alembic-core
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish -p alembic-core --no-verify
+
+      - name: publish alembic-engine
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish -p alembic-engine --no-verify
+
+      - name: publish alembic-adapter-netbox
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish -p alembic-adapter-netbox --no-verify
+
+      - name: publish alembic-cli
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish -p alembic-cli --no-verify

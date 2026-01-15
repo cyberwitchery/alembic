@@ -1,0 +1,18 @@
+[package]
+name = "alembic-engine"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+alembic-core = { path = "../alembic-core" }
+anyhow.workspace = true
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

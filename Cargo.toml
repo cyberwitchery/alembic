@@ -1,0 +1,24 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/alembic-core",
+  "crates/alembic-engine",
+  "crates/alembic-adapter-netbox",
+  "crates/alembic-cli",
+]
+
+[workspace.package]
+edition = "2021"
+license = "Apache-2.0"
+
+[workspace.dependencies]
+anyhow = "1"
+async-trait = "0.1"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+thiserror = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+uuid = { version = "1", features = ["serde", "v4"] }
+netbox = "0.1.3"

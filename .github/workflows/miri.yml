@@ -1,0 +1,31 @@
+name: miri
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * 1"
+
+jobs:
+  miri:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: alembic
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: setup rust (nightly + miri)
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+
+      - name: cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: alembic
+
+      - name: miri tests (isolation disabled)
+        env:
+          MIRIFLAGS: "-Zmiri-disable-isolation"
+        run: cargo miri test --workspace --all-features

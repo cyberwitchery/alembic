@@ -1,0 +1,52 @@
+objects:
+  - uid: "a4d6a0c3-4e73-4a76-b216-4d38f8c55f3d"
+    kind: dcim.site
+    key: "site=fra1"
+    attrs:
+      name: "FRA1"
+      slug: "fra1"
+      status: "active"
+
+  - uid: "7b8f7a92-8fd0-4667-9a4b-9f3b5c9a4b1a"
+    kind: dcim.device
+    key: "site=fra1/device=leaf01"
+    attrs:
+      name: "leaf01"
+      site: "a4d6a0c3-4e73-4a76-b216-4d38f8c55f3d"
+      role: "leaf"
+      device_type: "leaf-switch"
+      status: "active"
+
+  - uid: "5a1c43a4-4f52-4d07-8a2f-88ad1fbdf8c0"
+    kind: dcim.interface
+    key: "device=leaf01/interface=eth0"
+    attrs:
+      name: "eth0"
+      device: "7b8f7a92-8fd0-4667-9a4b-9f3b5c9a4b1a"
+      if_type: "1000base-t"
+      enabled: true
+
+  - uid: "4b8a93d3-6a6d-4ef5-9b04-1de2b8f5b8f2"
+    kind: dcim.interface
+    key: "device=leaf01/interface=eth1"
+    attrs:
+      name: "eth1"
+      device: "7b8f7a92-8fd0-4667-9a4b-9f3b5c9a4b1a"
+      if_type: "1000base-t"
+      enabled: true
+
+  - uid: "dc0adf72-3c0b-4c3a-8b18-23a7c0a7c0f1"
+    kind: ipam.prefix
+    key: "prefix=10.0.0.0/24"
+    attrs:
+      prefix: "10.0.0.0/24"
+      site: "a4d6a0c3-4e73-4a76-b216-4d38f8c55f3d"
+      description: "FRA1 leaf subnet"
+
+  - uid: "c4a0c0f0-ef8a-4c7f-9b0a-2ff3a4d14fd1"
+    kind: ipam.ip_address
+    key: "ip=10.0.0.10/24"
+    attrs:
+      address: "10.0.0.10/24"
+      assigned_interface: "5a1c43a4-4f52-4d07-8a2f-88ad1fbdf8c0"
+      description: "leaf01 eth0"
