@@ -4,7 +4,7 @@ the engine is responsible for loading, validating, planning, and applying change
 
 ## pipeline
 
-1) load files (supports `include` / `imports`)
+1) load brew files (supports `include` / `imports`) or compile raw yaml with a retort
 2) build object graph and validate references
 3) observe backend state via adapter
 4) plan deterministic operations

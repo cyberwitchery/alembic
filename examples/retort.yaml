@@ -1,0 +1,121 @@
+version: 1
+rules:
+  - name: sites
+    select: /sites/*
+    emit:
+      kind: dcim.site
+      key: "site=${slug}"
+      uid:
+        v5:
+          kind: "dcim.site"
+          stable: "site=${slug}"
+      vars:
+        slug: { from: .slug, required: true }
+        name: { from: .name, required: true }
+      attrs:
+        name: ${name}
+        slug: ${slug}
+
+  - name: devices
+    select: /sites/*/devices/*
+    emit:
+      kind: dcim.device
+      key: "device=${name}"
+      uid:
+        v5:
+          kind: "dcim.device"
+          stable: "device=${name}"
+      vars:
+        name: { from: .name, required: true }
+        role: { from: .role, required: true }
+        device_type: { from: .device_type, required: true }
+        site_slug: { from: ^.slug, required: true }
+      attrs:
+        name: ${name}
+        role: ${role}
+        device_type: ${device_type}
+        site:
+          uid:
+            kind: "dcim.site"
+            stable: "site=${site_slug}"
+
+  - name: interfaces
+    select: /sites/*/devices/*/interfaces/*
+    emit:
+      kind: dcim.interface
+      key: "if=${device_name}/${name}"
+      uid:
+        v5:
+          kind: "dcim.interface"
+          stable: "if=${device_name}/${name}"
+      vars:
+        name: { from: .name, required: true }
+        device_name: { from: ^.name, required: true }
+      attrs:
+        name: ${name}
+        device:
+          uid:
+            kind: "dcim.device"
+            stable: "device=${device_name}"
+
+  - name: prefixes
+    select: /prefixes/*
+    emit:
+      kind: ipam.prefix
+      key: "prefix=${prefix}"
+      uid:
+        v5:
+          kind: "ipam.prefix"
+          stable: "prefix=${prefix}"
+      vars:
+        prefix: { from: .prefix, required: true }
+        site_slug: { from: .site, required: false }
+      attrs:
+        prefix: ${prefix}
+        site:
+          uid?:
+            kind: "dcim.site"
+            stable: "site=${site_slug}"
+
+  - name: ips
+    select: /prefixes/*/ips/*
+    emit:
+      kind: ipam.ip_address
+      key: "ip=${address}"
+      uid:
+        v5:
+          kind: "ipam.ip_address"
+          stable: "ip=${address}"
+      vars:
+        address: { from: .address, required: true }
+        device: { from: .device, required: true }
+        interface: { from: .interface, required: true }
+      attrs:
+        address: ${address}
+        assigned_interface:
+          uid:
+            kind: "dcim.interface"
+            stable: "if=${device}/${interface}"
+
+  - name: evpn
+    select: /services/evpn
+    emit:
+      kind: services.evpn
+      key: "evpn=${name}"
+      uid:
+        v5:
+          kind: "services.evpn"
+          stable: "evpn=${name}"
+      vars:
+        name: { from: .name, required: true }
+        asn: { from: .asn, required: true }
+        vtep_pool: { from: .vtep_pool, required: true }
+        rt_import: { from: .route_targets/import, required: true }
+        rt_export: { from: .route_targets/export, required: true }
+      attrs:
+        name: ${name}
+        asn: ${asn}
+        vtep_pool: ${vtep_pool}
+        route_targets:
+          import: ${rt_import}
+          export: ${rt_export}

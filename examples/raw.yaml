@@ -1,0 +1,25 @@
+sites:
+  - slug: fra1
+    name: FRA1
+    devices:
+      - name: leaf01a
+        role: leaf
+        device_type: leaf-switch
+        interfaces:
+          - name: eth0
+          - name: eth1
+prefixes:
+  - site: fra1
+    prefix: 10.0.0.0/24
+    ips:
+      - device: leaf01a
+        interface: eth0
+        address: 10.0.0.10/24
+services:
+  evpn:
+    name: fra1-fabric
+    asn: 65001
+    vtep_pool: 10.255.0.0/24
+    route_targets:
+      import: 65001:100
+      export: 65001:200

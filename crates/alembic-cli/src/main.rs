@@ -1,7 +1,10 @@
 //! cli entrypoint for alembic.
 
 use alembic_adapter_netbox::NetBoxAdapter;
-use alembic_engine::{apply_plan, build_plan, load_brew, Plan, StateStore};
+use alembic_engine::{
+    apply_plan, build_plan, compile_retort, is_brew_format, load_brew, load_raw_yaml, load_retort,
+    Plan, StateStore,
+};
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
 use std::fs;
@@ -22,10 +25,14 @@ enum Command {
     Validate {
         #[arg(short = 'f', long)]
         file: PathBuf,
+        #[arg(long)]
+        retort: Option<PathBuf>,
     },
     Plan {
         #[arg(short = 'f', long)]
         file: PathBuf,
+        #[arg(long)]
+        retort: Option<PathBuf>,
         #[arg(short = 'o', long)]
         output: PathBuf,
         #[arg(long)]
@@ -47,6 +54,14 @@ enum Command {
         #[arg(long, default_value_t = false)]
         allow_delete: bool,
     },
+    Distill {
+        #[arg(short = 'f', long)]
+        file: PathBuf,
+        #[arg(long)]
+        retort: PathBuf,
+        #[arg(short = 'o', long)]
+        output: PathBuf,
+    },
 }
 
 /// main entrypoint for the async cli.
@@ -55,20 +70,21 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Validate { file } => {
-            let inventory = load_brew(&file)?;
+        Command::Validate { file, retort } => {
+            let inventory = load_inventory(&file, retort.as_deref())?;
             alembic_engine::validate(&inventory)?;
             println!("ok");
         }
         Command::Plan {
             file,
+            retort,
             output,
             netbox_url,
             netbox_token,
             dry_run: _,
             allow_delete,
         } => {
-            let inventory = load_brew(&file)?;
+            let inventory = load_inventory(&file, retort.as_deref())?;
             let state = load_state()?;
             let (url, token) = netbox_credentials(netbox_url, netbox_token)?;
             let adapter = NetBoxAdapter::new(&url, &token, state.clone())?;
@@ -90,6 +106,20 @@ async fn main() -> Result<()> {
             let report = apply_plan(&adapter, &plan, &mut state, allow_delete).await?;
             state.save()?;
             println!("applied {} operations", report.applied.len());
+        }
+        Command::Distill {
+            file,
+            retort,
+            output,
+        } => {
+            let raw = load_raw_yaml(&file)?;
+            if is_brew_format(&raw) {
+                return Err(anyhow!("distill expects raw yaml without objects"));
+            }
+            let retort = load_retort(&retort)?;
+            let inventory = compile_retort(&raw, &retort)?;
+            write_inventory(&output, &inventory)?;
+            println!("ir written to {}", output.display());
         }
     }
 
@@ -113,6 +143,11 @@ fn write_plan(path: &Path, plan: &Plan) -> Result<()> {
     fs::write(path, raw).with_context(|| format!("write plan: {}", path.display()))
 }
 
+fn write_inventory(path: &Path, inventory: &alembic_core::Inventory) -> Result<()> {
+    let raw = serde_json::to_string_pretty(inventory)?;
+    fs::write(path, raw).with_context(|| format!("write ir: {}", path.display()))
+}
+
 /// read a plan file from disk.
 fn read_plan(path: &Path) -> Result<Plan> {
     let raw = fs::read_to_string(path).with_context(|| format!("read plan: {}", path.display()))?;
@@ -128,6 +163,21 @@ fn netbox_credentials(url: Option<String>, token: Option<String>) -> Result<(Str
         .or_else(|| std::env::var("NETBOX_TOKEN").ok())
         .ok_or_else(|| anyhow!("missing --netbox-token or NETBOX_TOKEN"))?;
     Ok((url, token))
+}
+
+fn load_inventory(path: &Path, retort: Option<&Path>) -> Result<alembic_core::Inventory> {
+    let raw = load_raw_yaml(path)?;
+    if is_brew_format(&raw) {
+        if retort.is_some() {
+            eprintln!("warning: retort ignored for brew input");
+        }
+        return load_brew(path);
+    }
+
+    let retort_path =
+        retort.ok_or_else(|| anyhow!("raw yaml requires --retort to compile inventory"))?;
+    let retort = load_retort(retort_path)?;
+    compile_retort(&raw, &retort)
 }
 
 #[cfg(test)]

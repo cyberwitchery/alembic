@@ -1,8 +1,11 @@
-# brew format
+# brew vs raw
 
-alembic consumes yaml or json files. yaml is recommended.
+alembic consumes yaml or json files. yaml is recommended. there are two input modes:
 
-## top-level document
+- brew: canonical ir objects at `objects:`.
+- raw + retort: arbitrary yaml compiled into ir.
+
+## brew format
 
 ```yaml
 include:
@@ -56,3 +59,14 @@ objects:
       name: "FRA1"
       slug: "fra1"
 ```
+
+## raw + retort
+
+raw yaml uses any shape you want, and a retort mapping compiles it into the ir.
+
+```bash
+alembic distill -f examples/raw.yaml --retort examples/retort.yaml -o ir.json
+```
+
+- if the input has a top-level `objects` list, alembic treats it as brew and ignores retort.
+- otherwise, `--retort` is required for validate/plan.

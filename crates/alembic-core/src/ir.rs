@@ -4,10 +4,20 @@ use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fmt;
+use std::str::FromStr;
 use uuid::Uuid;
 
 /// stable object identifier (uuid).
 pub type Uid = Uuid;
+
+pub const ALEMBIC_UID_NAMESPACE: Uuid = Uuid::from_bytes([
+    0x45, 0x93, 0x1a, 0x5f, 0x6c, 0x2b, 0x49, 0x6a, 0x9b, 0x6f, 0x8f, 0x77, 0x7d, 0x4f, 0x3a, 0x1c,
+]);
+
+pub fn uid_v5(kind: &str, stable: &str) -> Uid {
+    let name = format!("{kind}:{stable}");
+    Uuid::new_v5(&ALEMBIC_UID_NAMESPACE, name.as_bytes())
+}
 
 /// canonical object kind.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -46,6 +56,11 @@ impl Kind {
         matches!(self, Kind::Custom(_))
     }
 
+    /// parse a kind string into a canonical kind.
+    pub fn parse(value: &str) -> Self {
+        Kind::from_str(value).unwrap_or_else(|_| Kind::Custom(value.to_string()))
+    }
+
     /// return true when kind string is empty.
     pub fn is_empty(&self) -> bool {
         matches!(self, Kind::Custom(value) if value.trim().is_empty())
@@ -73,13 +88,21 @@ impl<'de> Deserialize<'de> for Kind {
         D: Deserializer<'de>,
     {
         let raw = String::deserialize(deserializer)?;
-        Ok(match raw.as_str() {
+        Ok(Kind::parse(&raw))
+    }
+}
+
+impl FromStr for Kind {
+    type Err = std::convert::Infallible;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Ok(match value {
             "dcim.site" => Kind::DcimSite,
             "dcim.device" => Kind::DcimDevice,
             "dcim.interface" => Kind::DcimInterface,
             "ipam.prefix" => Kind::IpamPrefix,
             "ipam.ip_address" => Kind::IpamIpAddress,
-            _ => Kind::Custom(raw),
+            _ => Kind::Custom(value.to_string()),
         })
     }
 }

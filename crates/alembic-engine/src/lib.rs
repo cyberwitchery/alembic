@@ -2,6 +2,7 @@
 
 mod loader;
 mod planner;
+mod retort;
 mod state;
 mod types;
 
@@ -13,6 +14,7 @@ mod tests;
 
 pub use loader::load_brew;
 pub use planner::{plan, sort_ops_for_apply};
+pub use retort::{compile_retort, is_brew_format, load_raw_yaml, load_retort};
 pub use state::StateStore;
 pub use types::{
     Adapter, AppliedOp, ApplyReport, FieldChange, ObservedObject, ObservedState, Op, Plan,
