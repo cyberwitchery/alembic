@@ -53,3 +53,4 @@ other values return an error. extend `interface_type_from_str` if you need more.
 - prefix -> site is not currently observed from netbox (it is preserved on create/update).
 - ip -> interface assignment is only observed when netbox returns `assigned_object_type == dcim.interface`.
 - `x` extension data is not mapped yet.
+- generic objects are skipped with a warning in apply.

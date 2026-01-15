@@ -8,14 +8,14 @@ every object is represented as:
 
 ```yaml
 uid: "<uuid>"
-kind: dcim.site | dcim.device | dcim.interface | ipam.prefix | ipam.ip_address
+kind: dcim.site | dcim.device | dcim.interface | ipam.prefix | ipam.ip_address | <custom kind>
 key: "<human key>"
 attrs: { ... }
 x: { "namespace.key": <json value> }
 ```
 
 - `uid`: stable identifier (uuid). never use backend ids in input files.
-- `kind`: canonical type id for the object.
+- `kind`: canonical type id for the object (or any custom string).
 - `key`: human/natural key used for matching when no state mapping exists.
 - `attrs`: strongly typed fields for the object kind (or generic data for unknown kinds).
 - `x`: extension map for future portability (namespaced keys).

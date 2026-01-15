@@ -36,5 +36,7 @@ plans are json files that can be re-applied. the plan is deterministic for a giv
 
 ## notes
 
+- `kind` may be any custom string; unknown kinds are planned like typed ones.
+- generic attrs are compared as an opaque payload.
 - `backend_id` is optional and may be absent for creates or if not known.
 - deletes are only applied when `--allow-delete` is set.

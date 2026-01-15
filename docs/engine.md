@@ -16,6 +16,7 @@ validation ensures:
 
 - `uid` is unique
 - `key` is unique
+- `kind` is present
 - references are resolvable by `uid`
 - referenced kinds match expected kinds
 
@@ -36,6 +37,7 @@ plans are stable-sorted by kind and key:
 3) `dcim.interface`
 4) `ipam.prefix`
 5) `ipam.ip_address`
+6) custom kinds (sorted by kind string)
 
 ## apply ordering
 
@@ -46,4 +48,4 @@ apply uses a dependency-aware ordering:
 
 ## diff rules
 
-diffs are computed at the `attrs` field level (json value comparison). `x` is currently ignored by the planner.
+diffs are computed at the `attrs` field level (json value comparison). generic attrs are compared as a single payload. `x` is currently ignored by the planner.

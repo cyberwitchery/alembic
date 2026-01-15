@@ -23,3 +23,4 @@ alembic maintains a local mapping between ir `uid` and backend ids in `.alembic/
 - provides stability across renames (key changes).
 - updated after apply based on adapter results.
 - safe to delete if you want to re-discover by key, but expect extra lookups.
+- custom kinds are stored under their kind string.

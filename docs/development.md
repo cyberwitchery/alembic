@@ -33,8 +33,8 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 ## coverage
 
 ```bash
-cargo install cargo-tarpaulin --locked
-cargo tarpaulin --workspace --all-features --out Xml
+cargo install cargo-llvm-cov --locked
+cargo llvm-cov --workspace --all-features --fail-under-lines 80
 ```
 
 ## release

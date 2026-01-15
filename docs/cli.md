@@ -22,6 +22,7 @@ alembic plan -f examples/brew.yaml -o plan.json \
 - creates a deterministic plan
 - writes json plan to the output path
 - honors `--allow-delete` if you want delete ops
+- accepts generic kinds and attrs
 
 ## apply
 
