@@ -208,9 +208,9 @@ mod tests {
             ),
         ];
         let report = validate_inventory(&Inventory { objects });
-        assert!(report.errors.iter().any(|err| matches!(
-            err,
-            ValidationError::KindMismatch { .. }
-        )));
+        assert!(report
+            .errors
+            .iter()
+            .any(|err| matches!(err, ValidationError::KindMismatch { .. })));
     }
 }

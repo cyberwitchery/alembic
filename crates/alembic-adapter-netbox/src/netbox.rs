@@ -53,7 +53,6 @@ impl NetBoxAdapter {
 
         Ok(results)
     }
-
 }
 
 #[async_trait]
@@ -145,7 +144,9 @@ impl Adapter for NetBoxAdapter {
                     }
                 }
                 Kind::DcimInterface => {
-                    let interfaces = self.list_all(&self.client.dcim().interfaces(), None).await?;
+                    let interfaces = self
+                        .list_all(&self.client.dcim().interfaces(), None)
+                        .await?;
                     for interface in interfaces {
                         let backend_id = interface.id.map(|id| id as u64);
                         let device_name = interface
@@ -199,7 +200,9 @@ impl Adapter for NetBoxAdapter {
                     }
                 }
                 Kind::IpamIpAddress => {
-                    let ips = self.list_all(&self.client.ipam().ip_addresses(), None).await?;
+                    let ips = self
+                        .list_all(&self.client.ipam().ip_addresses(), None)
+                        .await?;
                     for ip in ips {
                         let backend_id = ip.id.map(|id| id as u64);
                         let key = format!("ip={}", ip.address);
@@ -921,7 +924,9 @@ mod unit_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alembic_core::{Attrs, DeviceAttrs, InterfaceAttrs, IpAddressAttrs, Kind, PrefixAttrs, SiteAttrs, Uid};
+    use alembic_core::{
+        Attrs, DeviceAttrs, InterfaceAttrs, IpAddressAttrs, Kind, PrefixAttrs, SiteAttrs, Uid,
+    };
     use alembic_engine::Op;
     use httpmock::Method::{DELETE, GET, PATCH, POST};
     use httpmock::{Mock, MockServer};
@@ -1015,7 +1020,6 @@ mod tests {
         })
     }
 
-
     #[tokio::test]
     async fn observe_maps_state_and_attrs() {
         let server = MockServer::start();
@@ -1024,10 +1028,22 @@ mod tests {
         let adapter = NetBoxAdapter::new(&server.base_url(), "token", state).unwrap();
 
         let _sites = mock_list(&server, "/api/dcim/sites/", json!([site_payload(1)]));
-        let _devices = mock_list(&server, "/api/dcim/devices/", json!([device_payload(2, "leaf01", 1)]));
-        let _interfaces = mock_list(&server, "/api/dcim/interfaces/", json!([interface_payload(3, 2)]));
+        let _devices = mock_list(
+            &server,
+            "/api/dcim/devices/",
+            json!([device_payload(2, "leaf01", 1)]),
+        );
+        let _interfaces = mock_list(
+            &server,
+            "/api/dcim/interfaces/",
+            json!([interface_payload(3, 2)]),
+        );
         let _prefixes = mock_list(&server, "/api/ipam/prefixes/", json!([prefix_payload(4)]));
-        let _ips = mock_list(&server, "/api/ipam/ip-addresses/", json!([ip_payload(5, 3)]));
+        let _ips = mock_list(
+            &server,
+            "/api/ipam/ip-addresses/",
+            json!([ip_payload(5, 3)]),
+        );
 
         let observed = adapter
             .observe(&[
@@ -1081,7 +1097,8 @@ mod tests {
             when.method(GET)
                 .path("/api/dcim/device-roles/")
                 .query_param("name", "leaf");
-            then.status(200).json_body(page(json!([{"id": 10, "name": "leaf", "slug": "leaf"}])));
+            then.status(200)
+                .json_body(page(json!([{"id": 10, "name": "leaf", "slug": "leaf"}])));
         });
         let _dtype = server.mock(|when, then| {
             when.method(GET)
@@ -1215,14 +1232,16 @@ mod tests {
             when.method(GET)
                 .path("/api/dcim/devices/")
                 .query_param("name", "leaf01");
-            then.status(200).json_body(page(json!([device_payload(2, "leaf01", 1)])));
+            then.status(200)
+                .json_body(page(json!([device_payload(2, "leaf01", 1)])));
         });
         let _interface_lookup = server.mock(|when, then| {
             when.method(GET)
                 .path("/api/dcim/interfaces/")
                 .query_param("device_id", "2")
                 .query_param("name", "eth0");
-            then.status(200).json_body(page(json!([interface_payload(3, 2)])));
+            then.status(200)
+                .json_body(page(json!([interface_payload(3, 2)])));
         });
         let _prefix_lookup = server.mock(|when, then| {
             when.method(GET)
@@ -1240,7 +1259,8 @@ mod tests {
             when.method(GET)
                 .path("/api/dcim/device-roles/")
                 .query_param("name", "leaf");
-            then.status(200).json_body(page(json!([{"id": 10, "name": "leaf", "slug": "leaf"}])));
+            then.status(200)
+                .json_body(page(json!([{"id": 10, "name": "leaf", "slug": "leaf"}])));
         });
         let _dtype = server.mock(|when, then| {
             when.method(GET)

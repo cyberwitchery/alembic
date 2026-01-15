@@ -134,8 +134,8 @@ fn netbox_credentials(url: Option<String>, token: Option<String>) -> Result<(Str
 mod tests {
     use super::*;
     use alembic_engine::Op;
-    use tempfile::tempdir;
     use std::sync::{Mutex, OnceLock};
+    use tempfile::tempdir;
 
     fn env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();

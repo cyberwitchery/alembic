@@ -459,7 +459,8 @@ fn build_plan_creates_ops() {
         report: ApplyReport { applied: vec![] },
     };
     let state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
-    let plan = futures::executor::block_on(build_plan(&adapter, &inventory, &state, false)).unwrap();
+    let plan =
+        futures::executor::block_on(build_plan(&adapter, &inventory, &state, false)).unwrap();
     assert_eq!(plan.ops.len(), 1);
 }
 
