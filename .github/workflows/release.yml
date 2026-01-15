@@ -11,9 +11,6 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: read
-    defaults:
-      run:
-        working-directory: alembic
     env:
       RUSTFLAGS: "-C debuginfo=0"
       CARGO_TARGET_DIR: target/ci
@@ -29,33 +26,47 @@ jobs:
         with:
           prefix-key: v0-rust-release
           cache-targets: true
-          workspaces: alembic
+          workspaces: |
+            .
+            alembic
 
       - name: doc build
         env:
           RUSTDOCFLAGS: "--cfg docsrs"
           CARGO_PROFILE_DEV_DEBUG: 0
-        run: cargo doc --workspace --all-features --no-deps
+        run: |
+          if [ -f alembic/Cargo.toml ]; then cd alembic; fi
+          cargo doc --workspace --all-features --no-deps
 
       - name: run tests
-        run: cargo test --workspace --all-features
+        run: |
+          if [ -f alembic/Cargo.toml ]; then cd alembic; fi
+          cargo test --workspace --all-features
 
       - name: publish alembic-core
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: cargo publish -p alembic-core --no-verify
+        run: |
+          if [ -f alembic/Cargo.toml ]; then cd alembic; fi
+          cargo publish -p alembic-core --no-verify
 
       - name: publish alembic-engine
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: cargo publish -p alembic-engine --no-verify
+        run: |
+          if [ -f alembic/Cargo.toml ]; then cd alembic; fi
+          cargo publish -p alembic-engine --no-verify
 
       - name: publish alembic-adapter-netbox
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: cargo publish -p alembic-adapter-netbox --no-verify
+        run: |
+          if [ -f alembic/Cargo.toml ]; then cd alembic; fi
+          cargo publish -p alembic-adapter-netbox --no-verify
 
       - name: publish alembic-cli
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: cargo publish -p alembic-cli --no-verify
+        run: |
+          if [ -f alembic/Cargo.toml ]; then cd alembic; fi
+          cargo publish -p alembic-cli --no-verify

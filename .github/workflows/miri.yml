@@ -9,9 +9,6 @@ jobs:
   miri:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    defaults:
-      run:
-        working-directory: alembic
     steps:
       - uses: actions/checkout@v4
 
@@ -23,9 +20,13 @@ jobs:
       - name: cache cargo
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: alembic
+          workspaces: |
+            .
+            alembic
 
       - name: miri tests (isolation disabled)
         env:
           MIRIFLAGS: "-Zmiri-disable-isolation"
-        run: cargo miri test --workspace --all-features
+        run: |
+          if [ -f alembic/Cargo.toml ]; then cd alembic; fi
+          cargo miri test --workspace --all-features

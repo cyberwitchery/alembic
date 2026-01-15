@@ -10,9 +10,6 @@ jobs:
   lint:
     name: lint-and-analysis
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: alembic
     steps:
       - uses: actions/checkout@v4
 
@@ -24,26 +21,30 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: alembic
+          workspaces: |
+            .
+            alembic
           shared-key: alembic-ci
 
       - name: Format
-        run: cargo fmt --all -- --check
+        run: |
+          if [ -f alembic/Cargo.toml ]; then cd alembic; fi
+          cargo fmt --all -- --check
 
       - name: Lint (clippy)
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+        run: |
+          if [ -f alembic/Cargo.toml ]; then cd alembic; fi
+          cargo clippy --workspace --all-targets --all-features -- -D warnings
 
       - name: Security audit
         run: |
+          if [ -f alembic/Cargo.toml ]; then cd alembic; fi
           cargo install cargo-audit --locked
           cargo audit
 
   test:
     name: tests
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: alembic
     steps:
       - uses: actions/checkout@v4
 
@@ -53,18 +54,19 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: alembic
+          workspaces: |
+            .
+            alembic
           shared-key: alembic-ci
 
       - name: Test
-        run: cargo test --workspace --all-features
+        run: |
+          if [ -f alembic/Cargo.toml ]; then cd alembic; fi
+          cargo test --workspace --all-features
 
   coverage:
     name: coverage
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: alembic
     steps:
       - uses: actions/checkout@v4
 
@@ -74,18 +76,25 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: alembic
+          workspaces: |
+            .
+            alembic
           shared-key: alembic-ci
 
       - name: Install tarpaulin
-        run: cargo install cargo-tarpaulin --locked
+        run: |
+          if [ -f alembic/Cargo.toml ]; then cd alembic; fi
+          cargo install cargo-tarpaulin --locked
 
       - name: Coverage
         run: |
+          if [ -f alembic/Cargo.toml ]; then cd alembic; fi
           cargo tarpaulin --workspace --all-features --timeout 120 --out Xml
 
       - name: Upload coverage artifact
         uses: actions/upload-artifact@v4
         with:
           name: coverage-report
-          path: alembic/tarpaulin-report.xml
+          path: |
+            tarpaulin-report.xml
+            alembic/tarpaulin-report.xml
