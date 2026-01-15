@@ -1,5 +1,6 @@
 use super::*;
 use alembic_core::{Attrs, DeviceAttrs, InterfaceAttrs, Inventory, Kind, Object, SiteAttrs, Uid};
+use std::collections::BTreeMap;
 use tempfile::tempdir;
 use uuid::Uuid;
 
@@ -64,6 +65,38 @@ fn load_json_brew() {
     assert_eq!(inventory.objects.len(), 1);
 }
 
+#[test]
+fn load_generic_kind_as_generic_attrs() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("generic.yaml");
+    std::fs::write(
+        &path,
+        r#"objects:
+  - uid: "00000000-0000-0000-0000-000000000010"
+    kind: services.vpn
+    key: "vpn=corp"
+    attrs:
+      peers:
+        - name: site1
+          ip: 10.0.0.1
+      pre_shared_key: "secret"
+  - uid: "00000000-0000-0000-0000-000000000011"
+    kind: dcim.site
+    key: "site=fra1"
+    attrs:
+      name: "FRA1"
+      slug: "fra1"
+"#,
+    )
+    .unwrap();
+
+    let inventory = load_brew(&path).unwrap();
+    let generic = &inventory.objects[0];
+    assert!(matches!(generic.attrs, Attrs::Generic(_)));
+    assert_eq!(generic.kind.to_string(), "services.vpn");
+    let typed = &inventory.objects[1];
+    assert!(matches!(typed.attrs, Attrs::Site(_)));
+}
 #[test]
 fn load_with_imports_merges_objects() {
     let dir = tempdir().unwrap();
@@ -269,7 +302,7 @@ fn plans_in_stable_order() {
         .ops
         .iter()
         .map(|op| match op {
-            Op::Create { kind, .. } => *kind,
+            Op::Create { kind, .. } => kind.clone(),
             _ => panic!("unexpected op"),
         })
         .collect();
@@ -313,6 +346,45 @@ fn detects_attribute_diff() {
     match &plan.ops[0] {
         Op::Update { changes, .. } => {
             assert!(changes.iter().any(|c| c.field == "name"));
+        }
+        _ => panic!("expected update"),
+    }
+}
+
+#[test]
+fn detects_generic_payload_diff() {
+    let uid = uid(40);
+    let mut from = BTreeMap::new();
+    from.insert("a".to_string(), serde_json::json!(1));
+    let mut to = BTreeMap::new();
+    to.insert("a".to_string(), serde_json::json!(2));
+    to.insert("b".to_string(), serde_json::json!({"nested": true}));
+
+    let desired = Inventory {
+        objects: vec![Object::new_generic(
+            uid,
+            Kind::Custom("services.vpn".to_string()),
+            "vpn=corp".to_string(),
+            to,
+        )],
+    };
+
+    let mut observed = ObservedState::default();
+    observed.insert(ObservedObject {
+        kind: Kind::Custom("services.vpn".to_string()),
+        key: "vpn=corp".to_string(),
+        attrs: Attrs::Generic(from),
+        backend_id: Some(10),
+    });
+
+    let state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
+    let plan = plan(&desired, &observed, &state, false);
+
+    assert_eq!(plan.ops.len(), 1);
+    match &plan.ops[0] {
+        Op::Update { changes, .. } => {
+            assert_eq!(changes.len(), 1);
+            assert_eq!(changes[0].field, "attrs");
         }
         _ => panic!("expected update"),
     }

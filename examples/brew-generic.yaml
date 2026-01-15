@@ -1,0 +1,17 @@
+objects:
+  - uid: "00000000-0000-0000-0000-000000000001"
+    kind: services.vpn
+    key: "vpn=corp"
+    attrs:
+      peers:
+        - name: site1
+          ip: 10.0.0.1
+        - name: site2
+          ip: 10.0.0.2
+      pre_shared_key: "secret"
+  - uid: "00000000-0000-0000-0000-000000000002"
+    kind: dcim.site
+    key: "site=fra1"
+    attrs:
+      name: "FRA1"
+      slug: "fra1"

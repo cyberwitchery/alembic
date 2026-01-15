@@ -17,7 +17,7 @@ x: { "namespace.key": <json value> }
 - `uid`: stable identifier (uuid). never use backend ids in input files.
 - `kind`: canonical type id for the object.
 - `key`: human/natural key used for matching when no state mapping exists.
-- `attrs`: strongly typed fields for the object kind.
+- `attrs`: strongly typed fields for the object kind (or generic data for unknown kinds).
 - `x`: extension map for future portability (namespaced keys).
 
 ## kinds and attrs (mvp)
@@ -89,3 +89,18 @@ references are always by `uid` and are validated in the engine:
 ## extension map
 
 `x` is a namespaced map for future portability. keys should be namespaced (e.g. `netbox.custom_field`).
+
+## generic attrs
+
+if an object `kind` is unknown or its `attrs` cannot be parsed into a typed schema, alembic stores it as `Attrs::Generic`. this preserves the original fields and allows planning based on payload equality.
+
+```yaml
+uid: "00000000-0000-0000-0000-000000000001"
+kind: services.vpn
+key: "vpn=corp"
+attrs:
+  peers:
+    - name: site1
+      ip: 10.0.0.1
+  pre_shared_key: "secret"
+```

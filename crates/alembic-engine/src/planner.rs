@@ -19,16 +19,16 @@ pub fn plan(
 
     for (kind, mapping) in state.all_mappings() {
         for (uid, backend_id) in mapping {
-            backend_to_uid.insert((*backend_id, *kind), *uid);
+            backend_to_uid.insert((*backend_id, kind.clone()), *uid);
         }
     }
 
     let mut desired_sorted = desired.objects.clone();
-    desired_sorted.sort_by(|a, b| op_sort_key(a.kind, &a.key).cmp(&op_sort_key(b.kind, &b.key)));
+    desired_sorted.sort_by(|a, b| op_sort_key(&a.kind, &a.key).cmp(&op_sort_key(&b.kind, &b.key)));
 
     for object in desired_sorted.iter() {
         let observed_object = state
-            .backend_id(object.kind, object.uid)
+            .backend_id(object.kind.clone(), object.uid)
             .and_then(|id| observed.by_backend_id.get(&id))
             .or_else(|| observed.by_key.get(&object.key));
 
@@ -37,7 +37,7 @@ pub fn plan(
             if !changes.is_empty() {
                 ops.push(Op::Update {
                     uid: object.uid,
-                    kind: object.kind,
+                    kind: object.kind.clone(),
                     desired: object.clone(),
                     changes,
                     backend_id: obs.backend_id,
@@ -49,7 +49,7 @@ pub fn plan(
         } else {
             ops.push(Op::Create {
                 uid: object.uid,
-                kind: object.kind,
+                kind: object.kind.clone(),
                 desired: object.clone(),
             });
         }
@@ -61,12 +61,12 @@ pub fn plan(
                 continue;
             }
             let uid = backend_to_uid
-                .get(&(*backend_id, obs.kind))
+                .get(&(*backend_id, obs.kind.clone()))
                 .copied()
                 .unwrap_or_else(Uid::nil);
             ops.push(Op::Delete {
                 uid,
-                kind: obs.kind,
+                kind: obs.kind.clone(),
                 key: obs.key.clone(),
                 backend_id: Some(*backend_id),
             });
@@ -80,11 +80,24 @@ pub fn plan(
 
 /// compute field-level diffs for attrs.
 fn diff_attrs(existing: &Attrs, desired: &Attrs) -> Vec<FieldChange> {
+    if matches!((existing, desired), (Attrs::Generic(_), Attrs::Generic(_))) {
+        let from = serde_json::to_value(existing).unwrap_or(Value::Null);
+        let to = serde_json::to_value(desired).unwrap_or(Value::Null);
+        if from != to {
+            return vec![FieldChange {
+                field: "attrs".to_string(),
+                from,
+                to,
+            }];
+        }
+        return Vec::new();
+    }
+
     if existing.kind() != desired.kind() {
         return vec![FieldChange {
             field: "kind".to_string(),
-            from: Value::String(existing.kind().as_str().to_string()),
-            to: Value::String(desired.kind().as_str().to_string()),
+            from: serde_json::to_value(existing).unwrap_or(Value::Null),
+            to: serde_json::to_value(desired).unwrap_or(Value::Null),
         }];
     }
 
@@ -127,28 +140,29 @@ fn diff_attrs(existing: &Attrs, desired: &Attrs) -> Vec<FieldChange> {
 }
 
 /// stable sort key for desired objects.
-fn op_sort_key(kind: Kind, key: &str) -> (u8, String) {
-    (kind_rank(kind), key.to_string())
+fn op_sort_key(kind: &Kind, key: &str) -> (u8, String, String) {
+    (kind_rank(kind), kind.as_string(), key.to_string())
 }
 
 /// stable sort key for plan operations.
-fn op_order_key(op: &Op) -> (u8, u8, String) {
+fn op_order_key(op: &Op) -> (u8, u8, String, String) {
     let (kind, key, weight) = match op {
-        Op::Create { kind, desired, .. } => (*kind, desired.key.clone(), 0),
-        Op::Update { kind, desired, .. } => (*kind, desired.key.clone(), 1),
-        Op::Delete { kind, key, .. } => (*kind, key.clone(), 2),
+        Op::Create { kind, desired, .. } => (kind.clone(), desired.key.clone(), 0),
+        Op::Update { kind, desired, .. } => (kind.clone(), desired.key.clone(), 1),
+        Op::Delete { kind, key, .. } => (kind.clone(), key.clone(), 2),
     };
-    (kind_rank(kind), weight, key)
+    (kind_rank(&kind), weight, kind.as_string(), key)
 }
 
 /// dependency rank for kinds.
-fn kind_rank(kind: Kind) -> u8 {
+fn kind_rank(kind: &Kind) -> u8 {
     match kind {
         Kind::DcimSite => 0,
         Kind::DcimDevice => 1,
         Kind::DcimInterface => 2,
         Kind::IpamPrefix => 3,
         Kind::IpamIpAddress => 4,
+        Kind::Custom(_) => 10,
     }
 }
 

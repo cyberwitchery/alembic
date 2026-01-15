@@ -11,6 +11,8 @@ pub enum ValidationError {
     DuplicateUid(Uid),
     #[error("duplicate key: {0}")]
     DuplicateKey(String),
+    #[error("missing field: {0}")]
+    MissingField(&'static str),
     #[error("missing reference {field} -> {target}")]
     MissingReference { field: &'static str, target: Uid },
     #[error("kind mismatch for {field}: expected {expected}, got {actual}")]
@@ -42,6 +44,12 @@ pub fn validate_inventory(inventory: &Inventory) -> ValidationReport {
     let mut uid_to_kind = BTreeMap::new();
 
     for object in &inventory.objects {
+        if object.key.trim().is_empty() {
+            report.errors.push(ValidationError::MissingField("key"));
+        }
+        if object.kind.is_empty() {
+            report.errors.push(ValidationError::MissingField("kind"));
+        }
         if !seen_uids.insert(object.uid) {
             report
                 .errors
@@ -52,7 +60,7 @@ pub fn validate_inventory(inventory: &Inventory) -> ValidationReport {
                 .errors
                 .push(ValidationError::DuplicateKey(object.key.clone()));
         }
-        uid_to_kind.insert(object.uid, object.kind);
+        uid_to_kind.insert(object.uid, object.kind.clone());
     }
 
     for object in &inventory.objects {
@@ -103,7 +111,7 @@ fn validate_object_refs(
                 check_ref("prefix.site", target, Kind::DcimSite, uid_to_kind, report);
             }
         }
-        Attrs::Site(_) => {}
+        Attrs::Site(_) | Attrs::Generic(_) => {}
     }
 }
 
@@ -122,7 +130,7 @@ fn check_ref(
         Some(actual) if *actual != expected => report.errors.push(ValidationError::KindMismatch {
             field,
             expected,
-            actual: *actual,
+            actual: actual.clone(),
         }),
         _ => {}
     }
@@ -132,6 +140,7 @@ fn check_ref(
 mod tests {
     use super::*;
     use crate::ir::{Attrs, DeviceAttrs, InterfaceAttrs, Object, SiteAttrs};
+    use std::collections::BTreeMap;
     use uuid::Uuid;
 
     fn uid(value: u128) -> Uid {
@@ -167,6 +176,42 @@ mod tests {
             .errors
             .iter()
             .any(|err| matches!(err, ValidationError::DuplicateKey(_))));
+    }
+
+    #[test]
+    fn detects_missing_key() {
+        let objects = vec![Object::new(
+            uid(30),
+            "".to_string(),
+            Attrs::Site(SiteAttrs {
+                name: "FRA1".to_string(),
+                slug: "fra1".to_string(),
+                status: None,
+                description: None,
+            }),
+        )];
+        let report = validate_inventory(&Inventory { objects });
+        assert!(report
+            .errors
+            .iter()
+            .any(|err| matches!(err, ValidationError::MissingField("key"))));
+    }
+
+    #[test]
+    fn detects_missing_kind() {
+        let object = Object::new_generic(
+            uid(31),
+            Kind::Custom("".to_string()),
+            "custom=empty".to_string(),
+            BTreeMap::new(),
+        );
+        let report = validate_inventory(&Inventory {
+            objects: vec![object],
+        });
+        assert!(report
+            .errors
+            .iter()
+            .any(|err| matches!(err, ValidationError::MissingField("kind"))));
     }
 
     #[test]

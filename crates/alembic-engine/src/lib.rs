@@ -40,7 +40,7 @@ pub async fn build_plan(
     allow_delete: bool,
 ) -> Result<Plan> {
     validate(inventory)?;
-    let kinds: Vec<_> = inventory.objects.iter().map(|o| o.kind).collect();
+    let kinds: Vec<_> = inventory.objects.iter().map(|o| o.kind.clone()).collect();
     let observed = adapter.observe(&kinds).await?;
     Ok(plan(inventory, &observed, state, allow_delete))
 }
@@ -66,9 +66,9 @@ pub async fn apply_plan(
 
     for applied in &report.applied {
         if let Some(backend_id) = applied.backend_id {
-            state.set_backend_id(applied.kind, applied.uid, backend_id);
+            state.set_backend_id(applied.kind.clone(), applied.uid, backend_id);
         } else {
-            state.remove_backend_id(applied.kind, applied.uid);
+            state.remove_backend_id(applied.kind.clone(), applied.uid);
         }
     }
 

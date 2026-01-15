@@ -59,7 +59,7 @@ impl NetBoxAdapter {
 impl Adapter for NetBoxAdapter {
     async fn observe(&self, kinds: &[Kind]) -> Result<ObservedState> {
         let mut state = ObservedState::default();
-        let unique: BTreeSet<Kind> = kinds.iter().copied().collect();
+        let unique: BTreeSet<Kind> = kinds.iter().cloned().collect();
         let mut site_id_to_uid = BTreeMap::new();
         let mut device_id_to_uid = BTreeMap::new();
         let mut interface_id_to_uid = BTreeMap::new();
@@ -86,6 +86,9 @@ impl Adapter for NetBoxAdapter {
         }
 
         for kind in unique {
+            if kind.is_custom() {
+                continue;
+            }
             match kind {
                 Kind::DcimSite => {
                     let sites = self.list_all(&self.client.dcim().sites(), None).await?;
@@ -102,7 +105,7 @@ impl Adapter for NetBoxAdapter {
                             description: site.description,
                         });
                         state.insert(ObservedObject {
-                            kind,
+                            kind: kind.clone(),
                             key,
                             attrs,
                             backend_id,
@@ -136,7 +139,7 @@ impl Adapter for NetBoxAdapter {
                                 .map(|s| s.to_string()),
                         });
                         state.insert(ObservedObject {
-                            kind,
+                            kind: kind.clone(),
                             key,
                             attrs,
                             backend_id,
@@ -174,7 +177,7 @@ impl Adapter for NetBoxAdapter {
                             description: interface.description,
                         });
                         state.insert(ObservedObject {
-                            kind,
+                            kind: kind.clone(),
                             key,
                             attrs,
                             backend_id,
@@ -192,7 +195,7 @@ impl Adapter for NetBoxAdapter {
                             description: prefix.description,
                         });
                         state.insert(ObservedObject {
-                            kind,
+                            kind: kind.clone(),
                             key,
                             attrs,
                             backend_id,
@@ -221,13 +224,14 @@ impl Adapter for NetBoxAdapter {
                             description: ip.description,
                         });
                         state.insert(ObservedObject {
-                            kind,
+                            kind: kind.clone(),
                             key,
                             attrs,
                             backend_id,
                         });
                     }
                 }
+                Kind::Custom(_) => {}
             }
         }
 
@@ -244,6 +248,10 @@ impl Adapter for NetBoxAdapter {
             }
         }
         for op in ops {
+            if should_skip_op(op) {
+                eprintln!("skipping generic op: {op:?}");
+                continue;
+            }
             match op {
                 Op::Update {
                     uid,
@@ -262,13 +270,19 @@ impl Adapter for NetBoxAdapter {
         }
 
         for op in ops {
+            if should_skip_op(op) {
+                eprintln!("skipping generic op: {op:?}");
+                continue;
+            }
             match op {
                 Op::Create { uid, kind, desired } => {
-                    let backend_id = self.create_object(*kind, desired, &mut resolved).await?;
+                    let backend_id = self
+                        .create_object(kind.clone(), desired, &mut resolved)
+                        .await?;
                     resolved.insert(*uid, backend_id);
                     applied.push(AppliedOp {
                         uid: *uid,
-                        kind: *kind,
+                        kind: kind.clone(),
                         backend_id: Some(backend_id),
                     });
                 }
@@ -281,17 +295,18 @@ impl Adapter for NetBoxAdapter {
                 } => {
                     let id = self
                         .resolve_backend_id(
-                            *kind,
+                            kind.clone(),
                             *uid,
                             backend_id.unwrap_or(0),
                             desired,
                             &resolved,
                         )
                         .await?;
-                    self.update_object(*kind, id, desired, &resolved).await?;
+                    self.update_object(kind.clone(), id, desired, &resolved)
+                        .await?;
                     applied.push(AppliedOp {
                         uid: *uid,
-                        kind: *kind,
+                        kind: kind.clone(),
                         backend_id: Some(id),
                     });
                 }
@@ -308,10 +323,10 @@ impl Adapter for NetBoxAdapter {
                     } else {
                         return Err(anyhow!("missing backend id for delete: {}", key));
                     };
-                    self.delete_object(*kind, id).await?;
+                    self.delete_object(kind.clone(), id).await?;
                     applied.push(AppliedOp {
                         uid: *uid,
-                        kind: *kind,
+                        kind: kind.clone(),
                         backend_id: None,
                     });
                 }
@@ -336,8 +351,9 @@ impl NetBoxAdapter {
             Attrs::Interface(attrs) => self.create_interface(attrs, resolved).await,
             Attrs::Prefix(attrs) => self.create_prefix(attrs, resolved).await,
             Attrs::IpAddress(attrs) => self.create_ip_address(attrs, resolved).await,
+            Attrs::Generic(_) => return Err(anyhow!("generic attrs are not supported")),
         }
-        .with_context(|| format!("create {}", kind.as_str()))
+        .with_context(|| format!("create {}", kind))
     }
 
     /// update a backend object to match the desired ir.
@@ -354,8 +370,9 @@ impl NetBoxAdapter {
             Attrs::Interface(attrs) => self.update_interface(backend_id, attrs, resolved).await,
             Attrs::Prefix(attrs) => self.update_prefix(backend_id, attrs, resolved).await,
             Attrs::IpAddress(attrs) => self.update_ip_address(backend_id, attrs, resolved).await,
+            Attrs::Generic(_) => return Err(anyhow!("generic attrs are not supported")),
         }
-        .with_context(|| format!("update {}", kind.as_str()))
+        .with_context(|| format!("update {}", kind))
     }
 
     /// delete a backend object by id.
@@ -376,6 +393,7 @@ impl NetBoxAdapter {
             Kind::IpamIpAddress => {
                 self.client.ipam().ip_addresses().delete(backend_id).await?;
             }
+            Kind::Custom(_) => return Err(anyhow!("generic kinds are not supported")),
         }
         Ok(())
     }
@@ -402,8 +420,9 @@ impl NetBoxAdapter {
             Attrs::Interface(attrs) => self.lookup_interface_id(attrs, resolved).await,
             Attrs::Prefix(attrs) => self.lookup_prefix_id(attrs).await,
             Attrs::IpAddress(attrs) => self.lookup_ip_address_id(attrs).await,
+            Attrs::Generic(_) => return Err(anyhow!("generic attrs are not supported")),
         }
-        .with_context(|| format!("resolve backend id for {}", kind.as_str()))
+        .with_context(|| format!("resolve backend id for {}", kind))
     }
 
     /// create a site and return its backend id.
@@ -809,6 +828,18 @@ impl NetBoxAdapter {
     }
 }
 
+fn should_skip_op(op: &Op) -> bool {
+    match op {
+        Op::Create { kind, desired, .. } => {
+            kind.is_custom() || matches!(desired.attrs, Attrs::Generic(_))
+        }
+        Op::Update { kind, desired, .. } => {
+            kind.is_custom() || matches!(desired.attrs, Attrs::Generic(_))
+        }
+        Op::Delete { kind, .. } => kind.is_custom(),
+    }
+}
+
 /// map string status to netbox site status enum.
 fn site_status_from_str(value: &str) -> Result<netbox::models::writable_site_request::Status> {
     match value {
@@ -1090,7 +1121,7 @@ mod tests {
     async fn apply_create_update_delete_flow() {
         let server = MockServer::start();
         let dir = tempdir().unwrap();
-        let state = StateStore::load(&dir.path().join("state.json")).unwrap();
+        let state = StateStore::load(dir.path().join("state.json")).unwrap();
         let adapter = NetBoxAdapter::new(&server.base_url(), "token", state).unwrap();
 
         let _role = server.mock(|when, then| {

@@ -10,18 +10,14 @@ use uuid::Uuid;
 pub type Uid = Uuid;
 
 /// canonical object kind.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Kind {
-    #[serde(rename = "dcim.site")]
     DcimSite,
-    #[serde(rename = "dcim.device")]
     DcimDevice,
-    #[serde(rename = "dcim.interface")]
     DcimInterface,
-    #[serde(rename = "ipam.prefix")]
     IpamPrefix,
-    #[serde(rename = "ipam.ip_address")]
     IpamIpAddress,
+    Custom(String),
 }
 
 impl Kind {
@@ -33,13 +29,70 @@ impl Kind {
             Kind::DcimInterface => "dcim.interface",
             Kind::IpamPrefix => "ipam.prefix",
             Kind::IpamIpAddress => "ipam.ip_address",
+            Kind::Custom(_) => "custom",
         }
+    }
+
+    /// return the serialized string for this kind.
+    pub fn as_string(&self) -> String {
+        match self {
+            Kind::Custom(value) => value.clone(),
+            _ => self.as_str().to_string(),
+        }
+    }
+
+    /// return true when this is a custom kind.
+    pub fn is_custom(&self) -> bool {
+        matches!(self, Kind::Custom(_))
+    }
+
+    /// return true when kind string is empty.
+    pub fn is_empty(&self) -> bool {
+        matches!(self, Kind::Custom(value) if value.trim().is_empty())
     }
 }
 
 impl fmt::Display for Kind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
+        f.write_str(&self.as_string())
+    }
+}
+
+impl Serialize for Kind {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.as_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for Kind {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = String::deserialize(deserializer)?;
+        Ok(match raw.as_str() {
+            "dcim.site" => Kind::DcimSite,
+            "dcim.device" => Kind::DcimDevice,
+            "dcim.interface" => Kind::DcimInterface,
+            "ipam.prefix" => Kind::IpamPrefix,
+            "ipam.ip_address" => Kind::IpamIpAddress,
+            _ => Kind::Custom(raw),
+        })
+    }
+}
+
+impl Ord for Kind {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.as_string().cmp(&other.as_string())
+    }
+}
+
+impl PartialOrd for Kind {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
     }
 }
 
@@ -127,17 +180,19 @@ pub enum Attrs {
     Interface(InterfaceAttrs),
     Prefix(PrefixAttrs),
     IpAddress(IpAddressAttrs),
+    Generic(BTreeMap<String, Value>),
 }
 
 impl Attrs {
     /// return the kind implied by this attrs variant.
-    pub fn kind(&self) -> Kind {
+    pub fn kind(&self) -> Option<Kind> {
         match self {
-            Attrs::Site(_) => Kind::DcimSite,
-            Attrs::Device(_) => Kind::DcimDevice,
-            Attrs::Interface(_) => Kind::DcimInterface,
-            Attrs::Prefix(_) => Kind::IpamPrefix,
-            Attrs::IpAddress(_) => Kind::IpamIpAddress,
+            Attrs::Site(_) => Some(Kind::DcimSite),
+            Attrs::Device(_) => Some(Kind::DcimDevice),
+            Attrs::Interface(_) => Some(Kind::DcimInterface),
+            Attrs::Prefix(_) => Some(Kind::IpamPrefix),
+            Attrs::IpAddress(_) => Some(Kind::IpamIpAddress),
+            Attrs::Generic(_) => None,
         }
     }
 }
@@ -160,12 +215,25 @@ pub struct Object {
 impl Object {
     /// create an object and infer its kind from attrs.
     pub fn new(uid: Uid, key: String, attrs: Attrs) -> Self {
-        let kind = attrs.kind();
+        let kind = attrs
+            .kind()
+            .unwrap_or_else(|| panic!("generic attrs require explicit kind"));
         Self {
             uid,
             kind,
             key,
             attrs,
+            x: BTreeMap::new(),
+        }
+    }
+
+    /// create a generic object with an explicit kind.
+    pub fn new_generic(uid: Uid, kind: Kind, key: String, attrs: BTreeMap<String, Value>) -> Self {
+        Self {
+            uid,
+            kind,
+            key,
+            attrs: Attrs::Generic(attrs),
             x: BTreeMap::new(),
         }
     }
@@ -200,6 +268,7 @@ impl Serialize for Object {
             (Kind::IpamIpAddress, Attrs::IpAddress(attrs)) => {
                 state.serialize_field("attrs", attrs)?
             }
+            (_, Attrs::Generic(attrs)) => state.serialize_field("attrs", attrs)?,
             _ => {
                 return Err(serde::ser::Error::custom(
                     "object kind does not match attrs",
@@ -230,31 +299,31 @@ impl<'de> Deserialize<'de> for Object {
 
         let raw = RawObject::deserialize(deserializer)?;
         let attrs = match raw.kind {
-            Kind::DcimSite => {
-                let parsed: SiteAttrs = serde_json::from_value(raw.attrs)
-                    .map_err(|e| de::Error::custom(format!("site attrs: {e}")))?;
-                Attrs::Site(parsed)
-            }
-            Kind::DcimDevice => {
-                let parsed: DeviceAttrs = serde_json::from_value(raw.attrs)
-                    .map_err(|e| de::Error::custom(format!("device attrs: {e}")))?;
-                Attrs::Device(parsed)
-            }
+            Kind::DcimSite => match serde_json::from_value::<SiteAttrs>(raw.attrs.clone()) {
+                Ok(parsed) => Attrs::Site(parsed),
+                Err(_) => Attrs::Generic(to_object_map(raw.attrs)?),
+            },
+            Kind::DcimDevice => match serde_json::from_value::<DeviceAttrs>(raw.attrs.clone()) {
+                Ok(parsed) => Attrs::Device(parsed),
+                Err(_) => Attrs::Generic(to_object_map(raw.attrs)?),
+            },
             Kind::DcimInterface => {
-                let parsed: InterfaceAttrs = serde_json::from_value(raw.attrs)
-                    .map_err(|e| de::Error::custom(format!("interface attrs: {e}")))?;
-                Attrs::Interface(parsed)
+                match serde_json::from_value::<InterfaceAttrs>(raw.attrs.clone()) {
+                    Ok(parsed) => Attrs::Interface(parsed),
+                    Err(_) => Attrs::Generic(to_object_map(raw.attrs)?),
+                }
             }
-            Kind::IpamPrefix => {
-                let parsed: PrefixAttrs = serde_json::from_value(raw.attrs)
-                    .map_err(|e| de::Error::custom(format!("prefix attrs: {e}")))?;
-                Attrs::Prefix(parsed)
-            }
+            Kind::IpamPrefix => match serde_json::from_value::<PrefixAttrs>(raw.attrs.clone()) {
+                Ok(parsed) => Attrs::Prefix(parsed),
+                Err(_) => Attrs::Generic(to_object_map(raw.attrs)?),
+            },
             Kind::IpamIpAddress => {
-                let parsed: IpAddressAttrs = serde_json::from_value(raw.attrs)
-                    .map_err(|e| de::Error::custom(format!("ip_address attrs: {e}")))?;
-                Attrs::IpAddress(parsed)
+                match serde_json::from_value::<IpAddressAttrs>(raw.attrs.clone()) {
+                    Ok(parsed) => Attrs::IpAddress(parsed),
+                    Err(_) => Attrs::Generic(to_object_map(raw.attrs)?),
+                }
             }
+            Kind::Custom(_) => Attrs::Generic(to_object_map(raw.attrs)?),
         };
 
         Ok(Object {
@@ -264,6 +333,16 @@ impl<'de> Deserialize<'de> for Object {
             attrs,
             x: raw.x,
         })
+    }
+}
+
+fn to_object_map<E>(value: Value) -> Result<BTreeMap<String, Value>, E>
+where
+    E: de::Error,
+{
+    match value {
+        Value::Object(map) => Ok(map.into_iter().collect()),
+        _ => Err(de::Error::custom("attrs must be an object")),
     }
 }
 
@@ -298,6 +377,26 @@ mod tests {
         assert_eq!(decoded.attrs, object.attrs);
     }
 
+    #[test]
+    fn object_roundtrip_generic() {
+        let mut attrs = BTreeMap::new();
+        attrs.insert("peers".to_string(), serde_json::json!([{"name": "site1"}]));
+        attrs.insert("pre_shared_key".to_string(), serde_json::json!("secret"));
+
+        let object = Object::new_generic(
+            Uuid::from_u128(10),
+            Kind::Custom("services.vpn".to_string()),
+            "vpn=corp".to_string(),
+            attrs,
+        );
+
+        let value = serde_json::to_value(&object).unwrap();
+        let decoded: Object = serde_json::from_value(value).unwrap();
+        assert_eq!(decoded.uid, object.uid);
+        assert_eq!(decoded.kind.to_string(), "services.vpn");
+        assert_eq!(decoded.key, object.key);
+        assert_eq!(decoded.attrs, object.attrs);
+    }
     #[test]
     fn object_serialize_rejects_mismatched_kind() {
         let object = Object {
@@ -351,11 +450,11 @@ mod tests {
             description: None,
         });
 
-        assert_eq!(site.kind(), Kind::DcimSite);
-        assert_eq!(device.kind(), Kind::DcimDevice);
-        assert_eq!(iface.kind(), Kind::DcimInterface);
-        assert_eq!(prefix.kind(), Kind::IpamPrefix);
-        assert_eq!(ip.kind(), Kind::IpamIpAddress);
+        assert_eq!(site.kind(), Some(Kind::DcimSite));
+        assert_eq!(device.kind(), Some(Kind::DcimDevice));
+        assert_eq!(iface.kind(), Some(Kind::DcimInterface));
+        assert_eq!(prefix.kind(), Some(Kind::IpamPrefix));
+        assert_eq!(ip.kind(), Some(Kind::IpamIpAddress));
     }
 
     #[test]
