@@ -129,3 +129,107 @@ fn netbox_credentials(url: Option<String>, token: Option<String>) -> Result<(Str
         .ok_or_else(|| anyhow!("missing --netbox-token or NETBOX_TOKEN"))?;
     Ok((url, token))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alembic_engine::Op;
+    use tempfile::tempdir;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    #[test]
+    fn state_path_uses_dot_alembic() {
+        let root = Path::new("/tmp/example");
+        let path = state_path(root);
+        assert!(path.ends_with(".alembic/state.json"));
+    }
+
+    #[test]
+    fn netbox_credentials_prefers_args() {
+        let creds = netbox_credentials(
+            Some("http://example".to_string()),
+            Some("token".to_string()),
+        )
+        .unwrap();
+        assert_eq!(creds.0, "http://example");
+        assert_eq!(creds.1, "token");
+    }
+
+    #[test]
+    fn netbox_credentials_from_env() {
+        let _guard = env_lock().lock().unwrap();
+        let old_url = std::env::var("NETBOX_URL").ok();
+        let old_token = std::env::var("NETBOX_TOKEN").ok();
+        std::env::set_var("NETBOX_URL", "http://env");
+        std::env::set_var("NETBOX_TOKEN", "envtoken");
+
+        let result = std::panic::catch_unwind(|| {
+            let creds = netbox_credentials(None, None).unwrap();
+            assert_eq!(creds.0, "http://env");
+            assert_eq!(creds.1, "envtoken");
+        });
+
+        if let Some(value) = old_url {
+            std::env::set_var("NETBOX_URL", value);
+        } else {
+            std::env::remove_var("NETBOX_URL");
+        }
+        if let Some(value) = old_token {
+            std::env::set_var("NETBOX_TOKEN", value);
+        } else {
+            std::env::remove_var("NETBOX_TOKEN");
+        }
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn plan_roundtrip_io() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("plan.json");
+        let plan = Plan {
+            ops: vec![Op::Delete {
+                uid: uuid::Uuid::from_u128(1),
+                kind: alembic_core::Kind::DcimSite,
+                key: "site=fra1".to_string(),
+                backend_id: Some(1),
+            }],
+        };
+
+        write_plan(&path, &plan).unwrap();
+        let loaded = read_plan(&path).unwrap();
+        assert_eq!(loaded.ops.len(), 1);
+    }
+
+    #[test]
+    fn netbox_credentials_missing_is_error() {
+        let _guard = env_lock().lock().unwrap();
+        let old_url = std::env::var("NETBOX_URL").ok();
+        let old_token = std::env::var("NETBOX_TOKEN").ok();
+        std::env::remove_var("NETBOX_URL");
+        std::env::remove_var("NETBOX_TOKEN");
+
+        let result = netbox_credentials(None, None);
+        assert!(result.is_err());
+
+        if let Some(value) = old_url {
+            std::env::set_var("NETBOX_URL", value);
+        }
+        if let Some(value) = old_token {
+            std::env::set_var("NETBOX_TOKEN", value);
+        }
+    }
+
+    #[test]
+    fn read_plan_invalid_json_errors() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("plan.json");
+        std::fs::write(&path, "not-json").unwrap();
+        assert!(read_plan(&path).is_err());
+    }
+}

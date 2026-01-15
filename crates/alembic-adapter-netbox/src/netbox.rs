@@ -9,6 +9,7 @@ use alembic_engine::{
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use netbox::{Client, ClientConfig, QueryBuilder};
+use serde::de::DeserializeOwned;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// netbox adapter that maps ir objects to netbox api calls.
@@ -24,6 +25,35 @@ impl NetBoxAdapter {
         let client = Client::new(config)?;
         Ok(Self { client, state })
     }
+
+    async fn list_all<T>(
+        &self,
+        resource: &netbox::Resource<T>,
+        query: Option<QueryBuilder>,
+    ) -> Result<Vec<T>>
+    where
+        T: DeserializeOwned,
+    {
+        let base_query = query.unwrap_or_default();
+        let mut results = Vec::new();
+        let mut offset = 0usize;
+        let limit = 200usize;
+
+        loop {
+            let page = resource
+                .list(Some(base_query.clone().limit(limit).offset(offset)))
+                .await?;
+            let page_count = page.results.len();
+            results.extend(page.results);
+            if results.len() >= page.count || page_count == 0 {
+                break;
+            }
+            offset += limit;
+        }
+
+        Ok(results)
+    }
+
 }
 
 #[async_trait]
@@ -59,13 +89,7 @@ impl Adapter for NetBoxAdapter {
         for kind in unique {
             match kind {
                 Kind::DcimSite => {
-                    let sites = self
-                        .client
-                        .dcim()
-                        .sites()
-                        .paginate(None)?
-                        .collect_all()
-                        .await?;
+                    let sites = self.list_all(&self.client.dcim().sites(), None).await?;
                     for site in sites {
                         let backend_id = site.id.map(|id| id as u64);
                         let key = format!("site={}", site.slug);
@@ -87,13 +111,7 @@ impl Adapter for NetBoxAdapter {
                     }
                 }
                 Kind::DcimDevice => {
-                    let devices = self
-                        .client
-                        .dcim()
-                        .devices()
-                        .paginate(None)?
-                        .collect_all()
-                        .await?;
+                    let devices = self.list_all(&self.client.dcim().devices(), None).await?;
                     for device in devices {
                         let backend_id = device.id.map(|id| id as u64);
                         let name = device
@@ -127,13 +145,7 @@ impl Adapter for NetBoxAdapter {
                     }
                 }
                 Kind::DcimInterface => {
-                    let interfaces = self
-                        .client
-                        .dcim()
-                        .interfaces()
-                        .paginate(None)?
-                        .collect_all()
-                        .await?;
+                    let interfaces = self.list_all(&self.client.dcim().interfaces(), None).await?;
                     for interface in interfaces {
                         let backend_id = interface.id.map(|id| id as u64);
                         let device_name = interface
@@ -169,13 +181,7 @@ impl Adapter for NetBoxAdapter {
                     }
                 }
                 Kind::IpamPrefix => {
-                    let prefixes = self
-                        .client
-                        .ipam()
-                        .prefixes()
-                        .paginate(None)?
-                        .collect_all()
-                        .await?;
+                    let prefixes = self.list_all(&self.client.ipam().prefixes(), None).await?;
                     for prefix in prefixes {
                         let backend_id = prefix.id.map(|id| id as u64);
                         let key = format!("prefix={}", prefix.prefix);
@@ -193,13 +199,7 @@ impl Adapter for NetBoxAdapter {
                     }
                 }
                 Kind::IpamIpAddress => {
-                    let ips = self
-                        .client
-                        .ipam()
-                        .ip_addresses()
-                        .paginate(None)?
-                        .collect_all()
-                        .await?;
+                    let ips = self.list_all(&self.client.ipam().ip_addresses(), None).await?;
                     for ip in ips {
                         let backend_id = ip.id.map(|id| id as u64);
                         let key = format!("ip={}", ip.address);
@@ -238,6 +238,23 @@ impl Adapter for NetBoxAdapter {
         for mapping in self.state.all_mappings().values() {
             for (uid, backend_id) in mapping {
                 resolved.insert(*uid, *backend_id);
+            }
+        }
+        for op in ops {
+            match op {
+                Op::Update {
+                    uid,
+                    backend_id: Some(id),
+                    ..
+                }
+                | Op::Delete {
+                    uid,
+                    backend_id: Some(id),
+                    ..
+                } => {
+                    resolved.insert(*uid, *id);
+                }
+                _ => {}
             }
         }
 
@@ -866,5 +883,495 @@ fn patched_interface_type_from_str(
         "bridge" => Ok(netbox::models::patched_writable_interface_request::RHashType::Bridge),
         "lag" => Ok(netbox::models::patched_writable_interface_request::RHashType::Lag),
         other => Err(anyhow!("unsupported interface type: {other}")),
+    }
+}
+
+#[cfg(test)]
+mod unit_tests {
+    use super::*;
+
+    #[test]
+    fn site_status_mapping() {
+        let status = site_status_from_str("active").unwrap();
+        assert!(matches!(
+            status,
+            netbox::models::writable_site_request::Status::Active
+        ));
+    }
+
+    #[test]
+    fn patched_site_status_mapping() {
+        let status = patched_site_status_from_str("retired").unwrap();
+        assert!(matches!(
+            status,
+            netbox::models::patched_writable_site_request::Status::Retired
+        ));
+    }
+
+    #[test]
+    fn interface_type_mapping() {
+        let value = interface_type_from_str(Some("1000base-t")).unwrap();
+        assert!(matches!(
+            value,
+            netbox::models::writable_interface_request::RHashType::Variant1000baseT
+        ));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alembic_core::{Attrs, DeviceAttrs, InterfaceAttrs, IpAddressAttrs, Kind, PrefixAttrs, SiteAttrs, Uid};
+    use alembic_engine::Op;
+    use httpmock::Method::{DELETE, GET, PATCH, POST};
+    use httpmock::{Mock, MockServer};
+    use serde_json::json;
+    use tempfile::tempdir;
+    use uuid::Uuid;
+
+    fn uid(value: u128) -> Uid {
+        Uuid::from_u128(value)
+    }
+
+    fn page(results: serde_json::Value) -> serde_json::Value {
+        json!({
+            "count": results.as_array().map(|a| a.len()).unwrap_or(0),
+            "next": null,
+            "previous": null,
+            "results": results
+        })
+    }
+
+    fn device_payload(id: i32, name: &str, site_id: i32) -> serde_json::Value {
+        json!({
+            "id": id,
+            "name": name,
+            "device_type": {
+                "manufacturer": { "name": "acme", "slug": "acme" },
+                "model": "leaf-switch",
+                "slug": "leaf-switch"
+            },
+            "role": { "name": "leaf", "slug": "leaf" },
+            "site": { "id": site_id, "name": "FRA1", "slug": "fra1" }
+        })
+    }
+
+    fn interface_payload(id: i32, device_id: i32) -> serde_json::Value {
+        json!({
+            "id": id,
+            "device": { "id": device_id, "name": "leaf01" },
+            "name": "eth0",
+            "type": { "value": "1000base-t" },
+            "enabled": true
+        })
+    }
+
+    fn site_payload(id: i32) -> serde_json::Value {
+        json!({
+            "id": id,
+            "name": "FRA1",
+            "slug": "fra1",
+            "status": { "value": "active" }
+        })
+    }
+
+    fn prefix_payload(id: i32) -> serde_json::Value {
+        json!({
+            "id": id,
+            "prefix": "10.0.0.0/24",
+            "description": "subnet"
+        })
+    }
+
+    fn ip_payload(id: i32, interface_id: i64) -> serde_json::Value {
+        json!({
+            "id": id,
+            "address": "10.0.0.10/24",
+            "assigned_object_type": "dcim.interface",
+            "assigned_object_id": interface_id,
+            "description": "leaf01 eth0"
+        })
+    }
+
+    fn state_with_mappings(path: &std::path::Path) -> StateStore {
+        let mut store = StateStore::load(path).unwrap();
+        store.set_backend_id(Kind::DcimSite, uid(1), 1);
+        store.set_backend_id(Kind::DcimDevice, uid(2), 2);
+        store.set_backend_id(Kind::DcimInterface, uid(3), 3);
+        store
+    }
+
+    fn mock_list<'a>(
+        server: &'a MockServer,
+        path: &'a str,
+        payload: serde_json::Value,
+    ) -> Mock<'a> {
+        server.mock(|when, then| {
+            when.method(GET)
+                .path(path)
+                .query_param("limit", "200")
+                .query_param("offset", "0");
+            then.status(200).json_body(page(payload));
+        })
+    }
+
+
+    #[tokio::test]
+    async fn observe_maps_state_and_attrs() {
+        let server = MockServer::start();
+        let dir = tempdir().unwrap();
+        let state = state_with_mappings(&dir.path().join("state.json"));
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token", state).unwrap();
+
+        let _sites = mock_list(&server, "/api/dcim/sites/", json!([site_payload(1)]));
+        let _devices = mock_list(&server, "/api/dcim/devices/", json!([device_payload(2, "leaf01", 1)]));
+        let _interfaces = mock_list(&server, "/api/dcim/interfaces/", json!([interface_payload(3, 2)]));
+        let _prefixes = mock_list(&server, "/api/ipam/prefixes/", json!([prefix_payload(4)]));
+        let _ips = mock_list(&server, "/api/ipam/ip-addresses/", json!([ip_payload(5, 3)]));
+
+        let observed = adapter
+            .observe(&[
+                Kind::DcimSite,
+                Kind::DcimDevice,
+                Kind::DcimInterface,
+                Kind::IpamPrefix,
+                Kind::IpamIpAddress,
+            ])
+            .await
+            .unwrap();
+
+        let site = observed.by_key.get("site=fra1").unwrap();
+        assert!(matches!(site.attrs, Attrs::Site(_)));
+
+        let device = observed.by_key.get("site=fra1/device=leaf01").unwrap();
+        match &device.attrs {
+            Attrs::Device(attrs) => {
+                assert_eq!(attrs.name, "leaf01");
+                assert_eq!(attrs.site, uid(1));
+            }
+            _ => panic!("expected device attrs"),
+        }
+
+        let interface = observed.by_key.get("device=leaf01/interface=eth0").unwrap();
+        match &interface.attrs {
+            Attrs::Interface(attrs) => {
+                assert_eq!(attrs.device, uid(2));
+                assert_eq!(attrs.if_type.as_deref(), Some("1000base-t"));
+            }
+            _ => panic!("expected interface attrs"),
+        }
+
+        let ip = observed.by_key.get("ip=10.0.0.10/24").unwrap();
+        match &ip.attrs {
+            Attrs::IpAddress(attrs) => {
+                assert_eq!(attrs.assigned_interface, Some(uid(3)));
+            }
+            _ => panic!("expected ip attrs"),
+        }
+    }
+
+    #[tokio::test]
+    async fn apply_create_update_delete_flow() {
+        let server = MockServer::start();
+        let dir = tempdir().unwrap();
+        let state = StateStore::load(&dir.path().join("state.json")).unwrap();
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token", state).unwrap();
+
+        let _role = server.mock(|when, then| {
+            when.method(GET)
+                .path("/api/dcim/device-roles/")
+                .query_param("name", "leaf");
+            then.status(200).json_body(page(json!([{"id": 10, "name": "leaf", "slug": "leaf"}])));
+        });
+        let _dtype = server.mock(|when, then| {
+            when.method(GET)
+                .path("/api/dcim/device-types/")
+                .query_param("model", "leaf-switch");
+            then.status(200).json_body(page(json!([{
+                "id": 20,
+                "manufacturer": { "name": "acme", "slug": "acme" },
+                "model": "leaf-switch",
+                "slug": "leaf-switch"
+            }])));
+        });
+        let _device_get = server.mock(|when, then| {
+            when.method(GET).path("/api/dcim/devices/2/");
+            then.status(200).json_body(device_payload(2, "leaf01", 1));
+        });
+        let _site_create = server.mock(|when, then| {
+            when.method(POST).path("/api/dcim/sites/");
+            then.status(201).json_body(site_payload(1));
+        });
+        let _device_create = server.mock(|when, then| {
+            when.method(POST).path("/api/dcim/devices/");
+            then.status(201).json_body(device_payload(2, "leaf01", 1));
+        });
+        let _interface_create = server.mock(|when, then| {
+            when.method(POST).path("/api/dcim/interfaces/");
+            then.status(201).json_body(interface_payload(3, 2));
+        });
+        let _prefix_create = server.mock(|when, then| {
+            when.method(POST).path("/api/ipam/prefixes/");
+            then.status(201).json_body(prefix_payload(4));
+        });
+        let _ip_create = server.mock(|when, then| {
+            when.method(POST).path("/api/ipam/ip-addresses/");
+            then.status(201).json_body(ip_payload(5, 3));
+        });
+
+        let ops = vec![
+            Op::Create {
+                uid: uid(1),
+                kind: Kind::DcimSite,
+                desired: alembic_core::Object::new(
+                    uid(1),
+                    "site=fra1".to_string(),
+                    Attrs::Site(SiteAttrs {
+                        name: "FRA1".to_string(),
+                        slug: "fra1".to_string(),
+                        status: Some("active".to_string()),
+                        description: None,
+                    }),
+                ),
+            },
+            Op::Create {
+                uid: uid(2),
+                kind: Kind::DcimDevice,
+                desired: alembic_core::Object::new(
+                    uid(2),
+                    "site=fra1/device=leaf01".to_string(),
+                    Attrs::Device(DeviceAttrs {
+                        name: "leaf01".to_string(),
+                        site: uid(1),
+                        role: "leaf".to_string(),
+                        device_type: "leaf-switch".to_string(),
+                        status: Some("active".to_string()),
+                    }),
+                ),
+            },
+            Op::Create {
+                uid: uid(3),
+                kind: Kind::DcimInterface,
+                desired: alembic_core::Object::new(
+                    uid(3),
+                    "device=leaf01/interface=eth0".to_string(),
+                    Attrs::Interface(InterfaceAttrs {
+                        name: "eth0".to_string(),
+                        device: uid(2),
+                        if_type: Some("1000base-t".to_string()),
+                        enabled: Some(true),
+                        description: None,
+                    }),
+                ),
+            },
+            Op::Create {
+                uid: uid(4),
+                kind: Kind::IpamPrefix,
+                desired: alembic_core::Object::new(
+                    uid(4),
+                    "prefix=10.0.0.0/24".to_string(),
+                    Attrs::Prefix(PrefixAttrs {
+                        prefix: "10.0.0.0/24".to_string(),
+                        site: Some(uid(1)),
+                        description: Some("subnet".to_string()),
+                    }),
+                ),
+            },
+            Op::Create {
+                uid: uid(5),
+                kind: Kind::IpamIpAddress,
+                desired: alembic_core::Object::new(
+                    uid(5),
+                    "ip=10.0.0.10/24".to_string(),
+                    Attrs::IpAddress(IpAddressAttrs {
+                        address: "10.0.0.10/24".to_string(),
+                        assigned_interface: Some(uid(3)),
+                        description: Some("leaf01 eth0".to_string()),
+                    }),
+                ),
+            },
+        ];
+
+        let report = adapter.apply(&ops).await.unwrap();
+        assert_eq!(report.applied.len(), ops.len());
+    }
+
+    #[tokio::test]
+    async fn apply_update_with_lookups() {
+        let server = MockServer::start();
+        let dir = tempdir().unwrap();
+        let mut state = StateStore::load(dir.path().join("state.json")).unwrap();
+        state.set_backend_id(Kind::DcimSite, uid(1), 1);
+        state.set_backend_id(Kind::DcimDevice, uid(2), 2);
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token", state).unwrap();
+
+        let _site_lookup = server.mock(|when, then| {
+            when.method(GET)
+                .path("/api/dcim/sites/")
+                .query_param("slug", "fra1");
+            then.status(200).json_body(page(json!([site_payload(1)])));
+        });
+        let _device_lookup = server.mock(|when, then| {
+            when.method(GET)
+                .path("/api/dcim/devices/")
+                .query_param("name", "leaf01");
+            then.status(200).json_body(page(json!([device_payload(2, "leaf01", 1)])));
+        });
+        let _interface_lookup = server.mock(|when, then| {
+            when.method(GET)
+                .path("/api/dcim/interfaces/")
+                .query_param("device_id", "2")
+                .query_param("name", "eth0");
+            then.status(200).json_body(page(json!([interface_payload(3, 2)])));
+        });
+        let _prefix_lookup = server.mock(|when, then| {
+            when.method(GET)
+                .path("/api/ipam/prefixes/")
+                .query_param("prefix", "10.0.0.0/24");
+            then.status(200).json_body(page(json!([prefix_payload(4)])));
+        });
+        let _ip_lookup = server.mock(|when, then| {
+            when.method(GET)
+                .path("/api/ipam/ip-addresses/")
+                .query_param("address", "10.0.0.10/24");
+            then.status(200).json_body(page(json!([ip_payload(5, 3)])));
+        });
+        let _role = server.mock(|when, then| {
+            when.method(GET)
+                .path("/api/dcim/device-roles/")
+                .query_param("name", "leaf");
+            then.status(200).json_body(page(json!([{"id": 10, "name": "leaf", "slug": "leaf"}])));
+        });
+        let _dtype = server.mock(|when, then| {
+            when.method(GET)
+                .path("/api/dcim/device-types/")
+                .query_param("model", "leaf-switch");
+            then.status(200).json_body(page(json!([{
+                "id": 20,
+                "manufacturer": { "name": "acme", "slug": "acme" },
+                "model": "leaf-switch",
+                "slug": "leaf-switch"
+            }])));
+        });
+        let _device_get = server.mock(|when, then| {
+            when.method(GET).path("/api/dcim/devices/2/");
+            then.status(200).json_body(device_payload(2, "leaf01", 1));
+        });
+        let _site_patch = server.mock(|when, then| {
+            when.method(PATCH).path("/api/dcim/sites/1/");
+            then.status(200).json_body(site_payload(1));
+        });
+        let _device_patch = server.mock(|when, then| {
+            when.method(PATCH).path("/api/dcim/devices/2/");
+            then.status(200).json_body(device_payload(2, "leaf01", 1));
+        });
+        let _interface_patch = server.mock(|when, then| {
+            when.method(PATCH).path("/api/dcim/interfaces/3/");
+            then.status(200).json_body(interface_payload(3, 2));
+        });
+        let _prefix_patch = server.mock(|when, then| {
+            when.method(PATCH).path("/api/ipam/prefixes/4/");
+            then.status(200).json_body(prefix_payload(4));
+        });
+        let _ip_patch = server.mock(|when, then| {
+            when.method(PATCH).path("/api/ipam/ip-addresses/5/");
+            then.status(200).json_body(ip_payload(5, 3));
+        });
+        let _ip_delete = server.mock(|when, then| {
+            when.method(DELETE).path("/api/ipam/ip-addresses/5/");
+            then.status(204);
+        });
+
+        let ops = vec![
+            Op::Update {
+                uid: uid(1),
+                kind: Kind::DcimSite,
+                desired: alembic_core::Object::new(
+                    uid(1),
+                    "site=fra1".to_string(),
+                    Attrs::Site(SiteAttrs {
+                        name: "FRA1".to_string(),
+                        slug: "fra1".to_string(),
+                        status: Some("active".to_string()),
+                        description: None,
+                    }),
+                ),
+                changes: vec![],
+                backend_id: None,
+            },
+            Op::Update {
+                uid: uid(2),
+                kind: Kind::DcimDevice,
+                desired: alembic_core::Object::new(
+                    uid(2),
+                    "site=fra1/device=leaf01".to_string(),
+                    Attrs::Device(DeviceAttrs {
+                        name: "leaf01".to_string(),
+                        site: uid(1),
+                        role: "leaf".to_string(),
+                        device_type: "leaf-switch".to_string(),
+                        status: Some("active".to_string()),
+                    }),
+                ),
+                changes: vec![],
+                backend_id: None,
+            },
+            Op::Update {
+                uid: uid(3),
+                kind: Kind::DcimInterface,
+                desired: alembic_core::Object::new(
+                    uid(3),
+                    "device=leaf01/interface=eth0".to_string(),
+                    Attrs::Interface(InterfaceAttrs {
+                        name: "eth0".to_string(),
+                        device: uid(2),
+                        if_type: Some("1000base-t".to_string()),
+                        enabled: Some(true),
+                        description: None,
+                    }),
+                ),
+                changes: vec![],
+                backend_id: None,
+            },
+            Op::Update {
+                uid: uid(4),
+                kind: Kind::IpamPrefix,
+                desired: alembic_core::Object::new(
+                    uid(4),
+                    "prefix=10.0.0.0/24".to_string(),
+                    Attrs::Prefix(PrefixAttrs {
+                        prefix: "10.0.0.0/24".to_string(),
+                        site: Some(uid(1)),
+                        description: Some("subnet".to_string()),
+                    }),
+                ),
+                changes: vec![],
+                backend_id: None,
+            },
+            Op::Update {
+                uid: uid(5),
+                kind: Kind::IpamIpAddress,
+                desired: alembic_core::Object::new(
+                    uid(5),
+                    "ip=10.0.0.10/24".to_string(),
+                    Attrs::IpAddress(IpAddressAttrs {
+                        address: "10.0.0.10/24".to_string(),
+                        assigned_interface: Some(uid(3)),
+                        description: Some("leaf01 eth0".to_string()),
+                    }),
+                ),
+                changes: vec![],
+                backend_id: None,
+            },
+            Op::Delete {
+                uid: uid(5),
+                kind: Kind::IpamIpAddress,
+                key: "ip=10.0.0.10/24".to_string(),
+                backend_id: Some(5),
+            },
+        ];
+
+        let report = adapter.apply(&ops).await.unwrap();
+        assert_eq!(report.applied.len(), ops.len());
     }
 }

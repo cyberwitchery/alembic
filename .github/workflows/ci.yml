@@ -42,31 +42,13 @@ jobs:
           cargo install cargo-audit --locked
           cargo audit
 
-  test:
-    name: tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            .
-            alembic
-          shared-key: alembic-ci
-
-      - name: Test
-        run: |
-          if [ -f alembic/Cargo.toml ]; then cd alembic; fi
-          cargo test --workspace --all-features
-
   coverage:
     name: coverage
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      RUSTFLAGS: "-C debuginfo=0"
+      CARGO_TARGET_DIR: target/ci
     steps:
       - uses: actions/checkout@v4
 
@@ -81,20 +63,18 @@ jobs:
             alembic
           shared-key: alembic-ci
 
-      - name: Install tarpaulin
-        run: |
-          if [ -f alembic/Cargo.toml ]; then cd alembic; fi
-          cargo install cargo-tarpaulin --locked
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
 
       - name: Coverage
         run: |
           if [ -f alembic/Cargo.toml ]; then cd alembic; fi
-          cargo tarpaulin --workspace --all-features --timeout 120 --out Xml
+          cargo llvm-cov --workspace --all-features --fail-under-lines 80 --lcov --output-path lcov.info
 
       - name: Upload coverage artifact
         uses: actions/upload-artifact@v4
         with:
-          name: coverage-report
+          name: coverage-lcov
           path: |
-            tarpaulin-report.xml
-            alembic/tarpaulin-report.xml
+            lcov.info
+            alembic/lcov.info

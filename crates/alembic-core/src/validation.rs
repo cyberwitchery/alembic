@@ -127,3 +127,90 @@ fn check_ref(
         _ => {}
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ir::{Attrs, DeviceAttrs, InterfaceAttrs, Object, SiteAttrs};
+    use uuid::Uuid;
+
+    fn uid(value: u128) -> Uid {
+        Uuid::from_u128(value)
+    }
+
+    #[test]
+    fn detects_duplicate_keys() {
+        let objects = vec![
+            Object::new(
+                uid(1),
+                "site=fra1".to_string(),
+                Attrs::Site(SiteAttrs {
+                    name: "FRA1".to_string(),
+                    slug: "fra1".to_string(),
+                    status: None,
+                    description: None,
+                }),
+            ),
+            Object::new(
+                uid(2),
+                "site=fra1".to_string(),
+                Attrs::Site(SiteAttrs {
+                    name: "FRA1-dup".to_string(),
+                    slug: "fra1-dup".to_string(),
+                    status: None,
+                    description: None,
+                }),
+            ),
+        ];
+        let report = validate_inventory(&Inventory { objects });
+        assert!(report
+            .errors
+            .iter()
+            .any(|err| matches!(err, ValidationError::DuplicateKey(_))));
+    }
+
+    #[test]
+    fn detects_kind_mismatch() {
+        let site_uid = uid(10);
+        let wrong_uid = uid(11);
+        let objects = vec![
+            Object::new(
+                site_uid,
+                "site=fra1".to_string(),
+                Attrs::Site(SiteAttrs {
+                    name: "FRA1".to_string(),
+                    slug: "fra1".to_string(),
+                    status: None,
+                    description: None,
+                }),
+            ),
+            Object::new(
+                wrong_uid,
+                "device=leaf01".to_string(),
+                Attrs::Device(DeviceAttrs {
+                    name: "leaf01".to_string(),
+                    site: site_uid,
+                    role: "leaf".to_string(),
+                    device_type: "leaf-switch".to_string(),
+                    status: None,
+                }),
+            ),
+            Object::new(
+                uid(12),
+                "device=leaf01/interface=eth0".to_string(),
+                Attrs::Interface(InterfaceAttrs {
+                    name: "eth0".to_string(),
+                    device: site_uid,
+                    if_type: None,
+                    enabled: None,
+                    description: None,
+                }),
+            ),
+        ];
+        let report = validate_inventory(&Inventory { objects });
+        assert!(report.errors.iter().any(|err| matches!(
+            err,
+            ValidationError::KindMismatch { .. }
+        )));
+    }
+}

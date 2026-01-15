@@ -10,4 +10,11 @@ alembic-engine = { path = "../alembic-engine" }
 anyhow.workspace = true
 async-trait.workspace = true
 netbox.workspace = true
+serde.workspace = true
 serde_json.workspace = true
+
+[dev-dependencies]
+httpmock = "0.7"
+tempfile = "3"
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+uuid.workspace = true

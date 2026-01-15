@@ -266,3 +266,124 @@ impl<'de> Deserialize<'de> for Object {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn kind_display_matches_str() {
+        assert_eq!(Kind::DcimSite.to_string(), "dcim.site");
+        assert_eq!(Kind::IpamIpAddress.to_string(), "ipam.ip_address");
+    }
+
+    #[test]
+    fn object_roundtrip_json() {
+        let object = Object::new(
+            Uuid::from_u128(1),
+            "site=fra1".to_string(),
+            Attrs::Site(SiteAttrs {
+                name: "FRA1".to_string(),
+                slug: "fra1".to_string(),
+                status: Some("active".to_string()),
+                description: Some("test".to_string()),
+            }),
+        );
+
+        let value = serde_json::to_value(&object).unwrap();
+        let decoded: Object = serde_json::from_value(value).unwrap();
+        assert_eq!(decoded.uid, object.uid);
+        assert_eq!(decoded.kind, object.kind);
+        assert_eq!(decoded.key, object.key);
+        assert_eq!(decoded.attrs, object.attrs);
+    }
+
+    #[test]
+    fn object_serialize_rejects_mismatched_kind() {
+        let object = Object {
+            uid: Uuid::from_u128(2),
+            kind: Kind::DcimSite,
+            key: "site=fra1".to_string(),
+            attrs: Attrs::Device(DeviceAttrs {
+                name: "leaf01".to_string(),
+                site: Uuid::from_u128(3),
+                role: "leaf".to_string(),
+                device_type: "leaf-switch".to_string(),
+                status: None,
+            }),
+            x: BTreeMap::new(),
+        };
+
+        let result = serde_json::to_value(&object);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn attrs_kind_matches_variant() {
+        let site = Attrs::Site(SiteAttrs {
+            name: "FRA1".to_string(),
+            slug: "fra1".to_string(),
+            status: None,
+            description: None,
+        });
+        let device = Attrs::Device(DeviceAttrs {
+            name: "leaf01".to_string(),
+            site: Uuid::from_u128(4),
+            role: "leaf".to_string(),
+            device_type: "leaf-switch".to_string(),
+            status: None,
+        });
+        let iface = Attrs::Interface(InterfaceAttrs {
+            name: "eth0".to_string(),
+            device: Uuid::from_u128(5),
+            if_type: None,
+            enabled: None,
+            description: None,
+        });
+        let prefix = Attrs::Prefix(PrefixAttrs {
+            prefix: "10.0.0.0/24".to_string(),
+            site: None,
+            description: None,
+        });
+        let ip = Attrs::IpAddress(IpAddressAttrs {
+            address: "10.0.0.10/24".to_string(),
+            assigned_interface: None,
+            description: None,
+        });
+
+        assert_eq!(site.kind(), Kind::DcimSite);
+        assert_eq!(device.kind(), Kind::DcimDevice);
+        assert_eq!(iface.kind(), Kind::DcimInterface);
+        assert_eq!(prefix.kind(), Kind::IpamPrefix);
+        assert_eq!(ip.kind(), Kind::IpamIpAddress);
+    }
+
+    #[test]
+    fn inventory_defaults_to_empty() {
+        let inventory = Inventory { objects: vec![] };
+        let value = serde_json::to_value(&inventory).unwrap();
+        let decoded: Inventory = serde_json::from_value(value).unwrap();
+        assert!(decoded.objects.is_empty());
+    }
+
+    #[test]
+    fn object_with_extensions_roundtrip() {
+        let mut object = Object::new(
+            Uuid::from_u128(6),
+            "site=fra1".to_string(),
+            Attrs::Site(SiteAttrs {
+                name: "FRA1".to_string(),
+                slug: "fra1".to_string(),
+                status: None,
+                description: None,
+            }),
+        );
+        object
+            .x
+            .insert("example.note".to_string(), Value::String("ok".to_string()));
+
+        let value = serde_json::to_value(&object).unwrap();
+        let decoded: Object = serde_json::from_value(value).unwrap();
+        assert_eq!(decoded.x.get("example.note").unwrap(), "ok");
+    }
+}
