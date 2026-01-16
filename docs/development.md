@@ -34,7 +34,8 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 
 ```bash
 cargo install cargo-llvm-cov --locked
-cargo llvm-cov --workspace --all-features --fail-under-lines 80
+cargo llvm-cov --workspace --all-features --fail-under-lines 80 \
+  --ignore-filename-regex "netbox\\.rs/"
 ```
 
 ## release

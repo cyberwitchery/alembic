@@ -10,7 +10,6 @@ use alembic_engine::{
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use netbox::{Client, ClientConfig, QueryBuilder};
-use reqwest::Method;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -943,65 +942,88 @@ impl NetBoxAdapter {
         backend_id: u64,
         projection: &ProjectionData,
     ) -> Result<()> {
-        let payload = build_projection_payload(kind, projection)?;
-        let Some(payload) = payload else {
+        if projection.custom_fields.is_none()
+            && projection.tags.is_none()
+            && projection.local_context.is_none()
+        {
             return Ok(());
-        };
-        let Some(path) = kind_path(kind) else {
-            return Ok(());
-        };
-        let path = format!("{path}{}/", backend_id);
-        self.client
-            .request_raw(Method::PATCH, &path, Some(&payload))
-            .await?;
-        Ok(())
-    }
-}
-
-fn build_projection_payload(kind: &Kind, projection: &ProjectionData) -> Result<Option<Value>> {
-    let mut payload = serde_json::Map::new();
-
-    if let Some(custom_fields) = &projection.custom_fields {
-        payload.insert(
-            "custom_fields".to_string(),
-            serde_json::to_value(custom_fields)?,
-        );
-    }
-
-    if let Some(tags) = &projection.tags {
-        let mut items = Vec::new();
-        for tag in tags {
-            let slug = slugify(tag);
-            items.push(serde_json::json!({ "name": tag, "slug": slug }));
         }
-        payload.insert("tags".to_string(), Value::Array(items));
-    }
-
-    if let Some(local_context) = &projection.local_context {
-        if matches!(kind, Kind::DcimDevice) {
-            payload.insert("local_context_data".to_string(), local_context.clone());
-        } else {
+        if projection.local_context.is_some() && !matches!(kind, Kind::DcimDevice) {
             return Err(anyhow!(
                 "local context projection is only supported for dcim.device"
             ));
         }
-    }
 
-    if payload.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(Value::Object(payload)))
-    }
-}
+        let tags = projection
+            .tags
+            .as_ref()
+            .map(|items| build_tag_inputs(items));
+        let custom_fields = projection
+            .custom_fields
+            .as_ref()
+            .map(map_custom_fields_patch);
 
-fn kind_path(kind: &Kind) -> Option<&'static str> {
-    match kind {
-        Kind::DcimSite => Some("dcim/sites/"),
-        Kind::DcimDevice => Some("dcim/devices/"),
-        Kind::DcimInterface => Some("dcim/interfaces/"),
-        Kind::IpamPrefix => Some("ipam/prefixes/"),
-        Kind::IpamIpAddress => Some("ipam/ip-addresses/"),
-        Kind::Custom(_) => None,
+        match kind {
+            Kind::DcimSite => {
+                let request = netbox::dcim::PatchSiteFieldsRequest {
+                    custom_fields,
+                    tags,
+                };
+                self.client
+                    .dcim()
+                    .sites()
+                    .patch(backend_id, &request)
+                    .await?;
+            }
+            Kind::DcimDevice => {
+                let request = netbox::dcim::PatchDeviceFieldsRequest {
+                    custom_fields,
+                    tags,
+                    local_context_data: projection.local_context.clone(),
+                };
+                self.client
+                    .dcim()
+                    .devices()
+                    .patch(backend_id, &request)
+                    .await?;
+            }
+            Kind::DcimInterface => {
+                let request = netbox::dcim::PatchInterfaceFieldsRequest {
+                    custom_fields,
+                    tags,
+                };
+                self.client
+                    .dcim()
+                    .interfaces()
+                    .patch(backend_id, &request)
+                    .await?;
+            }
+            Kind::IpamPrefix => {
+                let request = netbox::ipam::PatchPrefixFieldsRequest {
+                    custom_fields,
+                    tags,
+                };
+                self.client
+                    .ipam()
+                    .prefixes()
+                    .patch(backend_id, &request)
+                    .await?;
+            }
+            Kind::IpamIpAddress => {
+                let request = netbox::ipam::PatchIpAddressFieldsRequest {
+                    custom_fields,
+                    tags,
+                };
+                self.client
+                    .ipam()
+                    .ip_addresses()
+                    .patch(backend_id, &request)
+                    .await?;
+            }
+            Kind::Custom(_) => {}
+        }
+
+        Ok(())
     }
 }
 
@@ -1022,6 +1044,19 @@ fn slugify(input: &str) -> String {
         out.pop();
     }
     out
+}
+
+fn build_tag_inputs(tags: &[String]) -> Vec<netbox::models::NestedTag> {
+    tags.iter()
+        .map(|tag| netbox::models::NestedTag::new(tag.clone(), slugify(tag)))
+        .collect()
+}
+
+fn map_custom_fields_patch(fields: &BTreeMap<String, Value>) -> HashMap<String, Value> {
+    fields
+        .iter()
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect()
 }
 
 fn map_custom_fields(fields: Option<HashMap<String, Value>>) -> Option<BTreeMap<String, Value>> {
@@ -1582,6 +1617,23 @@ mod tests {
     fn slugify_normalizes_value() {
         assert_eq!(slugify("EVPN Fabric"), "evpn-fabric");
         assert_eq!(slugify("edge--core"), "edge-core");
+    }
+
+    #[test]
+    fn build_tag_inputs_uses_slugify() {
+        let tags = vec!["EVPN Fabric".to_string()];
+        let inputs = build_tag_inputs(&tags);
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(inputs[0].name, "EVPN Fabric");
+        assert_eq!(inputs[0].slug, "evpn-fabric");
+    }
+
+    #[test]
+    fn map_custom_fields_patch_clones_values() {
+        let mut fields = BTreeMap::new();
+        fields.insert("fabric".to_string(), json!("fra1"));
+        let mapped = map_custom_fields_patch(&fields);
+        assert_eq!(mapped.get("fabric"), Some(&json!("fra1")));
     }
 
     #[tokio::test]

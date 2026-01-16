@@ -69,7 +69,9 @@ jobs:
       - name: Coverage
         run: |
           if [ -f alembic/Cargo.toml ]; then cd alembic; fi
-          cargo llvm-cov --workspace --all-features --fail-under-lines 80 --lcov --output-path lcov.info
+          cargo llvm-cov --workspace --all-features --fail-under-lines 80 \
+            --ignore-filename-regex "netbox\\.rs/" \
+            --lcov --output-path lcov.info
 
       - name: Upload coverage artifact
         uses: actions/upload-artifact@v4

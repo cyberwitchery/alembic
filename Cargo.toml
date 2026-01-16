@@ -21,7 +21,5 @@ serde_yaml = "0.9"
 thiserror = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 uuid = { version = "1", features = ["serde", "v4", "v5"] }
-netbox = "0.1.4"
+netbox = "0.1.5"
 reqwest = "0.12"
-
-[patch.crates-io]
