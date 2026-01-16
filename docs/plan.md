@@ -44,3 +44,4 @@ plans are json files that can be re-applied. the plan is deterministic for a giv
 - `backend_id` is optional and may be absent for creates or if not known.
 - deletes are only applied when `--allow-delete` is set.
 - `projection` is present only when projection rules apply to an object, and diffs include projected fields.
+- optional fields omitted in desired (`null`/missing) are treated as "no change" to preserve idempotence.

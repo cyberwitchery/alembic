@@ -20,7 +20,7 @@ rules:
     select: /sites/*/devices/*
     emit:
       kind: dcim.device
-      key: "device=${name}"
+      key: "site=${site_slug}/device=${name}"
       uid:
         v5:
           kind: "dcim.device"
@@ -50,7 +50,7 @@ rules:
     select: /sites/*/devices/*/interfaces/*
     emit:
       kind: dcim.interface
-      key: "if=${device_name}/${name}"
+      key: "device=${device_name}/interface=${name}"
       uid:
         v5:
           kind: "dcim.interface"

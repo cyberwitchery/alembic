@@ -32,7 +32,7 @@ pub fn plan(
     for object in desired_sorted.iter() {
         let observed_object = state
             .backend_id(object.base.kind.clone(), object.base.uid)
-            .and_then(|id| observed.by_backend_id.get(&id))
+            .and_then(|id| observed.by_backend_id.get(&(object.base.kind.clone(), id)))
             .or_else(|| observed.by_key.get(&object.base.key));
 
         if let Some(obs) = observed_object {
@@ -59,17 +59,17 @@ pub fn plan(
     }
 
     if allow_delete {
-        for (backend_id, obs) in &observed.by_backend_id {
+        for ((kind, backend_id), obs) in &observed.by_backend_id {
             if matched.contains(backend_id) {
                 continue;
             }
             let uid = backend_to_uid
-                .get(&(*backend_id, obs.kind.clone()))
+                .get(&(*backend_id, kind.clone()))
                 .copied()
                 .unwrap_or_else(Uid::nil);
             ops.push(Op::Delete {
                 uid,
-                kind: obs.kind.clone(),
+                kind: kind.clone(),
                 key: obs.key.clone(),
                 backend_id: Some(*backend_id),
             });
@@ -130,6 +130,9 @@ fn diff_attrs(existing: &Attrs, desired: &Attrs) -> Vec<FieldChange> {
     for key in keys.iter() {
         let from = existing_map.get(key).cloned().unwrap_or(Value::Null);
         let to = desired_map.get(key).cloned().unwrap_or(Value::Null);
+        if to.is_null() {
+            continue;
+        }
         if from != to {
             changes.push(FieldChange {
                 field: key.clone(),
@@ -147,15 +150,35 @@ fn diff_object(
     desired: &crate::projection::ProjectedObject,
 ) -> Vec<FieldChange> {
     let mut changes = diff_attrs(&existing.attrs, &desired.base.attrs);
+    if matches!(desired.base.kind, Kind::IpamPrefix) {
+        changes.retain(|change| change.field != "site");
+    }
 
-    if desired.projection.custom_fields.is_some()
-        && existing.projection.custom_fields != desired.projection.custom_fields
-    {
-        changes.push(FieldChange {
-            field: "custom_fields".to_string(),
-            from: serde_json::to_value(&existing.projection.custom_fields).unwrap_or(Value::Null),
-            to: serde_json::to_value(&desired.projection.custom_fields).unwrap_or(Value::Null),
-        });
+    if let Some(desired_fields) = &desired.projection.custom_fields {
+        let existing_subset = existing
+            .projection
+            .custom_fields
+            .as_ref()
+            .map(|fields| {
+                fields
+                    .iter()
+                    .filter_map(|(key, value)| {
+                        if desired_fields.contains_key(key) {
+                            Some((key.clone(), value.clone()))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<BTreeMap<_, _>>()
+            })
+            .unwrap_or_default();
+        if existing_subset != *desired_fields {
+            changes.push(FieldChange {
+                field: "custom_fields".to_string(),
+                from: serde_json::to_value(existing_subset).unwrap_or(Value::Null),
+                to: serde_json::to_value(desired_fields).unwrap_or(Value::Null),
+            });
+        }
     }
     if desired.projection.tags.is_some() && existing.projection.tags != desired.projection.tags {
         changes.push(FieldChange {

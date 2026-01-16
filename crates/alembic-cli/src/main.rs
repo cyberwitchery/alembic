@@ -118,7 +118,7 @@ async fn run(cli: Cli) -> Result<()> {
             allow_delete,
         } => {
             let inventory = load_inventory(&file, retort.as_deref())?;
-            let state = load_state()?;
+            let mut state = load_state()?;
             let projection = load_projection_optional(projection.as_deref())?;
             let (url, token) = netbox_credentials(netbox_url, netbox_token)?;
             let adapter = NetBoxAdapter::new(&url, &token, state.clone())?;
@@ -126,7 +126,7 @@ async fn run(cli: Cli) -> Result<()> {
                 build_plan_with_proposal(
                     &adapter,
                     &inventory,
-                    &state,
+                    &mut state,
                     allow_delete,
                     projection.as_ref(),
                     projection_strict,
@@ -136,7 +136,7 @@ async fn run(cli: Cli) -> Result<()> {
                 build_plan_with_projection(
                     &adapter,
                     &inventory,
-                    &state,
+                    &mut state,
                     allow_delete,
                     projection.as_ref(),
                     projection_strict,
@@ -261,7 +261,7 @@ fn load_projection_optional(path: Option<&Path>) -> Result<Option<ProjectionSpec
 async fn build_plan_with_proposal(
     adapter: &NetBoxAdapter,
     inventory: &alembic_core::Inventory,
-    state: &StateStore,
+    state: &mut StateStore,
     allow_delete: bool,
     projection: Option<&ProjectionSpec>,
     projection_strict: bool,
@@ -356,9 +356,9 @@ mod tests {
         LOCK.get_or_init(|| Mutex::new(()))
     }
 
-    fn cwd_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
+    fn cwd_lock() -> &'static tokio::sync::Mutex<()> {
+        static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
     }
 
     #[test]
@@ -588,7 +588,7 @@ objects:
 
     #[tokio::test]
     async fn run_distill_raw() {
-        let _guard = cwd_lock().lock().unwrap();
+        let _guard = cwd_lock().lock().await;
         let dir = tempdir().unwrap();
         let raw = dir.path().join("raw.yaml");
         let retort = dir.path().join("retort.yaml");
@@ -639,7 +639,7 @@ rules:
 
     #[tokio::test]
     async fn run_project_raw() {
-        let _guard = cwd_lock().lock().unwrap();
+        let _guard = cwd_lock().lock().await;
         let dir = tempdir().unwrap();
         let raw = dir.path().join("raw.yaml");
         let retort = dir.path().join("retort.yaml");
@@ -701,7 +701,7 @@ rules: []
 
     #[tokio::test]
     async fn run_plan_missing_credentials_errors() {
-        let _guard = cwd_lock().lock().unwrap();
+        let _guard = cwd_lock().lock().await;
         let dir = tempdir().unwrap();
         let brew = dir.path().join("brew.yaml");
         let out = dir.path().join("plan.json");
@@ -742,7 +742,7 @@ objects:
 
     #[tokio::test]
     async fn run_apply_missing_credentials_errors() {
-        let _guard = cwd_lock().lock().unwrap();
+        let _guard = cwd_lock().lock().await;
         let dir = tempdir().unwrap();
         let plan_path = dir.path().join("plan.json");
         std::fs::write(&plan_path, r#"{ "ops": [] }"#).unwrap();

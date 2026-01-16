@@ -56,6 +56,7 @@ other values return an error. extend `interface_type_from_str` if you need more.
 ## known limitations
 
 - prefix -> site is not currently observed from netbox (it is preserved on create/update).
+- prefix site diffs are ignored in planning because the backend does not report the field.
 - ip -> interface assignment is only observed when netbox returns `assigned_object_type == dcim.interface`.
 - `x` extension data is ignored unless a projection spec is supplied.
 - generic objects are skipped with a warning in apply.

@@ -18,7 +18,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 /// netbox adapter that maps ir objects to netbox api calls.
 pub struct NetBoxAdapter {
     client: Client,
-    state: StateStore,
+    state: std::sync::Mutex<StateStore>,
 }
 
 impl NetBoxAdapter {
@@ -26,7 +26,10 @@ impl NetBoxAdapter {
     pub fn new(url: &str, token: &str, state: StateStore) -> Result<Self> {
         let config = ClientConfig::new(url, token);
         let client = Client::new(config)?;
-        Ok(Self { client, state })
+        Ok(Self {
+            client,
+            state: std::sync::Mutex::new(state),
+        })
     }
 
     pub async fn create_custom_fields(&self, missing: &[MissingCustomField]) -> Result<()> {
@@ -120,21 +123,25 @@ impl Adapter for NetBoxAdapter {
         let mut device_id_to_uid = BTreeMap::new();
         let mut interface_id_to_uid = BTreeMap::new();
 
-        for (_kind, mapping) in self.state.all_mappings() {
+        let mappings = {
+            let state_guard = self.state.lock().unwrap();
+            state_guard.all_mappings().clone()
+        };
+        for (_kind, mapping) in mappings {
             match _kind {
                 Kind::DcimSite => {
                     for (uid, backend_id) in mapping {
-                        site_id_to_uid.insert(*backend_id, *uid);
+                        site_id_to_uid.insert(backend_id, uid);
                     }
                 }
                 Kind::DcimDevice => {
                     for (uid, backend_id) in mapping {
-                        device_id_to_uid.insert(*backend_id, *uid);
+                        device_id_to_uid.insert(backend_id, uid);
                     }
                 }
                 Kind::DcimInterface => {
                     for (uid, backend_id) in mapping {
-                        interface_id_to_uid.insert(*backend_id, *uid);
+                        interface_id_to_uid.insert(backend_id, uid);
                     }
                 }
                 _ => {}
@@ -330,7 +337,11 @@ impl Adapter for NetBoxAdapter {
         let mut applied = Vec::new();
         let mut resolved = BTreeMap::new();
 
-        for mapping in self.state.all_mappings().values() {
+        let mappings = {
+            let state_guard = self.state.lock().unwrap();
+            state_guard.all_mappings().clone()
+        };
+        for mapping in mappings.values() {
             for (uid, backend_id) in mapping {
                 resolved.insert(*uid, *backend_id);
             }
@@ -422,6 +433,11 @@ impl Adapter for NetBoxAdapter {
         }
 
         Ok(ApplyReport { applied })
+    }
+
+    fn update_state(&self, state: &StateStore) {
+        let mut guard = self.state.lock().unwrap();
+        *guard = state.clone();
     }
 }
 
@@ -1557,7 +1573,7 @@ mod tests {
         });
 
         adapter
-            .create_tags(&vec!["fabric".to_string(), "fabric".to_string()])
+            .create_tags(&["fabric".to_string(), "fabric".to_string()])
             .await
             .unwrap();
     }

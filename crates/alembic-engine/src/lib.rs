@@ -44,7 +44,7 @@ pub fn validate(inventory: &Inventory) -> Result<()> {
 pub async fn build_plan(
     adapter: &dyn Adapter,
     inventory: &Inventory,
-    state: &StateStore,
+    state: &mut StateStore,
     allow_delete: bool,
 ) -> Result<Plan> {
     build_plan_with_projection(adapter, inventory, state, allow_delete, None, true).await
@@ -53,7 +53,7 @@ pub async fn build_plan(
 pub async fn build_plan_with_projection(
     adapter: &dyn Adapter,
     inventory: &Inventory,
-    state: &StateStore,
+    state: &mut StateStore,
     allow_delete: bool,
     projection: Option<&ProjectionSpec>,
     projection_strict: bool,
@@ -79,13 +79,44 @@ pub async fn build_plan_with_projection(
         .iter()
         .map(|o| o.base.kind.clone())
         .collect();
-    let observed = adapter.observe(&kinds).await?;
+    let mut observed = adapter.observe(&kinds).await?;
+    let bootstrapped = bootstrap_state_from_observed(state, &projected, &observed);
+    if bootstrapped {
+        adapter.update_state(state);
+        observed = adapter.observe(&kinds).await?;
+    }
     if projection_strict {
         if let Some(spec) = projection {
             validate_projection_strict(spec, &inventory.objects, &observed.capabilities)?;
         }
     }
     Ok(plan(&projected, &observed, state, allow_delete))
+}
+
+fn bootstrap_state_from_observed(
+    state: &mut StateStore,
+    desired: &ProjectedInventory,
+    observed: &ObservedState,
+) -> bool {
+    let mut updated = false;
+    for object in &desired.objects {
+        if state
+            .backend_id(object.base.kind.clone(), object.base.uid)
+            .is_some()
+        {
+            continue;
+        }
+        if let Some(obs) = observed.by_key.get(&object.base.key) {
+            if obs.kind != object.base.kind {
+                continue;
+            }
+            if let Some(backend_id) = obs.backend_id {
+                state.set_backend_id(object.base.kind.clone(), object.base.uid, backend_id);
+                updated = true;
+            }
+        }
+    }
+    updated
 }
 
 /// apply a plan and update the state store.

@@ -1,6 +1,8 @@
 use super::*;
 use crate::project_default;
-use alembic_core::{Attrs, DeviceAttrs, InterfaceAttrs, Inventory, Kind, Object, SiteAttrs, Uid};
+use alembic_core::{
+    Attrs, DeviceAttrs, InterfaceAttrs, Inventory, Kind, Object, PrefixAttrs, SiteAttrs, Uid,
+};
 use serde_json::json;
 use std::collections::BTreeMap;
 use tempfile::tempdir;
@@ -460,6 +462,159 @@ rules:
 }
 
 #[test]
+fn planner_ignores_optional_nulls() {
+    let desired = Object::new(
+        uid(80),
+        "site=fra1".to_string(),
+        Attrs::Site(SiteAttrs {
+            name: "FRA1".to_string(),
+            slug: "fra1".to_string(),
+            status: None,
+            description: None,
+        }),
+    );
+    let projected = project_default(std::slice::from_ref(&desired));
+
+    let mut observed = ObservedState::default();
+    observed.insert(ObservedObject {
+        kind: Kind::DcimSite,
+        key: "site=fra1".to_string(),
+        attrs: Attrs::Site(SiteAttrs {
+            name: "FRA1".to_string(),
+            slug: "fra1".to_string(),
+            status: Some("active".to_string()),
+            description: Some("".to_string()),
+        }),
+        projection: crate::ProjectionData::default(),
+        backend_id: Some(1),
+    });
+
+    let state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
+    let plan = plan(&projected, &observed, &state, false);
+    assert!(plan.ops.is_empty());
+}
+
+#[test]
+fn planner_ignores_unprojected_custom_fields() {
+    let desired = Object::new(
+        uid(81),
+        "site=fra1".to_string(),
+        Attrs::Site(SiteAttrs {
+            name: "FRA1".to_string(),
+            slug: "fra1".to_string(),
+            status: None,
+            description: None,
+        }),
+    );
+    let mut desired_fields = BTreeMap::new();
+    desired_fields.insert("fabric".to_string(), json!("fra1"));
+    let projected = ProjectedInventory {
+        objects: vec![ProjectedObject {
+            base: desired.clone(),
+            projection: crate::ProjectionData {
+                custom_fields: Some(desired_fields),
+                tags: None,
+                local_context: None,
+            },
+        }],
+    };
+
+    let mut observed_fields = BTreeMap::new();
+    observed_fields.insert("fabric".to_string(), json!("fra1"));
+    observed_fields.insert("extra".to_string(), json!("ignored"));
+    let mut observed = ObservedState::default();
+    observed.insert(ObservedObject {
+        kind: Kind::DcimSite,
+        key: "site=fra1".to_string(),
+        attrs: desired.attrs.clone(),
+        projection: crate::ProjectionData {
+            custom_fields: Some(observed_fields),
+            tags: None,
+            local_context: None,
+        },
+        backend_id: Some(1),
+    });
+
+    let state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
+    let plan = plan(&projected, &observed, &state, false);
+    assert!(plan.ops.is_empty());
+}
+
+#[test]
+fn planner_matches_backend_id_by_kind() {
+    let desired = Object::new(
+        uid(82),
+        "site=fra1/device=leaf01".to_string(),
+        Attrs::Device(DeviceAttrs {
+            name: "leaf01".to_string(),
+            site: uid(1),
+            role: "leaf".to_string(),
+            device_type: "leaf".to_string(),
+            status: None,
+        }),
+    );
+    let projected = project_default(std::slice::from_ref(&desired));
+
+    let mut observed = ObservedState::default();
+    observed.insert(ObservedObject {
+        kind: Kind::DcimDevice,
+        key: "site=fra1/device=leaf01".to_string(),
+        attrs: desired.attrs.clone(),
+        projection: crate::ProjectionData::default(),
+        backend_id: Some(1),
+    });
+    observed.insert(ObservedObject {
+        kind: Kind::DcimInterface,
+        key: "device=leaf01/interface=eth0".to_string(),
+        attrs: Attrs::Interface(InterfaceAttrs {
+            name: "eth0".to_string(),
+            device: uid(82),
+            if_type: None,
+            enabled: None,
+            description: None,
+        }),
+        projection: crate::ProjectionData::default(),
+        backend_id: Some(1),
+    });
+
+    let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
+    state.set_backend_id(Kind::DcimDevice, desired.uid, 1);
+    let plan = plan(&projected, &observed, &state, false);
+    assert!(plan.ops.is_empty());
+}
+
+#[test]
+fn planner_ignores_prefix_site_diff() {
+    let desired = Object::new(
+        uid(83),
+        "prefix=10.0.0.0/24".to_string(),
+        Attrs::Prefix(PrefixAttrs {
+            prefix: "10.0.0.0/24".to_string(),
+            site: Some(uid(1)),
+            description: None,
+        }),
+    );
+    let projected = project_default(std::slice::from_ref(&desired));
+
+    let mut observed = ObservedState::default();
+    observed.insert(ObservedObject {
+        kind: Kind::IpamPrefix,
+        key: "prefix=10.0.0.0/24".to_string(),
+        attrs: Attrs::Prefix(PrefixAttrs {
+            prefix: "10.0.0.0/24".to_string(),
+            site: None,
+            description: None,
+        }),
+        projection: crate::ProjectionData::default(),
+        backend_id: Some(1),
+    });
+
+    let state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
+    let plan = plan(&projected, &observed, &state, false);
+    assert!(plan.ops.is_empty());
+}
+
+#[test]
 fn state_store_roundtrip() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("state.json");
@@ -604,10 +759,104 @@ fn build_plan_creates_ops() {
         observed: ObservedState::default(),
         report: ApplyReport { applied: vec![] },
     };
-    let state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
+    let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
     let plan =
-        futures::executor::block_on(build_plan(&adapter, &inventory, &state, false)).unwrap();
+        futures::executor::block_on(build_plan(&adapter, &inventory, &mut state, false)).unwrap();
     assert_eq!(plan.ops.len(), 1);
+}
+
+#[test]
+fn build_plan_bootstraps_state_by_key() {
+    let inventory = Inventory {
+        objects: vec![Object::new(
+            uid(1),
+            "site=fra1".to_string(),
+            Attrs::Site(SiteAttrs {
+                name: "FRA1".to_string(),
+                slug: "fra1".to_string(),
+                status: None,
+                description: None,
+            }),
+        )],
+    };
+    let mut observed = ObservedState::default();
+    observed.insert(ObservedObject {
+        kind: Kind::DcimSite,
+        key: "site=fra1".to_string(),
+        attrs: Attrs::Site(SiteAttrs {
+            name: "FRA1".to_string(),
+            slug: "fra1".to_string(),
+            status: None,
+            description: None,
+        }),
+        projection: crate::ProjectionData::default(),
+        backend_id: Some(10),
+    });
+    let adapter = TestAdapter {
+        observed,
+        report: ApplyReport { applied: vec![] },
+    };
+    let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
+    let plan =
+        futures::executor::block_on(build_plan(&adapter, &inventory, &mut state, false)).unwrap();
+    assert!(plan.ops.is_empty());
+    assert_eq!(state.backend_id(Kind::DcimSite, uid(1)), Some(10));
+}
+
+#[test]
+fn build_plan_reobserves_after_bootstrap() {
+    #[derive(Clone)]
+    struct ReobserveAdapter {
+        states: std::sync::Arc<std::sync::Mutex<Vec<ObservedState>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Adapter for ReobserveAdapter {
+        async fn observe(&self, _kinds: &[Kind]) -> anyhow::Result<ObservedState> {
+            let mut states = self.states.lock().unwrap();
+            Ok(states.remove(0))
+        }
+
+        async fn apply(&self, _ops: &[Op]) -> anyhow::Result<ApplyReport> {
+            Ok(ApplyReport { applied: vec![] })
+        }
+    }
+
+    let inventory = Inventory {
+        objects: vec![Object::new(
+            uid(1),
+            "site=fra1".to_string(),
+            Attrs::Site(SiteAttrs {
+                name: "FRA1".to_string(),
+                slug: "fra1".to_string(),
+                status: None,
+                description: None,
+            }),
+        )],
+    };
+    let mut first = ObservedState::default();
+    first.insert(ObservedObject {
+        kind: Kind::DcimSite,
+        key: "site=fra1".to_string(),
+        attrs: Attrs::Site(SiteAttrs {
+            name: "FRA1".to_string(),
+            slug: "fra1".to_string(),
+            status: None,
+            description: None,
+        }),
+        projection: crate::ProjectionData::default(),
+        backend_id: Some(1),
+    });
+    let mut second = first.clone();
+    second.capabilities = crate::BackendCapabilities::default();
+
+    let adapter = ReobserveAdapter {
+        states: std::sync::Arc::new(std::sync::Mutex::new(vec![first, second])),
+    };
+    let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
+    let plan =
+        futures::executor::block_on(build_plan(&adapter, &inventory, &mut state, false)).unwrap();
+    assert!(plan.ops.is_empty());
 }
 
 #[test]

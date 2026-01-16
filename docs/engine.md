@@ -8,8 +8,9 @@ the engine is responsible for loading, validating, planning, and applying change
 2) build object graph and validate references
 3) apply projection spec (optional) to build backend payloads from `x`
 4) observe backend state via adapter (includes capabilities like custom fields)
-5) plan deterministic operations
-6) apply operations in dependency order
+5) bootstrap state mappings by key when missing
+6) plan deterministic operations
+7) apply operations in dependency order
 
 ## validation
 

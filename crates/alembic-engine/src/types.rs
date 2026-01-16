@@ -1,6 +1,7 @@
 //! core engine types and adapter contract.
 
 use crate::projection::{BackendCapabilities, ProjectedObject, ProjectionData};
+use crate::state::StateStore;
 use alembic_core::{Attrs, Kind, Uid};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -72,7 +73,7 @@ pub struct ObservedObject {
 #[derive(Debug, Default, Clone)]
 pub struct ObservedState {
     /// observed objects keyed by backend id.
-    pub by_backend_id: BTreeMap<u64, ObservedObject>,
+    pub by_backend_id: BTreeMap<(Kind, u64), ObservedObject>,
     /// observed objects keyed by natural key.
     pub by_key: BTreeMap<String, ObservedObject>,
     /// backend capabilities (custom fields, tags).
@@ -83,7 +84,8 @@ impl ObservedState {
     /// insert an observed object into both indexes.
     pub fn insert(&mut self, object: ObservedObject) {
         if let Some(id) = object.backend_id {
-            self.by_backend_id.insert(id, object.clone());
+            self.by_backend_id
+                .insert((object.kind.clone(), id), object.clone());
         }
         self.by_key.insert(object.key.clone(), object);
     }
@@ -113,4 +115,5 @@ pub struct ApplyReport {
 pub trait Adapter: Send + Sync {
     async fn observe(&self, kinds: &[Kind]) -> anyhow::Result<ObservedState>;
     async fn apply(&self, ops: &[Op]) -> anyhow::Result<ApplyReport>;
+    fn update_state(&self, _state: &StateStore) {}
 }

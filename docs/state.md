@@ -21,6 +21,7 @@ alembic maintains a local mapping between ir `uid` and backend ids in `.alembic/
 
 - used as the primary match during planning and apply.
 - provides stability across renames (key changes).
+- when empty, alembic can bootstrap mappings by matching observed objects by key.
 - updated after apply based on adapter results.
 - safe to delete if you want to re-discover by key, but expect extra lookups.
 - custom kinds are stored under their kind string.
