@@ -35,6 +35,14 @@ NETBOX_URL=https://netbox.example.com NETBOX_TOKEN=... \
   cargo run -p alembic-cli -- apply -p plan.json --allow-delete
 ```
 
+5) raw + retort + projection:
+
+```bash
+cargo run -p alembic-cli -- distill -f examples/raw.yaml --retort examples/retort.yaml -o ir.json
+cargo run -p alembic-cli -- plan -f examples/raw.yaml --retort examples/retort.yaml \
+  --projection examples/projection-netbox.yaml -o plan.json
+```
+
 ## object model (mvp)
 
 kinds supported end-to-end for the mvp:

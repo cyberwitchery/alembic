@@ -4,13 +4,16 @@ use alembic_core::{
     Attrs, DeviceAttrs, InterfaceAttrs, IpAddressAttrs, Kind, PrefixAttrs, SiteAttrs, Uid,
 };
 use alembic_engine::{
-    Adapter, AppliedOp, ApplyReport, ObservedObject, ObservedState, Op, StateStore,
+    Adapter, AppliedOp, ApplyReport, BackendCapabilities, MissingCustomField, ObservedObject,
+    ObservedState, Op, ProjectedObject, ProjectionData, StateStore,
 };
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use netbox::{Client, ClientConfig, QueryBuilder};
+use reqwest::Method;
 use serde::de::DeserializeOwned;
-use std::collections::{BTreeMap, BTreeSet};
+use serde_json::Value;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 /// netbox adapter that maps ir objects to netbox api calls.
 pub struct NetBoxAdapter {
@@ -24,6 +27,59 @@ impl NetBoxAdapter {
         let config = ClientConfig::new(url, token);
         let client = Client::new(config)?;
         Ok(Self { client, state })
+    }
+
+    pub async fn create_custom_fields(&self, missing: &[MissingCustomField]) -> Result<()> {
+        let grouped = group_custom_fields(missing);
+        for (field, entry) in grouped {
+            let request = netbox::extras::CreateCustomFieldRequest {
+                object_types: entry.object_types.into_iter().collect(),
+                r#type: entry.field_type,
+                name: field.clone(),
+                related_object_type: None,
+                label: Some(field),
+                group_name: None,
+                description: None,
+                required: None,
+                unique: None,
+                search_weight: None,
+                filter_logic: None,
+                ui_visible: None,
+                ui_editable: None,
+                is_cloneable: None,
+                default: None,
+                related_object_filter: None,
+                weight: None,
+                validation_minimum: None,
+                validation_maximum: None,
+                validation_regex: None,
+                choice_set: None,
+                comments: None,
+            };
+            let _ = self
+                .client
+                .extras()
+                .custom_fields()
+                .create(&request)
+                .await?;
+        }
+        Ok(())
+    }
+
+    pub async fn create_tags(&self, tags: &[String]) -> Result<()> {
+        let unique: BTreeSet<String> = tags.iter().cloned().collect();
+        for tag in unique {
+            let request = netbox::extras::CreateTagRequest {
+                name: tag.clone(),
+                slug: slugify(&tag),
+                color: None,
+                description: None,
+                weight: None,
+                object_types: None,
+            };
+            let _ = self.client.extras().tags().create(&request).await?;
+        }
+        Ok(())
     }
 
     async fn list_all<T>(
@@ -104,10 +160,16 @@ impl Adapter for NetBoxAdapter {
                                 .map(|s| s.to_string()),
                             description: site.description,
                         });
+                        let projection = ProjectionData {
+                            custom_fields: map_custom_fields(site.custom_fields),
+                            tags: map_tags(site.tags),
+                            local_context: None,
+                        };
                         state.insert(ObservedObject {
                             kind: kind.clone(),
                             key,
                             attrs,
+                            projection,
                             backend_id,
                         });
                     }
@@ -138,10 +200,16 @@ impl Adapter for NetBoxAdapter {
                                 .and_then(|status| status.value.map(device_status_to_str))
                                 .map(|s| s.to_string()),
                         });
+                        let projection = ProjectionData {
+                            custom_fields: map_custom_fields(device.custom_fields),
+                            tags: map_tags(device.tags),
+                            local_context: device.local_context_data.flatten(),
+                        };
                         state.insert(ObservedObject {
                             kind: kind.clone(),
                             key,
                             attrs,
+                            projection,
                             backend_id,
                         });
                     }
@@ -176,10 +244,16 @@ impl Adapter for NetBoxAdapter {
                             enabled: interface.enabled,
                             description: interface.description,
                         });
+                        let projection = ProjectionData {
+                            custom_fields: map_custom_fields(interface.custom_fields),
+                            tags: map_tags(interface.tags),
+                            local_context: None,
+                        };
                         state.insert(ObservedObject {
                             kind: kind.clone(),
                             key,
                             attrs,
+                            projection,
                             backend_id,
                         });
                     }
@@ -194,10 +268,16 @@ impl Adapter for NetBoxAdapter {
                             site: None,
                             description: prefix.description,
                         });
+                        let projection = ProjectionData {
+                            custom_fields: map_custom_fields(prefix.custom_fields),
+                            tags: map_tags(prefix.tags),
+                            local_context: None,
+                        };
                         state.insert(ObservedObject {
                             kind: kind.clone(),
                             key,
                             attrs,
+                            projection,
                             backend_id,
                         });
                     }
@@ -223,10 +303,16 @@ impl Adapter for NetBoxAdapter {
                             assigned_interface,
                             description: ip.description,
                         });
+                        let projection = ProjectionData {
+                            custom_fields: map_custom_fields(ip.custom_fields),
+                            tags: map_tags(ip.tags),
+                            local_context: None,
+                        };
                         state.insert(ObservedObject {
                             kind: kind.clone(),
                             key,
                             attrs,
+                            projection,
                             backend_id,
                         });
                     }
@@ -234,6 +320,8 @@ impl Adapter for NetBoxAdapter {
                 Kind::Custom(_) => {}
             }
         }
+
+        state.capabilities = fetch_capabilities(&self.client).await?;
 
         Ok(state)
     }
@@ -298,7 +386,7 @@ impl Adapter for NetBoxAdapter {
                             kind.clone(),
                             *uid,
                             backend_id.unwrap_or(0),
-                            desired,
+                            &desired.base,
                             &resolved,
                         )
                         .await?;
@@ -342,10 +430,10 @@ impl NetBoxAdapter {
     async fn create_object(
         &self,
         kind: Kind,
-        desired: &alembic_core::Object,
+        desired: &ProjectedObject,
         resolved: &mut BTreeMap<Uid, u64>,
     ) -> Result<u64> {
-        match &desired.attrs {
+        let backend_id = match &desired.base.attrs {
             Attrs::Site(attrs) => self.create_site(attrs).await,
             Attrs::Device(attrs) => self.create_device(attrs, resolved).await,
             Attrs::Interface(attrs) => self.create_interface(attrs, resolved).await,
@@ -353,7 +441,10 @@ impl NetBoxAdapter {
             Attrs::IpAddress(attrs) => self.create_ip_address(attrs, resolved).await,
             Attrs::Generic(_) => return Err(anyhow!("generic attrs are not supported")),
         }
-        .with_context(|| format!("create {}", kind))
+        .with_context(|| format!("create {}", kind))?;
+        self.apply_projection_patch(&kind, backend_id, &desired.projection)
+            .await?;
+        Ok(backend_id)
     }
 
     /// update a backend object to match the desired ir.
@@ -361,10 +452,10 @@ impl NetBoxAdapter {
         &self,
         kind: Kind,
         backend_id: u64,
-        desired: &alembic_core::Object,
+        desired: &ProjectedObject,
         resolved: &BTreeMap<Uid, u64>,
     ) -> Result<()> {
-        match &desired.attrs {
+        match &desired.base.attrs {
             Attrs::Site(attrs) => self.update_site(backend_id, attrs).await,
             Attrs::Device(attrs) => self.update_device(backend_id, attrs, resolved).await,
             Attrs::Interface(attrs) => self.update_interface(backend_id, attrs, resolved).await,
@@ -372,7 +463,10 @@ impl NetBoxAdapter {
             Attrs::IpAddress(attrs) => self.update_ip_address(backend_id, attrs, resolved).await,
             Attrs::Generic(_) => return Err(anyhow!("generic attrs are not supported")),
         }
-        .with_context(|| format!("update {}", kind))
+        .with_context(|| format!("update {}", kind))?;
+        self.apply_projection_patch(&kind, backend_id, &desired.projection)
+            .await?;
+        Ok(())
     }
 
     /// delete a backend object by id.
@@ -826,15 +920,200 @@ impl NetBoxAdapter {
             .flatten()
             .unwrap_or_else(|| device_id.to_string()))
     }
+
+    async fn apply_projection_patch(
+        &self,
+        kind: &Kind,
+        backend_id: u64,
+        projection: &ProjectionData,
+    ) -> Result<()> {
+        let payload = build_projection_payload(kind, projection)?;
+        let Some(payload) = payload else {
+            return Ok(());
+        };
+        let Some(path) = kind_path(kind) else {
+            return Ok(());
+        };
+        let path = format!("{path}{}/", backend_id);
+        self.client
+            .request_raw(Method::PATCH, &path, Some(&payload))
+            .await?;
+        Ok(())
+    }
+}
+
+fn build_projection_payload(kind: &Kind, projection: &ProjectionData) -> Result<Option<Value>> {
+    let mut payload = serde_json::Map::new();
+
+    if let Some(custom_fields) = &projection.custom_fields {
+        payload.insert(
+            "custom_fields".to_string(),
+            serde_json::to_value(custom_fields)?,
+        );
+    }
+
+    if let Some(tags) = &projection.tags {
+        let mut items = Vec::new();
+        for tag in tags {
+            let slug = slugify(tag);
+            items.push(serde_json::json!({ "name": tag, "slug": slug }));
+        }
+        payload.insert("tags".to_string(), Value::Array(items));
+    }
+
+    if let Some(local_context) = &projection.local_context {
+        if matches!(kind, Kind::DcimDevice) {
+            payload.insert("local_context_data".to_string(), local_context.clone());
+        } else {
+            return Err(anyhow!(
+                "local context projection is only supported for dcim.device"
+            ));
+        }
+    }
+
+    if payload.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(Value::Object(payload)))
+    }
+}
+
+fn kind_path(kind: &Kind) -> Option<&'static str> {
+    match kind {
+        Kind::DcimSite => Some("dcim/sites/"),
+        Kind::DcimDevice => Some("dcim/devices/"),
+        Kind::DcimInterface => Some("dcim/interfaces/"),
+        Kind::IpamPrefix => Some("ipam/prefixes/"),
+        Kind::IpamIpAddress => Some("ipam/ip-addresses/"),
+        Kind::Custom(_) => None,
+    }
+}
+
+fn slugify(input: &str) -> String {
+    let mut out = String::new();
+    let mut last_dash = false;
+    for ch in input.chars() {
+        let lower = ch.to_ascii_lowercase();
+        if lower.is_ascii_alphanumeric() {
+            out.push(lower);
+            last_dash = false;
+        } else if !last_dash {
+            out.push('-');
+            last_dash = true;
+        }
+    }
+    while out.ends_with('-') {
+        out.pop();
+    }
+    out
+}
+
+fn map_custom_fields(fields: Option<HashMap<String, Value>>) -> Option<BTreeMap<String, Value>> {
+    fields.map(|map| map.into_iter().collect())
+}
+
+fn map_tags(tags: Option<Vec<netbox::models::NestedTag>>) -> Option<Vec<String>> {
+    tags.map(|items| {
+        let mut tags: Vec<String> = items.into_iter().map(|tag| tag.name).collect();
+        tags.sort();
+        tags
+    })
+}
+
+async fn fetch_capabilities(client: &Client) -> Result<BackendCapabilities> {
+    let fields = client.extras().custom_fields().list(None).await?;
+    let mut by_kind: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for field in fields.results {
+        for object_type in field.object_types {
+            by_kind
+                .entry(object_type)
+                .or_default()
+                .insert(field.name.clone());
+        }
+    }
+    let mut tags = BTreeSet::new();
+    let mut offset = 0usize;
+    let limit = 200usize;
+    loop {
+        let page = client
+            .extras()
+            .tags()
+            .list(Some(QueryBuilder::default().limit(limit).offset(offset)))
+            .await?;
+        let page_count = page.results.len();
+        for tag in page.results {
+            tags.insert(tag.name);
+        }
+        if tags.len() >= page.count || page_count == 0 {
+            break;
+        }
+        offset += limit;
+    }
+    Ok(BackendCapabilities {
+        custom_fields_by_kind: by_kind,
+        tags,
+    })
+}
+
+#[derive(Default)]
+struct CustomFieldProposal {
+    object_types: BTreeSet<String>,
+    field_type: String,
+}
+
+fn group_custom_fields(missing: &[MissingCustomField]) -> BTreeMap<String, CustomFieldProposal> {
+    let mut grouped: BTreeMap<String, CustomFieldProposal> = BTreeMap::new();
+    for entry in missing {
+        let proposal = grouped.entry(entry.field.clone()).or_default();
+        proposal.object_types.insert(entry.kind.clone());
+        let entry_type = custom_field_type(&entry.sample);
+        proposal.field_type = merge_field_type(&proposal.field_type, entry_type);
+    }
+    grouped
+}
+
+fn custom_field_type(value: &Value) -> String {
+    match value {
+        Value::String(_) => "text".to_string(),
+        Value::Bool(_) => "boolean".to_string(),
+        Value::Number(number) => {
+            if number.is_i64() || number.is_u64() {
+                "integer".to_string()
+            } else {
+                "decimal".to_string()
+            }
+        }
+        Value::Array(_) | Value::Object(_) => "json".to_string(),
+        Value::Null => "text".to_string(),
+    }
+}
+
+fn merge_field_type(current: &str, incoming: String) -> String {
+    if current.is_empty() {
+        return incoming;
+    }
+    if current == "json" || incoming == "json" {
+        return "json".to_string();
+    }
+    if current == "text" || incoming == "text" {
+        return "text".to_string();
+    }
+    if current == "decimal" || incoming == "decimal" {
+        return "decimal".to_string();
+    }
+    if current == "boolean" || incoming == "boolean" {
+        return "boolean".to_string();
+    }
+    "integer".to_string()
 }
 
 fn should_skip_op(op: &Op) -> bool {
     match op {
         Op::Create { kind, desired, .. } => {
-            kind.is_custom() || matches!(desired.attrs, Attrs::Generic(_))
+            kind.is_custom() || matches!(desired.base.attrs, Attrs::Generic(_))
         }
         Op::Update { kind, desired, .. } => {
-            kind.is_custom() || matches!(desired.attrs, Attrs::Generic(_))
+            kind.is_custom() || matches!(desired.base.attrs, Attrs::Generic(_))
         }
         Op::Delete { kind, .. } => kind.is_custom(),
     }
@@ -958,7 +1237,7 @@ mod tests {
     use alembic_core::{
         Attrs, DeviceAttrs, InterfaceAttrs, IpAddressAttrs, Kind, PrefixAttrs, SiteAttrs, Uid,
     };
-    use alembic_engine::Op;
+    use alembic_engine::{Op, ProjectedObject, ProjectionData};
     use httpmock::Method::{DELETE, GET, PATCH, POST};
     use httpmock::{Mock, MockServer};
     use serde_json::json;
@@ -967,6 +1246,13 @@ mod tests {
 
     fn uid(value: u128) -> Uid {
         Uuid::from_u128(value)
+    }
+
+    fn projected(base: alembic_core::Object) -> ProjectedObject {
+        ProjectedObject {
+            base,
+            projection: ProjectionData::default(),
+        }
     }
 
     fn page(results: serde_json::Value) -> serde_json::Value {
@@ -1075,6 +1361,18 @@ mod tests {
             "/api/ipam/ip-addresses/",
             json!([ip_payload(5, 3)]),
         );
+        let _custom_fields = server.mock(|when, then| {
+            when.method(GET).path("/api/extras/custom-fields/");
+            then.status(200).json_body(page(json!([])));
+        });
+        let _tags = server.mock(|when, then| {
+            when.method(GET)
+                .path("/api/extras/tags/")
+                .query_param("limit", "200")
+                .query_param("offset", "0");
+            then.status(200)
+                .json_body(page(json!([{"id": 1, "name": "fabric", "slug": "fabric"}])));
+        });
 
         let observed = adapter
             .observe(&[
@@ -1115,6 +1413,7 @@ mod tests {
             }
             _ => panic!("expected ip attrs"),
         }
+        assert!(observed.capabilities.tags.contains("fabric"));
     }
 
     #[tokio::test]
@@ -1171,7 +1470,7 @@ mod tests {
             Op::Create {
                 uid: uid(1),
                 kind: Kind::DcimSite,
-                desired: alembic_core::Object::new(
+                desired: projected(alembic_core::Object::new(
                     uid(1),
                     "site=fra1".to_string(),
                     Attrs::Site(SiteAttrs {
@@ -1180,12 +1479,12 @@ mod tests {
                         status: Some("active".to_string()),
                         description: None,
                     }),
-                ),
+                )),
             },
             Op::Create {
                 uid: uid(2),
                 kind: Kind::DcimDevice,
-                desired: alembic_core::Object::new(
+                desired: projected(alembic_core::Object::new(
                     uid(2),
                     "site=fra1/device=leaf01".to_string(),
                     Attrs::Device(DeviceAttrs {
@@ -1195,12 +1494,12 @@ mod tests {
                         device_type: "leaf-switch".to_string(),
                         status: Some("active".to_string()),
                     }),
-                ),
+                )),
             },
             Op::Create {
                 uid: uid(3),
                 kind: Kind::DcimInterface,
-                desired: alembic_core::Object::new(
+                desired: projected(alembic_core::Object::new(
                     uid(3),
                     "device=leaf01/interface=eth0".to_string(),
                     Attrs::Interface(InterfaceAttrs {
@@ -1210,12 +1509,12 @@ mod tests {
                         enabled: Some(true),
                         description: None,
                     }),
-                ),
+                )),
             },
             Op::Create {
                 uid: uid(4),
                 kind: Kind::IpamPrefix,
-                desired: alembic_core::Object::new(
+                desired: projected(alembic_core::Object::new(
                     uid(4),
                     "prefix=10.0.0.0/24".to_string(),
                     Attrs::Prefix(PrefixAttrs {
@@ -1223,12 +1522,12 @@ mod tests {
                         site: Some(uid(1)),
                         description: Some("subnet".to_string()),
                     }),
-                ),
+                )),
             },
             Op::Create {
                 uid: uid(5),
                 kind: Kind::IpamIpAddress,
-                desired: alembic_core::Object::new(
+                desired: projected(alembic_core::Object::new(
                     uid(5),
                     "ip=10.0.0.10/24".to_string(),
                     Attrs::IpAddress(IpAddressAttrs {
@@ -1236,12 +1535,37 @@ mod tests {
                         assigned_interface: Some(uid(3)),
                         description: Some("leaf01 eth0".to_string()),
                     }),
-                ),
+                )),
             },
         ];
 
         let report = adapter.apply(&ops).await.unwrap();
         assert_eq!(report.applied.len(), ops.len());
+    }
+
+    #[tokio::test]
+    async fn create_tags_posts_unique_names() {
+        let server = MockServer::start();
+        let dir = tempdir().unwrap();
+        let state = StateStore::load(dir.path().join("state.json")).unwrap();
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token", state).unwrap();
+
+        let _tags = server.mock(|when, then| {
+            when.method(POST).path("/api/extras/tags/");
+            then.status(201)
+                .json_body(json!({"id": 1, "name": "fabric", "slug": "fabric"}));
+        });
+
+        adapter
+            .create_tags(&vec!["fabric".to_string(), "fabric".to_string()])
+            .await
+            .unwrap();
+    }
+
+    #[test]
+    fn slugify_normalizes_value() {
+        assert_eq!(slugify("EVPN Fabric"), "evpn-fabric");
+        assert_eq!(slugify("edge--core"), "edge-core");
     }
 
     #[tokio::test]
@@ -1337,7 +1661,7 @@ mod tests {
             Op::Update {
                 uid: uid(1),
                 kind: Kind::DcimSite,
-                desired: alembic_core::Object::new(
+                desired: projected(alembic_core::Object::new(
                     uid(1),
                     "site=fra1".to_string(),
                     Attrs::Site(SiteAttrs {
@@ -1346,14 +1670,14 @@ mod tests {
                         status: Some("active".to_string()),
                         description: None,
                     }),
-                ),
+                )),
                 changes: vec![],
                 backend_id: None,
             },
             Op::Update {
                 uid: uid(2),
                 kind: Kind::DcimDevice,
-                desired: alembic_core::Object::new(
+                desired: projected(alembic_core::Object::new(
                     uid(2),
                     "site=fra1/device=leaf01".to_string(),
                     Attrs::Device(DeviceAttrs {
@@ -1363,14 +1687,14 @@ mod tests {
                         device_type: "leaf-switch".to_string(),
                         status: Some("active".to_string()),
                     }),
-                ),
+                )),
                 changes: vec![],
                 backend_id: None,
             },
             Op::Update {
                 uid: uid(3),
                 kind: Kind::DcimInterface,
-                desired: alembic_core::Object::new(
+                desired: projected(alembic_core::Object::new(
                     uid(3),
                     "device=leaf01/interface=eth0".to_string(),
                     Attrs::Interface(InterfaceAttrs {
@@ -1380,14 +1704,14 @@ mod tests {
                         enabled: Some(true),
                         description: None,
                     }),
-                ),
+                )),
                 changes: vec![],
                 backend_id: None,
             },
             Op::Update {
                 uid: uid(4),
                 kind: Kind::IpamPrefix,
-                desired: alembic_core::Object::new(
+                desired: projected(alembic_core::Object::new(
                     uid(4),
                     "prefix=10.0.0.0/24".to_string(),
                     Attrs::Prefix(PrefixAttrs {
@@ -1395,14 +1719,14 @@ mod tests {
                         site: Some(uid(1)),
                         description: Some("subnet".to_string()),
                     }),
-                ),
+                )),
                 changes: vec![],
                 backend_id: None,
             },
             Op::Update {
                 uid: uid(5),
                 kind: Kind::IpamIpAddress,
-                desired: alembic_core::Object::new(
+                desired: projected(alembic_core::Object::new(
                     uid(5),
                     "ip=10.0.0.10/24".to_string(),
                     Attrs::IpAddress(IpAddressAttrs {
@@ -1410,7 +1734,7 @@ mod tests {
                         assigned_interface: Some(uid(3)),
                         description: Some("leaf01 eth0".to_string()),
                     }),
-                ),
+                )),
                 changes: vec![],
                 backend_id: None,
             },

@@ -11,7 +11,10 @@ plans are json files that can be re-applied. the plan is deterministic for a giv
       "op": "create",
       "uid": "...",
       "kind": "dcim.site",
-      "desired": { "uid": "...", "kind": "dcim.site", "key": "site=fra1", "attrs": { ... } }
+      "desired": {
+        "base": { "uid": "...", "kind": "dcim.site", "key": "site=fra1", "attrs": { ... } },
+        "projection": { "custom_fields": { ... }, "tags": ["..."] }
+      }
     },
     {
       "op": "update",
@@ -40,3 +43,4 @@ plans are json files that can be re-applied. the plan is deterministic for a giv
 - generic attrs are compared as an opaque payload.
 - `backend_id` is optional and may be absent for creates or if not known.
 - deletes are only applied when `--allow-delete` is set.
+- `projection` is present only when projection rules apply to an object, and diffs include projected fields.

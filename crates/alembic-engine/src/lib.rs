@@ -2,6 +2,7 @@
 
 mod loader;
 mod planner;
+mod projection;
 mod retort;
 mod state;
 mod types;
@@ -14,6 +15,11 @@ mod tests;
 
 pub use loader::load_brew;
 pub use planner::{plan, sort_ops_for_apply};
+pub use projection::{
+    apply_projection, load_projection, missing_custom_fields, missing_tags, project_default,
+    validate_projection_strict, BackendCapabilities, MissingCustomField, MissingTag,
+    ProjectedInventory, ProjectedObject, ProjectionData, ProjectionSpec,
+};
 pub use retort::{compile_retort, is_brew_format, load_raw_yaml, load_retort};
 pub use state::StateStore;
 pub use types::{
@@ -41,10 +47,45 @@ pub async fn build_plan(
     state: &StateStore,
     allow_delete: bool,
 ) -> Result<Plan> {
+    build_plan_with_projection(adapter, inventory, state, allow_delete, None, true).await
+}
+
+pub async fn build_plan_with_projection(
+    adapter: &dyn Adapter,
+    inventory: &Inventory,
+    state: &StateStore,
+    allow_delete: bool,
+    projection: Option<&ProjectionSpec>,
+    projection_strict: bool,
+) -> Result<Plan> {
     validate(inventory)?;
-    let kinds: Vec<_> = inventory.objects.iter().map(|o| o.kind.clone()).collect();
+    let projected = if let Some(spec) = projection {
+        apply_projection(spec, &inventory.objects)?
+    } else {
+        let objects = inventory
+            .objects
+            .iter()
+            .cloned()
+            .map(|base| ProjectedObject {
+                base,
+                projection: ProjectionData::default(),
+            })
+            .collect();
+        ProjectedInventory { objects }
+    };
+
+    let kinds: Vec<_> = projected
+        .objects
+        .iter()
+        .map(|o| o.base.kind.clone())
+        .collect();
     let observed = adapter.observe(&kinds).await?;
-    Ok(plan(inventory, &observed, state, allow_delete))
+    if projection_strict {
+        if let Some(spec) = projection {
+            validate_projection_strict(spec, &inventory.objects, &observed.capabilities)?;
+        }
+    }
+    Ok(plan(&projected, &observed, state, allow_delete))
 }
 
 /// apply a plan and update the state store.

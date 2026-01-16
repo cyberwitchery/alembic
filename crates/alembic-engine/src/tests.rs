@@ -1,5 +1,7 @@
 use super::*;
+use crate::project_default;
 use alembic_core::{Attrs, DeviceAttrs, InterfaceAttrs, Inventory, Kind, Object, SiteAttrs, Uid};
+use serde_json::json;
 use std::collections::BTreeMap;
 use tempfile::tempdir;
 use uuid::Uuid;
@@ -295,7 +297,8 @@ fn plans_in_stable_order() {
     let inventory = Inventory { objects };
     let observed = ObservedState::default();
     let state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
-    let plan = plan(&inventory, &observed, &state, false);
+    let projected = project_default(&inventory.objects);
+    let plan = plan(&projected, &observed, &state, false);
 
     assert_eq!(plan.ops.len(), 2);
     let kinds: Vec<Kind> = plan
@@ -336,11 +339,13 @@ fn detects_attribute_diff() {
             status: None,
             description: None,
         }),
+        projection: crate::ProjectionData::default(),
         backend_id: Some(100),
     });
 
     let state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
-    let plan = plan(&desired, &observed, &state, false);
+    let projected = project_default(&desired.objects);
+    let plan = plan(&projected, &observed, &state, false);
 
     assert_eq!(plan.ops.len(), 1);
     match &plan.ops[0] {
@@ -374,11 +379,13 @@ fn detects_generic_payload_diff() {
         kind: Kind::Custom("services.vpn".to_string()),
         key: "vpn=corp".to_string(),
         attrs: Attrs::Generic(from),
+        projection: crate::ProjectionData::default(),
         backend_id: Some(10),
     });
 
     let state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
-    let plan = plan(&desired, &observed, &state, false);
+    let projected = project_default(&desired.objects);
+    let plan = plan(&projected, &observed, &state, false);
 
     assert_eq!(plan.ops.len(), 1);
     match &plan.ops[0] {
@@ -388,6 +395,68 @@ fn detects_generic_payload_diff() {
         }
         _ => panic!("expected update"),
     }
+}
+
+#[test]
+fn planner_includes_projected_custom_fields() {
+    let mut object = Object::new(
+        uid(70),
+        "site=fra1".to_string(),
+        Attrs::Site(SiteAttrs {
+            name: "FRA1".to_string(),
+            slug: "fra1".to_string(),
+            status: None,
+            description: None,
+        }),
+    );
+    object.x.insert("model.fabric".to_string(), json!("fra1"));
+
+    let spec: crate::ProjectionSpec = serde_yaml::from_str(
+        r#"
+version: 1
+backend: netbox
+rules:
+  - name: cf
+    on_kind: dcim.site
+    from_x:
+      prefix: "model."
+    to:
+      custom_fields:
+        strategy: strip_prefix
+        prefix: "model."
+"#,
+    )
+    .unwrap();
+
+    let projected = crate::apply_projection(&spec, &[object]).unwrap();
+
+    let mut observed = ObservedState::default();
+    let mut fields = BTreeMap::new();
+    fields.insert("fabric".to_string(), json!("old"));
+    observed.insert(ObservedObject {
+        kind: Kind::DcimSite,
+        key: "site=fra1".to_string(),
+        attrs: Attrs::Site(SiteAttrs {
+            name: "FRA1".to_string(),
+            slug: "fra1".to_string(),
+            status: None,
+            description: None,
+        }),
+        projection: crate::ProjectionData {
+            custom_fields: Some(fields),
+            tags: None,
+            local_context: None,
+        },
+        backend_id: None,
+    });
+
+    let state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
+    let plan = plan(&projected, &observed, &state, false);
+    let changes = match &plan.ops[0] {
+        Op::Update { changes, .. } => changes,
+        _ => panic!("expected update"),
+    };
+    assert!(changes.iter().any(|change| change.field == "custom_fields"));
 }
 
 #[test]
@@ -457,11 +526,13 @@ fn plan_generates_deletes_when_enabled() {
             status: None,
             description: None,
         }),
+        projection: crate::ProjectionData::default(),
         backend_id: Some(10),
     });
 
     let state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
-    let plan = plan(&desired, &observed, &state, true);
+    let projected = project_default(&desired.objects);
+    let plan = plan(&projected, &observed, &state, true);
     assert!(plan.ops.iter().any(|op| matches!(op, Op::Delete { .. })));
 }
 
@@ -477,16 +548,19 @@ fn apply_order_puts_deletes_last() {
         Op::Create {
             uid: uid(2),
             kind: Kind::DcimSite,
-            desired: Object::new(
-                uid(2),
-                "site=fra1".to_string(),
-                Attrs::Site(SiteAttrs {
-                    name: "FRA1".to_string(),
-                    slug: "fra1".to_string(),
-                    status: None,
-                    description: None,
-                }),
-            ),
+            desired: crate::ProjectedObject {
+                base: Object::new(
+                    uid(2),
+                    "site=fra1".to_string(),
+                    Attrs::Site(SiteAttrs {
+                        name: "FRA1".to_string(),
+                        slug: "fra1".to_string(),
+                        status: None,
+                        description: None,
+                    }),
+                ),
+                projection: crate::ProjectionData::default(),
+            },
         },
     ];
 

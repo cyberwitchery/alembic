@@ -30,6 +30,9 @@ rules:
         role: { from: .role, required: true }
         device_type: { from: .device_type, required: true }
         site_slug: { from: ^.slug, required: true }
+        model_fabric: { from: .model/fabric, required: true }
+        model_role_hint: { from: .model/role_hint, required: true }
+        model_tags: { from: .model/tags, required: true }
       attrs:
         name: ${name}
         role: ${role}
@@ -38,6 +41,10 @@ rules:
           uid:
             kind: "dcim.site"
             stable: "site=${site_slug}"
+      x:
+        model.fabric: ${model_fabric}
+        model.role_hint: ${model_role_hint}
+        model.tags: ${model_tags}
 
   - name: interfaces
     select: /sites/*/devices/*/interfaces/*

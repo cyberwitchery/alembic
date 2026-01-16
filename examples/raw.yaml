@@ -5,6 +5,12 @@ sites:
       - name: leaf01a
         role: leaf
         device_type: leaf-switch
+        model:
+          fabric: fra1-fabric
+          role_hint: leaf
+          tags:
+            - fabric
+            - evpn
         interfaces:
           - name: eth0
           - name: eth1

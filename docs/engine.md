@@ -6,9 +6,10 @@ the engine is responsible for loading, validating, planning, and applying change
 
 1) load brew files (supports `include` / `imports`) or compile raw yaml with a retort
 2) build object graph and validate references
-3) observe backend state via adapter
-4) plan deterministic operations
-5) apply operations in dependency order
+3) apply projection spec (optional) to build backend payloads from `x`
+4) observe backend state via adapter (includes capabilities like custom fields)
+5) plan deterministic operations
+6) apply operations in dependency order
 
 ## validation
 
@@ -48,4 +49,4 @@ apply uses a dependency-aware ordering:
 
 ## diff rules
 
-diffs are computed at the `attrs` field level (json value comparison). generic attrs are compared as a single payload. `x` is currently ignored by the planner.
+diffs are computed at the `attrs` field level plus projected fields (`custom_fields`, `tags`, optional `local_context`). generic attrs are compared as a single payload. `x` is ignored unless a projection spec is provided.

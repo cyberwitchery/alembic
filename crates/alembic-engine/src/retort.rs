@@ -747,6 +747,11 @@ sites:
       - name: leaf01
         role: leaf
         device_type: leaf-switch
+        model:
+          fabric: fra1-fabric
+          role_hint: leaf
+          tags:
+            - fabric
         interfaces:
           - name: eth0
           - name: eth1
@@ -805,8 +810,61 @@ rules:
         let inventory = compile_retort(&raw, &retort).unwrap();
         let state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
         let observed = ObservedState::default();
-        let first = plan(&inventory, &observed, &state, false);
-        let second = plan(&inventory, &observed, &state, false);
+        let projected = crate::project_default(&inventory.objects);
+        let first = plan(&projected, &observed, &state, false);
+        let second = plan(&projected, &observed, &state, false);
         assert_eq!(first.ops, second.ops);
+    }
+
+    #[test]
+    fn parse_relative_path_tracks_parent_hops() {
+        let rel = parse_relative_path("^^.slug").unwrap();
+        assert_eq!(rel.up, 2);
+        assert_eq!(rel.selectors.len(), 1);
+    }
+
+    #[test]
+    fn render_uid_mapping_optional_skips_missing() {
+        let vars = BTreeMap::new();
+        let mapping: YamlValue = serde_yaml::from_str(
+            r#"
+uid?:
+  kind: "dcim.site"
+  stable: "site=${slug}"
+"#,
+        )
+        .unwrap();
+        let rendered = render_yaml_value(&mapping, &vars, "rule", "attrs", false).unwrap();
+        assert!(rendered.is_none());
+    }
+
+    #[test]
+    fn render_uid_mapping_required_errors_on_missing() {
+        let vars = BTreeMap::new();
+        let mapping: YamlValue = serde_yaml::from_str(
+            r#"
+uid:
+  kind: "dcim.site"
+  stable: "site=${slug}"
+"#,
+        )
+        .unwrap();
+        let err = render_yaml_value(&mapping, &vars, "rule", "attrs", false).unwrap_err();
+        assert!(err.to_string().contains("missing var"));
+    }
+
+    #[test]
+    fn template_errors_on_non_string_var() {
+        let mut vars = BTreeMap::new();
+        vars.insert("asn".to_string(), JsonValue::Number(65001.into()));
+        let err = render_template("asn=${asn}", &vars, "rule", "key").unwrap_err();
+        assert!(err.to_string().contains("must be a string"));
+    }
+
+    #[test]
+    fn resolve_uid_template_rejects_invalid_uuid() {
+        let vars = BTreeMap::new();
+        let err = resolve_uid_template("not-a-uuid", &vars, "rule").unwrap_err();
+        assert!(err.to_string().contains("uid template is not a valid uuid"));
     }
 }

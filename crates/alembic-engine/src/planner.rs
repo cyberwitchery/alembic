@@ -1,14 +1,15 @@
 //! diff and plan generation.
 
+use crate::projection::ProjectedInventory;
 use crate::state::StateStore;
 use crate::types::{FieldChange, ObservedState, Op, Plan};
-use alembic_core::{Attrs, Inventory, Kind, Uid};
+use alembic_core::{Attrs, Kind, Uid};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// build a deterministic plan from desired and observed state.
 pub fn plan(
-    desired: &Inventory,
+    desired: &ProjectedInventory,
     observed: &ObservedState,
     state: &StateStore,
     allow_delete: bool,
@@ -24,20 +25,22 @@ pub fn plan(
     }
 
     let mut desired_sorted = desired.objects.clone();
-    desired_sorted.sort_by(|a, b| op_sort_key(&a.kind, &a.key).cmp(&op_sort_key(&b.kind, &b.key)));
+    desired_sorted.sort_by(|a, b| {
+        op_sort_key(&a.base.kind, &a.base.key).cmp(&op_sort_key(&b.base.kind, &b.base.key))
+    });
 
     for object in desired_sorted.iter() {
         let observed_object = state
-            .backend_id(object.kind.clone(), object.uid)
+            .backend_id(object.base.kind.clone(), object.base.uid)
             .and_then(|id| observed.by_backend_id.get(&id))
-            .or_else(|| observed.by_key.get(&object.key));
+            .or_else(|| observed.by_key.get(&object.base.key));
 
         if let Some(obs) = observed_object {
-            let changes = diff_attrs(&obs.attrs, &object.attrs);
+            let changes = diff_object(obs, object);
             if !changes.is_empty() {
                 ops.push(Op::Update {
-                    uid: object.uid,
-                    kind: object.kind.clone(),
+                    uid: object.base.uid,
+                    kind: object.base.kind.clone(),
                     desired: object.clone(),
                     changes,
                     backend_id: obs.backend_id,
@@ -48,8 +51,8 @@ pub fn plan(
             }
         } else {
             ops.push(Op::Create {
-                uid: object.uid,
-                kind: object.kind.clone(),
+                uid: object.base.uid,
+                kind: object.base.kind.clone(),
                 desired: object.clone(),
             });
         }
@@ -139,6 +142,41 @@ fn diff_attrs(existing: &Attrs, desired: &Attrs) -> Vec<FieldChange> {
     changes
 }
 
+fn diff_object(
+    existing: &crate::types::ObservedObject,
+    desired: &crate::projection::ProjectedObject,
+) -> Vec<FieldChange> {
+    let mut changes = diff_attrs(&existing.attrs, &desired.base.attrs);
+
+    if desired.projection.custom_fields.is_some()
+        && existing.projection.custom_fields != desired.projection.custom_fields
+    {
+        changes.push(FieldChange {
+            field: "custom_fields".to_string(),
+            from: serde_json::to_value(&existing.projection.custom_fields).unwrap_or(Value::Null),
+            to: serde_json::to_value(&desired.projection.custom_fields).unwrap_or(Value::Null),
+        });
+    }
+    if desired.projection.tags.is_some() && existing.projection.tags != desired.projection.tags {
+        changes.push(FieldChange {
+            field: "tags".to_string(),
+            from: serde_json::to_value(&existing.projection.tags).unwrap_or(Value::Null),
+            to: serde_json::to_value(&desired.projection.tags).unwrap_or(Value::Null),
+        });
+    }
+    if desired.projection.local_context.is_some()
+        && existing.projection.local_context != desired.projection.local_context
+    {
+        changes.push(FieldChange {
+            field: "local_context".to_string(),
+            from: serde_json::to_value(&existing.projection.local_context).unwrap_or(Value::Null),
+            to: serde_json::to_value(&desired.projection.local_context).unwrap_or(Value::Null),
+        });
+    }
+
+    changes
+}
+
 /// stable sort key for desired objects.
 fn op_sort_key(kind: &Kind, key: &str) -> (u8, String, String) {
     (kind_rank(kind), kind.as_string(), key.to_string())
@@ -147,8 +185,8 @@ fn op_sort_key(kind: &Kind, key: &str) -> (u8, String, String) {
 /// stable sort key for plan operations.
 fn op_order_key(op: &Op) -> (u8, u8, String, String) {
     let (kind, key, weight) = match op {
-        Op::Create { kind, desired, .. } => (kind.clone(), desired.key.clone(), 0),
-        Op::Update { kind, desired, .. } => (kind.clone(), desired.key.clone(), 1),
+        Op::Create { kind, desired, .. } => (kind.clone(), desired.base.key.clone(), 0),
+        Op::Update { kind, desired, .. } => (kind.clone(), desired.base.key.clone(), 1),
         Op::Delete { kind, key, .. } => (kind.clone(), key.clone(), 2),
     };
     (kind_rank(&kind), weight, kind.as_string(), key)

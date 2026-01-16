@@ -12,4 +12,5 @@ this directory contains the canonical documentation for alembic.
 - `docs/state.md` - state store format and behavior
 - `docs/cli.md` - cli usage and examples
 - `docs/netbox.md` - netbox adapter mapping and constraints
+- `docs/projection.md` - backend projection spec for x data
 - `docs/development.md` - building, testing, and release flow

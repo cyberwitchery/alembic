@@ -1,6 +1,7 @@
 //! core engine types and adapter contract.
 
-use alembic_core::{Attrs, Kind, Object, Uid};
+use crate::projection::{BackendCapabilities, ProjectedObject, ProjectionData};
+use alembic_core::{Attrs, Kind, Uid};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -24,13 +25,13 @@ pub enum Op {
     Create {
         uid: Uid,
         kind: Kind,
-        desired: Object,
+        desired: ProjectedObject,
     },
     /// update an existing backend object.
     Update {
         uid: Uid,
         kind: Kind,
-        desired: Object,
+        desired: ProjectedObject,
         changes: Vec<FieldChange>,
         #[serde(skip_serializing_if = "Option::is_none")]
         backend_id: Option<u64>,
@@ -61,6 +62,8 @@ pub struct ObservedObject {
     pub key: String,
     /// observed attrs mapped to ir types.
     pub attrs: Attrs,
+    /// observed projection data.
+    pub projection: ProjectionData,
     /// backend id when known.
     pub backend_id: Option<u64>,
 }
@@ -72,6 +75,8 @@ pub struct ObservedState {
     pub by_backend_id: BTreeMap<u64, ObservedObject>,
     /// observed objects keyed by natural key.
     pub by_key: BTreeMap<String, ObservedObject>,
+    /// backend capabilities (custom fields, tags).
+    pub capabilities: BackendCapabilities,
 }
 
 impl ObservedState {

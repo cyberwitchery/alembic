@@ -1,9 +1,11 @@
 //! cli entrypoint for alembic.
 
 use alembic_adapter_netbox::NetBoxAdapter;
+use alembic_engine::Adapter;
 use alembic_engine::{
-    apply_plan, build_plan, compile_retort, is_brew_format, load_brew, load_raw_yaml, load_retort,
-    Plan, StateStore,
+    apply_plan, apply_projection, build_plan_with_projection, compile_retort, is_brew_format,
+    load_brew, load_projection, load_raw_yaml, load_retort, missing_custom_fields, missing_tags,
+    plan, Plan, ProjectedInventory, ProjectionSpec, StateStore,
 };
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
@@ -27,12 +29,20 @@ enum Command {
         file: PathBuf,
         #[arg(long)]
         retort: Option<PathBuf>,
+        #[arg(long)]
+        projection: Option<PathBuf>,
     },
     Plan {
         #[arg(short = 'f', long)]
         file: PathBuf,
         #[arg(long)]
         retort: Option<PathBuf>,
+        #[arg(long)]
+        projection: Option<PathBuf>,
+        #[arg(long, default_value_t = true)]
+        projection_strict: bool,
+        #[arg(long, default_value_t = false)]
+        projection_propose: bool,
         #[arg(short = 'o', long)]
         output: PathBuf,
         #[arg(long)]
@@ -62,22 +72,45 @@ enum Command {
         #[arg(short = 'o', long)]
         output: PathBuf,
     },
+    Project {
+        #[arg(short = 'f', long)]
+        file: PathBuf,
+        #[arg(long)]
+        retort: Option<PathBuf>,
+        #[arg(long)]
+        projection: PathBuf,
+        #[arg(short = 'o', long)]
+        output: PathBuf,
+    },
 }
 
 /// main entrypoint for the async cli.
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    run(cli).await
+}
 
+async fn run(cli: Cli) -> Result<()> {
     match cli.command {
-        Command::Validate { file, retort } => {
+        Command::Validate {
+            file,
+            retort,
+            projection,
+        } => {
             let inventory = load_inventory(&file, retort.as_deref())?;
+            if let Some(spec) = load_projection_optional(projection.as_deref())? {
+                let _ = apply_projection(&spec, &inventory.objects)?;
+            }
             alembic_engine::validate(&inventory)?;
             println!("ok");
         }
         Command::Plan {
             file,
             retort,
+            projection,
+            projection_strict,
+            projection_propose,
             output,
             netbox_url,
             netbox_token,
@@ -86,9 +119,30 @@ async fn main() -> Result<()> {
         } => {
             let inventory = load_inventory(&file, retort.as_deref())?;
             let state = load_state()?;
+            let projection = load_projection_optional(projection.as_deref())?;
             let (url, token) = netbox_credentials(netbox_url, netbox_token)?;
             let adapter = NetBoxAdapter::new(&url, &token, state.clone())?;
-            let plan = build_plan(&adapter, &inventory, &state, allow_delete).await?;
+            let plan = if projection_propose {
+                build_plan_with_proposal(
+                    &adapter,
+                    &inventory,
+                    &state,
+                    allow_delete,
+                    projection.as_ref(),
+                    projection_strict,
+                )
+                .await?
+            } else {
+                build_plan_with_projection(
+                    &adapter,
+                    &inventory,
+                    &state,
+                    allow_delete,
+                    projection.as_ref(),
+                    projection_strict,
+                )
+                .await?
+            };
             write_plan(&output, &plan)?;
             state.save()?;
             println!("plan written to {}", output.display());
@@ -121,6 +175,18 @@ async fn main() -> Result<()> {
             write_inventory(&output, &inventory)?;
             println!("ir written to {}", output.display());
         }
+        Command::Project {
+            file,
+            retort,
+            projection,
+            output,
+        } => {
+            let inventory = load_inventory(&file, retort.as_deref())?;
+            let projection = load_projection(&projection)?;
+            let projected = apply_projection(&projection, &inventory.objects)?;
+            write_projected(&output, &projected)?;
+            println!("projected ir written to {}", output.display());
+        }
     }
 
     Ok(())
@@ -146,6 +212,11 @@ fn write_plan(path: &Path, plan: &Plan) -> Result<()> {
 fn write_inventory(path: &Path, inventory: &alembic_core::Inventory) -> Result<()> {
     let raw = serde_json::to_string_pretty(inventory)?;
     fs::write(path, raw).with_context(|| format!("write ir: {}", path.display()))
+}
+
+fn write_projected(path: &Path, projected: &ProjectedInventory) -> Result<()> {
+    let raw = serde_json::to_string_pretty(projected)?;
+    fs::write(path, raw).with_context(|| format!("write projected ir: {}", path.display()))
 }
 
 /// read a plan file from disk.
@@ -180,6 +251,99 @@ fn load_inventory(path: &Path, retort: Option<&Path>) -> Result<alembic_core::In
     compile_retort(&raw, &retort)
 }
 
+fn load_projection_optional(path: Option<&Path>) -> Result<Option<ProjectionSpec>> {
+    match path {
+        Some(path) => Ok(Some(load_projection(path)?)),
+        None => Ok(None),
+    }
+}
+
+async fn build_plan_with_proposal(
+    adapter: &NetBoxAdapter,
+    inventory: &alembic_core::Inventory,
+    state: &StateStore,
+    allow_delete: bool,
+    projection: Option<&ProjectionSpec>,
+    projection_strict: bool,
+) -> Result<Plan> {
+    let Some(spec) = projection else {
+        return build_plan_with_projection(
+            adapter,
+            inventory,
+            state,
+            allow_delete,
+            None,
+            projection_strict,
+        )
+        .await;
+    };
+    let projected = apply_projection(spec, &inventory.objects)?;
+    let kinds: Vec<_> = projected
+        .objects
+        .iter()
+        .map(|o| o.base.kind.clone())
+        .collect();
+    let mut observed = adapter.observe(&kinds).await?;
+    let missing = missing_custom_fields(spec, &inventory.objects, &observed.capabilities)?;
+    if !missing.is_empty() {
+        eprintln!("projection proposal: missing custom fields");
+        for entry in &missing {
+            eprintln!(
+                "- rule {} (kind {}, x {}) -> field {}",
+                entry.rule, entry.kind, entry.x_key, entry.field
+            );
+        }
+        eprintln!();
+        if confirm("create missing custom fields in netbox? [y/N] ")? {
+            adapter.create_custom_fields(&missing).await?;
+            for entry in &missing {
+                observed
+                    .capabilities
+                    .custom_fields_by_kind
+                    .entry(entry.kind.clone())
+                    .or_default()
+                    .insert(entry.field.clone());
+            }
+        }
+    }
+    let missing_tags = missing_tags(spec, &inventory.objects, &observed.capabilities)?;
+    if !missing_tags.is_empty() {
+        eprintln!("projection proposal: missing tags");
+        for entry in &missing_tags {
+            eprintln!(
+                "- rule {} (kind {}, x {}) -> tag {}",
+                entry.rule, entry.kind, entry.x_key, entry.tag
+            );
+        }
+        eprintln!();
+        if confirm("create missing tags in netbox? [y/N] ")? {
+            let tags: Vec<String> = missing_tags.iter().map(|entry| entry.tag.clone()).collect();
+            adapter.create_tags(&tags).await?;
+            for tag in tags {
+                observed.capabilities.tags.insert(tag);
+            }
+        }
+    }
+    if projection_strict {
+        alembic_engine::validate_projection_strict(
+            spec,
+            &inventory.objects,
+            &observed.capabilities,
+        )?;
+    }
+    Ok(plan(&projected, &observed, state, allow_delete))
+}
+
+fn confirm(prompt: &str) -> Result<bool> {
+    use std::io::{self, Write};
+    let mut stdout = io::stdout();
+    stdout.write_all(prompt.as_bytes())?;
+    stdout.flush()?;
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    Ok(matches!(input.trim().to_lowercase().as_str(), "y" | "yes"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -188,6 +352,11 @@ mod tests {
     use tempfile::tempdir;
 
     fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn cwd_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
     }
@@ -281,5 +450,315 @@ mod tests {
         let path = dir.path().join("plan.json");
         std::fs::write(&path, "not-json").unwrap();
         assert!(read_plan(&path).is_err());
+    }
+
+    #[test]
+    fn load_inventory_brew_ignores_retort() {
+        let dir = tempdir().unwrap();
+        let brew = dir.path().join("brew.yaml");
+        let retort = dir.path().join("retort.yaml");
+        std::fs::write(
+            &brew,
+            r#"
+objects:
+  - uid: "00000000-0000-0000-0000-000000000001"
+    kind: dcim.site
+    key: "site=fra1"
+    attrs:
+      name: "FRA1"
+      slug: "fra1"
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            &retort,
+            r#"
+version: 1
+rules: []
+"#,
+        )
+        .unwrap();
+
+        let inventory = load_inventory(&brew, Some(&retort)).unwrap();
+        assert_eq!(inventory.objects.len(), 1);
+    }
+
+    #[test]
+    fn load_inventory_raw_requires_retort() {
+        let dir = tempdir().unwrap();
+        let raw = dir.path().join("raw.yaml");
+        std::fs::write(
+            &raw,
+            r#"
+sites:
+  - slug: fra1
+    name: FRA1
+"#,
+        )
+        .unwrap();
+        let err = load_inventory(&raw, None).unwrap_err();
+        assert!(err.to_string().contains("raw yaml requires --retort"));
+    }
+
+    #[test]
+    fn load_inventory_raw_with_retort() {
+        let dir = tempdir().unwrap();
+        let raw = dir.path().join("raw.yaml");
+        let retort = dir.path().join("retort.yaml");
+        std::fs::write(
+            &raw,
+            r#"
+sites:
+  - slug: fra1
+    name: FRA1
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            &retort,
+            r#"
+version: 1
+rules:
+  - name: sites
+    select: /sites/*
+    emit:
+      kind: dcim.site
+      key: "site=${slug}"
+      vars:
+        slug: { from: .slug, required: true }
+        name: { from: .name, required: true }
+      attrs:
+        name: ${name}
+        slug: ${slug}
+"#,
+        )
+        .unwrap();
+
+        let inventory = load_inventory(&raw, Some(&retort)).unwrap();
+        assert_eq!(inventory.objects.len(), 1);
+        assert_eq!(inventory.objects[0].kind.as_string(), "dcim.site");
+    }
+
+    #[test]
+    fn write_inventory_and_projected() {
+        let dir = tempdir().unwrap();
+        let inv_path = dir.path().join("ir.json");
+        let proj_path = dir.path().join("projected.json");
+        let inventory = alembic_core::Inventory {
+            objects: Vec::new(),
+        };
+        let projected = ProjectedInventory {
+            objects: Vec::new(),
+        };
+        write_inventory(&inv_path, &inventory).unwrap();
+        write_projected(&proj_path, &projected).unwrap();
+        let inv = std::fs::read_to_string(inv_path).unwrap();
+        let proj = std::fs::read_to_string(proj_path).unwrap();
+        assert!(inv.contains("\"objects\""));
+        assert!(proj.contains("\"objects\""));
+    }
+
+    #[tokio::test]
+    async fn run_validate_brew() {
+        let dir = tempdir().unwrap();
+        let brew = dir.path().join("brew.yaml");
+        std::fs::write(
+            &brew,
+            r#"
+objects:
+  - uid: "00000000-0000-0000-0000-000000000001"
+    kind: dcim.site
+    key: "site=fra1"
+    attrs:
+      name: "FRA1"
+      slug: "fra1"
+"#,
+        )
+        .unwrap();
+
+        let cli = Cli {
+            command: Command::Validate {
+                file: brew,
+                retort: None,
+                projection: None,
+            },
+        };
+        run(cli).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn run_distill_raw() {
+        let _guard = cwd_lock().lock().unwrap();
+        let dir = tempdir().unwrap();
+        let raw = dir.path().join("raw.yaml");
+        let retort = dir.path().join("retort.yaml");
+        let out = dir.path().join("ir.json");
+        std::fs::write(
+            &raw,
+            r#"
+sites:
+  - slug: fra1
+    name: FRA1
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            &retort,
+            r#"
+version: 1
+rules:
+  - name: sites
+    select: /sites/*
+    emit:
+      kind: dcim.site
+      key: "site=${slug}"
+      vars:
+        slug: { from: .slug, required: true }
+        name: { from: .name, required: true }
+      attrs:
+        name: ${name}
+        slug: ${slug}
+"#,
+        )
+        .unwrap();
+        let cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+
+        let cli = Cli {
+            command: Command::Distill {
+                file: raw,
+                retort,
+                output: out.clone(),
+            },
+        };
+        run(cli).await.unwrap();
+        let raw = std::fs::read_to_string(out).unwrap();
+        assert!(raw.contains("\"objects\""));
+        std::env::set_current_dir(cwd).unwrap();
+    }
+
+    #[tokio::test]
+    async fn run_project_raw() {
+        let _guard = cwd_lock().lock().unwrap();
+        let dir = tempdir().unwrap();
+        let raw = dir.path().join("raw.yaml");
+        let retort = dir.path().join("retort.yaml");
+        let projection = dir.path().join("projection.yaml");
+        let out = dir.path().join("projected.json");
+        std::fs::write(
+            &raw,
+            r#"
+sites:
+  - slug: fra1
+    name: FRA1
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            &retort,
+            r#"
+version: 1
+rules:
+  - name: sites
+    select: /sites/*
+    emit:
+      kind: dcim.site
+      key: "site=${slug}"
+      vars:
+        slug: { from: .slug, required: true }
+        name: { from: .name, required: true }
+      attrs:
+        name: ${name}
+        slug: ${slug}
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            &projection,
+            r#"
+version: 1
+backend: netbox
+rules: []
+"#,
+        )
+        .unwrap();
+        let cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+
+        let cli = Cli {
+            command: Command::Project {
+                file: raw,
+                retort: Some(retort),
+                projection,
+                output: out.clone(),
+            },
+        };
+        run(cli).await.unwrap();
+        let raw = std::fs::read_to_string(out).unwrap();
+        assert!(raw.contains("\"objects\""));
+        std::env::set_current_dir(cwd).unwrap();
+    }
+
+    #[tokio::test]
+    async fn run_plan_missing_credentials_errors() {
+        let _guard = cwd_lock().lock().unwrap();
+        let dir = tempdir().unwrap();
+        let brew = dir.path().join("brew.yaml");
+        let out = dir.path().join("plan.json");
+        std::fs::write(
+            &brew,
+            r#"
+objects:
+  - uid: "00000000-0000-0000-0000-000000000001"
+    kind: dcim.site
+    key: "site=fra1"
+    attrs:
+      name: "FRA1"
+      slug: "fra1"
+"#,
+        )
+        .unwrap();
+        let cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+
+        let cli = Cli {
+            command: Command::Plan {
+                file: brew,
+                retort: None,
+                projection: None,
+                projection_strict: true,
+                projection_propose: false,
+                output: out,
+                netbox_url: None,
+                netbox_token: None,
+                dry_run: false,
+                allow_delete: false,
+            },
+        };
+        let err = run(cli).await.unwrap_err();
+        assert!(err.to_string().contains("missing --netbox-url"));
+        std::env::set_current_dir(cwd).unwrap();
+    }
+
+    #[tokio::test]
+    async fn run_apply_missing_credentials_errors() {
+        let _guard = cwd_lock().lock().unwrap();
+        let dir = tempdir().unwrap();
+        let plan_path = dir.path().join("plan.json");
+        std::fs::write(&plan_path, r#"{ "ops": [] }"#).unwrap();
+        let cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+
+        let cli = Cli {
+            command: Command::Apply {
+                plan: plan_path,
+                netbox_url: None,
+                netbox_token: None,
+                allow_delete: false,
+            },
+        };
+        let err = run(cli).await.unwrap_err();
+        assert!(err.to_string().contains("missing --netbox-url"));
+        std::env::set_current_dir(cwd).unwrap();
     }
 }

@@ -17,25 +17,30 @@ if these are missing, create them in netbox before running `alembic plan`.
 - `dcim.site`
   - create/update via `WritableSiteRequest` / `PatchedWritableSiteRequest`
   - matching by `slug`
+  - projected custom fields/tags patched when configured
 
 - `dcim.device`
   - create/update via `CreateDeviceRequest` / `UpdateDeviceRequest`
   - site resolved via state store
   - role/type resolved by lookup
   - matching by `name`
+  - projected custom fields/tags/local context patched when configured
 
 - `dcim.interface`
   - create/update via `WritableInterfaceRequest` / `PatchedWritableInterfaceRequest`
   - device resolved via state store (device name used for reference)
   - limited interface type support (see below)
+  - projected custom fields/tags patched when configured
 
 - `ipam.prefix`
   - create/update via `CreatePrefixRequest` / `UpdatePrefixRequest`
   - site optional
+  - projected custom fields/tags patched when configured
 
 - `ipam.ip_address`
   - create/update via `CreateIpAddressRequest` / `UpdateIpAddressRequest`
   - assigned interface optional
+  - projected custom fields/tags patched when configured
 
 ## interface types
 
@@ -52,5 +57,6 @@ other values return an error. extend `interface_type_from_str` if you need more.
 
 - prefix -> site is not currently observed from netbox (it is preserved on create/update).
 - ip -> interface assignment is only observed when netbox returns `assigned_object_type == dcim.interface`.
-- `x` extension data is not mapped yet.
+- `x` extension data is ignored unless a projection spec is supplied.
 - generic objects are skipped with a warning in apply.
+- projection proposal can create missing custom fields and tags when enabled.
