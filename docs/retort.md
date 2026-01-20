@@ -36,6 +36,8 @@ rules:
 - use `.` for the current node and `^` for the parent.
 - example: `site_slug: { from: ^.slug }`
 - arrays are allowed with wildcards, e.g. `.interfaces/*/name`.
+- `vars` can be defined at rule level (shared by all emits) or at emit level.
+- emit-level vars override rule-level vars with the same name.
 
 ## templates
 
@@ -50,7 +52,48 @@ rules:
 - in `attrs`, `{ uid: { kind, stable } }` emits a uid string.
 - `uid?` is optional and omitted when a required var is missing.
 
+## multi-emit
+
+a single rule can emit multiple objects by using a list for `emit`:
+
+```yaml
+rules:
+  - name: fabric
+    select: /fabrics/*
+    vars:
+      site_slug: { from: .site, required: true }
+      vrf_name: { from: .vrf, required: true }
+    uids:
+      site:
+        v5:
+          kind: "dcim.site"
+          stable: "site=${site_slug}"
+      vrf:
+        v5:
+          kind: "ipam.vrf"
+          stable: "vrf=${vrf_name}"
+    emit:
+      - kind: dcim.site
+        key: "site=${site_slug}"
+        uid: ${uids.site}
+        attrs:
+          name: ${site_slug}
+          slug: ${site_slug}
+      - kind: ipam.vrf
+        key: "vrf=${vrf_name}"
+        uid: ${uids.vrf}
+        attrs:
+          name: ${vrf_name}
+          site: ${uids.site}
+```
+
+- `vars` at rule level are extracted once and shared by all emits.
+- `uids` declares named uids computed once and available as `${uids.name}`.
+- each emit can have its own `vars` that override rule-level vars.
+- named uids can be referenced in subsequent emits for cross-object relationships.
+
 ## determinism
 
 - the compiler sorts objects by kind rank, kind string, and key.
 - same raw yaml + same retort yields the same ir and plan order.
+- multi-emit rules produce objects in a deterministic order.

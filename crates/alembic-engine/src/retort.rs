@@ -20,7 +20,22 @@ pub struct Retort {
 pub struct Rule {
     pub name: String,
     pub select: String,
-    pub emit: Emit,
+    /// Rule-level vars extracted once and shared by all emits.
+    #[serde(default)]
+    pub vars: BTreeMap<String, VarSpec>,
+    /// Named UIDs computed once and available as `${uids.name}` in emits.
+    #[serde(default)]
+    pub uids: BTreeMap<String, EmitUid>,
+    /// Single emit (backward compat) or list of emits.
+    pub emit: EmitSpec,
+}
+
+/// Either a single emit (backward compatible) or a list of emits.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum EmitSpec {
+    Single(Emit),
+    Multi(Vec<Emit>),
 }
 
 #[derive(Debug, Deserialize)]
@@ -114,15 +129,36 @@ pub fn compile_retort(raw: &YamlValue, retort: &Retort) -> Result<Inventory> {
         let mut selected = Vec::new();
         select_paths(raw, &selectors, &mut Vec::new(), &mut selected);
 
+        let emits = match &rule.emit {
+            EmitSpec::Single(emit) => vec![emit],
+            EmitSpec::Multi(emits) => emits.iter().collect(),
+        };
+
         for path in selected {
-            let vars = extract_vars(raw, &path, &rule.emit.vars, &rule.name)?;
-            let key = render_template(&rule.emit.key, &vars, &rule.name, "key")?;
-            let uid = resolve_emit_uid(&rule.emit, &vars, &rule.name, &key)?;
-            let kind = Kind::parse(&rule.emit.kind);
-            let attrs = render_attrs(&rule.emit.attrs, &vars, &rule.name, "attrs")?;
-            let x = render_attrs(&rule.emit.x, &vars, &rule.name, "x")?;
-            let object = build_object(uid, kind, key, attrs, x)?;
-            objects.push(object);
+            // Extract rule-level vars first (shared by all emits).
+            let mut vars = extract_vars(raw, &path, &rule.vars, &rule.name)?;
+
+            // Compute named UIDs and add them as uids.X vars.
+            for (uid_name, uid_spec) in &rule.uids {
+                let uid = resolve_named_uid(uid_spec, &vars, &rule.name, uid_name)?;
+                vars.insert(format!("uids.{}", uid_name), JsonValue::String(uid.to_string()));
+            }
+
+            // Process each emit.
+            for emit in &emits {
+                // Merge emit-level vars with rule-level vars (emit takes precedence).
+                let mut emit_vars = vars.clone();
+                let emit_specific_vars = extract_vars(raw, &path, &emit.vars, &rule.name)?;
+                emit_vars.extend(emit_specific_vars);
+
+                let key = render_template(&emit.key, &emit_vars, &rule.name, "key")?;
+                let uid = resolve_emit_uid(emit, &emit_vars, &rule.name, &key)?;
+                let kind = Kind::parse(&emit.kind);
+                let attrs = render_attrs(&emit.attrs, &emit_vars, &rule.name, "attrs")?;
+                let x = render_attrs(&emit.x, &emit_vars, &rule.name, "x")?;
+                let object = build_object(uid, kind, key, attrs, x)?;
+                objects.push(object);
+            }
         }
     }
 
@@ -225,6 +261,19 @@ fn resolve_emit_uid(
         Some(EmitUid::V5 { v5 }) => resolve_uid_v5(v5, vars, rule, "uid"),
         Some(EmitUid::Template(template)) => resolve_uid_template(template, vars, rule),
         None => Ok(uid_v5(&emit.kind, key)),
+    }
+}
+
+fn resolve_named_uid(
+    uid_spec: &EmitUid,
+    vars: &BTreeMap<String, JsonValue>,
+    rule: &str,
+    uid_name: &str,
+) -> Result<Uid> {
+    let context = format!("uids.{}", uid_name);
+    match uid_spec {
+        EmitUid::V5 { v5 } => resolve_uid_v5(v5, vars, rule, &context),
+        EmitUid::Template(template) => resolve_uid_template(template, vars, rule),
     }
 }
 
@@ -866,5 +915,200 @@ uid:
         let vars = BTreeMap::new();
         let err = resolve_uid_template("not-a-uuid", &vars, "rule").unwrap_err();
         assert!(err.to_string().contains("uid template is not a valid uuid"));
+    }
+
+    #[test]
+    fn multi_emit_produces_multiple_objects() {
+        let raw = parse_yaml(
+            r#"
+fabrics:
+  - name: fabric1
+    site_slug: fra1
+    vrf_name: blue
+"#,
+        );
+        let retort = parse_yaml(
+            r#"
+version: 1
+rules:
+  - name: fabric
+    select: /fabrics/*
+    vars:
+      site_slug: { from: .site_slug, required: true }
+      vrf_name: { from: .vrf_name, required: true }
+    emit:
+      - kind: dcim.site
+        key: "site=${site_slug}"
+        attrs:
+          name: ${site_slug}
+          slug: ${site_slug}
+      - kind: custom.vrf
+        key: "vrf=${vrf_name}"
+        attrs:
+          name: ${vrf_name}
+"#,
+        );
+        let retort: Retort = serde_yaml::from_value(retort).unwrap();
+        let inventory = compile_retort(&raw, &retort).unwrap();
+        assert_eq!(inventory.objects.len(), 2);
+        // Objects are sorted by kind rank then key
+        assert_eq!(inventory.objects[0].kind.as_string(), "dcim.site");
+        assert_eq!(inventory.objects[1].kind.as_string(), "custom.vrf");
+    }
+
+    #[test]
+    fn multi_emit_with_named_uids() {
+        let raw = parse_yaml(
+            r#"
+fabrics:
+  - site_slug: fra1
+    vrf_name: blue
+"#,
+        );
+        let retort = parse_yaml(
+            r#"
+version: 1
+rules:
+  - name: fabric
+    select: /fabrics/*
+    vars:
+      site_slug: { from: .site_slug, required: true }
+      vrf_name: { from: .vrf_name, required: true }
+    uids:
+      site:
+        v5:
+          kind: "dcim.site"
+          stable: "site=${site_slug}"
+    emit:
+      - kind: dcim.site
+        key: "site=${site_slug}"
+        uid: ${uids.site}
+        attrs:
+          name: ${site_slug}
+          slug: ${site_slug}
+      - kind: custom.vrf
+        key: "vrf=${vrf_name}"
+        attrs:
+          name: ${vrf_name}
+          site: ${uids.site}
+"#,
+        );
+        let retort: Retort = serde_yaml::from_value(retort).unwrap();
+        let inventory = compile_retort(&raw, &retort).unwrap();
+        assert_eq!(inventory.objects.len(), 2);
+
+        let site = &inventory.objects[0];
+        let vrf = &inventory.objects[1];
+
+        // Site UID should match the named UID
+        let expected_site_uid = uid_v5("dcim.site", "site=fra1");
+        assert_eq!(site.uid, expected_site_uid);
+
+        // VRF should reference the site UID in its attrs
+        let vrf_attrs = match &vrf.attrs {
+            alembic_core::Attrs::Generic(map) => map,
+            _ => panic!("expected generic attrs"),
+        };
+        let site_ref = vrf_attrs.get("site").unwrap().as_str().unwrap();
+        assert_eq!(site_ref, expected_site_uid.to_string());
+    }
+
+    #[test]
+    fn multi_emit_is_deterministic() {
+        let raw = parse_yaml(
+            r#"
+fabrics:
+  - site_slug: fra1
+    vrf_name: blue
+  - site_slug: fra2
+    vrf_name: red
+"#,
+        );
+        let retort = parse_yaml(
+            r#"
+version: 1
+rules:
+  - name: fabric
+    select: /fabrics/*
+    vars:
+      site_slug: { from: .site_slug, required: true }
+      vrf_name: { from: .vrf_name, required: true }
+    emit:
+      - kind: dcim.site
+        key: "site=${site_slug}"
+        attrs:
+          slug: ${site_slug}
+      - kind: custom.vrf
+        key: "vrf=${vrf_name}"
+        attrs:
+          name: ${vrf_name}
+"#,
+        );
+        let retort: Retort = serde_yaml::from_value(retort).unwrap();
+        let first = compile_retort(&raw, &retort).unwrap();
+        let second = compile_retort(&raw, &retort).unwrap();
+
+        assert_eq!(first.objects.len(), 4);
+        assert_eq!(first.objects.len(), second.objects.len());
+        for (a, b) in first.objects.iter().zip(second.objects.iter()) {
+            assert_eq!(a.uid, b.uid);
+            assert_eq!(a.kind, b.kind);
+            assert_eq!(a.key, b.key);
+        }
+    }
+
+    #[test]
+    fn emit_level_vars_override_rule_level() {
+        let raw = parse_yaml(
+            r#"
+items:
+  - name: item1
+    override_name: overridden
+"#,
+        );
+        let retort = parse_yaml(
+            r#"
+version: 1
+rules:
+  - name: items
+    select: /items/*
+    vars:
+      name: { from: .name, required: true }
+    emit:
+      - kind: custom.first
+        key: "first=${name}"
+        attrs:
+          name: ${name}
+      - kind: custom.second
+        key: "second=${name}"
+        vars:
+          name: { from: .override_name, required: true }
+        attrs:
+          name: ${name}
+"#,
+        );
+        let retort: Retort = serde_yaml::from_value(retort).unwrap();
+        let inventory = compile_retort(&raw, &retort).unwrap();
+        assert_eq!(inventory.objects.len(), 2);
+
+        let first = &inventory.objects[0];
+        let second = &inventory.objects[1];
+
+        // First uses rule-level var
+        let first_attrs = match &first.attrs {
+            alembic_core::Attrs::Generic(map) => map,
+            _ => panic!("expected generic attrs"),
+        };
+        assert_eq!(first_attrs.get("name").unwrap().as_str().unwrap(), "item1");
+
+        // Second uses emit-level var (overrides rule-level)
+        let second_attrs = match &second.attrs {
+            alembic_core::Attrs::Generic(map) => map,
+            _ => panic!("expected generic attrs"),
+        };
+        assert_eq!(
+            second_attrs.get("name").unwrap().as_str().unwrap(),
+            "overridden"
+        );
     }
 }
