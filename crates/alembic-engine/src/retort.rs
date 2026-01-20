@@ -141,7 +141,10 @@ pub fn compile_retort(raw: &YamlValue, retort: &Retort) -> Result<Inventory> {
             // Compute named UIDs and add them as uids.X vars.
             for (uid_name, uid_spec) in &rule.uids {
                 let uid = resolve_named_uid(uid_spec, &vars, &rule.name, uid_name)?;
-                vars.insert(format!("uids.{}", uid_name), JsonValue::String(uid.to_string()));
+                vars.insert(
+                    format!("uids.{}", uid_name),
+                    JsonValue::String(uid.to_string()),
+                );
             }
 
             // Process each emit.
