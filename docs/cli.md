@@ -14,6 +14,18 @@ alembic validate -f examples/raw.yaml --retort examples/retort.yaml --projection
 - or compiles raw yaml with a retort before validation
 - exits non-zero on validation errors
 
+## lint
+
+```bash
+alembic lint --retort examples/retort.yaml --projection examples/projection-netbox.yaml
+alembic lint --retort examples/retort.yaml
+alembic lint --projection examples/projection-netbox.yaml
+```
+
+- checks retort template references and projection spec consistency
+- warns on x keys emitted but not projected
+- exits non-zero if errors are found
+
 ## plan
 
 ```bash

@@ -4,8 +4,8 @@ use alembic_adapter_netbox::NetBoxAdapter;
 use alembic_engine::Adapter;
 use alembic_engine::{
     apply_plan, apply_projection, build_plan_with_projection, compile_retort, is_brew_format,
-    load_brew, load_projection, load_raw_yaml, load_retort, missing_custom_fields, missing_tags,
-    plan, Plan, ProjectedInventory, ProjectionSpec, StateStore,
+    lint_specs, load_brew, load_projection, load_raw_yaml, load_retort, missing_custom_fields,
+    missing_tags, plan, Plan, ProjectedInventory, ProjectionSpec, Retort, StateStore,
 };
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
@@ -27,6 +27,12 @@ enum Command {
     Validate {
         #[arg(short = 'f', long)]
         file: PathBuf,
+        #[arg(long)]
+        retort: Option<PathBuf>,
+        #[arg(long)]
+        projection: Option<PathBuf>,
+    },
+    Lint {
         #[arg(long)]
         retort: Option<PathBuf>,
         #[arg(long)]
@@ -104,6 +110,28 @@ async fn run(cli: Cli) -> Result<()> {
             }
             alembic_engine::validate(&inventory)?;
             println!("ok");
+        }
+        Command::Lint { retort, projection } => {
+            let retort = load_retort_optional(retort.as_deref())?;
+            let projection = load_projection_optional(projection.as_deref())?;
+            if retort.is_none() && projection.is_none() {
+                return Err(anyhow!("lint requires --retort and/or --projection"));
+            }
+            let report = lint_specs(retort.as_ref(), projection.as_ref());
+            for warning in &report.warnings {
+                eprintln!("warning: {warning}");
+            }
+            for error in &report.errors {
+                eprintln!("error: {error}");
+            }
+            if !report.is_ok() {
+                return Err(anyhow!("lint failed"));
+            }
+            if report.warnings.is_empty() {
+                println!("ok");
+            } else {
+                println!("ok (with warnings)");
+            }
         }
         Command::Plan {
             file,
@@ -254,6 +282,13 @@ fn load_inventory(path: &Path, retort: Option<&Path>) -> Result<alembic_core::In
 fn load_projection_optional(path: Option<&Path>) -> Result<Option<ProjectionSpec>> {
     match path {
         Some(path) => Ok(Some(load_projection(path)?)),
+        None => Ok(None),
+    }
+}
+
+fn load_retort_optional(path: Option<&Path>) -> Result<Option<Retort>> {
+    match path {
+        Some(path) => Ok(Some(load_retort(path)?)),
         None => Ok(None),
     }
 }

@@ -32,8 +32,14 @@ struct PendingDelete {
 }
 
 enum PendingOp {
-    Update { kind: Kind, items: Vec<PendingUpdate> },
-    Delete { kind: Kind, items: Vec<PendingDelete> },
+    Update {
+        kind: Kind,
+        items: Vec<PendingUpdate>,
+    },
+    Delete {
+        kind: Kind,
+        items: Vec<PendingDelete>,
+    },
 }
 
 impl NetBoxAdapter {
@@ -101,9 +107,7 @@ impl NetBoxAdapter {
                         Attrs::Device(attrs) => attrs,
                         _ => return Err(anyhow!("expected device attrs for bulk update")),
                     };
-                    let request = self
-                        .build_device_update_request(attrs, resolved)
-                        .await?;
+                    let request = self.build_device_update_request(attrs, resolved).await?;
                     batch.push(BulkUpdate::new(item.backend_id, request));
                 }
                 self.client.dcim().devices().bulk_patch(&batch).await?;
@@ -115,16 +119,10 @@ impl NetBoxAdapter {
                         Attrs::Interface(attrs) => attrs,
                         _ => return Err(anyhow!("expected interface attrs for bulk update")),
                     };
-                    let request = self
-                        .build_interface_patch_request(attrs, resolved)
-                        .await?;
+                    let request = self.build_interface_patch_request(attrs, resolved).await?;
                     batch.push(BulkUpdate::new(item.backend_id, request));
                 }
-                self.client
-                    .dcim()
-                    .interfaces()
-                    .bulk_patch(&batch)
-                    .await?;
+                self.client.dcim().interfaces().bulk_patch(&batch).await?;
             }
             Kind::IpamPrefix => {
                 let mut batch = Vec::with_capacity(items.len());
@@ -133,9 +131,7 @@ impl NetBoxAdapter {
                         Attrs::Prefix(attrs) => attrs,
                         _ => return Err(anyhow!("expected prefix attrs for bulk update")),
                     };
-                    let request = self
-                        .build_prefix_update_request(attrs, resolved)
-                        .await?;
+                    let request = self.build_prefix_update_request(attrs, resolved).await?;
                     batch.push(BulkUpdate::new(item.backend_id, request));
                 }
                 self.client.ipam().prefixes().bulk_patch(&batch).await?;
@@ -150,11 +146,7 @@ impl NetBoxAdapter {
                     let request = self.build_ip_address_update_request(attrs)?;
                     batch.push(BulkUpdate::new(item.backend_id, request));
                 }
-                self.client
-                    .ipam()
-                    .ip_addresses()
-                    .bulk_patch(&batch)
-                    .await?;
+                self.client.ipam().ip_addresses().bulk_patch(&batch).await?;
             }
             Kind::Custom(_) => return Err(anyhow!("generic kinds are not supported")),
         }
@@ -172,7 +164,13 @@ impl NetBoxAdapter {
             Kind::DcimDevice => self.client.dcim().devices().bulk_delete(&batch).await?,
             Kind::DcimInterface => self.client.dcim().interfaces().bulk_delete(&batch).await?,
             Kind::IpamPrefix => self.client.ipam().prefixes().bulk_delete(&batch).await?,
-            Kind::IpamIpAddress => self.client.ipam().ip_addresses().bulk_delete(&batch).await?,
+            Kind::IpamIpAddress => {
+                self.client
+                    .ipam()
+                    .ip_addresses()
+                    .bulk_delete(&batch)
+                    .await?
+            }
             Kind::Custom(_) => return Err(anyhow!("generic kinds are not supported")),
         }
 
@@ -1820,7 +1818,8 @@ mod tests {
         });
         let _device_patch = server.mock(|when, then| {
             when.method(PATCH).path("/api/dcim/devices/");
-            then.status(200).json_body(json!([device_payload(2, "leaf01", 1)]));
+            then.status(200)
+                .json_body(json!([device_payload(2, "leaf01", 1)]));
         });
         let _interface_patch = server.mock(|when, then| {
             when.method(PATCH).path("/api/dcim/interfaces/");

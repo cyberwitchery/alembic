@@ -1,5 +1,6 @@
 //! engine orchestration: load, validate, plan, apply.
 
+mod lint;
 mod loader;
 mod planner;
 mod projection;
@@ -13,6 +14,7 @@ use anyhow::{anyhow, Result};
 #[cfg(test)]
 mod tests;
 
+pub use lint::{lint_specs, LintReport};
 pub use loader::load_brew;
 pub use planner::{plan, sort_ops_for_apply};
 pub use projection::{
@@ -20,7 +22,7 @@ pub use projection::{
     validate_projection_strict, BackendCapabilities, MissingCustomField, MissingTag,
     ProjectedInventory, ProjectedObject, ProjectionData, ProjectionSpec,
 };
-pub use retort::{compile_retort, is_brew_format, load_raw_yaml, load_retort};
+pub use retort::{compile_retort, is_brew_format, load_raw_yaml, load_retort, Retort};
 pub use state::StateStore;
 pub use types::{
     Adapter, AppliedOp, ApplyReport, FieldChange, ObservedObject, ObservedState, Op, Plan,
