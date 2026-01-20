@@ -23,6 +23,7 @@ const ADMIN_TEMPLATE: &str = include_str!("../templates/admin.py.tpl");
 const SERIALIZERS_TEMPLATE: &str = include_str!("../templates/serializers.py.tpl");
 const VIEWS_TEMPLATE: &str = include_str!("../templates/views.py.tpl");
 const URLS_TEMPLATE: &str = include_str!("../templates/urls.py.tpl");
+const ADMIN_SEARCH_FIELDS: &[&str] = &["key", "uid"];
 
 #[derive(Debug)]
 struct ModelSpec {
@@ -72,22 +73,14 @@ pub fn emit_django_app(
     let kinds = inventory_kinds(inventory);
     let models: Vec<ModelSpec> = kinds.iter().filter_map(model_spec).collect();
 
-    let models_content = render_models(&models);
-    fs::write(app_dir.join(GENERATED_MODELS), models_content)?;
-
-    if options.emit_admin {
-        let admin_content = render_admin(&models);
-        fs::write(app_dir.join(GENERATED_ADMIN), admin_content)?;
+    let rendered = render_files(&models, app_name, options.emit_admin);
+    fs::write(app_dir.join(GENERATED_MODELS), rendered.models)?;
+    if let Some(admin) = rendered.admin {
+        fs::write(app_dir.join(GENERATED_ADMIN), admin)?;
     }
-
-    let serializers_content = render_serializers(&models);
-    fs::write(app_dir.join(GENERATED_SERIALIZERS), serializers_content)?;
-
-    let views_content = render_views(&models);
-    fs::write(app_dir.join(GENERATED_VIEWS), views_content)?;
-
-    let urls_content = render_urls(&models, app_name);
-    fs::write(app_dir.join(GENERATED_URLS), urls_content)?;
+    fs::write(app_dir.join(GENERATED_SERIALIZERS), rendered.serializers)?;
+    fs::write(app_dir.join(GENERATED_VIEWS), rendered.views)?;
+    fs::write(app_dir.join(GENERATED_URLS), rendered.urls)?;
 
     write_user_file(
         app_dir.join(USER_MODELS),
@@ -244,201 +237,81 @@ fn model_spec(kind: &Kind) -> Option<ModelSpec> {
     }
 }
 
-fn render_models(models: &[ModelSpec]) -> String {
-    let mut rendered = String::new();
-    for model in models {
-        rendered.push_str(&format!("class {}(models.Model):\n", model.class_name));
-        rendered.push_str("    uid = models.UUIDField(primary_key=True, editable=False)\n");
-        rendered.push_str("    key = models.TextField()\n");
-        rendered.push_str("    x = models.JSONField(default=dict, blank=True)\n");
-        for field in &model.fields {
-            rendered.push_str(&format!("    {}\n", render_field(field)));
-        }
-        rendered.push('\n');
-    }
-    render_template(MODELS_TEMPLATE, &[("models", rendered)])
+struct DjangoFiles {
+    models: String,
+    admin: Option<String>,
+    serializers: String,
+    views: String,
+    urls: String,
 }
 
-fn render_admin(models: &[ModelSpec]) -> String {
-    let names: Vec<&str> = models.iter().map(|m| m.class_name).collect();
-    let model_import = if names.is_empty() {
-        String::new()
-    } else {
-        format!("from .generated_models import {}", names.join(", "))
-    };
-    let mut admins = String::new();
-    for model in models {
-        let list_display = admin_list_display(model);
-        let search_fields = admin_search_fields();
-        let list_filter = admin_list_filter(model);
+fn render_files(models: &[ModelSpec], app_name: &str, emit_admin: bool) -> DjangoFiles {
+    let model_names: Vec<&str> = models.iter().map(|m| m.class_name).collect();
+    let model_import = import_line("from .generated_models import ", &model_names);
+    let serializer_names: Vec<String> = model_names
+        .iter()
+        .map(|name| format!("{name}Serializer"))
+        .collect();
+    let serializer_import = import_line("from .generated_serializers import ", &serializer_names);
+    let view_names: Vec<String> = model_names
+        .iter()
+        .map(|name| format!("{name}ViewSet"))
+        .collect();
+    let view_import = import_line("from .generated_views import ", &view_names);
 
-        admins.push_str(&format!(
-            "@admin.register({})\nclass {}Admin(admin.ModelAdmin):\n",
-            model.class_name, model.class_name
-        ));
-        admins.push_str(&format!(
-            "    list_display = [{}]\n",
-            list_display
-                .iter()
-                .map(|field| format!("\"{field}\""))
-                .collect::<Vec<String>>()
-                .join(", ")
-        ));
-        admins.push_str(&format!(
-            "    search_fields = [{}]\n",
-            search_fields
-                .iter()
-                .map(|field| format!("\"{field}\""))
-                .collect::<Vec<String>>()
-                .join(", ")
-        ));
-        if !list_filter.is_empty() {
-            admins.push_str(&format!(
-                "    list_filter = [{}]\n",
-                list_filter
-                    .iter()
-                    .map(|field| format!("\"{field}\""))
-                    .collect::<Vec<String>>()
-                    .join(", ")
-            ));
-        }
-        admins.push('\n');
-    }
-    render_template(
-        ADMIN_TEMPLATE,
-        &[("model_import", model_import), ("admins", admins)],
-    )
-}
-
-fn render_serializers(models: &[ModelSpec]) -> String {
-    let names: Vec<&str> = models.iter().map(|m| m.class_name).collect();
-    let model_import = if names.is_empty() {
-        String::new()
+    let models_block = render_models_block(models);
+    let admins_block = if emit_admin {
+        render_admins_block(models)
     } else {
-        format!("from .generated_models import {}", names.join(", "))
+        String::new()
     };
-    let mut serializers = String::new();
-    for model in models {
-        let fields = serializer_fields(model);
-        serializers.push_str(&format!(
-            "class {}Serializer(serializers.ModelSerializer):\n",
-            model.class_name
-        ));
-        serializers.push_str("    class Meta:\n");
-        serializers.push_str(&format!("        model = {}\n", model.class_name));
-        serializers.push_str(&format!(
-            "        fields = [{}]\n\n",
-            fields
-                .iter()
-                .map(|field| format!("\"{field}\""))
-                .collect::<Vec<String>>()
-                .join(", ")
-        ));
-    }
-    render_template(
+    let serializers_block = render_serializers_block(models);
+    let views_block = render_views_block(models);
+    let routes_block = render_routes_block(models);
+
+    let models = render_template(MODELS_TEMPLATE, &[("models", models_block)]);
+    let admin = if emit_admin {
+        Some(render_template(
+            ADMIN_TEMPLATE,
+            &[
+                ("model_import", model_import.clone()),
+                ("admins", admins_block),
+            ],
+        ))
+    } else {
+        None
+    };
+    let serializers = render_template(
         SERIALIZERS_TEMPLATE,
-        &[("model_import", model_import), ("serializers", serializers)],
-    )
-}
-
-fn render_views(models: &[ModelSpec]) -> String {
-    let names: Vec<&str> = models.iter().map(|m| m.class_name).collect();
-    let model_import = if names.is_empty() {
-        String::new()
-    } else {
-        format!("from .generated_models import {}", names.join(", "))
-    };
-    let serializer_import = if names.is_empty() {
-        String::new()
-    } else {
-        format!(
-            "from .generated_serializers import {}",
-            names
-                .iter()
-                .map(|name| format!("{name}Serializer"))
-                .collect::<Vec<String>>()
-                .join(", ")
-        )
-    };
-    let mut views = String::new();
-    for model in models {
-        let filterset_fields = admin_list_display(model);
-        let search_fields = admin_search_fields_for_model(model);
-        let ordering_fields = admin_list_display(model);
-        views.push_str(&format!(
-            "class {}ViewSet(viewsets.ModelViewSet):\n",
-            model.class_name
-        ));
-        views.push_str(&format!(
-            "    queryset = {}.objects.all()\n",
-            model.class_name
-        ));
-        views.push_str(&format!(
-            "    serializer_class = {}Serializer\n",
-            model.class_name
-        ));
-        views.push_str(&format!(
-            "    filterset_fields = [{}]\n",
-            filterset_fields
-                .iter()
-                .map(|field| format!("\"{field}\""))
-                .collect::<Vec<String>>()
-                .join(", ")
-        ));
-        views.push_str(&format!(
-            "    search_fields = [{}]\n",
-            search_fields
-                .iter()
-                .map(|field| format!("\"{field}\""))
-                .collect::<Vec<String>>()
-                .join(", ")
-        ));
-        views.push_str(&format!(
-            "    ordering_fields = [{}]\n\n",
-            ordering_fields
-                .iter()
-                .map(|field| format!("\"{field}\""))
-                .collect::<Vec<String>>()
-                .join(", ")
-        ));
-    }
-    render_template(
+        &[
+            ("model_import", model_import.clone()),
+            ("serializers", serializers_block),
+        ],
+    );
+    let views = render_template(
         VIEWS_TEMPLATE,
         &[
             ("model_import", model_import),
             ("serializer_import", serializer_import),
-            ("views", views),
+            ("views", views_block),
         ],
-    )
-}
-
-fn render_urls(models: &[ModelSpec], app_name: &str) -> String {
-    let view_import = if models.is_empty() {
-        String::new()
-    } else {
-        format!(
-            "from .generated_views import {}",
-            models
-                .iter()
-                .map(|model| format!("{}ViewSet", model.class_name))
-                .collect::<Vec<String>>()
-                .join(", ")
-        )
-    };
-    let mut routes = String::new();
-    for model in models {
-        let name = model.class_name;
-        let endpoint = format!("{}s", name.to_lowercase());
-        routes.push_str(&format!("router.register(\"{endpoint}\", {name}ViewSet)\n"));
-    }
-    render_template(
+    );
+    let urls = render_template(
         URLS_TEMPLATE,
         &[
             ("view_import", view_import),
-            ("routes", routes),
+            ("routes", routes_block),
             ("app_name", app_name.to_string()),
         ],
-    )
+    );
+
+    DjangoFiles {
+        models,
+        admin,
+        serializers,
+        views,
+        urls,
+    }
 }
 
 fn render_field(field: &FieldSpec) -> String {
@@ -467,6 +340,107 @@ fn render_field(field: &FieldSpec) -> String {
     }
 }
 
+fn render_models_block(models: &[ModelSpec]) -> String {
+    models
+        .iter()
+        .map(render_model_block)
+        .collect::<Vec<String>>()
+        .join("\n")
+}
+
+fn render_model_block(model: &ModelSpec) -> String {
+    let mut fields = Vec::with_capacity(model.fields.len() + 3);
+    fields.push("uid = models.UUIDField(primary_key=True, editable=False)".to_string());
+    fields.push("key = models.TextField()".to_string());
+    fields.push("x = models.JSONField(default=dict, blank=True)".to_string());
+    for field in &model.fields {
+        fields.push(render_field(field));
+    }
+
+    format!(
+        "class {}(models.Model):\n    {}\n",
+        model.class_name,
+        fields.join("\n    ")
+    )
+}
+
+fn render_admins_block(models: &[ModelSpec]) -> String {
+    models
+        .iter()
+        .map(render_admin_block)
+        .collect::<Vec<String>>()
+        .join("\n")
+}
+
+fn render_admin_block(model: &ModelSpec) -> String {
+    let list_display = admin_list_display(model);
+    let list_filter = admin_list_filter(model);
+    let mut lines = vec![
+        format!(
+            "@admin.register({})\nclass {}Admin(admin.ModelAdmin):",
+            model.class_name, model.class_name
+        ),
+        format!("    list_display = [{}]", join_quoted(&list_display)),
+        format!("    search_fields = [{}]", join_quoted(ADMIN_SEARCH_FIELDS)),
+    ];
+    if !list_filter.is_empty() {
+        lines.push(format!("    list_filter = [{}]", join_quoted(&list_filter)));
+    }
+    lines.join("\n")
+}
+
+fn render_serializers_block(models: &[ModelSpec]) -> String {
+    models
+        .iter()
+        .map(render_serializer_block)
+        .collect::<Vec<String>>()
+        .join("\n")
+}
+
+fn render_serializer_block(model: &ModelSpec) -> String {
+    let fields = serializer_fields(model);
+    format!(
+        "class {}Serializer(serializers.ModelSerializer):\n    class Meta:\n        model = {}\n        fields = [{}]\n",
+        model.class_name,
+        model.class_name,
+        join_quoted(&fields)
+    )
+}
+
+fn render_views_block(models: &[ModelSpec]) -> String {
+    models
+        .iter()
+        .map(render_view_block)
+        .collect::<Vec<String>>()
+        .join("\n")
+}
+
+fn render_view_block(model: &ModelSpec) -> String {
+    let list_display = admin_list_display(model);
+    let search_fields = admin_search_fields_for_model(model);
+    format!(
+        "class {}ViewSet(viewsets.ModelViewSet):\n    queryset = {}.objects.all()\n    serializer_class = {}Serializer\n    filterset_fields = [{}]\n    search_fields = [{}]\n    ordering_fields = [{}]\n",
+        model.class_name,
+        model.class_name,
+        model.class_name,
+        join_quoted(&list_display),
+        join_quoted(&search_fields),
+        join_quoted(&list_display)
+    )
+}
+
+fn render_routes_block(models: &[ModelSpec]) -> String {
+    models
+        .iter()
+        .map(|model| {
+            let name = model.class_name;
+            let endpoint = format!("{}s", name.to_lowercase());
+            format!("router.register(\"{endpoint}\", {name}ViewSet)")
+        })
+        .collect::<Vec<String>>()
+        .join("\n")
+}
+
 fn field_name(field: &FieldSpec) -> &'static str {
     match field {
         FieldSpec::Text { name, .. } => name,
@@ -475,14 +449,33 @@ fn field_name(field: &FieldSpec) -> &'static str {
     }
 }
 
+fn join_quoted(fields: &[&str]) -> String {
+    fields
+        .iter()
+        .map(|field| format!("\"{field}\""))
+        .collect::<Vec<String>>()
+        .join(", ")
+}
+
+fn import_line<T: AsRef<str>>(prefix: &str, names: &[T]) -> String {
+    if names.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "{prefix}{}",
+            names
+                .iter()
+                .map(|name| name.as_ref())
+                .collect::<Vec<&str>>()
+                .join(", ")
+        )
+    }
+}
+
 fn admin_list_display(model: &ModelSpec) -> Vec<&'static str> {
     let mut fields = vec!["key", "uid"];
     fields.extend(model.fields.iter().map(field_name));
     fields
-}
-
-fn admin_search_fields() -> Vec<&'static str> {
-    vec!["key", "uid"]
 }
 
 fn admin_search_fields_for_model(model: &ModelSpec) -> Vec<&'static str> {
