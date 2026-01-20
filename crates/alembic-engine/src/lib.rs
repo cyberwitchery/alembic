@@ -4,6 +4,7 @@ mod django;
 mod extract;
 mod lint;
 mod loader;
+mod pipeline;
 mod planner;
 mod projection;
 mod retort;
@@ -20,6 +21,7 @@ pub use django::{emit_django_app, DjangoEmitOptions};
 pub use extract::{extract_inventory, ExtractReport};
 pub use lint::{lint_specs, LintReport};
 pub use loader::load_brew;
+use pipeline::{ApplyContext, LoadContext};
 pub use planner::{plan, sort_ops_for_apply};
 pub use projection::{
     apply_projection, load_projection, missing_custom_fields, missing_tags, project_default,
@@ -64,42 +66,14 @@ pub async fn build_plan_with_projection(
     projection: Option<&ProjectionSpec>,
     projection_strict: bool,
 ) -> Result<Plan> {
-    validate(inventory)?;
-    let projected = if let Some(spec) = projection {
-        apply_projection(spec, &inventory.objects)?
-    } else {
-        let objects = inventory
-            .objects
-            .iter()
-            .cloned()
-            .map(|base| ProjectedObject {
-                base,
-                projection: ProjectionData::default(),
-            })
-            .collect();
-        ProjectedInventory { objects }
-    };
-
-    let kinds: Vec<_> = projected
-        .objects
-        .iter()
-        .map(|o| o.base.kind.clone())
-        .collect();
-    let mut observed = adapter.observe(&kinds).await?;
-    let bootstrapped = bootstrap_state_from_observed(state, &projected, &observed);
-    if bootstrapped {
-        adapter.update_state(state);
-        observed = adapter.observe(&kinds).await?;
-    }
-    if projection_strict {
-        if let Some(spec) = projection {
-            validate_projection_strict(spec, &inventory.objects, &observed.capabilities)?;
-        }
-    }
-    Ok(plan(&projected, &observed, state, allow_delete))
+    let projected = LoadContext::from_ref(inventory)?
+        .project(projection)?
+        .observe(adapter, state, projection_strict, allow_delete)
+        .await?;
+    Ok(projected.plan(state))
 }
 
-fn bootstrap_state_from_observed(
+pub(crate) fn bootstrap_state_from_observed(
     state: &mut StateStore,
     desired: &ProjectedInventory,
     observed: &ObservedState,
@@ -132,25 +106,7 @@ pub async fn apply_plan(
     state: &mut StateStore,
     allow_delete: bool,
 ) -> Result<ApplyReport> {
-    if !allow_delete {
-        let has_delete = plan.ops.iter().any(|op| matches!(op, Op::Delete { .. }));
-        if has_delete {
-            return Err(anyhow!(
-                "plan contains delete operations; re-run with --allow-delete"
-            ));
-        }
-    }
-
-    let ordered = sort_ops_for_apply(&plan.ops);
-    let report = adapter.apply(&ordered).await?;
-
-    for applied in &report.applied {
-        if let Some(backend_id) = applied.backend_id {
-            state.set_backend_id(applied.kind.clone(), applied.uid, backend_id);
-        } else {
-            state.remove_backend_id(applied.kind.clone(), applied.uid);
-        }
-    }
-
-    Ok(report)
+    ApplyContext::new(plan, allow_delete)?
+        .apply(adapter, state)
+        .await
 }

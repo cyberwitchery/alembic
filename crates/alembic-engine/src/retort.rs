@@ -1,9 +1,9 @@
 //! retort mapping: compile raw yaml into canonical ir.
 
-use alembic_core::{uid_v5, Attrs, Inventory, Kind, Object, Uid};
+use alembic_core::{uid_v5, Attrs, Inventory, JsonMap, Kind, Object, Uid};
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
-use serde_json::{Map as JsonMap, Value as JsonValue};
+use serde_json::{Map as JsonObject, Value as JsonValue};
 use serde_yaml::{Mapping as YamlMapping, Value as YamlValue};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -169,15 +169,17 @@ pub fn compile_retort(raw: &YamlValue, retort: &Retort) -> Result<Inventory> {
         inventory_sort_key(&a.kind, &a.key).cmp(&inventory_sort_key(&b.kind, &b.key))
     });
 
-    Ok(Inventory { objects })
+    let inventory = Inventory { objects };
+    crate::validate(&inventory)?;
+    Ok(inventory)
 }
 
 fn build_object(
     uid: Uid,
     kind: Kind,
     key: String,
-    attrs: JsonMap<String, JsonValue>,
-    x: JsonMap<String, JsonValue>,
+    attrs: JsonObject<String, JsonValue>,
+    x: JsonObject<String, JsonValue>,
 ) -> Result<Object> {
     let attrs_value = JsonValue::Object(attrs);
     let parsed_attrs = match &kind {
@@ -209,13 +211,13 @@ fn build_object(
         kind,
         key,
         attrs: parsed_attrs,
-        x: x.into_iter().collect(),
+        x: x.into_iter().collect::<BTreeMap<_, _>>().into(),
     })
 }
 
-fn to_object_map(value: JsonValue) -> Result<BTreeMap<String, JsonValue>> {
+fn to_object_map(value: JsonValue) -> Result<JsonMap> {
     match value {
-        JsonValue::Object(map) => Ok(map.into_iter().collect()),
+        JsonValue::Object(map) => Ok(map.into_iter().collect::<BTreeMap<_, _>>().into()),
         _ => Err(anyhow!("attrs must be an object")),
     }
 }
@@ -312,8 +314,8 @@ fn render_attrs(
     vars: &BTreeMap<String, JsonValue>,
     rule: &str,
     context: &str,
-) -> Result<JsonMap<String, JsonValue>> {
-    let mut map = JsonMap::new();
+) -> Result<JsonObject<String, JsonValue>> {
+    let mut map = JsonObject::new();
     for (key, value) in attrs {
         let rendered = render_yaml_value(value, vars, rule, context, false)?;
         if let Some(value) = rendered {
@@ -353,7 +355,7 @@ fn render_yaml_value(
                 return render_uid_mapping(&spec, vars, rule, context, optional);
             }
 
-            let mut rendered = JsonMap::new();
+            let mut rendered = JsonObject::new();
             for (key, value) in map {
                 let key = key
                     .as_str()

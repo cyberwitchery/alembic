@@ -203,7 +203,7 @@ mod tests {
             uid(31),
             Kind::Custom("".to_string()),
             "custom=empty".to_string(),
-            BTreeMap::new(),
+            BTreeMap::new().into(),
         );
         let report = validate_inventory(&Inventory {
             objects: vec![object],

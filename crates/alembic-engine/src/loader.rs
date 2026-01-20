@@ -1,5 +1,6 @@
 //! brew file loading with include/import support.
 
+use crate::validate;
 use alembic_core::Inventory;
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
@@ -24,7 +25,9 @@ pub fn load_brew(path: impl AsRef<Path>) -> Result<Inventory> {
     let mut objects = Vec::new();
     let path = path.as_ref();
     load_recursive(path, &mut visited, &mut objects)?;
-    Ok(Inventory { objects })
+    let inventory = Inventory { objects };
+    validate(&inventory)?;
+    Ok(inventory)
 }
 
 /// recursive loader with cycle-safe include handling.

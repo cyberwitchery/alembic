@@ -4,11 +4,65 @@ use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fmt;
+use std::ops::{Deref, DerefMut};
 use std::str::FromStr;
 use uuid::Uuid;
 
 /// stable object identifier (uuid).
 pub type Uid = Uuid;
+
+/// json object wrapper for typed access and stricter boundaries.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct JsonMap(pub BTreeMap<String, Value>);
+
+impl JsonMap {
+    pub fn into_inner(self) -> BTreeMap<String, Value> {
+        self.0
+    }
+
+    pub fn get_str(&self, key: &str) -> Option<&str> {
+        self.get(key)?.as_str()
+    }
+
+    pub fn get_bool(&self, key: &str) -> Option<bool> {
+        self.get(key)?.as_bool()
+    }
+
+    pub fn get_i64(&self, key: &str) -> Option<i64> {
+        self.get(key)?.as_i64()
+    }
+
+    pub fn get_f64(&self, key: &str) -> Option<f64> {
+        self.get(key)?.as_f64()
+    }
+}
+
+impl Deref for JsonMap {
+    type Target = BTreeMap<String, Value>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for JsonMap {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl From<BTreeMap<String, Value>> for JsonMap {
+    fn from(map: BTreeMap<String, Value>) -> Self {
+        Self(map)
+    }
+}
+
+impl From<JsonMap> for BTreeMap<String, Value> {
+    fn from(map: JsonMap) -> Self {
+        map.0
+    }
+}
 
 pub const ALEMBIC_UID_NAMESPACE: Uuid = Uuid::from_bytes([
     0x45, 0x93, 0x1a, 0x5f, 0x6c, 0x2b, 0x49, 0x6a, 0x9b, 0x6f, 0x8f, 0x77, 0x7d, 0x4f, 0x3a, 0x1c,
@@ -203,7 +257,7 @@ pub enum Attrs {
     Interface(InterfaceAttrs),
     Prefix(PrefixAttrs),
     IpAddress(IpAddressAttrs),
-    Generic(BTreeMap<String, Value>),
+    Generic(JsonMap),
 }
 
 impl Attrs {
@@ -232,7 +286,7 @@ pub struct Object {
     /// typed attributes for this kind.
     pub attrs: Attrs,
     /// namespaced extension fields.
-    pub x: BTreeMap<String, Value>,
+    pub x: JsonMap,
 }
 
 impl Object {
@@ -246,18 +300,18 @@ impl Object {
             kind,
             key,
             attrs,
-            x: BTreeMap::new(),
+            x: JsonMap::default(),
         }
     }
 
     /// create a generic object with an explicit kind.
-    pub fn new_generic(uid: Uid, kind: Kind, key: String, attrs: BTreeMap<String, Value>) -> Self {
+    pub fn new_generic(uid: Uid, kind: Kind, key: String, attrs: JsonMap) -> Self {
         Self {
             uid,
             kind,
             key,
             attrs: Attrs::Generic(attrs),
-            x: BTreeMap::new(),
+            x: JsonMap::default(),
         }
     }
 }
@@ -317,7 +371,7 @@ impl<'de> Deserialize<'de> for Object {
             key: String,
             attrs: Value,
             #[serde(default)]
-            x: BTreeMap<String, Value>,
+            x: JsonMap,
         }
 
         let raw = RawObject::deserialize(deserializer)?;
@@ -359,12 +413,12 @@ impl<'de> Deserialize<'de> for Object {
     }
 }
 
-fn to_object_map<E>(value: Value) -> Result<BTreeMap<String, Value>, E>
+fn to_object_map<E>(value: Value) -> Result<JsonMap, E>
 where
     E: de::Error,
 {
     match value {
-        Value::Object(map) => Ok(map.into_iter().collect()),
+        Value::Object(map) => Ok(JsonMap(map.into_iter().collect())),
         _ => Err(de::Error::custom("attrs must be an object")),
     }
 }
@@ -410,7 +464,7 @@ mod tests {
             Uuid::from_u128(10),
             Kind::Custom("services.vpn".to_string()),
             "vpn=corp".to_string(),
-            attrs,
+            attrs.into(),
         );
 
         let value = serde_json::to_value(&object).unwrap();
@@ -433,7 +487,7 @@ mod tests {
                 device_type: "leaf-switch".to_string(),
                 status: None,
             }),
-            x: BTreeMap::new(),
+            x: JsonMap::default(),
         };
 
         let result = serde_json::to_value(&object);

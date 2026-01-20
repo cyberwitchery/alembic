@@ -3,7 +3,7 @@
 use crate::projection::{CustomFieldStrategy, ProjectionSpec};
 use crate::types::ObservedObject;
 use crate::Adapter;
-use alembic_core::{uid_v5, Inventory, Kind, Object};
+use alembic_core::{uid_v5, Inventory, JsonMap, Kind, Object};
 use anyhow::Result;
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -41,7 +41,7 @@ pub async fn extract_inventory(
             warnings.append(&mut object_warnings);
             x
         } else {
-            BTreeMap::new()
+            JsonMap::default()
         };
         inventory_objects.push(Object {
             uid,
@@ -63,9 +63,9 @@ pub async fn extract_inventory(
 fn invert_projection_for_object(
     spec: &ProjectionSpec,
     object: &ObservedObject,
-) -> (BTreeMap<String, Value>, Vec<String>) {
+) -> (JsonMap, Vec<String>) {
     let mut warnings = Vec::new();
-    let mut x = BTreeMap::new();
+    let mut x = JsonMap::default();
 
     let mut remaining_fields = object.projection.custom_fields.clone().unwrap_or_default();
     let mut tags = object.projection.tags.clone();
@@ -165,7 +165,7 @@ fn rule_matches(on_kind: &str, kind: &Kind) -> bool {
 
 #[allow(clippy::too_many_arguments)]
 fn invert_custom_fields(
-    x: &mut BTreeMap<String, Value>,
+    x: &mut JsonMap,
     remaining: &mut BTreeMap<String, Value>,
     strategy: &CustomFieldStrategy,
     prefix: Option<&String>,
@@ -250,7 +250,7 @@ fn invert_custom_fields(
 
 #[allow(clippy::too_many_arguments)]
 fn invert_local_context(
-    x: &mut BTreeMap<String, Value>,
+    x: &mut JsonMap,
     remaining: &mut BTreeMap<String, Value>,
     strategy: &CustomFieldStrategy,
     prefix: Option<&String>,
@@ -324,7 +324,7 @@ fn extract_root_fields(value: &Value, root: &str) -> Option<BTreeMap<String, Val
 }
 
 fn insert_x_value(
-    x: &mut BTreeMap<String, Value>,
+    x: &mut JsonMap,
     key: &str,
     value: Value,
     rule: &str,

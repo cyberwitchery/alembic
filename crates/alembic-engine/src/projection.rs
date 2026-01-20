@@ -1,6 +1,6 @@
 //! projection spec handling and application.
 
-use alembic_core::{Kind, Object};
+use alembic_core::{JsonMap, Kind, Object};
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -582,7 +582,7 @@ pub fn missing_tags(
 }
 
 fn select_x_entries(
-    x: &BTreeMap<String, Value>,
+    x: &JsonMap,
     from: &FromX,
     rule: &str,
     kind: &Kind,
@@ -596,7 +596,7 @@ fn select_x_entries(
         ));
     }
     if let Some(prefix) = &from.prefix {
-        for (key, value) in x {
+        for (key, value) in x.iter() {
             if key.starts_with(prefix) {
                 entries.insert(key.clone(), value.clone());
             }
@@ -737,7 +737,7 @@ mod tests {
                 status: None,
                 description: None,
             }),
-            x,
+            x: x.into(),
         }
     }
 
@@ -753,7 +753,7 @@ mod tests {
                 device_type: "leaf-switch".to_string(),
                 status: None,
             }),
-            x,
+            x: x.into(),
         }
     }
 

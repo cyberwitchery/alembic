@@ -372,7 +372,7 @@ fn detects_generic_payload_diff() {
             uid,
             Kind::Custom("services.vpn".to_string()),
             "vpn=corp".to_string(),
-            to,
+            to.into(),
         )],
     };
 
@@ -380,7 +380,7 @@ fn detects_generic_payload_diff() {
     observed.insert(ObservedObject {
         kind: Kind::Custom("services.vpn".to_string()),
         key: "vpn=corp".to_string(),
-        attrs: Attrs::Generic(from),
+        attrs: Attrs::Generic(from.into()),
         projection: crate::ProjectionData::default(),
         backend_id: Some(10),
     });
