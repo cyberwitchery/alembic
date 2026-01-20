@@ -1,0 +1,40 @@
+objects:
+  - uid: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    kind: dcim.site
+    key: "site=ams1"
+    attrs:
+      name: "AMS1"
+      slug: "ams1"
+
+  - uid: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+    kind: dcim.device
+    key: "site=ams1/device=spine01"
+    attrs:
+      name: "spine01"
+      site: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+      role: "spine"
+      device_type: "spine-switch"
+
+  - uid: "cccccccc-cccc-cccc-cccc-cccccccccccc"
+    kind: dcim.interface
+    key: "device=spine01/interface=eth0"
+    attrs:
+      name: "eth0"
+      device: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+      enabled: true
+
+  - uid: "dddddddd-dddd-dddd-dddd-dddddddddddd"
+    kind: ipam.prefix
+    key: "prefix=192.0.2.0/24"
+    attrs:
+      prefix: "192.0.2.0/24"
+      site: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+      description: "ams1 spine subnet"
+
+  - uid: "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"
+    kind: ipam.ip_address
+    key: "ip=192.0.2.10/24"
+    attrs:
+      address: "192.0.2.10/24"
+      assigned_interface: "cccccccc-cccc-cccc-cccc-cccccccccccc"
+      description: "spine01 eth0"

@@ -1,0 +1,37 @@
+objects:
+  - uid: "11111111-1111-1111-1111-111111111111"
+    kind: dcim.site
+    key: "site=fra1"
+    attrs:
+      name: "FRA1"
+      slug: "fra1"
+
+  - uid: "22222222-2222-2222-2222-222222222222"
+    kind: dcim.device
+    key: "site=fra1/device=leaf01"
+    attrs:
+      name: "leaf01"
+      site: "11111111-1111-1111-1111-111111111111"
+      role: "leaf"
+      device_type: "leaf-switch"
+
+  - uid: "33333333-3333-3333-3333-333333333333"
+    kind: dcim.interface
+    key: "device=leaf01/interface=eth0"
+    attrs:
+      name: "eth0"
+      device: "22222222-2222-2222-2222-222222222222"
+
+  - uid: "44444444-4444-4444-4444-444444444444"
+    kind: ipam.prefix
+    key: "prefix=10.0.0.0/24"
+    attrs:
+      prefix: "10.0.0.0/24"
+      site: "11111111-1111-1111-1111-111111111111"
+
+  - uid: "55555555-5555-5555-5555-555555555555"
+    kind: ipam.ip_address
+    key: "ip=10.0.0.10/24"
+    attrs:
+      address: "10.0.0.10/24"
+      assigned_interface: "33333333-3333-3333-3333-333333333333"

@@ -42,6 +42,41 @@ jobs:
           cargo install cargo-audit --locked
           cargo audit
 
+  tests:
+    name: tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Django deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install django djangorestframework
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            alembic
+          shared-key: alembic-ci
+
+      - name: Test
+        env:
+          ALEMBIC_CAST_PYTHON: python
+        run: |
+          if [ -f alembic/Cargo.toml ]; then cd alembic; fi
+          cargo test --workspace
+
   coverage:
     name: coverage
     runs-on: ubuntu-latest
