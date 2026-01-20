@@ -9,7 +9,7 @@ use alembic_engine::{
 };
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
-use netbox::{Client, ClientConfig, QueryBuilder};
+use netbox::{BulkDelete, BulkUpdate, Client, ClientConfig, QueryBuilder};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -20,7 +20,165 @@ pub struct NetBoxAdapter {
     state: std::sync::Mutex<StateStore>,
 }
 
+struct PendingUpdate {
+    uid: Uid,
+    backend_id: u64,
+    desired: ProjectedObject,
+}
+
+struct PendingDelete {
+    uid: Uid,
+    backend_id: u64,
+}
+
+enum PendingOp {
+    Update { kind: Kind, items: Vec<PendingUpdate> },
+    Delete { kind: Kind, items: Vec<PendingDelete> },
+}
+
 impl NetBoxAdapter {
+    async fn flush_pending(
+        &self,
+        pending: &mut Option<PendingOp>,
+        resolved: &BTreeMap<Uid, u64>,
+        applied: &mut Vec<AppliedOp>,
+    ) -> Result<()> {
+        let Some(batch) = pending.take() else {
+            return Ok(());
+        };
+
+        match batch {
+            PendingOp::Update { kind, items } => {
+                self.bulk_update_objects(&kind, &items, resolved).await?;
+                for item in items {
+                    self.apply_projection_patch(&kind, item.backend_id, &item.desired.projection)
+                        .await?;
+                    applied.push(AppliedOp {
+                        uid: item.uid,
+                        kind: kind.clone(),
+                        backend_id: Some(item.backend_id),
+                    });
+                }
+            }
+            PendingOp::Delete { kind, items } => {
+                self.bulk_delete_objects(&kind, &items).await?;
+                for item in items {
+                    applied.push(AppliedOp {
+                        uid: item.uid,
+                        kind: kind.clone(),
+                        backend_id: None,
+                    });
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn bulk_update_objects(
+        &self,
+        kind: &Kind,
+        items: &[PendingUpdate],
+        resolved: &BTreeMap<Uid, u64>,
+    ) -> Result<()> {
+        match kind {
+            Kind::DcimSite => {
+                let mut batch = Vec::with_capacity(items.len());
+                for item in items {
+                    let attrs = match &item.desired.base.attrs {
+                        Attrs::Site(attrs) => attrs,
+                        _ => return Err(anyhow!("expected site attrs for bulk update")),
+                    };
+                    let request = self.build_site_patch_request(attrs)?;
+                    batch.push(BulkUpdate::new(item.backend_id, request));
+                }
+                self.client.dcim().sites().bulk_patch(&batch).await?;
+            }
+            Kind::DcimDevice => {
+                let mut batch = Vec::with_capacity(items.len());
+                for item in items {
+                    let attrs = match &item.desired.base.attrs {
+                        Attrs::Device(attrs) => attrs,
+                        _ => return Err(anyhow!("expected device attrs for bulk update")),
+                    };
+                    let request = self
+                        .build_device_update_request(attrs, resolved)
+                        .await?;
+                    batch.push(BulkUpdate::new(item.backend_id, request));
+                }
+                self.client.dcim().devices().bulk_patch(&batch).await?;
+            }
+            Kind::DcimInterface => {
+                let mut batch = Vec::with_capacity(items.len());
+                for item in items {
+                    let attrs = match &item.desired.base.attrs {
+                        Attrs::Interface(attrs) => attrs,
+                        _ => return Err(anyhow!("expected interface attrs for bulk update")),
+                    };
+                    let request = self
+                        .build_interface_patch_request(attrs, resolved)
+                        .await?;
+                    batch.push(BulkUpdate::new(item.backend_id, request));
+                }
+                self.client
+                    .dcim()
+                    .interfaces()
+                    .bulk_patch(&batch)
+                    .await?;
+            }
+            Kind::IpamPrefix => {
+                let mut batch = Vec::with_capacity(items.len());
+                for item in items {
+                    let attrs = match &item.desired.base.attrs {
+                        Attrs::Prefix(attrs) => attrs,
+                        _ => return Err(anyhow!("expected prefix attrs for bulk update")),
+                    };
+                    let request = self
+                        .build_prefix_update_request(attrs, resolved)
+                        .await?;
+                    batch.push(BulkUpdate::new(item.backend_id, request));
+                }
+                self.client.ipam().prefixes().bulk_patch(&batch).await?;
+            }
+            Kind::IpamIpAddress => {
+                let mut batch = Vec::with_capacity(items.len());
+                for item in items {
+                    let attrs = match &item.desired.base.attrs {
+                        Attrs::IpAddress(attrs) => attrs,
+                        _ => return Err(anyhow!("expected ip address attrs for bulk update")),
+                    };
+                    let request = self.build_ip_address_update_request(attrs)?;
+                    batch.push(BulkUpdate::new(item.backend_id, request));
+                }
+                self.client
+                    .ipam()
+                    .ip_addresses()
+                    .bulk_patch(&batch)
+                    .await?;
+            }
+            Kind::Custom(_) => return Err(anyhow!("generic kinds are not supported")),
+        }
+
+        Ok(())
+    }
+
+    async fn bulk_delete_objects(&self, kind: &Kind, items: &[PendingDelete]) -> Result<()> {
+        let batch: Vec<BulkDelete> = items
+            .iter()
+            .map(|item| BulkDelete::new(item.backend_id))
+            .collect();
+        match kind {
+            Kind::DcimSite => self.client.dcim().sites().bulk_delete(&batch).await?,
+            Kind::DcimDevice => self.client.dcim().devices().bulk_delete(&batch).await?,
+            Kind::DcimInterface => self.client.dcim().interfaces().bulk_delete(&batch).await?,
+            Kind::IpamPrefix => self.client.ipam().prefixes().bulk_delete(&batch).await?,
+            Kind::IpamIpAddress => self.client.ipam().ip_addresses().bulk_delete(&batch).await?,
+            Kind::Custom(_) => return Err(anyhow!("generic kinds are not supported")),
+        }
+
+        Ok(())
+    }
+
     /// create a new adapter with url, token, and state store.
     pub fn new(url: &str, token: &str, state: StateStore) -> Result<Self> {
         let config = ClientConfig::new(url, token);
@@ -335,6 +493,7 @@ impl Adapter for NetBoxAdapter {
     async fn apply(&self, ops: &[Op]) -> Result<ApplyReport> {
         let mut applied = Vec::new();
         let mut resolved = BTreeMap::new();
+        let mut pending: Option<PendingOp> = None;
 
         let mappings = {
             let state_guard = self.state.lock().unwrap();
@@ -374,6 +533,8 @@ impl Adapter for NetBoxAdapter {
             }
             match op {
                 Op::Create { uid, kind, desired } => {
+                    self.flush_pending(&mut pending, &resolved, &mut applied)
+                        .await?;
                     let backend_id = self
                         .create_object(kind.clone(), desired, &mut resolved)
                         .await?;
@@ -400,13 +561,30 @@ impl Adapter for NetBoxAdapter {
                             &resolved,
                         )
                         .await?;
-                    self.update_object(kind.clone(), id, desired, &resolved)
-                        .await?;
-                    applied.push(AppliedOp {
-                        uid: *uid,
-                        kind: kind.clone(),
-                        backend_id: Some(id),
-                    });
+                    match &mut pending {
+                        Some(PendingOp::Update {
+                            kind: pending_kind,
+                            items,
+                        }) if pending_kind == kind => {
+                            items.push(PendingUpdate {
+                                uid: *uid,
+                                backend_id: id,
+                                desired: desired.clone(),
+                            });
+                        }
+                        _ => {
+                            self.flush_pending(&mut pending, &resolved, &mut applied)
+                                .await?;
+                            pending = Some(PendingOp::Update {
+                                kind: kind.clone(),
+                                items: vec![PendingUpdate {
+                                    uid: *uid,
+                                    backend_id: id,
+                                    desired: desired.clone(),
+                                }],
+                            });
+                        }
+                    }
                 }
                 Op::Delete {
                     uid,
@@ -421,15 +599,34 @@ impl Adapter for NetBoxAdapter {
                     } else {
                         return Err(anyhow!("missing backend id for delete: {}", key));
                     };
-                    self.delete_object(kind.clone(), id).await?;
-                    applied.push(AppliedOp {
-                        uid: *uid,
-                        kind: kind.clone(),
-                        backend_id: None,
-                    });
+                    match &mut pending {
+                        Some(PendingOp::Delete {
+                            kind: pending_kind,
+                            items,
+                        }) if pending_kind == kind => {
+                            items.push(PendingDelete {
+                                uid: *uid,
+                                backend_id: id,
+                            });
+                        }
+                        _ => {
+                            self.flush_pending(&mut pending, &resolved, &mut applied)
+                                .await?;
+                            pending = Some(PendingOp::Delete {
+                                kind: kind.clone(),
+                                items: vec![PendingDelete {
+                                    uid: *uid,
+                                    backend_id: id,
+                                }],
+                            });
+                        }
+                    }
                 }
             }
         }
+
+        self.flush_pending(&mut pending, &resolved, &mut applied)
+            .await?;
 
         Ok(ApplyReport { applied })
     }
@@ -460,51 +657,6 @@ impl NetBoxAdapter {
         self.apply_projection_patch(&kind, backend_id, &desired.projection)
             .await?;
         Ok(backend_id)
-    }
-
-    /// update a backend object to match the desired ir.
-    async fn update_object(
-        &self,
-        kind: Kind,
-        backend_id: u64,
-        desired: &ProjectedObject,
-        resolved: &BTreeMap<Uid, u64>,
-    ) -> Result<()> {
-        match &desired.base.attrs {
-            Attrs::Site(attrs) => self.update_site(backend_id, attrs).await,
-            Attrs::Device(attrs) => self.update_device(backend_id, attrs, resolved).await,
-            Attrs::Interface(attrs) => self.update_interface(backend_id, attrs, resolved).await,
-            Attrs::Prefix(attrs) => self.update_prefix(backend_id, attrs, resolved).await,
-            Attrs::IpAddress(attrs) => self.update_ip_address(backend_id, attrs, resolved).await,
-            Attrs::Generic(_) => return Err(anyhow!("generic attrs are not supported")),
-        }
-        .with_context(|| format!("update {}", kind))?;
-        self.apply_projection_patch(&kind, backend_id, &desired.projection)
-            .await?;
-        Ok(())
-    }
-
-    /// delete a backend object by id.
-    async fn delete_object(&self, kind: Kind, backend_id: u64) -> Result<()> {
-        match kind {
-            Kind::DcimSite => {
-                self.client.dcim().sites().delete(backend_id).await?;
-            }
-            Kind::DcimDevice => {
-                self.client.dcim().devices().delete(backend_id).await?;
-            }
-            Kind::DcimInterface => {
-                self.client.dcim().interfaces().delete(backend_id).await?;
-            }
-            Kind::IpamPrefix => {
-                self.client.ipam().prefixes().delete(backend_id).await?;
-            }
-            Kind::IpamIpAddress => {
-                self.client.ipam().ip_addresses().delete(backend_id).await?;
-            }
-            Kind::Custom(_) => return Err(anyhow!("generic kinds are not supported")),
-        }
-        Ok(())
     }
 
     /// resolve a backend id via state mapping or key-based lookup.
@@ -548,8 +700,10 @@ impl NetBoxAdapter {
             .ok_or_else(|| anyhow!("site create returned no id"))
     }
 
-    /// update a site by backend id.
-    async fn update_site(&self, backend_id: u64, attrs: &SiteAttrs) -> Result<()> {
+    fn build_site_patch_request(
+        &self,
+        attrs: &SiteAttrs,
+    ) -> Result<netbox::models::PatchedWritableSiteRequest> {
         let mut request = netbox::models::PatchedWritableSiteRequest::new();
         request.name = Some(attrs.name.clone());
         request.slug = Some(attrs.slug.clone());
@@ -557,12 +711,7 @@ impl NetBoxAdapter {
             request.status = Some(patched_site_status_from_str(status)?);
         }
         request.description = attrs.description.clone();
-        self.client
-            .dcim()
-            .sites()
-            .patch(backend_id, &request)
-            .await?;
-        Ok(())
+        Ok(request)
     }
 
     /// create a device and return its backend id.
@@ -593,18 +742,16 @@ impl NetBoxAdapter {
             .ok_or_else(|| anyhow!("device create returned no id"))
     }
 
-    /// update a device by backend id.
-    async fn update_device(
+    async fn build_device_update_request(
         &self,
-        backend_id: u64,
         attrs: &DeviceAttrs,
         resolved: &BTreeMap<Uid, u64>,
-    ) -> Result<()> {
+    ) -> Result<netbox::dcim::UpdateDeviceRequest> {
         let site_id = self.resolve_site_id(attrs.site, resolved).await?;
         let role_id = self.lookup_device_role_id(&attrs.role).await?;
         let device_type_id = self.lookup_device_type_id(&attrs.device_type).await?;
 
-        let request = netbox::dcim::UpdateDeviceRequest {
+        Ok(netbox::dcim::UpdateDeviceRequest {
             name: Some(attrs.name.clone()),
             device_type: Some(device_type_id as i32),
             role: Some(role_id as i32),
@@ -612,14 +759,7 @@ impl NetBoxAdapter {
             status: attrs.status.clone(),
             serial: None,
             asset_tag: None,
-        };
-
-        self.client
-            .dcim()
-            .devices()
-            .patch(backend_id, &request)
-            .await?;
-        Ok(())
+        })
     }
 
     /// create an interface and return its backend id.
@@ -651,13 +791,11 @@ impl NetBoxAdapter {
             .ok_or_else(|| anyhow!("interface create returned no id"))
     }
 
-    /// update an interface by backend id.
-    async fn update_interface(
+    async fn build_interface_patch_request(
         &self,
-        backend_id: u64,
         attrs: &InterfaceAttrs,
         resolved: &BTreeMap<Uid, u64>,
-    ) -> Result<()> {
+    ) -> Result<netbox::models::PatchedWritableInterfaceRequest> {
         let interface_type = patched_interface_type_from_str(attrs.if_type.as_deref())?;
         let mut request = netbox::models::PatchedWritableInterfaceRequest::new();
         request.name = Some(attrs.name.clone());
@@ -671,12 +809,7 @@ impl NetBoxAdapter {
             request.device = Some(Box::new(device_ref));
         }
 
-        self.client
-            .dcim()
-            .interfaces()
-            .patch(backend_id, &request)
-            .await?;
-        Ok(())
+        Ok(request)
     }
 
     /// create a prefix and return its backend id.
@@ -710,31 +843,22 @@ impl NetBoxAdapter {
             .ok_or_else(|| anyhow!("prefix create returned no id"))
     }
 
-    /// update a prefix by backend id.
-    async fn update_prefix(
+    async fn build_prefix_update_request(
         &self,
-        backend_id: u64,
         attrs: &PrefixAttrs,
         resolved: &BTreeMap<Uid, u64>,
-    ) -> Result<()> {
+    ) -> Result<netbox::ipam::UpdatePrefixRequest> {
         let site_id = match attrs.site {
             Some(site_uid) => Some(self.resolve_site_id(site_uid, resolved).await?),
             None => None,
         };
 
-        let request = netbox::ipam::UpdatePrefixRequest {
+        Ok(netbox::ipam::UpdatePrefixRequest {
             prefix: Some(attrs.prefix.clone()),
             site: site_id.map(|id| id as i32),
             status: None,
             description: attrs.description.clone(),
-        };
-
-        self.client
-            .ipam()
-            .prefixes()
-            .patch(backend_id, &request)
-            .await?;
-        Ok(())
+        })
     }
 
     /// create an ip address and return its backend id.
@@ -770,26 +894,16 @@ impl NetBoxAdapter {
             .ok_or_else(|| anyhow!("ip address create returned no id"))
     }
 
-    /// update an ip address by backend id.
-    async fn update_ip_address(
+    fn build_ip_address_update_request(
         &self,
-        backend_id: u64,
         attrs: &IpAddressAttrs,
-        _resolved: &BTreeMap<Uid, u64>,
-    ) -> Result<()> {
-        let request = netbox::ipam::UpdateIpAddressRequest {
+    ) -> Result<netbox::ipam::UpdateIpAddressRequest> {
+        Ok(netbox::ipam::UpdateIpAddressRequest {
             address: Some(attrs.address.clone()),
             status: None,
             dns_name: None,
             description: attrs.description.clone(),
-        };
-
-        self.client
-            .ipam()
-            .ip_addresses()
-            .patch(backend_id, &request)
-            .await?;
-        Ok(())
+        })
     }
 
     /// resolve site id from state mapping.
@@ -1701,27 +1815,27 @@ mod tests {
             then.status(200).json_body(device_payload(2, "leaf01", 1));
         });
         let _site_patch = server.mock(|when, then| {
-            when.method(PATCH).path("/api/dcim/sites/1/");
-            then.status(200).json_body(site_payload(1));
+            when.method(PATCH).path("/api/dcim/sites/");
+            then.status(200).json_body(json!([site_payload(1)]));
         });
         let _device_patch = server.mock(|when, then| {
-            when.method(PATCH).path("/api/dcim/devices/2/");
-            then.status(200).json_body(device_payload(2, "leaf01", 1));
+            when.method(PATCH).path("/api/dcim/devices/");
+            then.status(200).json_body(json!([device_payload(2, "leaf01", 1)]));
         });
         let _interface_patch = server.mock(|when, then| {
-            when.method(PATCH).path("/api/dcim/interfaces/3/");
-            then.status(200).json_body(interface_payload(3, 2));
+            when.method(PATCH).path("/api/dcim/interfaces/");
+            then.status(200).json_body(json!([interface_payload(3, 2)]));
         });
         let _prefix_patch = server.mock(|when, then| {
-            when.method(PATCH).path("/api/ipam/prefixes/4/");
-            then.status(200).json_body(prefix_payload(4));
+            when.method(PATCH).path("/api/ipam/prefixes/");
+            then.status(200).json_body(json!([prefix_payload(4)]));
         });
         let _ip_patch = server.mock(|when, then| {
-            when.method(PATCH).path("/api/ipam/ip-addresses/5/");
-            then.status(200).json_body(ip_payload(5, 3));
+            when.method(PATCH).path("/api/ipam/ip-addresses/");
+            then.status(200).json_body(json!([ip_payload(5, 3)]));
         });
         let _ip_delete = server.mock(|when, then| {
-            when.method(DELETE).path("/api/ipam/ip-addresses/5/");
+            when.method(DELETE).path("/api/ipam/ip-addresses/");
             then.status(204);
         });
 

@@ -1,0 +1,44 @@
+# Example: multi-emit retort rules
+#
+# This demonstrates emitting multiple objects from a single yaml element,
+# such as creating a site, vrf, and route targets from one fabric definition.
+
+version: 1
+rules:
+  # Single fabric definition emits site + vrf + route targets
+  - name: fabric
+    select: /fabrics/*
+    vars:
+      name: { from: .name, required: true }
+      site_slug: { from: .site, required: true }
+      vrf_name: { from: .vrf, required: true }
+      rt_import: { from: .route_targets/import, required: true }
+      rt_export: { from: .route_targets/export, required: true }
+    uids:
+      site:
+        v5:
+          kind: "dcim.site"
+          stable: "site=${site_slug}"
+      vrf:
+        v5:
+          kind: "ipam.vrf"
+          stable: "vrf=${vrf_name}"
+    emit:
+      - kind: dcim.site
+        key: "site=${site_slug}"
+        uid: ${uids.site}
+        attrs:
+          name: ${name}
+          slug: ${site_slug}
+
+      - kind: ipam.vrf
+        key: "vrf=${vrf_name}"
+        uid: ${uids.vrf}
+        attrs:
+          name: ${vrf_name}
+          rd: ${rt_export}
+        x:
+          route_targets:
+            import: ${rt_import}
+            export: ${rt_export}
+          site: ${uids.site}

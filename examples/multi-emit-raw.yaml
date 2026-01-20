@@ -1,0 +1,18 @@
+# Example raw input for multi-emit retort
+#
+# Use with: alembic distill -f multi-emit-raw.yaml --retort multi-emit.yaml
+
+fabrics:
+  - name: Frankfurt DC1
+    site: fra1
+    vrf: fra1-prod
+    route_targets:
+      import: "65000:100"
+      export: "65000:100"
+
+  - name: Amsterdam DC1
+    site: ams1
+    vrf: ams1-prod
+    route_targets:
+      import: "65000:200"
+      export: "65000:200"
