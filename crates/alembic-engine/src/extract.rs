@@ -163,6 +163,7 @@ fn rule_matches(on_kind: &str, kind: &Kind) -> bool {
     on_kind == "*" || on_kind == kind.as_string()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn invert_custom_fields(
     x: &mut BTreeMap<String, Value>,
     remaining: &mut BTreeMap<String, Value>,
@@ -247,6 +248,7 @@ fn invert_custom_fields(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn invert_local_context(
     x: &mut BTreeMap<String, Value>,
     remaining: &mut BTreeMap<String, Value>,
