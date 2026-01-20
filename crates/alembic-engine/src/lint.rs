@@ -471,4 +471,120 @@ rules:
         lint_template_value(&value, &allowed, &mut report, "mapping");
         assert_eq!(report.errors.len(), 1);
     }
+
+    #[test]
+    fn lint_reports_projection_version_and_backend_errors() {
+        let projection = parse_projection(
+            r#"
+version: 2
+backend: ""
+rules:
+  - name: model
+    on_kind: dcim.site
+    from_x:
+      key: model.serial
+    to:
+      custom_fields:
+        strategy: direct
+"#,
+        );
+
+        let report = lint_specs(None, Some(&projection));
+        assert!(report
+            .errors
+            .iter()
+            .any(|msg| msg.contains("projection version")));
+        assert!(report
+            .errors
+            .iter()
+            .any(|msg| msg.contains("projection backend")));
+    }
+
+    #[test]
+    fn lint_reports_projection_selector_errors() {
+        let projection = parse_projection(
+            r#"
+version: 1
+backend: netbox
+rules:
+  - name: model
+    on_kind: dcim.site
+    from_x:
+      key: model.serial
+      prefix: model.
+    to:
+      custom_fields:
+        strategy: direct
+"#,
+        );
+
+        let report = lint_specs(None, Some(&projection));
+        assert!(report
+            .errors
+            .iter()
+            .any(|msg| msg.contains("from_x must include exactly one")));
+    }
+
+    #[test]
+    fn lint_reports_projection_unknown_transform() {
+        let projection = parse_projection(
+            r#"
+version: 1
+backend: netbox
+rules:
+  - name: model
+    on_kind: dcim.site
+    from_x:
+      key: model.serial
+      transform:
+        - unknown
+    to:
+      custom_fields:
+        strategy: direct
+"#,
+        );
+
+        let report = lint_specs(None, Some(&projection));
+        assert!(report
+            .errors
+            .iter()
+            .any(|msg| msg.contains("unknown transform")));
+    }
+
+    #[test]
+    fn lint_reports_projection_local_context_kind() {
+        let projection = parse_projection(
+            r#"
+version: 1
+backend: netbox
+rules:
+  - name: local
+    on_kind: dcim.site
+    from_x:
+      key: context.role
+    to:
+      local_context:
+        root: system
+        strategy: direct
+"#,
+        );
+
+        let report = lint_specs(None, Some(&projection));
+        assert!(report
+            .errors
+            .iter()
+            .any(|msg| msg.contains("local_context only supported")));
+    }
+
+    #[test]
+    fn lint_reports_template_parse_errors() {
+        assert_eq!(
+            extract_template_vars("name=${").unwrap_err(),
+            "unterminated template"
+        );
+        assert_eq!(
+            extract_template_vars("name=${}").unwrap_err(),
+            "empty template var"
+        );
+    }
 }

@@ -1,5 +1,6 @@
 //! engine orchestration: load, validate, plan, apply.
 
+mod extract;
 mod lint;
 mod loader;
 mod planner;
@@ -14,6 +15,7 @@ use anyhow::{anyhow, Result};
 #[cfg(test)]
 mod tests;
 
+pub use extract::{extract_inventory, ExtractReport};
 pub use lint::{lint_specs, LintReport};
 pub use loader::load_brew;
 pub use planner::{plan, sort_ops_for_apply};

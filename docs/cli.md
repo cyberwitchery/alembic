@@ -81,6 +81,19 @@ alembic project -f examples/raw.yaml --retort examples/retort.yaml \
 
 - outputs ir + projected backend fields for debugging
 
+## extract
+
+```bash
+alembic extract -o inventory.yaml \
+  --netbox-url https://netbox.example.com \
+  --netbox-token $NETBOX_TOKEN \
+  --projection examples/projection-netbox.yaml
+```
+
+- observes backend state and emits a canonical inventory
+- `--projection` inverts projection into `x` keys where possible
+- `--retort` is accepted but not inverted yet (warning emitted)
+
 ## environment variables
 
 - `NETBOX_URL`

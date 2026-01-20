@@ -5,7 +5,8 @@ use alembic_engine::Adapter;
 use alembic_engine::{
     apply_plan, apply_projection, build_plan_with_projection, compile_retort, is_brew_format,
     lint_specs, load_brew, load_projection, load_raw_yaml, load_retort, missing_custom_fields,
-    missing_tags, plan, Plan, ProjectedInventory, ProjectionSpec, Retort, StateStore,
+    missing_tags, plan, ExtractReport, Plan, ProjectedInventory, ProjectionSpec, Retort,
+    StateStore,
 };
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
@@ -87,6 +88,18 @@ enum Command {
         projection: PathBuf,
         #[arg(short = 'o', long)]
         output: PathBuf,
+    },
+    Extract {
+        #[arg(short = 'o', long)]
+        output: PathBuf,
+        #[arg(long)]
+        retort: Option<PathBuf>,
+        #[arg(long)]
+        projection: Option<PathBuf>,
+        #[arg(long)]
+        netbox_url: Option<String>,
+        #[arg(long)]
+        netbox_token: Option<String>,
     },
 }
 
@@ -214,6 +227,30 @@ async fn run(cli: Cli) -> Result<()> {
             let projected = apply_projection(&projection, &inventory.objects)?;
             write_projected(&output, &projected)?;
             println!("projected ir written to {}", output.display());
+        }
+        Command::Extract {
+            output,
+            retort,
+            projection,
+            netbox_url,
+            netbox_token,
+        } => {
+            if let Some(retort_path) = retort.as_deref() {
+                let _ = load_retort(retort_path)?;
+                eprintln!("warning: retort inversion is not implemented; ignoring --retort");
+            }
+            let projection = load_projection_optional(projection.as_deref())?;
+            let (url, token) = netbox_credentials(netbox_url, netbox_token)?;
+            let adapter = NetBoxAdapter::new(&url, &token, load_state()?)?;
+            let ExtractReport {
+                inventory,
+                warnings,
+            } = alembic_engine::extract_inventory(&adapter, projection.as_ref()).await?;
+            for warning in warnings {
+                eprintln!("warning: {warning}");
+            }
+            write_inventory(&output, &inventory)?;
+            println!("inventory written to {}", output.display());
         }
     }
 
@@ -790,6 +827,28 @@ objects:
                 netbox_url: None,
                 netbox_token: None,
                 allow_delete: false,
+            },
+        };
+        let err = run(cli).await.unwrap_err();
+        assert!(err.to_string().contains("missing --netbox-url"));
+        std::env::set_current_dir(cwd).unwrap();
+    }
+
+    #[tokio::test]
+    async fn run_extract_missing_credentials_errors() {
+        let _guard = cwd_lock().lock().await;
+        let dir = tempdir().unwrap();
+        let out = dir.path().join("inventory.yaml");
+        let cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+
+        let cli = Cli {
+            command: Command::Extract {
+                output: out,
+                retort: None,
+                projection: None,
+                netbox_url: None,
+                netbox_token: None,
             },
         };
         let err = run(cli).await.unwrap_err();
