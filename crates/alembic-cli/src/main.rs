@@ -289,16 +289,16 @@ async fn run(cli: Cli) -> Result<()> {
                 no_admin,
             } => {
                 let runner = CommandRunner::new();
-                run_cast_django(
-                    &runner,
-                    &file,
-                    &output,
-                    project.as_deref(),
-                    app.as_deref(),
-                    &python,
+                let config = CastDjangoConfig {
+                    file,
+                    output,
+                    project,
+                    app,
+                    python,
                     no_migrate,
                     no_admin,
-                )?;
+                };
+                run_cast_django(&runner, config)?;
             }
         },
     }
@@ -431,36 +431,39 @@ impl Runner for CommandRunner {
     }
 }
 
-fn run_cast_django(
-    runner: &dyn Runner,
-    file: &Path,
-    output: &Path,
-    project: Option<&str>,
-    app: Option<&str>,
-    python: &str,
+struct CastDjangoConfig {
+    file: PathBuf,
+    output: PathBuf,
+    project: Option<String>,
+    app: Option<String>,
+    python: String,
     no_migrate: bool,
     no_admin: bool,
-) -> Result<()> {
-    let inventory = load_brew_only(file)?;
-    let project_name = project.unwrap_or("alembic_project");
-    let app_name = app.unwrap_or("alembic_app");
-    let output_dir = output;
+}
+
+fn run_cast_django(runner: &dyn Runner, config: CastDjangoConfig) -> Result<()> {
+    let inventory = load_brew_only(&config.file)?;
+    let project_name = config.project.as_deref().unwrap_or("alembic_project");
+    let app_name = config.app.as_deref().unwrap_or("alembic_app");
+    let output_dir = &config.output;
     fs::create_dir_all(output_dir).with_context(|| format!("create {}", output_dir.display()))?;
 
     ensure_django_project(runner, output_dir, project_name)?;
-    ensure_python_has_django(runner, python)?;
-    ensure_django_app(runner, output_dir, app_name, python)?;
+    ensure_python_has_django(runner, &config.python)?;
+    ensure_python_has_drf(runner, &config.python)?;
+    ensure_django_app(runner, output_dir, app_name, &config.python)?;
 
     let app_dir = output_dir.join(app_name);
     let options = DjangoEmitOptions {
-        emit_admin: !no_admin,
+        emit_admin: !config.no_admin,
     };
     alembic_engine::emit_django_app(&app_dir, &inventory, options)?;
-    ensure_app_in_settings(output_dir, project_name, app_name)?;
-    run_manage_check(runner, output_dir, python)?;
-    run_manage_makemigrations(runner, output_dir, python)?;
-    if !no_migrate {
-        run_manage_migrate(runner, output_dir, python)?;
+    ensure_installed_apps_entries(output_dir, project_name, &["rest_framework", app_name])?;
+    ensure_project_urls(output_dir, project_name, app_name)?;
+    run_manage_check(runner, output_dir, &config.python)?;
+    run_manage_makemigrations(runner, output_dir, &config.python)?;
+    if !config.no_migrate {
+        run_manage_migrate(runner, output_dir, &config.python)?;
     }
 
     println!(
@@ -517,6 +520,16 @@ fn ensure_python_has_django(runner: &dyn Runner, python: &str) -> Result<()> {
     }
 }
 
+fn ensure_python_has_drf(runner: &dyn Runner, python: &str) -> Result<()> {
+    match runner.run(python, &["-c", "import rest_framework"], None) {
+        Ok(()) => Ok(()),
+        Err(_) => Err(anyhow!(
+            "djangorestframework is not available for {}; install it (pip install djangorestframework)",
+            python
+        )),
+    }
+}
+
 fn ensure_app_name_available(
     runner: &dyn Runner,
     output_dir: &Path,
@@ -536,27 +549,77 @@ fn ensure_app_name_available(
     }
 }
 
-fn ensure_app_in_settings(output_dir: &Path, project_name: &str, app_name: &str) -> Result<()> {
+fn ensure_installed_apps_entries(
+    output_dir: &Path,
+    project_name: &str,
+    entries: &[&str],
+) -> Result<()> {
     let settings_path = output_dir.join(project_name).join("settings.py");
     let mut contents = fs::read_to_string(&settings_path)
         .with_context(|| format!("read {}", settings_path.display()))?;
-    let quoted = format!("\"{app_name}\"");
-    let single_quoted = format!("'{app_name}'");
-    if contents.contains(&quoted) || contents.contains(&single_quoted) {
-        return Ok(());
-    }
 
     let start = contents
         .find("INSTALLED_APPS")
         .ok_or_else(|| anyhow!("settings.py missing INSTALLED_APPS"))?;
-    let end = contents[start..]
-        .find(']')
-        .ok_or_else(|| anyhow!("settings.py missing INSTALLED_APPS closing bracket"))?
-        + start;
-
-    contents.insert_str(end, &format!("    \"{app_name}\",\n"));
+    for entry in entries {
+        let quoted = format!("\"{entry}\"");
+        let single_quoted = format!("'{entry}'");
+        if contents.contains(&quoted) || contents.contains(&single_quoted) {
+            continue;
+        }
+        let end = contents[start..]
+            .find(']')
+            .ok_or_else(|| anyhow!("settings.py missing INSTALLED_APPS closing bracket"))?
+            + start;
+        contents.insert_str(end, &format!("    \"{entry}\",\n"));
+    }
     fs::write(&settings_path, contents)
         .with_context(|| format!("write {}", settings_path.display()))?;
+    Ok(())
+}
+
+fn ensure_project_urls(output_dir: &Path, project_name: &str, app_name: &str) -> Result<()> {
+    let urls_path = output_dir.join(project_name).join("urls.py");
+    let mut contents =
+        fs::read_to_string(&urls_path).with_context(|| format!("read {}", urls_path.display()))?;
+
+    if contents.contains("include(") && contents.contains(&format!("{app_name}.urls")) {
+        return Ok(());
+    }
+
+    let mut import_fixed = false;
+    for line in contents.lines() {
+        if line.trim_start().starts_with("from django.urls import") {
+            if line.contains("include") {
+                import_fixed = true;
+                break;
+            }
+            let updated = line.replace("import", "import include,");
+            contents = contents.replace(line, &updated);
+            import_fixed = true;
+            break;
+        }
+    }
+    if !import_fixed {
+        contents = format!("from django.urls import include, path\n{contents}");
+    }
+
+    if !contents.contains(&format!("include(\"{app_name}.urls\")"))
+        && !contents.contains(&format!("include('{app_name}.urls')"))
+    {
+        if let Some(pos) = contents.find("urlpatterns = [") {
+            let insert_pos = contents[pos..]
+                .find(']')
+                .ok_or_else(|| anyhow!("urls.py missing urlpatterns closing bracket"))?
+                + pos;
+            contents.insert_str(
+                insert_pos,
+                &format!("    path(\"api/\", include(\"{app_name}.urls\")),\n"),
+            );
+        }
+    }
+
+    fs::write(&urls_path, contents).with_context(|| format!("write {}", urls_path.display()))?;
     Ok(())
 }
 
@@ -727,6 +790,11 @@ mod tests {
                 "INSTALLED_APPS = [\n    \"django.contrib.admin\",\n]\n",
             )
             .unwrap();
+            std::fs::write(
+                project_dir.join("urls.py"),
+                "from django.contrib import admin\nfrom django.urls import path\n\nurlpatterns = [\n    path('admin/', admin.site.urls),\n]\n",
+            )
+            .unwrap();
             settings
         }
 
@@ -790,6 +858,11 @@ mod tests {
         std::fs::write(
             &settings,
             "INSTALLED_APPS = [\n    \"django.contrib.admin\",\n]\n",
+        )
+        .unwrap();
+        std::fs::write(
+            project_dir.join("urls.py"),
+            "from django.contrib import admin\nfrom django.urls import path\n\nurlpatterns = [\n    path('admin/', admin.site.urls),\n]\n",
         )
         .unwrap();
         settings
@@ -918,13 +991,15 @@ objects:
         let runner = MockRunner::new();
         run_cast_django(
             &runner,
-            &brew,
-            &output,
-            Some("alembic_project"),
-            Some("alembic_app"),
-            "python3",
-            false,
-            false,
+            CastDjangoConfig {
+                file: brew,
+                output: output.clone(),
+                project: Some("alembic_project".to_string()),
+                app: Some("alembic_app".to_string()),
+                python: "python3".to_string(),
+                no_migrate: false,
+                no_admin: false,
+            },
         )
         .unwrap();
 
@@ -937,6 +1012,9 @@ objects:
         assert!(called
             .iter()
             .any(|call| { call.1 == vec!["-c".to_string(), "import django".to_string()] }));
+        assert!(called
+            .iter()
+            .any(|call| { call.1 == vec!["-c".to_string(), "import rest_framework".to_string()] }));
         assert!(called
             .iter()
             .any(|call| call.1.iter().any(|arg| arg.contains("importlib.util"))));
@@ -960,6 +1038,9 @@ objects:
 
         let settings = std::fs::read_to_string(output.join("alembic_project/settings.py")).unwrap();
         assert!(settings.contains("\"alembic_app\""));
+        assert!(settings.contains("\"rest_framework\""));
+        let urls = std::fs::read_to_string(output.join("alembic_project/urls.py")).unwrap();
+        assert!(urls.contains("include(\"alembic_app.urls\")"));
     }
 
     #[test]
@@ -974,13 +1055,15 @@ objects:
         let runner = MockRunner::new();
         run_cast_django(
             &runner,
-            &brew,
-            &output,
-            Some("alembic_project"),
-            Some("alembic_app"),
-            "python3",
-            true,
-            false,
+            CastDjangoConfig {
+                file: brew,
+                output: output.clone(),
+                project: Some("alembic_project".to_string()),
+                app: Some("alembic_app".to_string()),
+                python: "python3".to_string(),
+                no_migrate: true,
+                no_admin: false,
+            },
         )
         .unwrap();
 
@@ -1002,26 +1085,38 @@ objects:
 
         run_cast_django(
             &runner,
-            &brew,
-            &output,
-            Some("alembic_project"),
-            Some("alembic_app"),
-            "python3",
-            true,
-            false,
+            CastDjangoConfig {
+                file: brew,
+                output: output.clone(),
+                project: Some("alembic_project".to_string()),
+                app: Some("alembic_app".to_string()),
+                python: "python3".to_string(),
+                no_migrate: true,
+                no_admin: false,
+            },
         )
         .unwrap();
 
         let app_dir = output.join("alembic_app");
         assert!(app_dir.join("generated_models.py").exists());
         assert!(app_dir.join("generated_admin.py").exists());
+        assert!(app_dir.join("generated_serializers.py").exists());
+        assert!(app_dir.join("generated_views.py").exists());
+        assert!(app_dir.join("generated_urls.py").exists());
         let models = std::fs::read_to_string(app_dir.join("models.py")).unwrap();
         assert!(models.contains("generated_models"));
         let admin = std::fs::read_to_string(app_dir.join("admin.py")).unwrap();
         assert!(admin.contains("generated_admin"));
+        let views = std::fs::read_to_string(app_dir.join("views.py")).unwrap();
+        assert!(views.contains("generated_views"));
+        let urls = std::fs::read_to_string(app_dir.join("urls.py")).unwrap();
+        assert!(urls.contains("generated_urls"));
 
         let settings = std::fs::read_to_string(output.join("alembic_project/settings.py")).unwrap();
         assert!(settings.contains("\"alembic_app\""));
+        assert!(settings.contains("\"rest_framework\""));
+        let urls = std::fs::read_to_string(output.join("alembic_project/urls.py")).unwrap();
+        assert!(urls.contains("include(\"alembic_app.urls\")"));
 
         let calls = runner.calls();
         assert!(calls.iter().any(|call| {
