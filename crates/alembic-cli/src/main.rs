@@ -5,13 +5,14 @@ use alembic_engine::Adapter;
 use alembic_engine::{
     apply_plan, apply_projection, build_plan_with_projection, compile_retort, is_brew_format,
     lint_specs, load_brew, load_projection, load_raw_yaml, load_retort, missing_custom_fields,
-    missing_tags, plan, ExtractReport, Plan, ProjectedInventory, ProjectionSpec, Retort,
-    StateStore,
+    missing_tags, plan, DjangoEmitOptions, ExtractReport, Plan, ProjectedInventory, ProjectionSpec,
+    Retort, StateStore,
 };
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command as ProcessCommand;
 
 /// top-level cli definition.
 #[derive(Parser)]
@@ -100,6 +101,31 @@ enum Command {
         netbox_url: Option<String>,
         #[arg(long)]
         netbox_token: Option<String>,
+    },
+    Cast {
+        #[command(subcommand)]
+        target: CastTarget,
+    },
+}
+
+/// cast subcommands.
+#[derive(Subcommand)]
+enum CastTarget {
+    Django {
+        #[arg(short = 'f', long)]
+        file: PathBuf,
+        #[arg(short = 'o', long)]
+        output: PathBuf,
+        #[arg(long)]
+        project: Option<String>,
+        #[arg(long)]
+        app: Option<String>,
+        #[arg(long, default_value = "python3")]
+        python: String,
+        #[arg(long, default_value_t = false)]
+        no_migrate: bool,
+        #[arg(long, default_value_t = false)]
+        no_admin: bool,
     },
 }
 
@@ -252,6 +278,29 @@ async fn run(cli: Cli) -> Result<()> {
             write_inventory(&output, &inventory)?;
             println!("inventory written to {}", output.display());
         }
+        Command::Cast { target } => match target {
+            CastTarget::Django {
+                file,
+                output,
+                project,
+                app,
+                python,
+                no_migrate,
+                no_admin,
+            } => {
+                let runner = CommandRunner::new();
+                run_cast_django(
+                    &runner,
+                    &file,
+                    &output,
+                    project.as_deref(),
+                    app.as_deref(),
+                    &python,
+                    no_migrate,
+                    no_admin,
+                )?;
+            }
+        },
     }
 
     Ok(())
@@ -316,6 +365,16 @@ fn load_inventory(path: &Path, retort: Option<&Path>) -> Result<alembic_core::In
     compile_retort(&raw, &retort)
 }
 
+fn load_brew_only(path: &Path) -> Result<alembic_core::Inventory> {
+    let raw = load_raw_yaml(path)?;
+    if !is_brew_format(&raw) {
+        return Err(anyhow!(
+            "cast requires a brew/ir yaml file with objects; run distill first"
+        ));
+    }
+    load_brew(path)
+}
+
 fn load_projection_optional(path: Option<&Path>) -> Result<Option<ProjectionSpec>> {
     match path {
         Some(path) => Ok(Some(load_projection(path)?)),
@@ -328,6 +387,189 @@ fn load_retort_optional(path: Option<&Path>) -> Result<Option<Retort>> {
         Some(path) => Ok(Some(load_retort(path)?)),
         None => Ok(None),
     }
+}
+
+trait Runner {
+    fn run(&self, program: &str, args: &[&str], cwd: Option<&Path>) -> Result<()>;
+}
+
+struct CommandRunner;
+
+impl CommandRunner {
+    fn new() -> Self {
+        Self
+    }
+
+    fn run_command(&self, program: &str, args: &[&str], cwd: Option<&Path>) -> Result<()> {
+        let mut command = ProcessCommand::new(program);
+        command.args(args);
+        if let Some(dir) = cwd {
+            command.current_dir(dir);
+        }
+        let output = command.output().with_context(|| {
+            if program == "django-admin" {
+                "failed to run django-admin; is Django installed? (pip install django)"
+            } else {
+                "failed to run command"
+            }
+        })?;
+        if output.status.success() {
+            return Ok(());
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(anyhow!(
+            "command failed: {program} {}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+            args.join(" ")
+        ))
+    }
+}
+
+impl Runner for CommandRunner {
+    fn run(&self, program: &str, args: &[&str], cwd: Option<&Path>) -> Result<()> {
+        self.run_command(program, args, cwd)
+    }
+}
+
+fn run_cast_django(
+    runner: &dyn Runner,
+    file: &Path,
+    output: &Path,
+    project: Option<&str>,
+    app: Option<&str>,
+    python: &str,
+    no_migrate: bool,
+    no_admin: bool,
+) -> Result<()> {
+    let inventory = load_brew_only(file)?;
+    let project_name = project.unwrap_or("alembic_project");
+    let app_name = app.unwrap_or("alembic_app");
+    let output_dir = output;
+    fs::create_dir_all(output_dir).with_context(|| format!("create {}", output_dir.display()))?;
+
+    ensure_django_project(runner, output_dir, project_name)?;
+    ensure_python_has_django(runner, python)?;
+    ensure_django_app(runner, output_dir, app_name, python)?;
+
+    let app_dir = output_dir.join(app_name);
+    let options = DjangoEmitOptions {
+        emit_admin: !no_admin,
+    };
+    alembic_engine::emit_django_app(&app_dir, &inventory, options)?;
+    ensure_app_in_settings(output_dir, project_name, app_name)?;
+    run_manage_check(runner, output_dir, python)?;
+    run_manage_makemigrations(runner, output_dir, python)?;
+    if !no_migrate {
+        run_manage_migrate(runner, output_dir, python)?;
+    }
+
+    println!(
+        "django app generated at {} (project {}, app {})",
+        output_dir.display(),
+        project_name,
+        app_name
+    );
+    Ok(())
+}
+
+fn ensure_django_project(runner: &dyn Runner, output_dir: &Path, project_name: &str) -> Result<()> {
+    let manage_py = output_dir.join("manage.py");
+    let project_dir = output_dir.join(project_name);
+    if manage_py.exists() && project_dir.exists() {
+        return Ok(());
+    }
+    runner.run(
+        "django-admin",
+        &[
+            "startproject",
+            project_name,
+            &output_dir.display().to_string(),
+        ],
+        None,
+    )
+}
+
+fn ensure_django_app(
+    runner: &dyn Runner,
+    output_dir: &Path,
+    app_name: &str,
+    python: &str,
+) -> Result<()> {
+    let app_dir = output_dir.join(app_name);
+    if app_dir.join("apps.py").exists() {
+        return Ok(());
+    }
+    ensure_app_name_available(runner, output_dir, app_name, python)?;
+    runner.run(
+        python,
+        &["manage.py", "startapp", app_name],
+        Some(output_dir),
+    )
+}
+
+fn ensure_python_has_django(runner: &dyn Runner, python: &str) -> Result<()> {
+    match runner.run(python, &["-c", "import django"], None) {
+        Ok(()) => Ok(()),
+        Err(_) => Err(anyhow!(
+            "django is not available for {}; install it (pip install django)",
+            python
+        )),
+    }
+}
+
+fn ensure_app_name_available(
+    runner: &dyn Runner,
+    output_dir: &Path,
+    app_name: &str,
+    python: &str,
+) -> Result<()> {
+    let check = format!(
+        "import importlib.util, sys; sys.exit(0 if importlib.util.find_spec({name:?}) is None else 1)",
+        name = app_name
+    );
+    match runner.run(python, &["-c", &check], Some(output_dir)) {
+        Ok(()) => Ok(()),
+        Err(_) => Err(anyhow!(
+            "app name '{}' conflicts with an existing Python module; pick a different --app name",
+            app_name
+        )),
+    }
+}
+
+fn ensure_app_in_settings(output_dir: &Path, project_name: &str, app_name: &str) -> Result<()> {
+    let settings_path = output_dir.join(project_name).join("settings.py");
+    let mut contents = fs::read_to_string(&settings_path)
+        .with_context(|| format!("read {}", settings_path.display()))?;
+    let quoted = format!("\"{app_name}\"");
+    let single_quoted = format!("'{app_name}'");
+    if contents.contains(&quoted) || contents.contains(&single_quoted) {
+        return Ok(());
+    }
+
+    let start = contents
+        .find("INSTALLED_APPS")
+        .ok_or_else(|| anyhow!("settings.py missing INSTALLED_APPS"))?;
+    let end = contents[start..]
+        .find(']')
+        .ok_or_else(|| anyhow!("settings.py missing INSTALLED_APPS closing bracket"))?
+        + start;
+
+    contents.insert_str(end, &format!("    \"{app_name}\",\n"));
+    fs::write(&settings_path, contents)
+        .with_context(|| format!("write {}", settings_path.display()))?;
+    Ok(())
+}
+
+fn run_manage_check(runner: &dyn Runner, output_dir: &Path, python: &str) -> Result<()> {
+    runner.run(python, &["manage.py", "check"], Some(output_dir))
+}
+
+fn run_manage_makemigrations(runner: &dyn Runner, output_dir: &Path, python: &str) -> Result<()> {
+    runner.run(python, &["manage.py", "makemigrations"], Some(output_dir))
+}
+
+fn run_manage_migrate(runner: &dyn Runner, output_dir: &Path, python: &str) -> Result<()> {
+    runner.run(python, &["manage.py", "migrate"], Some(output_dir))
 }
 
 async fn build_plan_with_proposal(
@@ -420,8 +662,156 @@ fn confirm(prompt: &str) -> Result<bool> {
 mod tests {
     use super::*;
     use alembic_engine::Op;
+    use std::cell::RefCell;
+    use std::path::PathBuf;
     use std::sync::{Mutex, OnceLock};
     use tempfile::tempdir;
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct Call {
+        program: String,
+        args: Vec<String>,
+        cwd: Option<PathBuf>,
+    }
+
+    struct MockRunner {
+        calls: RefCell<Vec<Call>>,
+    }
+
+    impl MockRunner {
+        fn new() -> Self {
+            Self {
+                calls: RefCell::new(Vec::new()),
+            }
+        }
+
+        fn calls(&self) -> Vec<Call> {
+            self.calls.borrow().clone()
+        }
+    }
+
+    impl Runner for MockRunner {
+        fn run(&self, program: &str, args: &[&str], cwd: Option<&Path>) -> Result<()> {
+            self.calls.borrow_mut().push(Call {
+                program: program.to_string(),
+                args: args.iter().map(|arg| arg.to_string()).collect(),
+                cwd: cwd.map(|dir| dir.to_path_buf()),
+            });
+            Ok(())
+        }
+    }
+
+    struct FixtureRunner {
+        calls: RefCell<Vec<Call>>,
+        output_dir: PathBuf,
+    }
+
+    impl FixtureRunner {
+        fn new(output_dir: PathBuf) -> Self {
+            Self {
+                calls: RefCell::new(Vec::new()),
+                output_dir,
+            }
+        }
+
+        fn calls(&self) -> Vec<Call> {
+            self.calls.borrow().clone()
+        }
+
+        fn write_settings(&self, project_name: &str) -> PathBuf {
+            let project_dir = self.output_dir.join(project_name);
+            std::fs::create_dir_all(&project_dir).unwrap();
+            let settings = project_dir.join("settings.py");
+            std::fs::write(
+                &settings,
+                "INSTALLED_APPS = [\n    \"django.contrib.admin\",\n]\n",
+            )
+            .unwrap();
+            settings
+        }
+
+        fn write_startapp_files(&self, app_name: &str) {
+            let app_dir = self.output_dir.join(app_name);
+            std::fs::create_dir_all(app_dir.join("migrations")).unwrap();
+            std::fs::write(
+                app_dir.join("models.py"),
+                "from django.db import models\n\n# Create your models here.\n",
+            )
+            .unwrap();
+            std::fs::write(
+                app_dir.join("admin.py"),
+                "from django.contrib import admin\n\n# Register your models here.\n",
+            )
+            .unwrap();
+            std::fs::write(
+                app_dir.join("apps.py"),
+                "from django.apps import AppConfig\n",
+            )
+            .unwrap();
+            std::fs::write(app_dir.join("migrations/__init__.py"), "").unwrap();
+        }
+    }
+
+    impl Runner for FixtureRunner {
+        fn run(&self, program: &str, args: &[&str], cwd: Option<&Path>) -> Result<()> {
+            self.calls.borrow_mut().push(Call {
+                program: program.to_string(),
+                args: args.iter().map(|arg| arg.to_string()).collect(),
+                cwd: cwd.map(|dir| dir.to_path_buf()),
+            });
+            if program == "django-admin" && args.len() >= 3 && args[0] == "startproject" {
+                let project_name = args[1];
+                std::fs::create_dir_all(&self.output_dir).unwrap();
+                std::fs::write(self.output_dir.join("manage.py"), "").unwrap();
+                self.write_settings(project_name);
+            }
+            if program.ends_with("python3")
+                && args.len() >= 3
+                && args[0] == "manage.py"
+                && args[1] == "startapp"
+            {
+                let app_name = args[2];
+                self.write_startapp_files(app_name);
+            }
+            Ok(())
+        }
+    }
+
+    fn write_minimal_brew(dir: &Path) -> PathBuf {
+        let brew = dir.join("brew.yaml");
+        std::fs::write(&brew, "objects: []\n").unwrap();
+        brew
+    }
+
+    fn write_settings(output_dir: &Path, project_name: &str) -> PathBuf {
+        let project_dir = output_dir.join(project_name);
+        std::fs::create_dir_all(&project_dir).unwrap();
+        let settings = project_dir.join("settings.py");
+        std::fs::write(
+            &settings,
+            "INSTALLED_APPS = [\n    \"django.contrib.admin\",\n]\n",
+        )
+        .unwrap();
+        settings
+    }
+
+    fn write_site_brew(dir: &Path) -> PathBuf {
+        let brew = dir.join("brew.yaml");
+        std::fs::write(
+            &brew,
+            r#"
+objects:
+  - uid: "00000000-0000-0000-0000-000000000001"
+    kind: dcim.site
+    key: "site=fra1"
+    attrs:
+      name: "FRA1"
+      slug: "fra1"
+"#,
+        )
+        .unwrap();
+        brew
+    }
 
     fn env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -514,6 +904,129 @@ mod tests {
         if let Some(value) = old_token {
             std::env::set_var("NETBOX_TOKEN", value);
         }
+    }
+
+    #[test]
+    fn cast_django_runs_migrations_by_default() {
+        let dir = tempdir().unwrap();
+        let output = dir.path().join("out");
+        std::fs::create_dir_all(&output).unwrap();
+        std::fs::write(output.join("manage.py"), "").unwrap();
+        write_settings(&output, "alembic_project");
+        let brew = write_minimal_brew(dir.path());
+
+        let runner = MockRunner::new();
+        run_cast_django(
+            &runner,
+            &brew,
+            &output,
+            Some("alembic_project"),
+            Some("alembic_app"),
+            "python3",
+            false,
+            false,
+        )
+        .unwrap();
+
+        let calls = runner.calls();
+        let called: Vec<(String, Vec<String>)> = calls
+            .into_iter()
+            .map(|call| (call.program, call.args))
+            .collect();
+
+        assert!(called
+            .iter()
+            .any(|call| { call.1 == vec!["-c".to_string(), "import django".to_string()] }));
+        assert!(called
+            .iter()
+            .any(|call| call.1.iter().any(|arg| arg.contains("importlib.util"))));
+        assert!(called.iter().any(|call| {
+            call.1
+                == vec![
+                    "manage.py".to_string(),
+                    "startapp".to_string(),
+                    "alembic_app".to_string(),
+                ]
+        }));
+        assert!(called
+            .iter()
+            .any(|call| { call.1 == vec!["manage.py".to_string(), "check".to_string()] }));
+        assert!(called
+            .iter()
+            .any(|call| { call.1 == vec!["manage.py".to_string(), "makemigrations".to_string()] }));
+        assert!(called
+            .iter()
+            .any(|call| call.1 == vec!["manage.py".to_string(), "migrate".to_string()]));
+
+        let settings = std::fs::read_to_string(output.join("alembic_project/settings.py")).unwrap();
+        assert!(settings.contains("\"alembic_app\""));
+    }
+
+    #[test]
+    fn cast_django_skips_migrate_with_flag() {
+        let dir = tempdir().unwrap();
+        let output = dir.path().join("out");
+        std::fs::create_dir_all(&output).unwrap();
+        std::fs::write(output.join("manage.py"), "").unwrap();
+        write_settings(&output, "alembic_project");
+        let brew = write_minimal_brew(dir.path());
+
+        let runner = MockRunner::new();
+        run_cast_django(
+            &runner,
+            &brew,
+            &output,
+            Some("alembic_project"),
+            Some("alembic_app"),
+            "python3",
+            true,
+            false,
+        )
+        .unwrap();
+
+        let calls = runner.calls();
+        assert!(calls.iter().any(|call| {
+            call.args == vec!["manage.py".to_string(), "makemigrations".to_string()]
+        }));
+        assert!(!calls
+            .iter()
+            .any(|call| call.args == vec!["manage.py".to_string(), "migrate".to_string()]));
+    }
+
+    #[test]
+    fn cast_django_integration_writes_generated_files() {
+        let dir = tempdir().unwrap();
+        let output = dir.path().join("out");
+        let brew = write_site_brew(dir.path());
+        let runner = FixtureRunner::new(output.clone());
+
+        run_cast_django(
+            &runner,
+            &brew,
+            &output,
+            Some("alembic_project"),
+            Some("alembic_app"),
+            "python3",
+            true,
+            false,
+        )
+        .unwrap();
+
+        let app_dir = output.join("alembic_app");
+        assert!(app_dir.join("generated_models.py").exists());
+        assert!(app_dir.join("generated_admin.py").exists());
+        let models = std::fs::read_to_string(app_dir.join("models.py")).unwrap();
+        assert!(models.contains("generated_models"));
+        let admin = std::fs::read_to_string(app_dir.join("admin.py")).unwrap();
+        assert!(admin.contains("generated_admin"));
+
+        let settings = std::fs::read_to_string(output.join("alembic_project/settings.py")).unwrap();
+        assert!(settings.contains("\"alembic_app\""));
+
+        let calls = runner.calls();
+        assert!(calls.iter().any(|call| {
+            call.args == vec!["manage.py".to_string(), "makemigrations".to_string()]
+        }));
     }
 
     #[test]

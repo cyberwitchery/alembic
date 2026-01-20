@@ -1,6 +1,6 @@
 # cli
 
-alembic ships a single cli binary with validate, plan, apply, distill, and project subcommands.
+alembic ships a single cli binary with validate, plan, apply, distill, project, and cast subcommands.
 
 ## validate
 
@@ -93,6 +93,22 @@ alembic extract -o inventory.yaml \
 - observes backend state and emits a canonical inventory
 - `--projection` inverts projection into `x` keys where possible
 - `--retort` is accepted but not inverted yet (warning emitted)
+
+## cast
+
+```bash
+alembic cast django -f examples/brew.yaml -o ./out \
+  --project alembic_project \
+  --app alembic_app \
+  --python python3
+```
+
+- scaffolds a django project/app and runs `manage.py check`
+- runs `manage.py makemigrations` and `manage.py migrate` by default
+- generates `generated_models.py` and `generated_admin.py` in the app
+- only creates user-owned `models.py`/`admin.py`/`extensions.py` if they are missing
+- `--no-admin` skips admin generation
+- `--no-migrate` skips `migrate` but still runs `makemigrations`
 
 ## environment variables
 

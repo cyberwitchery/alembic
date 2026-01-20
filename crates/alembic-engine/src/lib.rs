@@ -16,7 +16,7 @@ use anyhow::{anyhow, Result};
 #[cfg(test)]
 mod tests;
 
-pub use django::emit_django_app;
+pub use django::{emit_django_app, DjangoEmitOptions};
 pub use extract::{extract_inventory, ExtractReport};
 pub use lint::{lint_specs, LintReport};
 pub use loader::load_brew;

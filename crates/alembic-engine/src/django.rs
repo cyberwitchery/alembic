@@ -35,7 +35,22 @@ enum FieldSpec {
     },
 }
 
-pub fn emit_django_app(app_dir: &Path, inventory: &Inventory) -> Result<()> {
+#[derive(Debug, Clone, Copy)]
+pub struct DjangoEmitOptions {
+    pub emit_admin: bool,
+}
+
+impl Default for DjangoEmitOptions {
+    fn default() -> Self {
+        Self { emit_admin: true }
+    }
+}
+
+pub fn emit_django_app(
+    app_dir: &Path,
+    inventory: &Inventory,
+    options: DjangoEmitOptions,
+) -> Result<()> {
     fs::create_dir_all(app_dir)?;
 
     let kinds = inventory_kinds(inventory);
@@ -44,11 +59,23 @@ pub fn emit_django_app(app_dir: &Path, inventory: &Inventory) -> Result<()> {
     let models_content = render_models(&models);
     fs::write(app_dir.join(GENERATED_MODELS), models_content)?;
 
-    let admin_content = render_admin(&models);
-    fs::write(app_dir.join(GENERATED_ADMIN), admin_content)?;
+    if options.emit_admin {
+        let admin_content = render_admin(&models);
+        fs::write(app_dir.join(GENERATED_ADMIN), admin_content)?;
+    }
 
-    write_if_missing(app_dir.join(USER_MODELS), user_models_stub())?;
-    write_if_missing(app_dir.join(USER_ADMIN), user_admin_stub())?;
+    write_user_file(
+        app_dir.join(USER_MODELS),
+        user_models_stub(),
+        &[default_models_stub()],
+    )?;
+    if options.emit_admin {
+        write_user_file(
+            app_dir.join(USER_ADMIN),
+            user_admin_stub(),
+            &[default_admin_stub()],
+        )?;
+    }
     write_if_missing(app_dir.join(USER_EXTENSIONS), user_extensions_stub())?;
 
     Ok(())
@@ -259,6 +286,22 @@ fn write_if_missing(path: impl AsRef<Path>, contents: &str) -> Result<()> {
     Ok(())
 }
 
+fn write_user_file(path: impl AsRef<Path>, contents: &str, defaults: &[&str]) -> Result<()> {
+    let path = path.as_ref();
+    if path.exists() {
+        let existing = fs::read_to_string(path)?;
+        let normalized = existing.trim().replace("\r\n", "\n");
+        let is_default = defaults
+            .iter()
+            .any(|candidate| candidate.trim().replace("\r\n", "\n") == normalized);
+        if !is_default {
+            return Ok(());
+        }
+    }
+    fs::write(path, contents)?;
+    Ok(())
+}
+
 fn user_models_stub() -> &'static str {
     "from .generated_models import *  # noqa: F401,F403\nfrom .extensions import *  # noqa: F401,F403\n"
 }
@@ -269,6 +312,14 @@ fn user_admin_stub() -> &'static str {
 
 fn user_extensions_stub() -> &'static str {
     "# User extension hooks live here.\n"
+}
+
+fn default_models_stub() -> &'static str {
+    "from django.db import models\n\n# Create your models here.\n"
+}
+
+fn default_admin_stub() -> &'static str {
+    "from django.contrib import admin\n\n# Register your models here.\n"
 }
 
 #[cfg(test)]
@@ -320,7 +371,12 @@ mod tests {
     #[test]
     fn emit_django_app_writes_files_and_stubs() {
         let dir = tempdir().unwrap();
-        emit_django_app(dir.path(), &sample_inventory()).unwrap();
+        emit_django_app(
+            dir.path(),
+            &sample_inventory(),
+            DjangoEmitOptions::default(),
+        )
+        .unwrap();
 
         assert!(dir.path().join(GENERATED_MODELS).exists());
         assert!(dir.path().join(GENERATED_ADMIN).exists());
@@ -342,16 +398,47 @@ mod tests {
         fs::write(&models_path, "# user models\n").unwrap();
         fs::write(&admin_path, "# user admin\n").unwrap();
 
-        emit_django_app(dir.path(), &sample_inventory()).unwrap();
+        emit_django_app(
+            dir.path(),
+            &sample_inventory(),
+            DjangoEmitOptions::default(),
+        )
+        .unwrap();
 
         assert_eq!(fs::read_to_string(models_path).unwrap(), "# user models\n");
         assert_eq!(fs::read_to_string(admin_path).unwrap(), "# user admin\n");
     }
 
     #[test]
+    fn emit_django_app_overwrites_default_skeleton() {
+        let dir = tempdir().unwrap();
+        let models_path = dir.path().join(USER_MODELS);
+        let admin_path = dir.path().join(USER_ADMIN);
+        fs::write(&models_path, default_models_stub()).unwrap();
+        fs::write(&admin_path, default_admin_stub()).unwrap();
+
+        emit_django_app(
+            dir.path(),
+            &sample_inventory(),
+            DjangoEmitOptions::default(),
+        )
+        .unwrap();
+
+        let models = fs::read_to_string(models_path).unwrap();
+        let admin = fs::read_to_string(admin_path).unwrap();
+        assert!(models.contains("generated_models"));
+        assert!(admin.contains("generated_admin"));
+    }
+
+    #[test]
     fn generated_models_are_deterministic_by_kind() {
         let dir = tempdir().unwrap();
-        emit_django_app(dir.path(), &sample_inventory()).unwrap();
+        emit_django_app(
+            dir.path(),
+            &sample_inventory(),
+            DjangoEmitOptions::default(),
+        )
+        .unwrap();
 
         let models = fs::read_to_string(dir.path().join(GENERATED_MODELS)).unwrap();
         let device_pos = models.find("class Device").unwrap();
