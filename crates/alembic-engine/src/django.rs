@@ -237,8 +237,42 @@ fn render_admin(models: &[ModelSpec]) -> String {
         "from .generated_models import {}\n\n\n",
         names.join(", ")
     ));
-    for name in names {
-        output.push_str(&format!("admin.site.register({})\n", name));
+    for model in models {
+        let list_display = admin_list_display(model);
+        let search_fields = admin_search_fields();
+        let list_filter = admin_list_filter(model);
+
+        output.push_str(&format!(
+            "@admin.register({})\nclass {}Admin(admin.ModelAdmin):\n",
+            model.class_name, model.class_name
+        ));
+        output.push_str(&format!(
+            "    list_display = [{}]\n",
+            list_display
+                .iter()
+                .map(|field| format!("\"{field}\""))
+                .collect::<Vec<String>>()
+                .join(", ")
+        ));
+        output.push_str(&format!(
+            "    search_fields = [{}]\n",
+            search_fields
+                .iter()
+                .map(|field| format!("\"{field}\""))
+                .collect::<Vec<String>>()
+                .join(", ")
+        ));
+        if !list_filter.is_empty() {
+            output.push_str(&format!(
+                "    list_filter = [{}]\n",
+                list_filter
+                    .iter()
+                    .map(|field| format!("\"{field}\""))
+                    .collect::<Vec<String>>()
+                    .join(", ")
+            ));
+        }
+        output.push('\n');
     }
     output
 }
@@ -267,6 +301,36 @@ fn render_field(field: &FieldSpec) -> String {
             format!("{} = models.ForeignKey({})", name, args.join(", "))
         }
     }
+}
+
+fn field_name(field: &FieldSpec) -> &'static str {
+    match field {
+        FieldSpec::Text { name, .. } => name,
+        FieldSpec::Bool { name, .. } => name,
+        FieldSpec::ForeignKey { name, .. } => name,
+    }
+}
+
+fn admin_list_display(model: &ModelSpec) -> Vec<&'static str> {
+    let mut fields = vec!["key", "uid"];
+    fields.extend(model.fields.iter().map(field_name));
+    fields
+}
+
+fn admin_search_fields() -> Vec<&'static str> {
+    vec!["key", "uid"]
+}
+
+fn admin_list_filter(model: &ModelSpec) -> Vec<&'static str> {
+    let mut fields = Vec::new();
+    for field in &model.fields {
+        match field {
+            FieldSpec::Bool { name, .. } => fields.push(*name),
+            FieldSpec::Text { name, .. } if *name == "status" => fields.push(*name),
+            _ => {}
+        }
+    }
+    fields
 }
 
 fn nullable(optional: bool) -> String {
@@ -428,6 +492,25 @@ mod tests {
         let admin = fs::read_to_string(admin_path).unwrap();
         assert!(models.contains("generated_models"));
         assert!(admin.contains("generated_admin"));
+    }
+
+    #[test]
+    fn generated_admin_includes_defaults() {
+        let dir = tempdir().unwrap();
+        emit_django_app(
+            dir.path(),
+            &sample_inventory(),
+            DjangoEmitOptions::default(),
+        )
+        .unwrap();
+        let admin = fs::read_to_string(dir.path().join(GENERATED_ADMIN)).unwrap();
+
+        assert!(admin.contains("class DeviceAdmin"));
+        assert!(admin.contains("list_display = [\"key\", \"uid\", \"name\", \"site\", \"role\", \"device_type\", \"status\"]"));
+        assert!(admin.contains("search_fields = [\"key\", \"uid\"]"));
+        assert!(admin.contains("list_filter = [\"status\"]"));
+        assert!(admin.contains("class InterfaceAdmin"));
+        assert!(admin.contains("list_filter = [\"enabled\"]"));
     }
 
     #[test]
