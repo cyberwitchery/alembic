@@ -45,10 +45,10 @@ impl NetBoxClient {
 
     pub(super) async fn fetch_capabilities(&self) -> Result<BackendCapabilities> {
         let fields = self.client.extras().custom_fields().list(None).await?;
-        let mut by_kind: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let mut by_type: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         for field in fields.results {
             for object_type in field.object_types {
-                by_kind
+                by_type
                     .entry(object_type)
                     .or_default()
                     .insert(field.name.clone());
@@ -74,7 +74,7 @@ impl NetBoxClient {
             offset += limit;
         }
         Ok(BackendCapabilities {
-            custom_fields_by_kind: by_kind,
+            custom_fields_by_type: by_type,
             tags,
         })
     }

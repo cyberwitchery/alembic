@@ -1,6 +1,6 @@
 # ir
 
-alembic defines a canonical, vendor-neutral ir for dcim/ipam data. all objects share a common envelope and are strongly typed by `kind`.
+alembic defines a canonical, vendor-neutral ir for dcim/ipam data. all objects share a common envelope and are typed by an explicit `type` string. types are user-defined and may optionally be described with a schema.
 
 ## object envelope
 
@@ -8,99 +8,58 @@ every object is represented as:
 
 ```yaml
 uid: "<uuid>"
-kind: dcim.site | dcim.device | dcim.interface | ipam.prefix | ipam.ip_address | <custom kind>
+type: "<type name>"
 key: "<human key>"
 attrs: { ... }
-x: { "namespace.key": <json value> }
 ```
 
 - `uid`: stable identifier (uuid). never use backend ids in input files.
-- `kind`: canonical type id for the object (or any custom string).
+- `type`: canonical type id for the object (any string).
 - `key`: human/natural key used for matching when no state mapping exists.
-- `attrs`: strongly typed fields for the object kind (or generic data for unknown kinds).
-- `x`: extension map for future portability (namespaced keys).
+- `attrs`: payload for the object. alembic validates structure when a schema is provided. backend-specific fields can also live here and be projected into adapters.
 
-## kinds and attrs (mvp)
+## schema (optional)
 
-### dcim.site
-
-```yaml
-attrs:
-  name: "FRA1"
-  slug: "fra1"
-  status: "active" # optional
-  description: "..." # optional
-```
-
-### dcim.device
+you can supply schema metadata for types alongside objects. schemas define field types and reference targets so the engine can validate payloads and relationships.
 
 ```yaml
-attrs:
-  name: "leaf01"
-  site: "<site uid>"
-  role: "leaf"
-  device_type: "leaf-switch"
-  status: "active" # optional
+schema:
+  types:
+    dcim.site:
+      fields:
+        name: { type: string, required: true }
+        slug: { type: slug, required: true }
+    dcim.device:
+      fields:
+        name: { type: string, required: true }
+        site: { type: ref, target: dcim.site, required: true }
+        role: { type: string }
+        device_type: { type: string }
 ```
 
-### dcim.interface
-
-```yaml
-attrs:
-  name: "eth0"
-  device: "<device uid>"
-  if_type: "1000base-t" # optional
-  enabled: true # optional
-  description: "..." # optional
-```
-
-### ipam.prefix
-
-```yaml
-attrs:
-  prefix: "10.0.0.0/24"
-  site: "<site uid>" # optional
-  description: "..." # optional
-```
-
-### ipam.ip_address
-
-```yaml
-attrs:
-  address: "10.0.0.10/24"
-  assigned_interface: "<interface uid>" # optional
-  description: "..." # optional
-```
+supported field types include primitives (string, int, float, bool, uuid), structured types (list, map, json), and typed references (`ref`, `list_ref`).
 
 ## relationships
 
-references are always by `uid` and are validated in the engine:
+references are expressed by uid strings in `attrs` and validated when the schema declares a `ref` or `list_ref` target.
 
-- `dcim.device.attrs.site` -> `dcim.site.uid`
-- `dcim.interface.attrs.device` -> `dcim.device.uid`
-- `ipam.ip_address.attrs.assigned_interface` -> `dcim.interface.uid`
-- `ipam.prefix.attrs.site` -> `dcim.site.uid` (optional)
+```yaml
+objects:
+  - uid: "00000000-0000-0000-0000-000000000001"
+    type: dcim.site
+    key: "site=fra1"
+    attrs:
+      name: "FRA1"
+      slug: "fra1"
+  - uid: "00000000-0000-0000-0000-000000000002"
+    type: dcim.device
+    key: "device=leaf01"
+    attrs:
+      name: "leaf01"
+      site: "00000000-0000-0000-0000-000000000001"
+```
 
 ## matching semantics
 
 - primary match: state store mapping (`uid` -> backend id)
 - fallback match: `key`
-
-## extension map
-
-`x` is a namespaced map for future portability. keys should be namespaced (e.g. `netbox.custom_field`).
-
-## generic attrs
-
-if an object `kind` is unknown or its `attrs` cannot be parsed into a typed schema, alembic stores it as `Attrs::Generic`. this preserves the original fields and allows planning based on payload equality.
-
-```yaml
-uid: "00000000-0000-0000-0000-000000000001"
-kind: services.vpn
-key: "vpn=corp"
-attrs:
-  peers:
-    - name: site1
-      ip: 10.0.0.1
-  pre_shared_key: "secret"
-```

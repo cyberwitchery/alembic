@@ -18,6 +18,12 @@ use std::collections::BTreeMap;
 use client::NetBoxClient;
 use mapping::*;
 
+pub const TYPE_DCIM_SITE: &str = "dcim.site";
+pub const TYPE_DCIM_DEVICE: &str = "dcim.device";
+pub const TYPE_DCIM_INTERFACE: &str = "dcim.interface";
+pub const TYPE_IPAM_PREFIX: &str = "ipam.prefix";
+pub const TYPE_IPAM_IP_ADDRESS: &str = "ipam.ip_address";
+
 /// netbox adapter that maps ir objects to netbox api calls.
 pub struct NetBoxAdapter {
     client: NetBoxClient,
@@ -129,13 +135,12 @@ mod unit_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alembic_core::{
-        Attrs, DeviceAttrs, InterfaceAttrs, IpAddressAttrs, Kind, PrefixAttrs, SiteAttrs, Uid,
-    };
+    use alembic_core::{JsonMap, TypeName, Uid};
     use alembic_engine::{Op, ProjectedObject, ProjectionData};
     use httpmock::Method::{DELETE, GET, PATCH, POST};
     use httpmock::{Mock, MockServer};
     use serde_json::json;
+    use std::collections::BTreeSet;
     use tempfile::tempdir;
     use uuid::Uuid;
 
@@ -143,10 +148,30 @@ mod tests {
         Uuid::from_u128(value)
     }
 
+    fn attrs_map(value: serde_json::Value) -> JsonMap {
+        let serde_json::Value::Object(map) = value else {
+            panic!("attrs must be a json object");
+        };
+        map.into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>()
+            .into()
+    }
+
+    fn obj(uid: Uid, type_name: &str, key: &str, attrs: serde_json::Value) -> alembic_core::Object {
+        alembic_core::Object::new(
+            uid,
+            TypeName::new(type_name),
+            key.to_string(),
+            attrs_map(attrs),
+        )
+        .unwrap()
+    }
+
     fn projected(base: alembic_core::Object) -> ProjectedObject {
         ProjectedObject {
             base,
             projection: ProjectionData::default(),
+            projection_inputs: BTreeSet::new(),
         }
     }
 
@@ -214,9 +239,9 @@ mod tests {
 
     fn state_with_mappings(path: &std::path::Path) -> StateStore {
         let mut store = StateStore::load(path).unwrap();
-        store.set_backend_id(Kind::DcimSite, uid(1), 1);
-        store.set_backend_id(Kind::DcimDevice, uid(2), 2);
-        store.set_backend_id(Kind::DcimInterface, uid(3), 3);
+        store.set_backend_id(TypeName::new("dcim.site"), uid(1), 1);
+        store.set_backend_id(TypeName::new("dcim.device"), uid(2), 2);
+        store.set_backend_id(TypeName::new("dcim.interface"), uid(3), 3);
         store
     }
 
@@ -273,51 +298,56 @@ mod tests {
 
         let observed = adapter
             .observe(&[
-                Kind::DcimSite,
-                Kind::DcimDevice,
-                Kind::DcimInterface,
-                Kind::IpamPrefix,
-                Kind::IpamIpAddress,
+                TypeName::new("dcim.site"),
+                TypeName::new("dcim.device"),
+                TypeName::new("dcim.interface"),
+                TypeName::new("ipam.prefix"),
+                TypeName::new("ipam.ip_address"),
             ])
             .await
             .unwrap();
 
         let site = observed.by_key.get("site=fra1").unwrap();
-        assert!(matches!(site.attrs, Attrs::Site(_)));
+        assert_eq!(
+            site.attrs.get("name").and_then(|v| v.as_str()),
+            Some("FRA1")
+        );
 
         let device = observed.by_key.get("site=fra1/device=leaf01").unwrap();
-        match &device.attrs {
-            Attrs::Device(attrs) => {
-                assert_eq!(attrs.name, "leaf01");
-                assert_eq!(attrs.site, uid(1));
-            }
-            _ => panic!("expected device attrs"),
-        }
+        let site_uid = uid(1).to_string();
+        assert_eq!(
+            device.attrs.get("name").and_then(|v| v.as_str()),
+            Some("leaf01")
+        );
+        assert_eq!(
+            device.attrs.get("site").and_then(|v| v.as_str()),
+            Some(site_uid.as_str())
+        );
 
         let interface = observed.by_key.get("device=leaf01/interface=eth0").unwrap();
-        match &interface.attrs {
-            Attrs::Interface(attrs) => {
-                assert_eq!(attrs.device, uid(2));
-                assert_eq!(attrs.if_type.as_deref(), Some("1000base-t"));
-            }
-            _ => panic!("expected interface attrs"),
-        }
+        let device_uid = uid(2).to_string();
+        assert_eq!(
+            interface.attrs.get("device").and_then(|v| v.as_str()),
+            Some(device_uid.as_str())
+        );
+        assert_eq!(
+            interface.attrs.get("if_type").and_then(|v| v.as_str()),
+            Some("1000base-t")
+        );
 
         let prefix = observed.by_key.get("prefix=10.0.0.0/24").unwrap();
-        match &prefix.attrs {
-            Attrs::Prefix(attrs) => {
-                assert_eq!(attrs.site, Some(uid(1)));
-            }
-            _ => panic!("expected prefix attrs"),
-        }
+        let prefix_site_uid = uid(1).to_string();
+        assert_eq!(
+            prefix.attrs.get("site").and_then(|v| v.as_str()),
+            Some(prefix_site_uid.as_str())
+        );
 
         let ip = observed.by_key.get("ip=10.0.0.10/24").unwrap();
-        match &ip.attrs {
-            Attrs::IpAddress(attrs) => {
-                assert_eq!(attrs.assigned_interface, Some(uid(3)));
-            }
-            _ => panic!("expected ip attrs"),
-        }
+        let iface_uid = uid(3).to_string();
+        assert_eq!(
+            ip.attrs.get("assigned_interface").and_then(|v| v.as_str()),
+            Some(iface_uid.as_str())
+        );
         assert!(observed.capabilities.tags.contains("fabric"));
     }
 
@@ -374,88 +404,72 @@ mod tests {
         let ops = vec![
             Op::Create {
                 uid: uid(1),
-                kind: Kind::DcimSite,
-                desired: projected(
-                    alembic_core::Object::new(
-                        uid(1),
-                        "site=fra1".to_string(),
-                        Attrs::Site(SiteAttrs {
-                            name: "FRA1".to_string(),
-                            slug: "fra1".to_string(),
-                            status: Some("active".to_string()),
-                            description: None,
-                        }),
-                    )
-                    .unwrap(),
-                ),
+                type_name: TypeName::new("dcim.site"),
+                desired: projected(obj(
+                    uid(1),
+                    "dcim.site",
+                    "site=fra1",
+                    json!({ "name": "FRA1", "slug": "fra1", "status": "active" }),
+                )),
             },
             Op::Create {
                 uid: uid(2),
-                kind: Kind::DcimDevice,
-                desired: projected(
-                    alembic_core::Object::new(
-                        uid(2),
-                        "site=fra1/device=leaf01".to_string(),
-                        Attrs::Device(DeviceAttrs {
-                            name: "leaf01".to_string(),
-                            site: uid(1),
-                            role: "leaf".to_string(),
-                            device_type: "leaf-switch".to_string(),
-                            status: Some("active".to_string()),
-                        }),
-                    )
-                    .unwrap(),
-                ),
+                type_name: TypeName::new("dcim.device"),
+                desired: projected(obj(
+                    uid(2),
+                    "dcim.device",
+                    "site=fra1/device=leaf01",
+                    json!({
+                        "name": "leaf01",
+                        "site": uid(1).to_string(),
+                        "role": "leaf",
+                        "device_type": "leaf-switch",
+                        "status": "active"
+                    }),
+                )),
             },
             Op::Create {
                 uid: uid(3),
-                kind: Kind::DcimInterface,
-                desired: projected(
-                    alembic_core::Object::new(
-                        uid(3),
-                        "device=leaf01/interface=eth0".to_string(),
-                        Attrs::Interface(InterfaceAttrs {
-                            name: "eth0".to_string(),
-                            device: uid(2),
-                            if_type: Some("1000base-t".to_string()),
-                            enabled: Some(true),
-                            description: None,
-                        }),
-                    )
-                    .unwrap(),
-                ),
+                type_name: TypeName::new("dcim.interface"),
+                desired: projected(obj(
+                    uid(3),
+                    "dcim.interface",
+                    "device=leaf01/interface=eth0",
+                    json!({
+                        "name": "eth0",
+                        "device": uid(2).to_string(),
+                        "if_type": "1000base-t",
+                        "enabled": true
+                    }),
+                )),
             },
             Op::Create {
                 uid: uid(4),
-                kind: Kind::IpamPrefix,
-                desired: projected(
-                    alembic_core::Object::new(
-                        uid(4),
-                        "prefix=10.0.0.0/24".to_string(),
-                        Attrs::Prefix(PrefixAttrs {
-                            prefix: "10.0.0.0/24".to_string(),
-                            site: Some(uid(1)),
-                            description: Some("subnet".to_string()),
-                        }),
-                    )
-                    .unwrap(),
-                ),
+                type_name: TypeName::new("ipam.prefix"),
+                desired: projected(obj(
+                    uid(4),
+                    "ipam.prefix",
+                    "prefix=10.0.0.0/24",
+                    json!({
+                        "prefix": "10.0.0.0/24",
+                        "site": uid(1).to_string(),
+                        "description": "subnet"
+                    }),
+                )),
             },
             Op::Create {
                 uid: uid(5),
-                kind: Kind::IpamIpAddress,
-                desired: projected(
-                    alembic_core::Object::new(
-                        uid(5),
-                        "ip=10.0.0.10/24".to_string(),
-                        Attrs::IpAddress(IpAddressAttrs {
-                            address: "10.0.0.10/24".to_string(),
-                            assigned_interface: Some(uid(3)),
-                            description: Some("leaf01 eth0".to_string()),
-                        }),
-                    )
-                    .unwrap(),
-                ),
+                type_name: TypeName::new("ipam.ip_address"),
+                desired: projected(obj(
+                    uid(5),
+                    "ipam.ip_address",
+                    "ip=10.0.0.10/24",
+                    json!({
+                        "address": "10.0.0.10/24",
+                        "assigned_interface": uid(3).to_string(),
+                        "description": "leaf01 eth0"
+                    }),
+                )),
             },
         ];
 
@@ -510,8 +524,8 @@ mod tests {
         let server = MockServer::start();
         let dir = tempdir().unwrap();
         let mut state = StateStore::load(dir.path().join("state.json")).unwrap();
-        state.set_backend_id(Kind::DcimSite, uid(1), 1);
-        state.set_backend_id(Kind::DcimDevice, uid(2), 2);
+        state.set_backend_id(TypeName::new("dcim.site"), uid(1), 1);
+        state.set_backend_id(TypeName::new("dcim.device"), uid(2), 2);
         let adapter = NetBoxAdapter::new(&server.base_url(), "token", state).unwrap();
 
         let _site_lookup = server.mock(|when, then| {
@@ -598,102 +612,86 @@ mod tests {
         let ops = vec![
             Op::Update {
                 uid: uid(1),
-                kind: Kind::DcimSite,
-                desired: projected(
-                    alembic_core::Object::new(
-                        uid(1),
-                        "site=fra1".to_string(),
-                        Attrs::Site(SiteAttrs {
-                            name: "FRA1".to_string(),
-                            slug: "fra1".to_string(),
-                            status: Some("active".to_string()),
-                            description: None,
-                        }),
-                    )
-                    .unwrap(),
-                ),
+                type_name: TypeName::new("dcim.site"),
+                desired: projected(obj(
+                    uid(1),
+                    "dcim.site",
+                    "site=fra1",
+                    json!({ "name": "FRA1", "slug": "fra1", "status": "active" }),
+                )),
                 changes: vec![],
                 backend_id: None,
             },
             Op::Update {
                 uid: uid(2),
-                kind: Kind::DcimDevice,
-                desired: projected(
-                    alembic_core::Object::new(
-                        uid(2),
-                        "site=fra1/device=leaf01".to_string(),
-                        Attrs::Device(DeviceAttrs {
-                            name: "leaf01".to_string(),
-                            site: uid(1),
-                            role: "leaf".to_string(),
-                            device_type: "leaf-switch".to_string(),
-                            status: Some("active".to_string()),
-                        }),
-                    )
-                    .unwrap(),
-                ),
+                type_name: TypeName::new("dcim.device"),
+                desired: projected(obj(
+                    uid(2),
+                    "dcim.device",
+                    "site=fra1/device=leaf01",
+                    json!({
+                        "name": "leaf01",
+                        "site": uid(1).to_string(),
+                        "role": "leaf",
+                        "device_type": "leaf-switch",
+                        "status": "active"
+                    }),
+                )),
                 changes: vec![],
                 backend_id: None,
             },
             Op::Update {
                 uid: uid(3),
-                kind: Kind::DcimInterface,
-                desired: projected(
-                    alembic_core::Object::new(
-                        uid(3),
-                        "device=leaf01/interface=eth0".to_string(),
-                        Attrs::Interface(InterfaceAttrs {
-                            name: "eth0".to_string(),
-                            device: uid(2),
-                            if_type: Some("1000base-t".to_string()),
-                            enabled: Some(true),
-                            description: None,
-                        }),
-                    )
-                    .unwrap(),
-                ),
+                type_name: TypeName::new("dcim.interface"),
+                desired: projected(obj(
+                    uid(3),
+                    "dcim.interface",
+                    "device=leaf01/interface=eth0",
+                    json!({
+                        "name": "eth0",
+                        "device": uid(2).to_string(),
+                        "if_type": "1000base-t",
+                        "enabled": true
+                    }),
+                )),
                 changes: vec![],
                 backend_id: None,
             },
             Op::Update {
                 uid: uid(4),
-                kind: Kind::IpamPrefix,
-                desired: projected(
-                    alembic_core::Object::new(
-                        uid(4),
-                        "prefix=10.0.0.0/24".to_string(),
-                        Attrs::Prefix(PrefixAttrs {
-                            prefix: "10.0.0.0/24".to_string(),
-                            site: Some(uid(1)),
-                            description: Some("subnet".to_string()),
-                        }),
-                    )
-                    .unwrap(),
-                ),
+                type_name: TypeName::new("ipam.prefix"),
+                desired: projected(obj(
+                    uid(4),
+                    "ipam.prefix",
+                    "prefix=10.0.0.0/24",
+                    json!({
+                        "prefix": "10.0.0.0/24",
+                        "site": uid(1).to_string(),
+                        "description": "subnet"
+                    }),
+                )),
                 changes: vec![],
                 backend_id: None,
             },
             Op::Update {
                 uid: uid(5),
-                kind: Kind::IpamIpAddress,
-                desired: projected(
-                    alembic_core::Object::new(
-                        uid(5),
-                        "ip=10.0.0.10/24".to_string(),
-                        Attrs::IpAddress(IpAddressAttrs {
-                            address: "10.0.0.10/24".to_string(),
-                            assigned_interface: Some(uid(3)),
-                            description: Some("leaf01 eth0".to_string()),
-                        }),
-                    )
-                    .unwrap(),
-                ),
+                type_name: TypeName::new("ipam.ip_address"),
+                desired: projected(obj(
+                    uid(5),
+                    "ipam.ip_address",
+                    "ip=10.0.0.10/24",
+                    json!({
+                        "address": "10.0.0.10/24",
+                        "assigned_interface": uid(3).to_string(),
+                        "description": "leaf01 eth0"
+                    }),
+                )),
                 changes: vec![],
                 backend_id: None,
             },
             Op::Delete {
                 uid: uid(5),
-                kind: Kind::IpamIpAddress,
+                type_name: TypeName::new("ipam.ip_address"),
                 key: "ip=10.0.0.10/24".to_string(),
                 backend_id: Some(5),
             },

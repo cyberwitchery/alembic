@@ -2,9 +2,8 @@
 
 use crate::projection::{CustomFieldStrategy, ProjectionSpec};
 use crate::retort::{Emit, EmitSpec, EmitUid, Retort};
-use alembic_core::Kind;
 use serde_yaml::Value as YamlValue;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 #[derive(Debug, Default)]
 pub struct LintReport {
@@ -21,44 +20,25 @@ impl LintReport {
 pub fn lint_specs(retort: Option<&Retort>, projection: Option<&ProjectionSpec>) -> LintReport {
     let mut report = LintReport::default();
 
-    let retort_summary = retort.map(retort_summary);
+    let retort_types = retort.map(retort_types);
     if let Some(retort) = retort {
         lint_retort_templates(retort, &mut report);
     }
     if let Some(spec) = projection {
-        lint_projection_rules(spec, retort_summary.as_ref(), &mut report);
-    }
-    if let (Some(retort), Some(spec)) = (retort, projection) {
-        lint_projection_coverage(retort, spec, &mut report);
+        lint_projection_rules(spec, retort_types.as_ref(), &mut report);
     }
 
     report
 }
 
-struct RetortSummary {
-    kinds: BTreeSet<String>,
-    emitted_x: BTreeMap<String, BTreeSet<String>>,
-}
-
-fn retort_summary(retort: &Retort) -> RetortSummary {
-    let mut kinds = BTreeSet::new();
-    let mut emitted_x: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-
+fn retort_types(retort: &Retort) -> BTreeSet<String> {
+    let mut types = BTreeSet::new();
     for rule in &retort.rules {
         for emit in emits_for_rule(rule) {
-            let kind = Kind::parse(&emit.kind).as_string();
-            kinds.insert(kind.clone());
-            if emit.x.is_empty() {
-                continue;
-            }
-            let entry = emitted_x.entry(kind).or_default();
-            for key in emit.x.keys() {
-                entry.insert(key.clone());
-            }
+            types.insert(emit.type_name.clone());
         }
     }
-
-    RetortSummary { kinds, emitted_x }
+    types
 }
 
 fn emits_for_rule(rule: &crate::retort::Rule) -> Vec<&Emit> {
@@ -99,10 +79,10 @@ fn lint_retort_templates(retort: &Retort, report: &mut LintReport) {
                     ),
                     EmitUid::V5 { v5 } => {
                         lint_template_string(
-                            &v5.kind,
+                            &v5.type_name,
                             &allowed_vars,
                             report,
-                            &format!("retort rule {} emit uid kind", rule.name),
+                            &format!("retort rule {} emit uid type", rule.name),
                         );
                         lint_template_string(
                             &v5.stable,
@@ -122,21 +102,13 @@ fn lint_retort_templates(retort: &Retort, report: &mut LintReport) {
                     &format!("retort rule {} emit attrs.{key}", rule.name),
                 );
             }
-            for (key, value) in &emit.x {
-                lint_template_value(
-                    value,
-                    &allowed_vars,
-                    report,
-                    &format!("retort rule {} emit x.{key}", rule.name),
-                );
-            }
         }
     }
 }
 
 fn lint_projection_rules(
     spec: &ProjectionSpec,
-    retort_summary: Option<&RetortSummary>,
+    retort_types: Option<&BTreeSet<String>>,
     report: &mut LintReport,
 ) {
     if spec.version != 1 {
@@ -152,24 +124,24 @@ fn lint_projection_rules(
     }
 
     for rule in &spec.rules {
-        if rule.on_kind.trim().is_empty() {
+        if rule.on_type.trim().is_empty() {
             report.errors.push(format!(
-                "projection rule {}: on_kind is required",
+                "projection rule {}: on_type is required",
                 rule.name
             ));
         }
 
-        let selector_count = rule.from_x.prefix.is_some() as u8
-            + rule.from_x.key.is_some() as u8
-            + (!rule.from_x.map.is_empty()) as u8;
+        let selector_count = rule.from_attrs.prefix.is_some() as u8
+            + rule.from_attrs.key.is_some() as u8
+            + (!rule.from_attrs.map.is_empty()) as u8;
         if selector_count != 1 {
             report.errors.push(format!(
-                "projection rule {} (kind {}): from_x must include exactly one of prefix, key, or map",
-                rule.name, rule.on_kind
+                "projection rule {} (type {}): from_attrs must include exactly one of prefix, key, or map",
+                rule.name, rule.on_type
             ));
         }
 
-        for transform in &rule.from_x.transform {
+        for transform in &rule.from_attrs.transform {
             match transform {
                 crate::projection::TransformSpec::Simple(name) => {
                     if name != "stringify" && name != "drop_if_null" {
@@ -187,74 +159,36 @@ fn lint_projection_rules(
         if let Some(custom_fields) = &rule.to.custom_fields {
             if matches!(custom_fields.strategy, CustomFieldStrategy::StripPrefix)
                 && custom_fields.prefix.is_none()
-                && rule.from_x.prefix.is_none()
+                && rule.from_attrs.prefix.is_none()
             {
                 report.errors.push(format!(
-                    "projection rule {} (kind {}): missing prefix for strip_prefix",
-                    rule.name, rule.on_kind
+                    "projection rule {} (type {}): missing prefix for strip_prefix",
+                    rule.name, rule.on_type
                 ));
             }
         }
 
         if let Some(local_context) = &rule.to.local_context {
-            if rule.on_kind != "dcim.device" {
-                report.errors.push(format!(
-                    "projection rule {} (kind {}): local_context only supported for dcim.device",
-                    rule.name, rule.on_kind
-                ));
-            }
             if matches!(local_context.strategy, CustomFieldStrategy::StripPrefix)
                 && local_context.prefix.is_none()
-                && rule.from_x.prefix.is_none()
+                && rule.from_attrs.prefix.is_none()
             {
                 report.errors.push(format!(
-                    "projection rule {} (kind {}): missing prefix for strip_prefix",
-                    rule.name, rule.on_kind
+                    "projection rule {} (type {}): missing prefix for strip_prefix",
+                    rule.name, rule.on_type
                 ));
             }
         }
 
-        if let Some(summary) = retort_summary {
-            if rule.on_kind != "*" && !summary.kinds.contains(&rule.on_kind) {
+        if let Some(types) = retort_types {
+            if rule.on_type != "*" && !types.contains(&rule.on_type) {
                 report.errors.push(format!(
-                    "projection rule {} references unknown kind {}",
-                    rule.name, rule.on_kind
+                    "projection rule {} references unknown type {}",
+                    rule.name, rule.on_type
                 ));
             }
         }
     }
-}
-
-fn lint_projection_coverage(retort: &Retort, spec: &ProjectionSpec, report: &mut LintReport) {
-    let summary = retort_summary(retort);
-    for (kind, keys) in summary.emitted_x {
-        for key in keys {
-            if !projection_consumes_key(spec, &kind, &key) {
-                report.warnings.push(format!(
-                    "retort emits x key {} for kind {} but no projection rule consumes it",
-                    key, kind
-                ));
-            }
-        }
-    }
-}
-
-fn projection_consumes_key(spec: &ProjectionSpec, kind: &str, key: &str) -> bool {
-    spec.rules.iter().any(|rule| {
-        if rule.on_kind != "*" && rule.on_kind != kind {
-            return false;
-        }
-        if let Some(prefix) = &rule.from_x.prefix {
-            return key.starts_with(prefix);
-        }
-        if let Some(rule_key) = &rule.from_x.key {
-            return key == rule_key;
-        }
-        if !rule.from_x.map.is_empty() {
-            return rule.from_x.map.contains_key(key);
-        }
-        false
-    })
 }
 
 fn lint_template_value(
@@ -350,7 +284,7 @@ rules:
       name:
         from: name
     emit:
-      kind: dcim.device
+      type: dcim.device
       key: "device=${missing}"
       attrs: {}
 "#,
@@ -362,7 +296,7 @@ rules:
     }
 
     #[test]
-    fn lint_reports_unknown_projection_kind() {
+    fn lint_reports_unknown_projection_type() {
         let retort = parse_retort(
             r#"
 version: 1
@@ -370,7 +304,7 @@ rules:
   - name: sites
     select: sites
     emit:
-      kind: dcim.site
+      type: dcim.site
       key: "site=fra1"
       attrs: {}
 "#,
@@ -381,8 +315,8 @@ version: 1
 backend: netbox
 rules:
   - name: bad
-    on_kind: dcim.rack
-    from_x:
+    on_type: dcim.rack
+    from_attrs:
       key: foo
     to:
       custom_fields:
@@ -391,43 +325,7 @@ rules:
         );
 
         let report = lint_specs(Some(&retort), Some(&projection));
-        assert!(report.errors.iter().any(|msg| msg.contains("unknown kind")));
-    }
-
-    #[test]
-    fn lint_warns_on_unprojected_key() {
-        let retort = parse_retort(
-            r#"
-version: 1
-rules:
-  - name: sites
-    select: sites
-    emit:
-      kind: dcim.site
-      key: "site=fra1"
-      attrs: {}
-      x:
-        model.serial: "x"
-"#,
-        );
-        let projection = parse_projection(
-            r#"
-version: 1
-backend: netbox
-rules:
-  - name: model
-    on_kind: dcim.site
-    from_x:
-      key: model.asset
-    to:
-      custom_fields:
-        strategy: direct
-"#,
-        );
-
-        let report = lint_specs(Some(&retort), Some(&projection));
-        assert_eq!(report.errors.len(), 0);
-        assert_eq!(report.warnings.len(), 1);
+        assert!(report.errors.iter().any(|msg| msg.contains("unknown type")));
     }
 
     #[test]
@@ -438,8 +336,8 @@ version: 1
 backend: netbox
 rules:
   - name: model
-    on_kind: dcim.site
-    from_x:
+    on_type: dcim.site
+    from_attrs:
       key: model.serial
     to:
       custom_fields:
@@ -480,8 +378,8 @@ version: 2
 backend: ""
 rules:
   - name: model
-    on_kind: dcim.site
-    from_x:
+    on_type: dcim.site
+    from_attrs:
       key: model.serial
     to:
       custom_fields:
@@ -508,8 +406,8 @@ version: 1
 backend: netbox
 rules:
   - name: model
-    on_kind: dcim.site
-    from_x:
+    on_type: dcim.site
+    from_attrs:
       key: model.serial
       prefix: model.
     to:
@@ -522,7 +420,7 @@ rules:
         assert!(report
             .errors
             .iter()
-            .any(|msg| msg.contains("from_x must include exactly one")));
+            .any(|msg| msg.contains("from_attrs must include exactly one")));
     }
 
     #[test]
@@ -533,8 +431,8 @@ version: 1
 backend: netbox
 rules:
   - name: model
-    on_kind: dcim.site
-    from_x:
+    on_type: dcim.site
+    from_attrs:
       key: model.serial
       transform:
         - unknown
@@ -549,31 +447,6 @@ rules:
             .errors
             .iter()
             .any(|msg| msg.contains("unknown transform")));
-    }
-
-    #[test]
-    fn lint_reports_projection_local_context_kind() {
-        let projection = parse_projection(
-            r#"
-version: 1
-backend: netbox
-rules:
-  - name: local
-    on_kind: dcim.site
-    from_x:
-      key: context.role
-    to:
-      local_context:
-        root: system
-        strategy: direct
-"#,
-        );
-
-        let report = lint_specs(None, Some(&projection));
-        assert!(report
-            .errors
-            .iter()
-            .any(|msg| msg.contains("local_context only supported")));
     }
 
     #[test]

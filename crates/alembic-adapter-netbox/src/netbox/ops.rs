@@ -4,10 +4,11 @@ use super::mapping::{
     patched_site_status_from_str, should_skip_op, site_status_from_str, status_value_to_str,
 };
 use super::state::{resolved_from_state, state_mappings};
-use super::NetBoxAdapter;
-use alembic_core::{
-    Attrs, DeviceAttrs, InterfaceAttrs, IpAddressAttrs, Kind, PrefixAttrs, SiteAttrs, Uid,
+use super::{
+    NetBoxAdapter, TYPE_DCIM_DEVICE, TYPE_DCIM_INTERFACE, TYPE_DCIM_SITE, TYPE_IPAM_IP_ADDRESS,
+    TYPE_IPAM_PREFIX,
 };
+use alembic_core::{JsonMap, TypeName, Uid};
 use alembic_engine::{
     Adapter, AppliedOp, ApplyReport, ObservedObject, ObservedState, Op, ProjectedObject,
     ProjectionData, StateStore,
@@ -15,7 +16,9 @@ use alembic_engine::{
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use netbox::{BulkDelete, BulkUpdate, QueryBuilder};
+use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, Serialize)]
@@ -34,6 +37,69 @@ struct IpAddressPatchRequest {
     assigned_object_id: Option<i32>,
 }
 
+#[derive(Debug, Clone, serde::Deserialize)]
+struct SiteAttrs {
+    name: String,
+    slug: String,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct DeviceAttrs {
+    name: String,
+    site: String,
+    role: String,
+    device_type: String,
+    #[serde(default)]
+    status: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct InterfaceAttrs {
+    name: String,
+    device: String,
+    #[serde(default)]
+    if_type: Option<String>,
+    #[serde(default)]
+    enabled: Option<bool>,
+    #[serde(default)]
+    description: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct PrefixAttrs {
+    prefix: String,
+    #[serde(default)]
+    site: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct IpAddressAttrs {
+    address: String,
+    #[serde(default)]
+    assigned_interface: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
+}
+
+fn decode_attrs<T: DeserializeOwned>(attrs: &JsonMap) -> Result<T> {
+    let map: serde_json::Map<String, serde_json::Value> = attrs
+        .iter()
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    serde_json::from_value(serde_json::Value::Object(map))
+        .map_err(|err| anyhow!("invalid attrs: {err}"))
+}
+
+fn parse_uid(value: &str) -> Result<Uid> {
+    Uid::parse_str(value).map_err(|err| anyhow!("invalid uid {value}: {err}"))
+}
+
 struct PendingUpdate {
     uid: Uid,
     backend_id: u64,
@@ -47,20 +113,29 @@ struct PendingDelete {
 
 enum PendingOp {
     Update {
-        kind: Kind,
+        type_name: TypeName,
         items: Vec<PendingUpdate>,
     },
     Delete {
-        kind: Kind,
+        type_name: TypeName,
         items: Vec<PendingDelete>,
     },
 }
 
 #[async_trait]
 impl Adapter for NetBoxAdapter {
-    async fn observe(&self, kinds: &[Kind]) -> Result<ObservedState> {
+    async fn observe(&self, types: &[TypeName]) -> Result<ObservedState> {
         let mut state = ObservedState::default();
-        let unique: BTreeSet<Kind> = kinds.iter().cloned().collect();
+        let mut unique: BTreeSet<TypeName> = types.iter().cloned().collect();
+        if unique.is_empty() {
+            unique.extend([
+                TypeName::new(TYPE_DCIM_SITE),
+                TypeName::new(TYPE_DCIM_DEVICE),
+                TypeName::new(TYPE_DCIM_INTERFACE),
+                TypeName::new(TYPE_IPAM_PREFIX),
+                TypeName::new(TYPE_IPAM_IP_ADDRESS),
+            ]);
+        }
 
         let mappings = {
             let state_guard = self.state_guard()?;
@@ -70,12 +145,9 @@ impl Adapter for NetBoxAdapter {
         let device_id_to_uid = mappings.device_id_to_uid;
         let interface_id_to_uid = mappings.interface_id_to_uid;
 
-        for kind in unique {
-            if kind.is_custom() {
-                continue;
-            }
-            match kind {
-                Kind::DcimSite => {
+        for type_name in unique {
+            match type_name.as_str() {
+                TYPE_DCIM_SITE => {
                     let sites = self
                         .client
                         .list_all(&self.client.dcim().sites(), None)
@@ -83,22 +155,26 @@ impl Adapter for NetBoxAdapter {
                     for site in sites {
                         let backend_id = site.id.map(|id| id as u64);
                         let key = format!("site={}", site.slug);
-                        let attrs = Attrs::Site(SiteAttrs {
-                            name: site.name,
-                            slug: site.slug,
-                            status: site
-                                .status
-                                .and_then(|status| status.value.map(status_value_to_str))
-                                .map(|s| s.to_string()),
-                            description: site.description,
-                        });
+                        let mut attrs = JsonMap::default();
+                        attrs.insert("name".to_string(), json!(site.name));
+                        attrs.insert("slug".to_string(), json!(site.slug));
+                        if let Some(status) = site
+                            .status
+                            .and_then(|status| status.value.map(status_value_to_str))
+                            .map(|s| s.to_string())
+                        {
+                            attrs.insert("status".to_string(), json!(status));
+                        }
+                        if let Some(description) = site.description {
+                            attrs.insert("description".to_string(), json!(description));
+                        }
                         let projection = ProjectionData {
                             custom_fields: map_custom_fields(site.custom_fields),
                             tags: map_tags(site.tags),
                             local_context: None,
                         };
                         state.insert(ObservedObject {
-                            kind: kind.clone(),
+                            type_name: type_name.clone(),
                             key,
                             attrs,
                             projection,
@@ -106,7 +182,7 @@ impl Adapter for NetBoxAdapter {
                         });
                     }
                 }
-                Kind::DcimDevice => {
+                TYPE_DCIM_DEVICE => {
                     let devices = self
                         .client
                         .list_all(&self.client.dcim().devices(), None)
@@ -125,24 +201,27 @@ impl Adapter for NetBoxAdapter {
                             .id
                             .map(|id| id as u64)
                             .and_then(|id| site_id_to_uid.get(&id).copied())
-                            .unwrap_or_else(Uid::nil);
-                        let attrs = Attrs::Device(DeviceAttrs {
-                            name,
-                            site: site_uid,
-                            role: device.role.name,
-                            device_type: device.device_type.model,
-                            status: device
-                                .status
-                                .and_then(|status| status.value.map(device_status_to_str))
-                                .map(|s| s.to_string()),
-                        });
+                            .map(|uid| uid.to_string())
+                            .unwrap_or_else(|| Uid::nil().to_string());
+                        let mut attrs = JsonMap::default();
+                        attrs.insert("name".to_string(), json!(name));
+                        attrs.insert("site".to_string(), json!(site_uid));
+                        attrs.insert("role".to_string(), json!(device.role.name));
+                        attrs.insert("device_type".to_string(), json!(device.device_type.model));
+                        if let Some(status) = device
+                            .status
+                            .and_then(|status| status.value.map(device_status_to_str))
+                            .map(|s| s.to_string())
+                        {
+                            attrs.insert("status".to_string(), json!(status));
+                        }
                         let projection = ProjectionData {
                             custom_fields: map_custom_fields(device.custom_fields),
                             tags: map_tags(device.tags),
                             local_context: device.local_context_data.flatten(),
                         };
                         state.insert(ObservedObject {
-                            kind: kind.clone(),
+                            type_name: type_name.clone(),
                             key,
                             attrs,
                             projection,
@@ -150,7 +229,7 @@ impl Adapter for NetBoxAdapter {
                         });
                     }
                 }
-                Kind::DcimInterface => {
+                TYPE_DCIM_INTERFACE => {
                     let interfaces = self
                         .client
                         .list_all(&self.client.dcim().interfaces(), None)
@@ -174,21 +253,27 @@ impl Adapter for NetBoxAdapter {
                             .id
                             .map(|id| id as u64)
                             .and_then(|id| device_id_to_uid.get(&id).copied())
-                            .unwrap_or_else(Uid::nil);
-                        let attrs = Attrs::Interface(InterfaceAttrs {
-                            name: interface.name,
-                            device: device_uid,
-                            if_type,
-                            enabled: interface.enabled,
-                            description: interface.description,
-                        });
+                            .map(|uid| uid.to_string())
+                            .unwrap_or_else(|| Uid::nil().to_string());
+                        let mut attrs = JsonMap::default();
+                        attrs.insert("name".to_string(), json!(interface.name));
+                        attrs.insert("device".to_string(), json!(device_uid));
+                        if let Some(if_type) = if_type {
+                            attrs.insert("if_type".to_string(), json!(if_type));
+                        }
+                        if let Some(enabled) = interface.enabled {
+                            attrs.insert("enabled".to_string(), json!(enabled));
+                        }
+                        if let Some(description) = interface.description {
+                            attrs.insert("description".to_string(), json!(description));
+                        }
                         let projection = ProjectionData {
                             custom_fields: map_custom_fields(interface.custom_fields),
                             tags: map_tags(interface.tags),
                             local_context: None,
                         };
                         state.insert(ObservedObject {
-                            kind: kind.clone(),
+                            type_name: type_name.clone(),
                             key,
                             attrs,
                             projection,
@@ -196,7 +281,7 @@ impl Adapter for NetBoxAdapter {
                         });
                     }
                 }
-                Kind::IpamPrefix => {
+                TYPE_IPAM_PREFIX => {
                     let prefixes = self
                         .client
                         .list_all(&self.client.ipam().prefixes(), None)
@@ -207,24 +292,28 @@ impl Adapter for NetBoxAdapter {
                             prefix.scope_type.as_ref().and_then(|scope| scope.as_ref()),
                             prefix.scope_id.flatten(),
                         ) {
-                            (Some(scope), Some(id)) if scope == "dcim.site" => {
-                                site_id_to_uid.get(&(id as u64)).copied()
-                            }
+                            (Some(scope), Some(id)) if scope == "dcim.site" => site_id_to_uid
+                                .get(&(id as u64))
+                                .copied()
+                                .map(|uid| uid.to_string()),
                             _ => None,
                         };
                         let key = format!("prefix={}", prefix.prefix);
-                        let attrs = Attrs::Prefix(PrefixAttrs {
-                            prefix: prefix.prefix,
-                            site: site_uid,
-                            description: prefix.description,
-                        });
+                        let mut attrs = JsonMap::default();
+                        attrs.insert("prefix".to_string(), json!(prefix.prefix));
+                        if let Some(site_uid) = site_uid {
+                            attrs.insert("site".to_string(), json!(site_uid));
+                        }
+                        if let Some(description) = prefix.description {
+                            attrs.insert("description".to_string(), json!(description));
+                        }
                         let projection = ProjectionData {
                             custom_fields: map_custom_fields(prefix.custom_fields),
                             tags: map_tags(prefix.tags),
                             local_context: None,
                         };
                         state.insert(ObservedObject {
-                            kind: kind.clone(),
+                            type_name: type_name.clone(),
                             key,
                             attrs,
                             projection,
@@ -232,7 +321,7 @@ impl Adapter for NetBoxAdapter {
                         });
                     }
                 }
-                Kind::IpamIpAddress => {
+                TYPE_IPAM_IP_ADDRESS => {
                     let ips = self
                         .client
                         .list_all(&self.client.ipam().ip_addresses(), None)
@@ -249,18 +338,24 @@ impl Adapter for NetBoxAdapter {
                             }
                             _ => None,
                         };
-                        let attrs = Attrs::IpAddress(IpAddressAttrs {
-                            address: ip.address,
-                            assigned_interface,
-                            description: ip.description,
-                        });
+                        let mut attrs = JsonMap::default();
+                        attrs.insert("address".to_string(), json!(ip.address));
+                        if let Some(interface_uid) = assigned_interface {
+                            attrs.insert(
+                                "assigned_interface".to_string(),
+                                json!(interface_uid.to_string()),
+                            );
+                        }
+                        if let Some(description) = ip.description {
+                            attrs.insert("description".to_string(), json!(description));
+                        }
                         let projection = ProjectionData {
                             custom_fields: map_custom_fields(ip.custom_fields),
                             tags: map_tags(ip.tags),
                             local_context: None,
                         };
                         state.insert(ObservedObject {
-                            kind: kind.clone(),
+                            type_name: type_name.clone(),
                             key,
                             attrs,
                             projection,
@@ -268,7 +363,7 @@ impl Adapter for NetBoxAdapter {
                         });
                     }
                 }
-                Kind::Custom(_) => {}
+                _ => {}
             }
         }
 
@@ -313,29 +408,33 @@ impl Adapter for NetBoxAdapter {
                 continue;
             }
             match op {
-                Op::Create { uid, kind, desired } => {
+                Op::Create {
+                    uid,
+                    type_name,
+                    desired,
+                } => {
                     self.flush_pending(&mut pending, &resolved, &mut applied)
                         .await?;
                     let backend_id = self
-                        .create_object(kind.clone(), desired, &mut resolved)
+                        .create_object(type_name.clone(), desired, &mut resolved)
                         .await?;
                     resolved.insert(*uid, backend_id);
                     applied.push(AppliedOp {
                         uid: *uid,
-                        kind: kind.clone(),
+                        type_name: type_name.clone(),
                         backend_id: Some(backend_id),
                     });
                 }
                 Op::Update {
                     uid,
-                    kind,
+                    type_name,
                     desired,
                     backend_id,
                     ..
                 } => {
                     let id = self
                         .resolve_backend_id(
-                            kind.clone(),
+                            type_name.clone(),
                             *uid,
                             backend_id.unwrap_or(0),
                             &desired.base,
@@ -345,9 +444,9 @@ impl Adapter for NetBoxAdapter {
                     resolved.insert(*uid, id);
                     match &mut pending {
                         Some(PendingOp::Update {
-                            kind: pending_kind,
+                            type_name: pending_type,
                             items,
-                        }) if pending_kind == kind => {
+                        }) if pending_type == type_name => {
                             items.push(PendingUpdate {
                                 uid: *uid,
                                 backend_id: id,
@@ -358,7 +457,7 @@ impl Adapter for NetBoxAdapter {
                             self.flush_pending(&mut pending, &resolved, &mut applied)
                                 .await?;
                             pending = Some(PendingOp::Update {
-                                kind: kind.clone(),
+                                type_name: type_name.clone(),
                                 items: vec![PendingUpdate {
                                     uid: *uid,
                                     backend_id: id,
@@ -370,7 +469,7 @@ impl Adapter for NetBoxAdapter {
                 }
                 Op::Delete {
                     uid,
-                    kind,
+                    type_name,
                     key,
                     backend_id,
                 } => {
@@ -383,9 +482,9 @@ impl Adapter for NetBoxAdapter {
                     };
                     match &mut pending {
                         Some(PendingOp::Delete {
-                            kind: pending_kind,
+                            type_name: pending_type,
                             items,
-                        }) if pending_kind == kind => {
+                        }) if pending_type == type_name => {
                             items.push(PendingDelete {
                                 uid: *uid,
                                 backend_id: id,
@@ -395,7 +494,7 @@ impl Adapter for NetBoxAdapter {
                             self.flush_pending(&mut pending, &resolved, &mut applied)
                                 .await?;
                             pending = Some(PendingOp::Delete {
-                                kind: kind.clone(),
+                                type_name: type_name.clone(),
                                 items: vec![PendingDelete {
                                     uid: *uid,
                                     backend_id: id,
@@ -437,24 +536,29 @@ impl NetBoxAdapter {
         };
 
         match batch {
-            PendingOp::Update { kind, items } => {
-                self.bulk_update_objects(&kind, &items, resolved).await?;
+            PendingOp::Update { type_name, items } => {
+                self.bulk_update_objects(&type_name, &items, resolved)
+                    .await?;
                 for item in items {
-                    self.apply_projection_patch(&kind, item.backend_id, &item.desired.projection)
-                        .await?;
+                    self.apply_projection_patch(
+                        &type_name,
+                        item.backend_id,
+                        &item.desired.projection,
+                    )
+                    .await?;
                     applied.push(AppliedOp {
                         uid: item.uid,
-                        kind: kind.clone(),
+                        type_name: type_name.clone(),
                         backend_id: Some(item.backend_id),
                     });
                 }
             }
-            PendingOp::Delete { kind, items } => {
-                self.bulk_delete_objects(&kind, &items).await?;
+            PendingOp::Delete { type_name, items } => {
+                self.bulk_delete_objects(&type_name, &items).await?;
                 for item in items {
                     applied.push(AppliedOp {
                         uid: item.uid,
-                        kind: kind.clone(),
+                        type_name: type_name.clone(),
                         backend_id: None,
                     });
                 }
@@ -466,97 +570,86 @@ impl NetBoxAdapter {
 
     async fn bulk_update_objects(
         &self,
-        kind: &Kind,
+        type_name: &TypeName,
         items: &[PendingUpdate],
         resolved: &BTreeMap<Uid, u64>,
     ) -> Result<()> {
-        match kind {
-            Kind::DcimSite => {
+        match type_name.as_str() {
+            TYPE_DCIM_SITE => {
                 let mut batch = Vec::with_capacity(items.len());
                 for item in items {
-                    let attrs = match &item.desired.base.attrs {
-                        Attrs::Site(attrs) => attrs,
-                        _ => return Err(anyhow!("expected site attrs for bulk update")),
-                    };
-                    let request = self.build_site_patch_request(attrs)?;
+                    let attrs: SiteAttrs = decode_attrs(&item.desired.base.attrs)?;
+                    let request = self.build_site_patch_request(&attrs)?;
                     batch.push(BulkUpdate::new(item.backend_id, request));
                 }
                 self.client.dcim().sites().bulk_patch(&batch).await?;
             }
-            Kind::DcimDevice => {
+            TYPE_DCIM_DEVICE => {
                 let mut batch = Vec::with_capacity(items.len());
                 for item in items {
-                    let attrs = match &item.desired.base.attrs {
-                        Attrs::Device(attrs) => attrs,
-                        _ => return Err(anyhow!("expected device attrs for bulk update")),
-                    };
-                    let request = self.build_device_update_request(attrs, resolved).await?;
+                    let attrs: DeviceAttrs = decode_attrs(&item.desired.base.attrs)?;
+                    let request = self.build_device_update_request(&attrs, resolved).await?;
                     batch.push(BulkUpdate::new(item.backend_id, request));
                 }
                 self.client.dcim().devices().bulk_patch(&batch).await?;
             }
-            Kind::DcimInterface => {
+            TYPE_DCIM_INTERFACE => {
                 let mut batch = Vec::with_capacity(items.len());
                 for item in items {
-                    let attrs = match &item.desired.base.attrs {
-                        Attrs::Interface(attrs) => attrs,
-                        _ => return Err(anyhow!("expected interface attrs for bulk update")),
-                    };
-                    let request = self.build_interface_patch_request(attrs, resolved).await?;
+                    let attrs: InterfaceAttrs = decode_attrs(&item.desired.base.attrs)?;
+                    let request = self.build_interface_patch_request(&attrs, resolved).await?;
                     batch.push(BulkUpdate::new(item.backend_id, request));
                 }
                 self.client.dcim().interfaces().bulk_patch(&batch).await?;
             }
-            Kind::IpamPrefix => {
+            TYPE_IPAM_PREFIX => {
                 let mut batch = Vec::with_capacity(items.len());
                 for item in items {
-                    let attrs = match &item.desired.base.attrs {
-                        Attrs::Prefix(attrs) => attrs,
-                        _ => return Err(anyhow!("expected prefix attrs for bulk update")),
-                    };
-                    let request = self.build_prefix_update_request(attrs, resolved).await?;
+                    let attrs: PrefixAttrs = decode_attrs(&item.desired.base.attrs)?;
+                    let request = self.build_prefix_update_request(&attrs, resolved).await?;
                     batch.push(BulkUpdate::new(item.backend_id, request));
                 }
                 self.client.ipam().prefixes().bulk_patch(&batch).await?;
             }
-            Kind::IpamIpAddress => {
+            TYPE_IPAM_IP_ADDRESS => {
                 let mut batch = Vec::with_capacity(items.len());
                 for item in items {
-                    let attrs = match &item.desired.base.attrs {
-                        Attrs::IpAddress(attrs) => attrs,
-                        _ => return Err(anyhow!("expected ip address attrs for bulk update")),
-                    };
+                    let attrs: IpAddressAttrs = decode_attrs(&item.desired.base.attrs)?;
                     let request = self
-                        .build_ip_address_update_request(attrs, resolved)
+                        .build_ip_address_update_request(&attrs, resolved)
                         .await?;
                     batch.push(BulkUpdate::new(item.backend_id, request));
                 }
                 self.client.ipam().ip_addresses().bulk_patch(&batch).await?;
             }
-            Kind::Custom(_) => return Err(anyhow!("generic kinds are not supported")),
+            _ => return Err(anyhow!("unsupported type {type_name}")),
         }
 
         Ok(())
     }
 
-    async fn bulk_delete_objects(&self, kind: &Kind, items: &[PendingDelete]) -> Result<()> {
+    async fn bulk_delete_objects(
+        &self,
+        type_name: &TypeName,
+        items: &[PendingDelete],
+    ) -> Result<()> {
         let batch: Vec<BulkDelete> = items
             .iter()
             .map(|item| BulkDelete::new(item.backend_id))
             .collect();
-        match kind {
-            Kind::DcimSite => self.client.dcim().sites().bulk_delete(&batch).await?,
-            Kind::DcimDevice => self.client.dcim().devices().bulk_delete(&batch).await?,
-            Kind::DcimInterface => self.client.dcim().interfaces().bulk_delete(&batch).await?,
-            Kind::IpamPrefix => self.client.ipam().prefixes().bulk_delete(&batch).await?,
-            Kind::IpamIpAddress => {
+        match type_name.as_str() {
+            TYPE_DCIM_SITE => self.client.dcim().sites().bulk_delete(&batch).await?,
+            TYPE_DCIM_DEVICE => self.client.dcim().devices().bulk_delete(&batch).await?,
+            TYPE_DCIM_INTERFACE => self.client.dcim().interfaces().bulk_delete(&batch).await?,
+            TYPE_IPAM_PREFIX => self.client.ipam().prefixes().bulk_delete(&batch).await?,
+            TYPE_IPAM_IP_ADDRESS => {
                 self.client
                     .ipam()
                     .ip_addresses()
                     .bulk_delete(&batch)
                     .await?
             }
-            Kind::Custom(_) => return Err(anyhow!("generic kinds are not supported")),
+            _ => return Err(anyhow!("unsupported type {type_name}")),
         }
 
         Ok(())
@@ -564,27 +657,42 @@ impl NetBoxAdapter {
 
     async fn create_object(
         &self,
-        kind: Kind,
+        type_name: TypeName,
         desired: &ProjectedObject,
         resolved: &mut BTreeMap<Uid, u64>,
     ) -> Result<u64> {
-        let backend_id = match &desired.base.attrs {
-            Attrs::Site(attrs) => self.create_site(attrs).await,
-            Attrs::Device(attrs) => self.create_device(attrs, resolved).await,
-            Attrs::Interface(attrs) => self.create_interface(attrs, resolved).await,
-            Attrs::Prefix(attrs) => self.create_prefix(attrs, resolved).await,
-            Attrs::IpAddress(attrs) => self.create_ip_address(attrs, resolved).await,
-            Attrs::Generic(_) => return Err(anyhow!("generic attrs are not supported")),
+        let backend_id = match type_name.as_str() {
+            TYPE_DCIM_SITE => {
+                let attrs: SiteAttrs = decode_attrs(&desired.base.attrs)?;
+                self.create_site(&attrs).await
+            }
+            TYPE_DCIM_DEVICE => {
+                let attrs: DeviceAttrs = decode_attrs(&desired.base.attrs)?;
+                self.create_device(&attrs, resolved).await
+            }
+            TYPE_DCIM_INTERFACE => {
+                let attrs: InterfaceAttrs = decode_attrs(&desired.base.attrs)?;
+                self.create_interface(&attrs, resolved).await
+            }
+            TYPE_IPAM_PREFIX => {
+                let attrs: PrefixAttrs = decode_attrs(&desired.base.attrs)?;
+                self.create_prefix(&attrs, resolved).await
+            }
+            TYPE_IPAM_IP_ADDRESS => {
+                let attrs: IpAddressAttrs = decode_attrs(&desired.base.attrs)?;
+                self.create_ip_address(&attrs, resolved).await
+            }
+            _ => return Err(anyhow!("unsupported type {type_name}")),
         }
-        .with_context(|| format!("create {}", kind))?;
-        self.apply_projection_patch(&kind, backend_id, &desired.projection)
+        .with_context(|| format!("create {}", type_name))?;
+        self.apply_projection_patch(&type_name, backend_id, &desired.projection)
             .await?;
         Ok(backend_id)
     }
 
     async fn resolve_backend_id(
         &self,
-        kind: Kind,
+        type_name: TypeName,
         uid: Uid,
         backend_id: u64,
         desired: &alembic_core::Object,
@@ -597,15 +705,30 @@ impl NetBoxAdapter {
             return Ok(*id);
         }
 
-        match &desired.attrs {
-            Attrs::Site(attrs) => self.lookup_site_id(attrs).await,
-            Attrs::Device(attrs) => self.lookup_device_id(attrs).await,
-            Attrs::Interface(attrs) => self.lookup_interface_id(attrs, resolved).await,
-            Attrs::Prefix(attrs) => self.lookup_prefix_id(attrs).await,
-            Attrs::IpAddress(attrs) => self.lookup_ip_address_id(attrs).await,
-            Attrs::Generic(_) => return Err(anyhow!("generic attrs are not supported")),
+        match type_name.as_str() {
+            TYPE_DCIM_SITE => {
+                let attrs: SiteAttrs = decode_attrs(&desired.attrs)?;
+                self.lookup_site_id(&attrs).await
+            }
+            TYPE_DCIM_DEVICE => {
+                let attrs: DeviceAttrs = decode_attrs(&desired.attrs)?;
+                self.lookup_device_id(&attrs).await
+            }
+            TYPE_DCIM_INTERFACE => {
+                let attrs: InterfaceAttrs = decode_attrs(&desired.attrs)?;
+                self.lookup_interface_id(&attrs, resolved).await
+            }
+            TYPE_IPAM_PREFIX => {
+                let attrs: PrefixAttrs = decode_attrs(&desired.attrs)?;
+                self.lookup_prefix_id(&attrs).await
+            }
+            TYPE_IPAM_IP_ADDRESS => {
+                let attrs: IpAddressAttrs = decode_attrs(&desired.attrs)?;
+                self.lookup_ip_address_id(&attrs).await
+            }
+            _ => return Err(anyhow!("unsupported type {type_name}")),
         }
-        .with_context(|| format!("resolve backend id for {}", kind))
+        .with_context(|| format!("resolve backend id for {}", type_name))
     }
 
     async fn create_site(&self, attrs: &SiteAttrs) -> Result<u64> {
@@ -640,7 +763,8 @@ impl NetBoxAdapter {
         attrs: &DeviceAttrs,
         resolved: &mut BTreeMap<Uid, u64>,
     ) -> Result<u64> {
-        let site_id = self.resolve_site_id(attrs.site, resolved).await?;
+        let site_uid = parse_uid(&attrs.site)?;
+        let site_id = self.resolve_site_id(site_uid, resolved).await?;
         let role_id = self.lookup_device_role_id(&attrs.role).await?;
         let device_type_id = self.lookup_device_type_id(&attrs.device_type).await?;
 
@@ -667,7 +791,8 @@ impl NetBoxAdapter {
         attrs: &DeviceAttrs,
         resolved: &BTreeMap<Uid, u64>,
     ) -> Result<netbox::dcim::UpdateDeviceRequest> {
-        let site_id = self.resolve_site_id(attrs.site, resolved).await?;
+        let site_uid = parse_uid(&attrs.site)?;
+        let site_id = self.resolve_site_id(site_uid, resolved).await?;
         let role_id = self.lookup_device_role_id(&attrs.role).await?;
         let device_type_id = self.lookup_device_type_id(&attrs.device_type).await?;
 
@@ -687,7 +812,8 @@ impl NetBoxAdapter {
         attrs: &InterfaceAttrs,
         resolved: &mut BTreeMap<Uid, u64>,
     ) -> Result<u64> {
-        let device_id = self.resolve_device_id(attrs.device, resolved).await?;
+        let device_uid = parse_uid(&attrs.device)?;
+        let device_id = self.resolve_device_id(device_uid, resolved).await?;
         let interface_type = interface_type_from_str(attrs.if_type.as_deref())?;
         let device_name = self.device_name_by_id(device_id).await?;
 
@@ -722,7 +848,8 @@ impl NetBoxAdapter {
         request.enabled = attrs.enabled;
         request.description = attrs.description.clone();
 
-        if let Some(device_id) = resolved.get(&attrs.device) {
+        let device_uid = parse_uid(&attrs.device)?;
+        if let Some(device_id) = resolved.get(&device_uid) {
             let mut device_ref = netbox::models::BriefInterfaceRequestDevice::new();
             device_ref.name = Some(Some(self.device_name_by_id(*device_id).await?));
             request.device = Some(Box::new(device_ref));
@@ -736,17 +863,26 @@ impl NetBoxAdapter {
         attrs: &PrefixAttrs,
         resolved: &mut BTreeMap<Uid, u64>,
     ) -> Result<u64> {
-        let site_id = match attrs.site {
-            Some(site_uid) => Some(self.resolve_site_id(site_uid, resolved).await?),
+        let site_id = match &attrs.site {
+            Some(site_uid) => {
+                let uid = parse_uid(site_uid)?;
+                Some(self.resolve_site_id(uid, resolved).await?)
+            }
             None => None,
+        };
+        let (scope_type, scope_id) = match site_id {
+            Some(id) => (Some("dcim.site".to_string()), Some(id as i32)),
+            None => (None, None),
         };
 
         let request = netbox::ipam::CreatePrefixRequest {
             prefix: attrs.prefix.clone(),
-            site: site_id.map(|id| id as i32),
+            site: None,
             vrf: None,
             tenant: None,
             vlan: None,
+            scope_type,
+            scope_id,
             status: None,
             role: None,
             is_pool: None,
@@ -766,14 +902,23 @@ impl NetBoxAdapter {
         attrs: &PrefixAttrs,
         resolved: &BTreeMap<Uid, u64>,
     ) -> Result<netbox::ipam::UpdatePrefixRequest> {
-        let site_id = match attrs.site {
-            Some(site_uid) => Some(self.resolve_site_id(site_uid, resolved).await?),
+        let site_id = match &attrs.site {
+            Some(site_uid) => {
+                let uid = parse_uid(site_uid)?;
+                Some(self.resolve_site_id(uid, resolved).await?)
+            }
             None => None,
+        };
+        let (scope_type, scope_id) = match site_id {
+            Some(id) => (Some("dcim.site".to_string()), Some(id as i32)),
+            None => (None, None),
         };
 
         Ok(netbox::ipam::UpdatePrefixRequest {
             prefix: Some(attrs.prefix.clone()),
-            site: site_id.map(|id| id as i32),
+            site: None,
+            scope_type,
+            scope_id,
             status: None,
             description: attrs.description.clone(),
         })
@@ -785,8 +930,9 @@ impl NetBoxAdapter {
         resolved: &mut BTreeMap<Uid, u64>,
     ) -> Result<u64> {
         let (assigned_type, assigned_id) = match attrs.assigned_interface {
-            Some(interface_uid) => {
-                let id = self.resolve_interface_id(interface_uid, resolved).await?;
+            Some(ref interface_uid) => {
+                let uid = parse_uid(interface_uid)?;
+                let id = self.resolve_interface_id(uid, resolved).await?;
                 (Some("dcim.interface".to_string()), Some(id as i32))
             }
             None => (None, None),
@@ -817,8 +963,9 @@ impl NetBoxAdapter {
         resolved: &BTreeMap<Uid, u64>,
     ) -> Result<IpAddressPatchRequest> {
         let (assigned_type, assigned_id) = match attrs.assigned_interface {
-            Some(interface_uid) => {
-                let id = self.resolve_interface_id(interface_uid, resolved).await?;
+            Some(ref interface_uid) => {
+                let uid = parse_uid(interface_uid)?;
+                let id = self.resolve_interface_id(uid, resolved).await?;
                 (Some("dcim.interface".to_string()), Some(id as i32))
             }
             None => (None, None),
@@ -886,7 +1033,8 @@ impl NetBoxAdapter {
         attrs: &InterfaceAttrs,
         resolved: &BTreeMap<Uid, u64>,
     ) -> Result<u64> {
-        if let Some(device_id) = resolved.get(&attrs.device) {
+        let device_uid = parse_uid(&attrs.device)?;
+        if let Some(device_id) = resolved.get(&device_uid) {
             let query = QueryBuilder::new()
                 .filter("device_id", device_id.to_string())
                 .filter("name", &attrs.name);
@@ -968,7 +1116,7 @@ impl NetBoxAdapter {
 
     async fn apply_projection_patch(
         &self,
-        kind: &Kind,
+        type_name: &TypeName,
         backend_id: u64,
         projection: &ProjectionData,
     ) -> Result<()> {
@@ -977,11 +1125,6 @@ impl NetBoxAdapter {
             && projection.local_context.is_none()
         {
             return Ok(());
-        }
-        if projection.local_context.is_some() && !matches!(kind, Kind::DcimDevice) {
-            return Err(anyhow!(
-                "local context projection is only supported for dcim.device"
-            ));
         }
 
         let tags = projection
@@ -993,8 +1136,8 @@ impl NetBoxAdapter {
             .as_ref()
             .map(map_custom_fields_patch);
 
-        match kind {
-            Kind::DcimSite => {
+        match type_name.as_str() {
+            TYPE_DCIM_SITE => {
                 let request = netbox::dcim::PatchSiteFieldsRequest {
                     custom_fields,
                     tags,
@@ -1005,7 +1148,7 @@ impl NetBoxAdapter {
                     .patch(backend_id, &request)
                     .await?;
             }
-            Kind::DcimDevice => {
+            TYPE_DCIM_DEVICE => {
                 let request = netbox::dcim::PatchDeviceFieldsRequest {
                     custom_fields,
                     tags,
@@ -1017,7 +1160,7 @@ impl NetBoxAdapter {
                     .patch(backend_id, &request)
                     .await?;
             }
-            Kind::DcimInterface => {
+            TYPE_DCIM_INTERFACE => {
                 let request = netbox::dcim::PatchInterfaceFieldsRequest {
                     custom_fields,
                     tags,
@@ -1028,7 +1171,7 @@ impl NetBoxAdapter {
                     .patch(backend_id, &request)
                     .await?;
             }
-            Kind::IpamPrefix => {
+            TYPE_IPAM_PREFIX => {
                 let request = netbox::ipam::PatchPrefixFieldsRequest {
                     custom_fields,
                     tags,
@@ -1039,7 +1182,7 @@ impl NetBoxAdapter {
                     .patch(backend_id, &request)
                     .await?;
             }
-            Kind::IpamIpAddress => {
+            TYPE_IPAM_IP_ADDRESS => {
                 let request = netbox::ipam::PatchIpAddressFieldsRequest {
                     custom_fields,
                     tags,
@@ -1050,7 +1193,7 @@ impl NetBoxAdapter {
                     .patch(backend_id, &request)
                     .await?;
             }
-            Kind::Custom(_) => {}
+            _ => {}
         }
 
         Ok(())

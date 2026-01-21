@@ -1,6 +1,6 @@
 //! local uid -> backend id state store.
 
-use alembic_core::{Kind, Uid};
+use alembic_core::{TypeName, Uid};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 struct StateData {
     #[serde(default)]
-    mappings: BTreeMap<Kind, BTreeMap<Uid, u64>>,
+    mappings: BTreeMap<TypeName, BTreeMap<Uid, u64>>,
 }
 
 /// state store wrapper with load/save helpers.
@@ -51,32 +51,32 @@ impl StateStore {
         Ok(())
     }
 
-    /// lookup a backend id by kind + uid.
-    pub fn backend_id(&self, kind: Kind, uid: Uid) -> Option<u64> {
+    /// lookup a backend id by type + uid.
+    pub fn backend_id(&self, type_name: TypeName, uid: Uid) -> Option<u64> {
         self.data
             .mappings
-            .get(&kind)
+            .get(&type_name)
             .and_then(|map| map.get(&uid).copied())
     }
 
     /// set a backend id mapping.
-    pub fn set_backend_id(&mut self, kind: Kind, uid: Uid, backend_id: u64) {
+    pub fn set_backend_id(&mut self, type_name: TypeName, uid: Uid, backend_id: u64) {
         self.data
             .mappings
-            .entry(kind)
+            .entry(type_name)
             .or_default()
             .insert(uid, backend_id);
     }
 
     /// remove a backend id mapping.
-    pub fn remove_backend_id(&mut self, kind: Kind, uid: Uid) {
-        if let Some(kind_map) = self.data.mappings.get_mut(&kind) {
-            kind_map.remove(&uid);
+    pub fn remove_backend_id(&mut self, type_name: TypeName, uid: Uid) {
+        if let Some(type_map) = self.data.mappings.get_mut(&type_name) {
+            type_map.remove(&uid);
         }
     }
 
     /// return all mappings for external use.
-    pub fn all_mappings(&self) -> &BTreeMap<Kind, BTreeMap<Uid, u64>> {
+    pub fn all_mappings(&self) -> &BTreeMap<TypeName, BTreeMap<Uid, u64>> {
         &self.data.mappings
     }
 }

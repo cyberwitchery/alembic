@@ -1,6 +1,6 @@
 //! django app generation from alembic ir.
 
-use alembic_core::{Inventory, Kind};
+use alembic_core::{Inventory, TypeName};
 use anyhow::Result;
 use std::collections::BTreeSet;
 use std::fs;
@@ -70,8 +70,8 @@ pub fn emit_django_app(
         .and_then(|name| name.to_str())
         .unwrap_or("alembic_app");
 
-    let kinds = inventory_kinds(inventory);
-    let models: Vec<ModelSpec> = kinds.iter().filter_map(model_spec).collect();
+    let types = inventory_types(inventory);
+    let models: Vec<ModelSpec> = types.iter().filter_map(model_spec).collect();
 
     let rendered = render_files(&models, app_name, options.emit_admin);
     fs::write(app_dir.join(GENERATED_MODELS), rendered.models)?;
@@ -106,25 +106,26 @@ pub fn emit_django_app(
     Ok(())
 }
 
-fn inventory_kinds(inventory: &Inventory) -> Vec<Kind> {
+fn inventory_types(inventory: &Inventory) -> Vec<TypeName> {
     let mut objects = inventory.objects.clone();
     objects.sort_by(|a, b| {
-        (a.kind.as_string(), a.key.clone()).cmp(&(b.kind.as_string(), b.key.clone()))
+        (a.type_name.as_str().to_string(), a.key.clone())
+            .cmp(&(b.type_name.as_str().to_string(), b.key.clone()))
     });
 
     let mut seen = BTreeSet::new();
-    let mut kinds = Vec::new();
+    let mut types = Vec::new();
     for object in objects {
-        if seen.insert(object.kind.as_string()) {
-            kinds.push(object.kind);
+        if seen.insert(object.type_name.as_str().to_string()) {
+            types.push(object.type_name);
         }
     }
-    kinds
+    types
 }
 
-fn model_spec(kind: &Kind) -> Option<ModelSpec> {
-    match kind {
-        Kind::DcimSite => Some(ModelSpec {
+fn model_spec(type_name: &TypeName) -> Option<ModelSpec> {
+    match type_name.as_str() {
+        "dcim.site" => Some(ModelSpec {
             class_name: "Site",
             fields: vec![
                 FieldSpec::Text {
@@ -145,7 +146,7 @@ fn model_spec(kind: &Kind) -> Option<ModelSpec> {
                 },
             ],
         }),
-        Kind::DcimDevice => Some(ModelSpec {
+        "dcim.device" => Some(ModelSpec {
             class_name: "Device",
             fields: vec![
                 FieldSpec::Text {
@@ -171,7 +172,7 @@ fn model_spec(kind: &Kind) -> Option<ModelSpec> {
                 },
             ],
         }),
-        Kind::DcimInterface => Some(ModelSpec {
+        "dcim.interface" => Some(ModelSpec {
             class_name: "Interface",
             fields: vec![
                 FieldSpec::Text {
@@ -197,7 +198,7 @@ fn model_spec(kind: &Kind) -> Option<ModelSpec> {
                 },
             ],
         }),
-        Kind::IpamPrefix => Some(ModelSpec {
+        "ipam.prefix" => Some(ModelSpec {
             class_name: "Prefix",
             fields: vec![
                 FieldSpec::Text {
@@ -215,7 +216,7 @@ fn model_spec(kind: &Kind) -> Option<ModelSpec> {
                 },
             ],
         }),
-        Kind::IpamIpAddress => Some(ModelSpec {
+        "ipam.ip_address" => Some(ModelSpec {
             class_name: "IpAddress",
             fields: vec![
                 FieldSpec::Text {
@@ -233,7 +234,7 @@ fn model_spec(kind: &Kind) -> Option<ModelSpec> {
                 },
             ],
         }),
-        Kind::Custom(_) => None,
+        _ => None,
     }
 }
 
@@ -352,7 +353,7 @@ fn render_model_block(model: &ModelSpec) -> String {
     let mut fields = Vec::with_capacity(model.fields.len() + 3);
     fields.push("uid = models.UUIDField(primary_key=True, editable=False)".to_string());
     fields.push("key = models.TextField()".to_string());
-    fields.push("x = models.JSONField(default=dict, blank=True)".to_string());
+    fields.push("attrs = models.JSONField(default=dict, blank=True)".to_string());
     for field in &model.fields {
         fields.push(render_field(field));
     }
@@ -501,7 +502,7 @@ fn admin_list_filter(model: &ModelSpec) -> Vec<&'static str> {
 }
 
 fn serializer_fields(model: &ModelSpec) -> Vec<&'static str> {
-    let mut fields = vec!["uid", "key", "x"];
+    let mut fields = vec!["uid", "key", "attrs"];
     fields.extend(model.fields.iter().map(field_name));
     fields
 }
@@ -587,48 +588,61 @@ fn default_views_stub() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alembic_core::{Attrs, DeviceAttrs, InterfaceAttrs, Inventory, Object, SiteAttrs};
+    use alembic_core::{Inventory, JsonMap, Object, TypeName};
+    use serde_json::{json, Value};
+    use std::collections::BTreeMap;
     use tempfile::tempdir;
     use uuid::Uuid;
 
+    fn attrs_map(pairs: Vec<(&str, Value)>) -> JsonMap {
+        JsonMap::from(
+            pairs
+                .into_iter()
+                .map(|(key, value)| (key.to_string(), value))
+                .collect::<BTreeMap<_, _>>(),
+        )
+    }
+
+    fn obj(uid: u128, type_name: &str, key: &str, attrs: JsonMap) -> Object {
+        Object::new(
+            Uuid::from_u128(uid),
+            TypeName::new(type_name),
+            key.to_string(),
+            attrs,
+        )
+        .unwrap()
+    }
+
     fn sample_inventory() -> Inventory {
         Inventory {
+            schema: None,
             objects: vec![
-                Object::new(
-                    Uuid::from_u128(1),
-                    "device=leaf01".to_string(),
-                    Attrs::Device(DeviceAttrs {
-                        name: "leaf01".to_string(),
-                        site: Uuid::from_u128(2),
-                        role: "leaf".to_string(),
-                        device_type: "leaf-switch".to_string(),
-                        status: None,
-                    }),
-                )
-                .unwrap(),
-                Object::new(
-                    Uuid::from_u128(2),
-                    "site=fra1".to_string(),
-                    Attrs::Site(SiteAttrs {
-                        name: "FRA1".to_string(),
-                        slug: "fra1".to_string(),
-                        status: None,
-                        description: None,
-                    }),
-                )
-                .unwrap(),
-                Object::new(
-                    Uuid::from_u128(3),
-                    "interface=eth0".to_string(),
-                    Attrs::Interface(InterfaceAttrs {
-                        name: "eth0".to_string(),
-                        device: Uuid::from_u128(1),
-                        if_type: None,
-                        enabled: None,
-                        description: None,
-                    }),
-                )
-                .unwrap(),
+                obj(
+                    1,
+                    "dcim.device",
+                    "device=leaf01",
+                    attrs_map(vec![
+                        ("name", json!("leaf01")),
+                        ("site", json!(Uuid::from_u128(2).to_string())),
+                        ("role", json!("leaf")),
+                        ("device_type", json!("leaf-switch")),
+                    ]),
+                ),
+                obj(
+                    2,
+                    "dcim.site",
+                    "site=fra1",
+                    attrs_map(vec![("name", json!("FRA1")), ("slug", json!("fra1"))]),
+                ),
+                obj(
+                    3,
+                    "dcim.interface",
+                    "interface=eth0",
+                    attrs_map(vec![
+                        ("name", json!("eth0")),
+                        ("device", json!(Uuid::from_u128(1).to_string())),
+                    ]),
+                ),
             ],
         }
     }
@@ -658,7 +672,7 @@ mod tests {
         let models = fs::read_to_string(dir.path().join(GENERATED_MODELS)).unwrap();
         assert!(models.contains("class Site"));
         assert!(models.contains("uid = models.UUIDField"));
-        assert!(models.contains("x = models.JSONField"));
+        assert!(models.contains("attrs = models.JSONField"));
     }
 
     #[test]

@@ -1,15 +1,35 @@
 use super::*;
 use crate::project_default;
-use alembic_core::{
-    Attrs, DeviceAttrs, InterfaceAttrs, Inventory, Kind, Object, PrefixAttrs, SiteAttrs, Uid,
-};
+use alembic_core::{Inventory, JsonMap, Object, TypeName, Uid};
 use serde_json::json;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use tempfile::tempdir;
 use uuid::Uuid;
 
 fn uid(n: u128) -> Uid {
     Uuid::from_u128(n)
+}
+
+fn t(name: &str) -> TypeName {
+    TypeName::new(name)
+}
+
+fn attrs_map(value: serde_json::Value) -> JsonMap {
+    let serde_json::Value::Object(map) = value else {
+        panic!("attrs must be a json object");
+    };
+    map.into_iter().collect::<BTreeMap<_, _>>().into()
+}
+
+fn obj(uid: Uid, type_name: &str, key: &str, attrs: serde_json::Value) -> Object {
+    Object::new(uid, t(type_name), key.to_string(), attrs_map(attrs)).unwrap()
+}
+
+fn inv(objects: Vec<Object>) -> Inventory {
+    Inventory {
+        schema: None,
+        objects,
+    }
 }
 
 #[test]
@@ -24,7 +44,7 @@ fn load_includes_combines_objects() {
         &child,
         r#"objects:
   - uid: "00000000-0000-0000-0000-000000000001"
-    kind: dcim.site
+    type: dcim.site
     key: "site=child"
     attrs:
       name: "Child"
@@ -40,7 +60,7 @@ fn load_includes_combines_objects() {
   - {}
 objects:
   - uid: "00000000-0000-0000-0000-000000000002"
-    kind: dcim.site
+    type: dcim.site
     key: "site=base"
     attrs:
       name: "Base"
@@ -61,7 +81,7 @@ fn load_json_brew() {
     let path = dir.path().join("brew.json");
     std::fs::write(
         &path,
-        r#"{ "objects": [ { "uid": "00000000-0000-0000-0000-000000000010", "kind": "dcim.site", "key": "site=fra1", "attrs": { "name": "FRA1", "slug": "fra1" } } ] }"#,
+        r#"{ "objects": [ { "uid": "00000000-0000-0000-0000-000000000010", "type": "dcim.site", "key": "site=fra1", "attrs": { "name": "FRA1", "slug": "fra1" } } ] }"#,
     )
     .unwrap();
 
@@ -77,7 +97,7 @@ fn load_generic_kind_as_generic_attrs() {
         &path,
         r#"objects:
   - uid: "00000000-0000-0000-0000-000000000010"
-    kind: services.vpn
+    type: services.vpn
     key: "vpn=corp"
     attrs:
       peers:
@@ -85,7 +105,7 @@ fn load_generic_kind_as_generic_attrs() {
           ip: 10.0.0.1
       pre_shared_key: "secret"
   - uid: "00000000-0000-0000-0000-000000000011"
-    kind: dcim.site
+    type: dcim.site
     key: "site=fra1"
     attrs:
       name: "FRA1"
@@ -96,10 +116,10 @@ fn load_generic_kind_as_generic_attrs() {
 
     let inventory = load_brew(&path).unwrap();
     let generic = &inventory.objects[0];
-    assert!(matches!(generic.attrs, Attrs::Generic(_)));
-    assert_eq!(generic.kind.to_string(), "services.vpn");
+    assert_eq!(generic.type_name.as_str(), "services.vpn");
+    assert!(generic.attrs.contains_key("pre_shared_key"));
     let typed = &inventory.objects[1];
-    assert!(matches!(typed.attrs, Attrs::Site(_)));
+    assert_eq!(typed.type_name.as_str(), "dcim.site");
 }
 #[test]
 fn load_with_imports_merges_objects() {
@@ -112,7 +132,7 @@ fn load_with_imports_merges_objects() {
         &a,
         r#"objects:
   - uid: "00000000-0000-0000-0000-000000000020"
-    kind: dcim.site
+    type: dcim.site
     key: "site=a"
     attrs:
       name: "A"
@@ -127,7 +147,7 @@ fn load_with_imports_merges_objects() {
   - {}
 objects:
   - uid: "00000000-0000-0000-0000-000000000021"
-    kind: dcim.site
+    type: dcim.site
     key: "site=b"
     attrs:
       name: "B"
@@ -157,7 +177,7 @@ fn load_is_idempotent_with_cycles() {
   - {}
 objects:
   - uid: "00000000-0000-0000-0000-000000000030"
-    kind: dcim.site
+    type: dcim.site
     key: "site=a"
     attrs:
       name: "A"
@@ -174,7 +194,7 @@ objects:
   - {}
 objects:
   - uid: "00000000-0000-0000-0000-000000000031"
-    kind: dcim.site
+    type: dcim.site
     key: "site=b"
     attrs:
       name: "B"
@@ -224,49 +244,61 @@ fn load_errors_on_invalid_yaml() {
 #[test]
 fn detects_duplicate_uids() {
     let objects = vec![
-        Object::new(
+        obj(
             uid(1),
-            "site=a".to_string(),
-            Attrs::Site(SiteAttrs {
-                name: "A".to_string(),
-                slug: "a".to_string(),
-                status: None,
-                description: None,
-            }),
-        )
-        .unwrap(),
-        Object::new(
+            "dcim.site",
+            "site=a",
+            json!({ "name": "A", "slug": "a" }),
+        ),
+        obj(
             uid(1),
-            "site=b".to_string(),
-            Attrs::Site(SiteAttrs {
-                name: "B".to_string(),
-                slug: "b".to_string(),
-                status: None,
-                description: None,
-            }),
-        )
-        .unwrap(),
+            "dcim.site",
+            "site=b",
+            json!({ "name": "B", "slug": "b" }),
+        ),
     ];
-    let inventory = Inventory { objects };
+    let inventory = Inventory {
+        schema: None,
+        objects,
+    };
     let result = validate(&inventory);
     assert!(result.is_err());
 }
 
 #[test]
 fn detects_missing_references() {
-    let objects = vec![Object::new(
+    let objects = vec![obj(
         uid(2),
-        "device=leaf01/interface=eth0".to_string(),
-        Attrs::Interface(InterfaceAttrs {
-            name: "eth0".to_string(),
-            device: uid(3),
-            if_type: Some("1000base-t".to_string()),
-            enabled: Some(true),
-            description: None,
+        "dcim.interface",
+        "device=leaf01/interface=eth0",
+        json!({
+            "name": "eth0",
+            "device": uid(3).to_string(),
+            "if_type": "1000base-t",
+            "enabled": true
         }),
-    )
-    .unwrap()];
-    let inventory = Inventory { objects };
+    )];
+    let inventory = Inventory {
+        schema: Some(alembic_core::Schema {
+            types: BTreeMap::from([(
+                "dcim.interface".to_string(),
+                alembic_core::TypeSchema {
+                    fields: BTreeMap::from([(
+                        "device".to_string(),
+                        alembic_core::FieldSchema {
+                            r#type: alembic_core::FieldType::Ref {
+                                target: "dcim.device".to_string(),
+                            },
+                            required: true,
+                            nullable: false,
+                            description: None,
+                        },
+                    )]),
+                },
+            )]),
+        }),
+        objects,
+    };
     let result = validate(&inventory);
     assert!(result.is_err());
 }
@@ -276,77 +308,62 @@ fn plans_in_stable_order() {
     let site_uid = uid(10);
     let device_uid = uid(11);
     let objects = vec![
-        Object::new(
+        obj(
             device_uid,
-            "site=fra1/device=leaf01".to_string(),
-            Attrs::Device(DeviceAttrs {
-                name: "leaf01".to_string(),
-                site: site_uid,
-                role: "leaf".to_string(),
-                device_type: "leaf-switch".to_string(),
-                status: None,
+            "dcim.device",
+            "site=fra1/device=leaf01",
+            json!({
+                "name": "leaf01",
+                "site": site_uid.to_string(),
+                "role": "leaf",
+                "device_type": "leaf-switch"
             }),
-        )
-        .unwrap(),
-        Object::new(
+        ),
+        obj(
             site_uid,
-            "site=fra1".to_string(),
-            Attrs::Site(SiteAttrs {
-                name: "FRA1".to_string(),
-                slug: "fra1".to_string(),
-                status: None,
-                description: None,
-            }),
-        )
-        .unwrap(),
+            "dcim.site",
+            "site=fra1",
+            json!({ "name": "FRA1", "slug": "fra1" }),
+        ),
     ];
 
-    let inventory = Inventory { objects };
+    let inventory = Inventory {
+        schema: None,
+        objects,
+    };
     let observed = ObservedState::default();
     let state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
     let projected = project_default(&inventory.objects);
     let plan = plan(&projected, &observed, &state, false);
 
     assert_eq!(plan.ops.len(), 2);
-    let kinds: Vec<Kind> = plan
+    let kinds: Vec<TypeName> = plan
         .ops
         .iter()
         .map(|op| match op {
-            Op::Create { kind, .. } => kind.clone(),
+            Op::Create { type_name, .. } => type_name.clone(),
             _ => panic!("unexpected op"),
         })
         .collect();
 
-    assert_eq!(kinds, vec![Kind::DcimSite, Kind::DcimDevice]);
+    assert_eq!(kinds, vec![t("dcim.device"), t("dcim.site")]);
 }
 
 #[test]
 fn detects_attribute_diff() {
     let uid = uid(20);
-    let desired = Inventory {
-        objects: vec![Object::new(
-            uid,
-            "site=fra1".to_string(),
-            Attrs::Site(SiteAttrs {
-                name: "FRA1".to_string(),
-                slug: "fra1".to_string(),
-                status: None,
-                description: None,
-            }),
-        )
-        .unwrap()],
-    };
+    let desired = inv(vec![obj(
+        uid,
+        "dcim.site",
+        "site=fra1",
+        json!({ "name": "FRA1", "slug": "fra1" }),
+    )]);
 
     let mut observed = ObservedState::default();
     observed.insert(ObservedObject {
-        kind: Kind::DcimSite,
+        type_name: t("dcim.site"),
         key: "site=fra1".to_string(),
-        attrs: Attrs::Site(SiteAttrs {
-            name: "OLD".to_string(),
-            slug: "fra1".to_string(),
-            status: None,
-            description: None,
-        }),
+        attrs: attrs_map(json!({ "name": "OLD", "slug": "fra1" })),
         projection: crate::ProjectionData::default(),
         backend_id: Some(100),
     });
@@ -373,20 +390,19 @@ fn detects_generic_payload_diff() {
     to.insert("a".to_string(), serde_json::json!(2));
     to.insert("b".to_string(), serde_json::json!({"nested": true}));
 
-    let desired = Inventory {
-        objects: vec![Object::new_generic(
-            uid,
-            Kind::Custom("services.vpn".to_string()),
-            "vpn=corp".to_string(),
-            to.into(),
-        )],
-    };
+    let desired = inv(vec![Object::new(
+        uid,
+        t("services.vpn"),
+        "vpn=corp".to_string(),
+        to.into(),
+    )
+    .unwrap()]);
 
     let mut observed = ObservedState::default();
     observed.insert(ObservedObject {
-        kind: Kind::Custom("services.vpn".to_string()),
+        type_name: t("services.vpn"),
         key: "vpn=corp".to_string(),
-        attrs: Attrs::Generic(from.into()),
+        attrs: from.into(),
         projection: crate::ProjectionData::default(),
         backend_id: Some(10),
     });
@@ -398,8 +414,11 @@ fn detects_generic_payload_diff() {
     assert_eq!(plan.ops.len(), 1);
     match &plan.ops[0] {
         Op::Update { changes, .. } => {
-            assert_eq!(changes.len(), 1);
-            assert_eq!(changes[0].field, "attrs");
+            assert_eq!(changes.len(), 2);
+            let mut fields: Vec<&str> =
+                changes.iter().map(|change| change.field.as_str()).collect();
+            fields.sort();
+            assert_eq!(fields, vec!["a", "b"]);
         }
         _ => panic!("expected update"),
     }
@@ -407,18 +426,15 @@ fn detects_generic_payload_diff() {
 
 #[test]
 fn planner_includes_projected_custom_fields() {
-    let mut object = Object::new(
+    let mut object = obj(
         uid(70),
-        "site=fra1".to_string(),
-        Attrs::Site(SiteAttrs {
-            name: "FRA1".to_string(),
-            slug: "fra1".to_string(),
-            status: None,
-            description: None,
-        }),
-    )
-    .unwrap();
-    object.x.insert("model.fabric".to_string(), json!("fra1"));
+        "dcim.site",
+        "site=fra1",
+        json!({ "name": "FRA1", "slug": "fra1" }),
+    );
+    object
+        .attrs
+        .insert("model.fabric".to_string(), json!("fra1"));
 
     let spec: crate::ProjectionSpec = serde_yaml::from_str(
         r#"
@@ -426,8 +442,8 @@ version: 1
 backend: netbox
 rules:
   - name: cf
-    on_kind: dcim.site
-    from_x:
+    on_type: dcim.site
+    from_attrs:
       prefix: "model."
     to:
       custom_fields:
@@ -443,14 +459,9 @@ rules:
     let mut fields = BTreeMap::new();
     fields.insert("fabric".to_string(), json!("old"));
     observed.insert(ObservedObject {
-        kind: Kind::DcimSite,
+        type_name: t("dcim.site"),
         key: "site=fra1".to_string(),
-        attrs: Attrs::Site(SiteAttrs {
-            name: "FRA1".to_string(),
-            slug: "fra1".to_string(),
-            status: None,
-            description: None,
-        }),
+        attrs: attrs_map(json!({ "name": "FRA1", "slug": "fra1" })),
         projection: crate::ProjectionData {
             custom_fields: Some(fields),
             tags: None,
@@ -470,29 +481,24 @@ rules:
 
 #[test]
 fn planner_ignores_optional_nulls() {
-    let desired = Object::new(
+    let desired = obj(
         uid(80),
-        "site=fra1".to_string(),
-        Attrs::Site(SiteAttrs {
-            name: "FRA1".to_string(),
-            slug: "fra1".to_string(),
-            status: None,
-            description: None,
-        }),
-    )
-    .unwrap();
+        "dcim.site",
+        "site=fra1",
+        json!({ "name": "FRA1", "slug": "fra1" }),
+    );
     let projected = project_default(std::slice::from_ref(&desired));
 
     let mut observed = ObservedState::default();
     observed.insert(ObservedObject {
-        kind: Kind::DcimSite,
+        type_name: t("dcim.site"),
         key: "site=fra1".to_string(),
-        attrs: Attrs::Site(SiteAttrs {
-            name: "FRA1".to_string(),
-            slug: "fra1".to_string(),
-            status: Some("active".to_string()),
-            description: Some("".to_string()),
-        }),
+        attrs: attrs_map(json!({
+            "name": "FRA1",
+            "slug": "fra1",
+            "status": "active",
+            "description": ""
+        })),
         projection: crate::ProjectionData::default(),
         backend_id: Some(1),
     });
@@ -504,17 +510,12 @@ fn planner_ignores_optional_nulls() {
 
 #[test]
 fn planner_ignores_unprojected_custom_fields() {
-    let desired = Object::new(
+    let desired = obj(
         uid(81),
-        "site=fra1".to_string(),
-        Attrs::Site(SiteAttrs {
-            name: "FRA1".to_string(),
-            slug: "fra1".to_string(),
-            status: None,
-            description: None,
-        }),
-    )
-    .unwrap();
+        "dcim.site",
+        "site=fra1",
+        json!({ "name": "FRA1", "slug": "fra1" }),
+    );
     let mut desired_fields = BTreeMap::new();
     desired_fields.insert("fabric".to_string(), json!("fra1"));
     let projected = ProjectedInventory {
@@ -525,6 +526,7 @@ fn planner_ignores_unprojected_custom_fields() {
                 tags: None,
                 local_context: None,
             },
+            projection_inputs: BTreeSet::new(),
         }],
     };
 
@@ -533,7 +535,7 @@ fn planner_ignores_unprojected_custom_fields() {
     observed_fields.insert("extra".to_string(), json!("ignored"));
     let mut observed = ObservedState::default();
     observed.insert(ObservedObject {
-        kind: Kind::DcimSite,
+        type_name: t("dcim.site"),
         key: "site=fra1".to_string(),
         attrs: desired.attrs.clone(),
         projection: crate::ProjectionData {
@@ -551,71 +553,62 @@ fn planner_ignores_unprojected_custom_fields() {
 
 #[test]
 fn planner_matches_backend_id_by_kind() {
-    let desired = Object::new(
+    let desired = obj(
         uid(82),
-        "site=fra1/device=leaf01".to_string(),
-        Attrs::Device(DeviceAttrs {
-            name: "leaf01".to_string(),
-            site: uid(1),
-            role: "leaf".to_string(),
-            device_type: "leaf".to_string(),
-            status: None,
+        "dcim.device",
+        "site=fra1/device=leaf01",
+        json!({
+            "name": "leaf01",
+            "site": uid(1).to_string(),
+            "role": "leaf",
+            "device_type": "leaf"
         }),
-    )
-    .unwrap();
+    );
     let projected = project_default(std::slice::from_ref(&desired));
 
     let mut observed = ObservedState::default();
     observed.insert(ObservedObject {
-        kind: Kind::DcimDevice,
+        type_name: t("dcim.device"),
         key: "site=fra1/device=leaf01".to_string(),
         attrs: desired.attrs.clone(),
         projection: crate::ProjectionData::default(),
         backend_id: Some(1),
     });
     observed.insert(ObservedObject {
-        kind: Kind::DcimInterface,
+        type_name: t("dcim.interface"),
         key: "device=leaf01/interface=eth0".to_string(),
-        attrs: Attrs::Interface(InterfaceAttrs {
-            name: "eth0".to_string(),
-            device: uid(82),
-            if_type: None,
-            enabled: None,
-            description: None,
-        }),
+        attrs: attrs_map(json!({
+            "name": "eth0",
+            "device": uid(82).to_string()
+        })),
         projection: crate::ProjectionData::default(),
         backend_id: Some(1),
     });
 
     let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
-    state.set_backend_id(Kind::DcimDevice, desired.uid, 1);
+    state.set_backend_id(t("dcim.device"), desired.uid, 1);
     let plan = plan(&projected, &observed, &state, false);
     assert!(plan.ops.is_empty());
 }
 
 #[test]
 fn planner_includes_prefix_site_diff() {
-    let desired = Object::new(
+    let desired = obj(
         uid(83),
-        "prefix=10.0.0.0/24".to_string(),
-        Attrs::Prefix(PrefixAttrs {
-            prefix: "10.0.0.0/24".to_string(),
-            site: Some(uid(1)),
-            description: None,
+        "ipam.prefix",
+        "prefix=10.0.0.0/24",
+        json!({
+            "prefix": "10.0.0.0/24",
+            "site": uid(1).to_string()
         }),
-    )
-    .unwrap();
+    );
     let projected = project_default(std::slice::from_ref(&desired));
 
     let mut observed = ObservedState::default();
     observed.insert(ObservedObject {
-        kind: Kind::IpamPrefix,
+        type_name: t("ipam.prefix"),
         key: "prefix=10.0.0.0/24".to_string(),
-        attrs: Attrs::Prefix(PrefixAttrs {
-            prefix: "10.0.0.0/24".to_string(),
-            site: None,
-            description: None,
-        }),
+        attrs: attrs_map(json!({ "prefix": "10.0.0.0/24" })),
         projection: crate::ProjectionData::default(),
         backend_id: Some(1),
     });
@@ -636,16 +629,16 @@ fn state_store_roundtrip() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("state.json");
     let mut store = StateStore::load(&path).unwrap();
-    store.set_backend_id(Kind::DcimSite, uid(99), 123);
+    store.set_backend_id(t("dcim.site"), uid(99), 123);
     store.save().unwrap();
 
     let reloaded = StateStore::load(&path).unwrap();
-    assert_eq!(reloaded.backend_id(Kind::DcimSite, uid(99)), Some(123));
-    assert!(reloaded.all_mappings().contains_key(&Kind::DcimSite));
+    assert_eq!(reloaded.backend_id(t("dcim.site"), uid(99)), Some(123));
+    assert!(reloaded.all_mappings().contains_key(&t("dcim.site")));
 
     let mut reloaded = reloaded;
-    reloaded.remove_backend_id(Kind::DcimSite, uid(99));
-    assert_eq!(reloaded.backend_id(Kind::DcimSite, uid(99)), None);
+    reloaded.remove_backend_id(t("dcim.site"), uid(99));
+    assert_eq!(reloaded.backend_id(t("dcim.site"), uid(99)), None);
 }
 
 #[test]
@@ -687,17 +680,12 @@ fn state_store_save_errors_on_bad_parent() {
 
 #[test]
 fn plan_generates_deletes_when_enabled() {
-    let desired = Inventory { objects: vec![] };
+    let desired = inv(vec![]);
     let mut observed = ObservedState::default();
     observed.insert(ObservedObject {
-        kind: Kind::DcimSite,
+        type_name: t("dcim.site"),
         key: "site=orphan".to_string(),
-        attrs: Attrs::Site(SiteAttrs {
-            name: "orphan".to_string(),
-            slug: "orphan".to_string(),
-            status: None,
-            description: None,
-        }),
+        attrs: attrs_map(json!({ "name": "orphan", "slug": "orphan" })),
         projection: crate::ProjectionData::default(),
         backend_id: Some(10),
     });
@@ -713,26 +701,22 @@ fn apply_order_puts_deletes_last() {
     let ops = vec![
         Op::Delete {
             uid: uid(1),
-            kind: Kind::DcimDevice,
+            type_name: t("dcim.device"),
             key: "site=fra1/device=leaf01".to_string(),
             backend_id: Some(2),
         },
         Op::Create {
             uid: uid(2),
-            kind: Kind::DcimSite,
+            type_name: t("dcim.site"),
             desired: crate::ProjectedObject {
-                base: Object::new(
+                base: obj(
                     uid(2),
-                    "site=fra1".to_string(),
-                    Attrs::Site(SiteAttrs {
-                        name: "FRA1".to_string(),
-                        slug: "fra1".to_string(),
-                        status: None,
-                        description: None,
-                    }),
-                )
-                .unwrap(),
+                    "dcim.site",
+                    "site=fra1",
+                    json!({ "name": "FRA1", "slug": "fra1" }),
+                ),
                 projection: crate::ProjectionData::default(),
+                projection_inputs: BTreeSet::new(),
             },
         },
     ];
@@ -750,7 +734,7 @@ struct TestAdapter {
 
 #[async_trait::async_trait]
 impl Adapter for TestAdapter {
-    async fn observe(&self, _kinds: &[Kind]) -> anyhow::Result<ObservedState> {
+    async fn observe(&self, _types: &[TypeName]) -> anyhow::Result<ObservedState> {
         Ok(self.observed.clone())
     }
 
@@ -761,19 +745,12 @@ impl Adapter for TestAdapter {
 
 #[test]
 fn build_plan_creates_ops() {
-    let inventory = Inventory {
-        objects: vec![Object::new(
-            uid(1),
-            "site=fra1".to_string(),
-            Attrs::Site(SiteAttrs {
-                name: "FRA1".to_string(),
-                slug: "fra1".to_string(),
-                status: None,
-                description: None,
-            }),
-        )
-        .unwrap()],
-    };
+    let inventory = inv(vec![obj(
+        uid(1),
+        "dcim.site",
+        "site=fra1",
+        json!({ "name": "FRA1", "slug": "fra1" }),
+    )]);
     let adapter = TestAdapter {
         observed: ObservedState::default(),
         report: ApplyReport { applied: vec![] },
@@ -786,29 +763,17 @@ fn build_plan_creates_ops() {
 
 #[test]
 fn build_plan_bootstraps_state_by_key() {
-    let inventory = Inventory {
-        objects: vec![Object::new(
-            uid(1),
-            "site=fra1".to_string(),
-            Attrs::Site(SiteAttrs {
-                name: "FRA1".to_string(),
-                slug: "fra1".to_string(),
-                status: None,
-                description: None,
-            }),
-        )
-        .unwrap()],
-    };
+    let inventory = inv(vec![obj(
+        uid(1),
+        "dcim.site",
+        "site=fra1",
+        json!({ "name": "FRA1", "slug": "fra1" }),
+    )]);
     let mut observed = ObservedState::default();
     observed.insert(ObservedObject {
-        kind: Kind::DcimSite,
+        type_name: t("dcim.site"),
         key: "site=fra1".to_string(),
-        attrs: Attrs::Site(SiteAttrs {
-            name: "FRA1".to_string(),
-            slug: "fra1".to_string(),
-            status: None,
-            description: None,
-        }),
+        attrs: attrs_map(json!({ "name": "FRA1", "slug": "fra1" })),
         projection: crate::ProjectionData::default(),
         backend_id: Some(10),
     });
@@ -820,7 +785,7 @@ fn build_plan_bootstraps_state_by_key() {
     let plan =
         futures::executor::block_on(build_plan(&adapter, &inventory, &mut state, false)).unwrap();
     assert!(plan.ops.is_empty());
-    assert_eq!(state.backend_id(Kind::DcimSite, uid(1)), Some(10));
+    assert_eq!(state.backend_id(t("dcim.site"), uid(1)), Some(10));
 }
 
 #[test]
@@ -832,7 +797,7 @@ fn build_plan_reobserves_after_bootstrap() {
 
     #[async_trait::async_trait]
     impl Adapter for ReobserveAdapter {
-        async fn observe(&self, _kinds: &[Kind]) -> anyhow::Result<ObservedState> {
+        async fn observe(&self, _types: &[TypeName]) -> anyhow::Result<ObservedState> {
             let mut states = self.states.lock().unwrap();
             Ok(states.remove(0))
         }
@@ -842,29 +807,17 @@ fn build_plan_reobserves_after_bootstrap() {
         }
     }
 
-    let inventory = Inventory {
-        objects: vec![Object::new(
-            uid(1),
-            "site=fra1".to_string(),
-            Attrs::Site(SiteAttrs {
-                name: "FRA1".to_string(),
-                slug: "fra1".to_string(),
-                status: None,
-                description: None,
-            }),
-        )
-        .unwrap()],
-    };
+    let inventory = inv(vec![obj(
+        uid(1),
+        "dcim.site",
+        "site=fra1",
+        json!({ "name": "FRA1", "slug": "fra1" }),
+    )]);
     let mut first = ObservedState::default();
     first.insert(ObservedObject {
-        kind: Kind::DcimSite,
+        type_name: t("dcim.site"),
         key: "site=fra1".to_string(),
-        attrs: Attrs::Site(SiteAttrs {
-            name: "FRA1".to_string(),
-            slug: "fra1".to_string(),
-            status: None,
-            description: None,
-        }),
+        attrs: attrs_map(json!({ "name": "FRA1", "slug": "fra1" })),
         projection: crate::ProjectionData::default(),
         backend_id: Some(1),
     });
@@ -890,7 +843,7 @@ fn apply_plan_blocks_deletes_without_flag() {
     let plan = Plan {
         ops: vec![Op::Delete {
             uid: uid(1),
-            kind: Kind::DcimSite,
+            type_name: t("dcim.site"),
             key: "site=fra1".to_string(),
             backend_id: Some(1),
         }],
@@ -906,7 +859,7 @@ fn apply_plan_updates_state() {
         report: ApplyReport {
             applied: vec![AppliedOp {
                 uid: uid(1),
-                kind: Kind::DcimSite,
+                type_name: t("dcim.site"),
                 backend_id: Some(55),
             }],
         },
@@ -914,5 +867,5 @@ fn apply_plan_updates_state() {
     let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
     let plan = Plan { ops: vec![] };
     futures::executor::block_on(apply_plan(&adapter, &plan, &mut state, true)).unwrap();
-    assert_eq!(state.backend_id(Kind::DcimSite, uid(1)), Some(55));
+    assert_eq!(state.backend_id(t("dcim.site"), uid(1)), Some(55));
 }

@@ -1,6 +1,6 @@
 # projection
 
-projection maps `x` extension data into backend fields (custom fields, tags, local context) before planning. it keeps `attrs` portable and moves backend-specific storage to the projection spec.
+projection maps `attrs` data into backend fields (custom fields, tags, local context) before planning. it lets you keep backend-specific fields in the same object while still emitting backend payloads.
 
 ## spec
 
@@ -9,8 +9,8 @@ version: 1
 backend: netbox
 rules:
   - name: model_to_custom_fields_devices
-    on_kind: dcim.device
-    from_x:
+    on_type: dcim.device
+    from_attrs:
       map:
         "model.fabric": "fabric"
         "model.role_hint": "role_hint"
@@ -19,8 +19,8 @@ rules:
         strategy: explicit
 
   - name: model_tags
-    on_kind: "*"
-    from_x:
+    on_type: "*"
+    from_attrs:
       key: "model.tags"
     to:
       tags:
@@ -31,27 +31,27 @@ see `examples/projection-netbox.yaml` for a full example paired with `examples/r
 
 ## selection
 
-- `on_kind` matches a single kind string (e.g. `dcim.device`) or `*`.
-- `from_x` must specify exactly one selector:
+- `on_type` matches a single type string (e.g. `dcim.device`) or `*`.
+- `from_attrs` must specify exactly one selector:
   - `prefix`: match keys with a prefix
   - `key`: match a single key
-  - `map`: explicit `x_key -> field_name` map
+  - `map`: explicit `attr_key -> field_name` map
 
 ## targets
 
 - `custom_fields` writes to netbox custom fields.
 - `tags` expects a list of strings (tag names).
-- `local_context` writes a json blob (supported on devices only).
+- `local_context` writes a json blob (backend support varies).
 
 ## strategies
 
-- `strip_prefix`: remove a prefix from `x` keys.
+- `strip_prefix`: remove a prefix from `attrs` keys.
 - `explicit`: use the `map` entries.
-- `direct`: use the `x` key or an explicit `field`.
+- `direct`: use the `attrs` key or an explicit `field`.
 
 ## transforms
 
-optional transforms can be attached under `from_x.transform`:
+optional transforms can be attached under `from_attrs.transform`:
 
 - `stringify`
 - `drop_if_null`

@@ -1,7 +1,7 @@
 //! brew file loading with include/import support.
 
 use crate::validate;
-use alembic_core::Inventory;
+use alembic_core::{Inventory, Schema};
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
 use std::collections::BTreeSet;
@@ -16,6 +16,8 @@ struct BrewFile {
     #[serde(default)]
     imports: Vec<String>,
     #[serde(default)]
+    schema: Option<Schema>,
+    #[serde(default)]
     objects: Vec<alembic_core::Object>,
 }
 
@@ -23,9 +25,10 @@ struct BrewFile {
 pub fn load_brew(path: impl AsRef<Path>) -> Result<Inventory> {
     let mut visited = BTreeSet::new();
     let mut objects = Vec::new();
+    let mut schema: Option<Schema> = None;
     let path = path.as_ref();
-    load_recursive(path, &mut visited, &mut objects)?;
-    let inventory = Inventory { objects };
+    load_recursive(path, &mut visited, &mut objects, &mut schema)?;
+    let inventory = Inventory { schema, objects };
     validate(&inventory)?;
     Ok(inventory)
 }
@@ -35,6 +38,7 @@ fn load_recursive(
     path: &Path,
     visited: &mut BTreeSet<PathBuf>,
     objects: &mut Vec<alembic_core::Object>,
+    schema: &mut Option<Schema>,
 ) -> Result<()> {
     let canonical =
         fs::canonicalize(path).with_context(|| format!("load brew: {}", path.display()))?;
@@ -61,9 +65,30 @@ fn load_recursive(
 
     for entry in includes {
         let include_path = base.join(entry);
-        load_recursive(&include_path, visited, objects)?;
+        load_recursive(&include_path, visited, objects, schema)?;
     }
 
+    merge_schema(schema, brew.schema)?;
     objects.extend(brew.objects);
+    Ok(())
+}
+
+fn merge_schema(current: &mut Option<Schema>, incoming: Option<Schema>) -> Result<()> {
+    let Some(incoming) = incoming else {
+        return Ok(());
+    };
+    match current {
+        Some(existing) => {
+            for (name, schema) in incoming.types {
+                if existing.types.contains_key(&name) {
+                    return Err(anyhow!("duplicate schema type {name}"));
+                }
+                existing.types.insert(name, schema);
+            }
+        }
+        None => {
+            *current = Some(incoming);
+        }
+    }
     Ok(())
 }

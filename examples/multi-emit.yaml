@@ -17,27 +17,26 @@ rules:
     uids:
       site:
         v5:
-          kind: "dcim.site"
+          type: "dcim.site"
           stable: "site=${site_slug}"
       vrf:
         v5:
-          kind: "ipam.vrf"
+          type: "ipam.vrf"
           stable: "vrf=${vrf_name}"
     emit:
-      - kind: dcim.site
+      - type: dcim.site
         key: "site=${site_slug}"
         uid: ${uids.site}
         attrs:
           name: ${name}
           slug: ${site_slug}
 
-      - kind: ipam.vrf
+      - type: ipam.vrf
         key: "vrf=${vrf_name}"
         uid: ${uids.vrf}
         attrs:
           name: ${vrf_name}
           rd: ${rt_export}
-        x:
           route_targets:
             import: ${rt_import}
             export: ${rt_export}

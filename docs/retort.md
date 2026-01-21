@@ -10,11 +10,11 @@ rules:
   - name: sites
     select: /sites/*
     emit:
-      kind: dcim.site
+      type: dcim.site
       key: "site=${slug}"
       uid:
         v5:
-          kind: "dcim.site"
+          type: "dcim.site"
           stable: "site=${slug}"
       vars:
         slug: { from: .slug, required: true }
@@ -47,9 +47,9 @@ rules:
 
 ## uid
 
-- `uid.v5` builds a deterministic uuid from `kind` + `stable`.
+- `uid.v5` builds a deterministic uuid from `type` + `stable`.
 - `uid` can also be a string template to reuse explicit uuids in raw yaml.
-- in `attrs`, `{ uid: { kind, stable } }` emits a uid string.
+- in `attrs`, `{ uid: { type, stable } }` emits a uid string.
 - `uid?` is optional and omitted when a required var is missing.
 
 ## multi-emit
@@ -66,20 +66,20 @@ rules:
     uids:
       site:
         v5:
-          kind: "dcim.site"
+          type: "dcim.site"
           stable: "site=${site_slug}"
       vrf:
         v5:
-          kind: "ipam.vrf"
+          type: "ipam.vrf"
           stable: "vrf=${vrf_name}"
     emit:
-      - kind: dcim.site
+      - type: dcim.site
         key: "site=${site_slug}"
         uid: ${uids.site}
         attrs:
           name: ${site_slug}
           slug: ${site_slug}
-      - kind: ipam.vrf
+      - type: ipam.vrf
         key: "vrf=${vrf_name}"
         uid: ${uids.vrf}
         attrs:
@@ -94,6 +94,6 @@ rules:
 
 ## determinism
 
-- the compiler sorts objects by kind rank, kind string, and key.
+- the compiler sorts objects by type name and key.
 - same raw yaml + same retort yields the same ir and plan order.
 - multi-emit rules produce objects in a deterministic order.

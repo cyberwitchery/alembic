@@ -149,7 +149,7 @@ pub(crate) fn write_site_brew(dir: &Path) -> PathBuf {
         r#"
 objects:
   - uid: "00000000-0000-0000-0000-000000000001"
-    kind: dcim.site
+    type: dcim.site
     key: "site=fra1"
     attrs:
       name: "FRA1"

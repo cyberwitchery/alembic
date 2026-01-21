@@ -10,17 +10,17 @@ plans are json files that can be re-applied. the plan is deterministic for a giv
     {
       "op": "create",
       "uid": "...",
-      "kind": "dcim.site",
+      "type_name": "dcim.site",
       "desired": {
-        "base": { "uid": "...", "kind": "dcim.site", "key": "site=fra1", "attrs": { ... } },
-        "projection": { "custom_fields": { ... }, "tags": ["..."] }
+        "base": { "uid": "...", "type": "dcim.site", "key": "site=fra1", "attrs": { "...": "..." } },
+        "projection": { "custom_fields": { "...": "..." }, "tags": ["..."] }
       }
     },
     {
       "op": "update",
       "uid": "...",
-      "kind": "dcim.device",
-      "desired": { ... },
+      "type_name": "dcim.device",
+      "desired": { "...": "..." },
       "changes": [
         { "field": "name", "from": "old", "to": "new" }
       ],
@@ -29,7 +29,7 @@ plans are json files that can be re-applied. the plan is deterministic for a giv
     {
       "op": "delete",
       "uid": "...",
-      "kind": "ipam.ip_address",
+      "type_name": "ipam.ip_address",
       "key": "ip=10.0.0.10/24",
       "backend_id": 456
     }
@@ -39,9 +39,7 @@ plans are json files that can be re-applied. the plan is deterministic for a giv
 
 ## notes
 
-- `kind` may be any custom string; unknown kinds are planned like typed ones.
-- generic attrs are compared as an opaque payload.
+- `type_name` may be any custom string.
 - `backend_id` is optional and may be absent for creates or if not known.
 - deletes are only applied when `--allow-delete` is set.
 - `projection` is present only when projection rules apply to an object, and diffs include projected fields.
-- optional fields omitted in desired (`null`/missing) are treated as "no change" to preserve idempotence.

@@ -679,19 +679,19 @@ async fn build_plan_with_proposal(
         .await;
     };
     let projected = apply_projection(spec, &inventory.objects)?;
-    let kinds: Vec<_> = projected
+    let types: Vec<_> = projected
         .objects
         .iter()
-        .map(|o| o.base.kind.clone())
+        .map(|o| o.base.type_name.clone())
         .collect();
-    let mut observed = adapter.observe(&kinds).await?;
+    let mut observed = adapter.observe(&types).await?;
     let missing = missing_custom_fields(spec, &inventory.objects, &observed.capabilities)?;
     if !missing.is_empty() {
         eprintln!("projection proposal: missing custom fields");
         for entry in &missing {
             eprintln!(
-                "- rule {} (kind {}, x {}) -> field {}",
-                entry.rule, entry.kind, entry.x_key, entry.field
+                "- rule {} (type {}, attr {}) -> field {}",
+                entry.rule, entry.type_name, entry.attr_key, entry.field
             );
         }
         eprintln!();
@@ -700,8 +700,8 @@ async fn build_plan_with_proposal(
             for entry in &missing {
                 observed
                     .capabilities
-                    .custom_fields_by_kind
-                    .entry(entry.kind.clone())
+                    .custom_fields_by_type
+                    .entry(entry.type_name.clone())
                     .or_default()
                     .insert(entry.field.clone());
             }
@@ -712,8 +712,8 @@ async fn build_plan_with_proposal(
         eprintln!("projection proposal: missing tags");
         for entry in &missing_tags {
             eprintln!(
-                "- rule {} (kind {}, x {}) -> tag {}",
-                entry.rule, entry.kind, entry.x_key, entry.tag
+                "- rule {} (type {}, attr {}) -> tag {}",
+                entry.rule, entry.type_name, entry.attr_key, entry.tag
             );
         }
         eprintln!();
@@ -805,7 +805,7 @@ mod tests {
         let plan = Plan {
             ops: vec![Op::Delete {
                 uid: uuid::Uuid::from_u128(1),
-                kind: alembic_core::Kind::DcimSite,
+                type_name: alembic_core::TypeName::new("dcim.site"),
                 key: "site=fra1".to_string(),
                 backend_id: Some(1),
             }],
@@ -998,7 +998,7 @@ mod tests {
             r#"
 objects:
   - uid: "00000000-0000-0000-0000-000000000001"
-    kind: dcim.site
+    type: dcim.site
     key: "site=fra1"
     attrs:
       name: "FRA1"
@@ -1058,7 +1058,7 @@ rules:
   - name: sites
     select: /sites/*
     emit:
-      kind: dcim.site
+      type: dcim.site
       key: "site=${slug}"
       vars:
         slug: { from: .slug, required: true }
@@ -1072,7 +1072,7 @@ rules:
 
         let inventory = load_inventory(&raw, Some(&retort)).unwrap();
         assert_eq!(inventory.objects.len(), 1);
-        assert_eq!(inventory.objects[0].kind.as_string(), "dcim.site");
+        assert_eq!(inventory.objects[0].type_name.as_str(), "dcim.site");
     }
 
     #[test]
@@ -1081,6 +1081,7 @@ rules:
         let inv_path = dir.path().join("ir.json");
         let proj_path = dir.path().join("projected.json");
         let inventory = alembic_core::Inventory {
+            schema: None,
             objects: Vec::new(),
         };
         let projected = ProjectedInventory {
@@ -1103,7 +1104,7 @@ rules:
             r#"
 objects:
   - uid: "00000000-0000-0000-0000-000000000001"
-    kind: dcim.site
+    type: dcim.site
     key: "site=fra1"
     attrs:
       name: "FRA1"
@@ -1146,7 +1147,7 @@ rules:
   - name: sites
     select: /sites/*
     emit:
-      kind: dcim.site
+      type: dcim.site
       key: "site=${slug}"
       vars:
         slug: { from: .slug, required: true }
@@ -1198,7 +1199,7 @@ rules:
   - name: sites
     select: /sites/*
     emit:
-      kind: dcim.site
+      type: dcim.site
       key: "site=${slug}"
       vars:
         slug: { from: .slug, required: true }
@@ -1246,7 +1247,7 @@ rules: []
             r#"
 objects:
   - uid: "00000000-0000-0000-0000-000000000001"
-    kind: dcim.site
+    type: dcim.site
     key: "site=fra1"
     attrs:
       name: "FRA1"

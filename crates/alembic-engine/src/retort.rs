@@ -1,6 +1,6 @@
 //! retort mapping: compile raw yaml into canonical ir.
 
-use alembic_core::{uid_v5, Attrs, Inventory, JsonMap, Kind, Object, Uid};
+use alembic_core::{uid_v5, Inventory, JsonMap, Object, TypeName, Uid};
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
 use serde_json::{Map as JsonObject, Value as JsonValue};
@@ -40,7 +40,8 @@ pub enum EmitSpec {
 
 #[derive(Debug, Deserialize)]
 pub struct Emit {
-    pub kind: String,
+    #[serde(rename = "type", alias = "kind")]
+    pub type_name: String,
     pub key: String,
     #[serde(default)]
     pub uid: Option<EmitUid>,
@@ -48,8 +49,6 @@ pub struct Emit {
     pub vars: BTreeMap<String, VarSpec>,
     #[serde(default)]
     pub attrs: BTreeMap<String, YamlValue>,
-    #[serde(default)]
-    pub x: BTreeMap<String, YamlValue>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -68,7 +67,8 @@ pub enum EmitUid {
 
 #[derive(Debug, Deserialize)]
 pub struct UidV5Spec {
-    pub kind: String,
+    #[serde(rename = "type", alias = "kind")]
+    pub type_name: String,
     pub stable: String,
 }
 
@@ -156,63 +156,40 @@ pub fn compile_retort(raw: &YamlValue, retort: &Retort) -> Result<Inventory> {
 
                 let key = render_template(&emit.key, &emit_vars, &rule.name, "key")?;
                 let uid = resolve_emit_uid(emit, &emit_vars, &rule.name, &key)?;
-                let kind = Kind::parse(&emit.kind);
+                let type_name = TypeName::new(render_template(
+                    &emit.type_name,
+                    &emit_vars,
+                    &rule.name,
+                    "type",
+                )?);
                 let attrs = render_attrs(&emit.attrs, &emit_vars, &rule.name, "attrs")?;
-                let x = render_attrs(&emit.x, &emit_vars, &rule.name, "x")?;
-                let object = build_object(uid, kind, key, attrs, x)?;
+                let object = build_object(uid, type_name, key, attrs)?;
                 objects.push(object);
             }
         }
     }
 
     objects.sort_by(|a, b| {
-        inventory_sort_key(&a.kind, &a.key).cmp(&inventory_sort_key(&b.kind, &b.key))
+        inventory_sort_key(&a.type_name, &a.key).cmp(&inventory_sort_key(&b.type_name, &b.key))
     });
 
-    let inventory = Inventory { objects };
+    let inventory = Inventory {
+        schema: None,
+        objects,
+    };
     crate::validate(&inventory)?;
     Ok(inventory)
 }
 
 fn build_object(
     uid: Uid,
-    kind: Kind,
+    type_name: TypeName,
     key: String,
     attrs: JsonObject<String, JsonValue>,
-    x: JsonObject<String, JsonValue>,
 ) -> Result<Object> {
     let attrs_value = JsonValue::Object(attrs);
-    let parsed_attrs = match &kind {
-        Kind::DcimSite => match serde_json::from_value(attrs_value.clone()) {
-            Ok(parsed) => Attrs::Site(parsed),
-            Err(_) => Attrs::Generic(to_object_map(attrs_value)?),
-        },
-        Kind::DcimDevice => match serde_json::from_value(attrs_value.clone()) {
-            Ok(parsed) => Attrs::Device(parsed),
-            Err(_) => Attrs::Generic(to_object_map(attrs_value)?),
-        },
-        Kind::DcimInterface => match serde_json::from_value(attrs_value.clone()) {
-            Ok(parsed) => Attrs::Interface(parsed),
-            Err(_) => Attrs::Generic(to_object_map(attrs_value)?),
-        },
-        Kind::IpamPrefix => match serde_json::from_value(attrs_value.clone()) {
-            Ok(parsed) => Attrs::Prefix(parsed),
-            Err(_) => Attrs::Generic(to_object_map(attrs_value)?),
-        },
-        Kind::IpamIpAddress => match serde_json::from_value(attrs_value.clone()) {
-            Ok(parsed) => Attrs::IpAddress(parsed),
-            Err(_) => Attrs::Generic(to_object_map(attrs_value)?),
-        },
-        Kind::Custom(_) => Attrs::Generic(to_object_map(attrs_value)?),
-    };
-
-    Ok(Object {
-        uid,
-        kind,
-        key,
-        attrs: parsed_attrs,
-        x: x.into_iter().collect::<BTreeMap<_, _>>().into(),
-    })
+    let attrs = to_object_map(attrs_value)?;
+    Ok(Object::new(uid, type_name, key, attrs)?)
 }
 
 fn to_object_map(value: JsonValue) -> Result<JsonMap> {
@@ -265,7 +242,7 @@ fn resolve_emit_uid(
     match emit.uid.as_ref() {
         Some(EmitUid::V5 { v5 }) => resolve_uid_v5(v5, vars, rule, "uid"),
         Some(EmitUid::Template(template)) => resolve_uid_template(template, vars, rule),
-        None => Ok(uid_v5(&emit.kind, key)),
+        None => Ok(uid_v5(&emit.type_name, key)),
     }
 }
 
@@ -288,11 +265,11 @@ fn resolve_uid_v5(
     rule: &str,
     context: &str,
 ) -> Result<Uid> {
-    let kind = render_template(&spec.kind, vars, rule, context)?;
+    let kind = render_template(&spec.type_name, vars, rule, context)?;
     let stable = render_template(&spec.stable, vars, rule, context)?;
     if kind.trim().is_empty() || stable.trim().is_empty() {
         return Err(anyhow!(
-            "rule {rule}: uid v5 requires non-empty kind and stable values"
+            "rule {rule}: uid v5 requires non-empty type and stable values"
         ));
     }
     Ok(uid_v5(&kind, &stable))
@@ -387,7 +364,7 @@ fn render_uid_mapping(
     context: &str,
     optional: bool,
 ) -> Result<Option<JsonValue>> {
-    let kind = render_template_optional(&spec.kind, vars, rule, context, optional)?;
+    let kind = render_template_optional(&spec.type_name, vars, rule, context, optional)?;
     let stable = render_template_optional(&spec.stable, vars, rule, context, optional)?;
     let (Some(kind), Some(stable)) = (kind, stable) else {
         return Ok(None);
@@ -397,7 +374,7 @@ fn render_uid_mapping(
             return Ok(None);
         }
         return Err(anyhow!(
-            "rule {rule}: uid mapping requires non-empty kind and stable"
+            "rule {rule}: uid mapping requires non-empty type and stable"
         ));
     }
     let uid = uid_v5(&kind, &stable);
@@ -508,11 +485,19 @@ fn parse_uid_mapping(map: &YamlMapping) -> Option<(bool, UidV5Spec)> {
     let YamlValue::Mapping(inner) = value else {
         return None;
     };
-    let kind = inner.get(YamlValue::String("kind".to_string()))?;
+    let kind = inner
+        .get(YamlValue::String("type".to_string()))
+        .or_else(|| inner.get(YamlValue::String("kind".to_string())))?;
     let stable = inner.get(YamlValue::String("stable".to_string()))?;
     let kind = kind.as_str()?.to_string();
     let stable = stable.as_str()?.to_string();
-    Some((optional, UidV5Spec { kind, stable }))
+    Some((
+        optional,
+        UidV5Spec {
+            type_name: kind,
+            stable,
+        },
+    ))
 }
 
 fn parse_selector_path(path: &str) -> Result<Vec<SelectorToken>> {
@@ -725,19 +710,8 @@ fn yaml_to_json(value: YamlValue) -> Result<JsonValue> {
     serde_json::to_value(value).map_err(|err| anyhow!("yaml to json failed: {err}"))
 }
 
-fn inventory_sort_key(kind: &Kind, key: &str) -> (u8, String, String) {
-    (kind_rank(kind), kind.as_string(), key.to_string())
-}
-
-fn kind_rank(kind: &Kind) -> u8 {
-    match kind {
-        Kind::DcimSite => 0,
-        Kind::DcimDevice => 1,
-        Kind::DcimInterface => 2,
-        Kind::IpamPrefix => 3,
-        Kind::IpamIpAddress => 4,
-        Kind::Custom(_) => 10,
-    }
+fn inventory_sort_key(type_name: &TypeName, key: &str) -> (String, String) {
+    (type_name.as_str().to_string(), key.to_string())
 }
 
 #[cfg(test)]
@@ -824,14 +798,12 @@ prefixes:
         let json = serde_json::to_value(&inventory).unwrap();
         let objects = json.get("objects").unwrap().as_array().unwrap();
         assert_eq!(objects.len(), 6);
-        assert_eq!(
-            objects[0].get("kind").unwrap().as_str().unwrap(),
-            "dcim.site"
-        );
-        assert_eq!(
-            objects[1].get("kind").unwrap().as_str().unwrap(),
-            "dcim.device"
-        );
+        let types: Vec<&str> = objects
+            .iter()
+            .map(|obj| obj.get("type").unwrap().as_str().unwrap())
+            .collect();
+        assert!(types.contains(&"dcim.site"));
+        assert!(types.contains(&"dcim.device"));
     }
 
     #[test]
@@ -850,7 +822,7 @@ rules:
   - name: sites
     select: /sites/*
     emit:
-      kind: dcim.site
+      type: dcim.site
       key: "site=${slug}"
       vars:
         slug: { from: .slug, required: true }
@@ -883,7 +855,7 @@ rules:
         let mapping: YamlValue = serde_yaml::from_str(
             r#"
 uid?:
-  kind: "dcim.site"
+  type: "dcim.site"
   stable: "site=${slug}"
 "#,
         )
@@ -898,7 +870,7 @@ uid?:
         let mapping: YamlValue = serde_yaml::from_str(
             r#"
 uid:
-  kind: "dcim.site"
+  type: "dcim.site"
   stable: "site=${slug}"
 "#,
         )
@@ -942,12 +914,12 @@ rules:
       site_slug: { from: .site_slug, required: true }
       vrf_name: { from: .vrf_name, required: true }
     emit:
-      - kind: dcim.site
+      - type: dcim.site
         key: "site=${site_slug}"
         attrs:
           name: ${site_slug}
           slug: ${site_slug}
-      - kind: custom.vrf
+      - type: custom.vrf
         key: "vrf=${vrf_name}"
         attrs:
           name: ${vrf_name}
@@ -956,9 +928,9 @@ rules:
         let retort: Retort = serde_yaml::from_value(retort).unwrap();
         let inventory = compile_retort(&raw, &retort).unwrap();
         assert_eq!(inventory.objects.len(), 2);
-        // Objects are sorted by kind rank then key
-        assert_eq!(inventory.objects[0].kind.as_string(), "dcim.site");
-        assert_eq!(inventory.objects[1].kind.as_string(), "custom.vrf");
+        // Objects are sorted by type then key.
+        assert_eq!(inventory.objects[0].type_name.as_str(), "custom.vrf");
+        assert_eq!(inventory.objects[1].type_name.as_str(), "dcim.site");
     }
 
     #[test]
@@ -982,16 +954,16 @@ rules:
     uids:
       site:
         v5:
-          kind: "dcim.site"
+          type: "dcim.site"
           stable: "site=${site_slug}"
     emit:
-      - kind: dcim.site
+      - type: dcim.site
         key: "site=${site_slug}"
         uid: ${uids.site}
         attrs:
           name: ${site_slug}
           slug: ${site_slug}
-      - kind: custom.vrf
+      - type: custom.vrf
         key: "vrf=${vrf_name}"
         attrs:
           name: ${vrf_name}
@@ -1002,18 +974,24 @@ rules:
         let inventory = compile_retort(&raw, &retort).unwrap();
         assert_eq!(inventory.objects.len(), 2);
 
-        let site = &inventory.objects[0];
-        let vrf = &inventory.objects[1];
+        let mut site = None;
+        let mut vrf = None;
+        for object in &inventory.objects {
+            match object.type_name.as_str() {
+                "dcim.site" => site = Some(object),
+                "custom.vrf" => vrf = Some(object),
+                _ => {}
+            }
+        }
+        let site = site.expect("expected dcim.site");
+        let vrf = vrf.expect("expected custom.vrf");
 
         // Site UID should match the named UID
         let expected_site_uid = uid_v5("dcim.site", "site=fra1");
         assert_eq!(site.uid, expected_site_uid);
 
         // VRF should reference the site UID in its attrs
-        let vrf_attrs = match &vrf.attrs {
-            alembic_core::Attrs::Generic(map) => map,
-            _ => panic!("expected generic attrs"),
-        };
+        let vrf_attrs = &vrf.attrs;
         let site_ref = vrf_attrs.get("site").unwrap().as_str().unwrap();
         assert_eq!(site_ref, expected_site_uid.to_string());
     }
@@ -1039,11 +1017,11 @@ rules:
       site_slug: { from: .site_slug, required: true }
       vrf_name: { from: .vrf_name, required: true }
     emit:
-      - kind: dcim.site
+      - type: dcim.site
         key: "site=${site_slug}"
         attrs:
           slug: ${site_slug}
-      - kind: custom.vrf
+      - type: custom.vrf
         key: "vrf=${vrf_name}"
         attrs:
           name: ${vrf_name}
@@ -1057,7 +1035,7 @@ rules:
         assert_eq!(first.objects.len(), second.objects.len());
         for (a, b) in first.objects.iter().zip(second.objects.iter()) {
             assert_eq!(a.uid, b.uid);
-            assert_eq!(a.kind, b.kind);
+            assert_eq!(a.type_name, b.type_name);
             assert_eq!(a.key, b.key);
         }
     }
@@ -1080,11 +1058,11 @@ rules:
     vars:
       name: { from: .name, required: true }
     emit:
-      - kind: custom.first
+      - type: custom.first
         key: "first=${name}"
         attrs:
           name: ${name}
-      - kind: custom.second
+      - type: custom.second
         key: "second=${name}"
         vars:
           name: { from: .override_name, required: true }
@@ -1100,17 +1078,11 @@ rules:
         let second = &inventory.objects[1];
 
         // First uses rule-level var
-        let first_attrs = match &first.attrs {
-            alembic_core::Attrs::Generic(map) => map,
-            _ => panic!("expected generic attrs"),
-        };
+        let first_attrs = &first.attrs;
         assert_eq!(first_attrs.get("name").unwrap().as_str().unwrap(), "item1");
 
         // Second uses emit-level var (overrides rule-level)
-        let second_attrs = match &second.attrs {
-            alembic_core::Attrs::Generic(map) => map,
-            _ => panic!("expected generic attrs"),
-        };
+        let second_attrs = &second.attrs;
         assert_eq!(
             second_attrs.get("name").unwrap().as_str().unwrap(),
             "overridden"

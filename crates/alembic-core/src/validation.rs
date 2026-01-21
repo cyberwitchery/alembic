@@ -1,6 +1,7 @@
 //! validation utilities for the ir.
 
-use crate::ir::{Attrs, Inventory, Kind, Object, Uid};
+use crate::ir::{FieldType, Inventory, Object, Schema, TypeName, Uid};
+use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use thiserror::Error;
 
@@ -13,14 +14,10 @@ pub enum ValidationError {
     DuplicateKey(String),
     #[error("missing field: {0}")]
     MissingField(&'static str),
+    #[error("unknown type: {0}")]
+    UnknownType(String),
     #[error("missing reference {field} -> {target}")]
     MissingReference { field: String, target: Uid },
-    #[error("kind mismatch for {field}: expected {expected}, got {actual}")]
-    KindMismatch {
-        field: String,
-        expected: Kind,
-        actual: Kind,
-    },
 }
 
 /// aggregated validation report.
@@ -41,133 +38,142 @@ pub fn validate_inventory(inventory: &Inventory) -> ValidationReport {
     let mut report = ValidationReport::default();
     let mut seen_uids = BTreeSet::new();
     let mut seen_keys = BTreeSet::new();
-    let mut uid_to_kind = BTreeMap::new();
+    let mut uid_to_type = BTreeMap::new();
 
     for object in &inventory.objects {
         if object.key.trim().is_empty() {
             report.errors.push(ValidationError::MissingField("key"));
         }
-        if object.kind.is_empty() {
-            report.errors.push(ValidationError::MissingField("kind"));
+        if object.type_name.is_empty() {
+            report.errors.push(ValidationError::MissingField("type"));
         }
         if !seen_uids.insert(object.uid) {
             report
                 .errors
                 .push(ValidationError::DuplicateUid(object.uid));
         }
-        if !seen_keys.insert(object.key.clone()) {
-            report
-                .errors
-                .push(ValidationError::DuplicateKey(object.key.clone()));
+        let key = format!("{}::{}", object.type_name, object.key);
+        if !seen_keys.insert(key.clone()) {
+            report.errors.push(ValidationError::DuplicateKey(key));
         }
-        uid_to_kind.insert(object.uid, object.kind.clone());
+        uid_to_type.insert(object.uid, object.type_name.clone());
     }
 
-    for object in &inventory.objects {
-        validate_object_refs(object, &uid_to_kind, &mut report);
+    if let Some(schema) = &inventory.schema {
+        validate_schema_types(schema, &inventory.objects, &mut report);
+        for object in &inventory.objects {
+            validate_object_refs(object, schema, &uid_to_type, &mut report);
+        }
     }
 
     report
 }
 
-/// validate references for a single object against the uid->kind map.
-fn validate_object_refs(
-    object: &Object,
-    uid_to_kind: &BTreeMap<Uid, Kind>,
-    report: &mut ValidationReport,
-) {
-    match &object.attrs {
-        Attrs::Device(attrs) => {
-            check_ref(
-                "device.site",
-                attrs.site,
-                Kind::DcimSite,
-                uid_to_kind,
-                report,
-            );
+fn validate_schema_types(schema: &Schema, objects: &[Object], report: &mut ValidationReport) {
+    for object in objects {
+        if !schema.types.contains_key(object.type_name.as_str()) {
+            report
+                .errors
+                .push(ValidationError::UnknownType(object.type_name.to_string()));
         }
-        Attrs::Interface(attrs) => {
-            check_ref(
-                "interface.device",
-                attrs.device,
-                Kind::DcimDevice,
-                uid_to_kind,
-                report,
-            );
-        }
-        Attrs::IpAddress(attrs) => {
-            if let Some(target) = attrs.assigned_interface {
-                check_ref(
-                    "ip_address.assigned_interface",
-                    target,
-                    Kind::DcimInterface,
-                    uid_to_kind,
-                    report,
-                );
-            }
-        }
-        Attrs::Prefix(attrs) => {
-            if let Some(target) = attrs.site {
-                check_ref("prefix.site", target, Kind::DcimSite, uid_to_kind, report);
-            }
-        }
-        Attrs::Generic(attrs) => {
-            validate_generic_refs(attrs, uid_to_kind, report);
-        }
-        Attrs::Site(_) => {}
     }
 }
 
-/// validate that a uid exists and matches the expected kind.
-fn check_ref(
-    field: &'static str,
-    target: Uid,
-    expected: Kind,
-    uid_to_kind: &BTreeMap<Uid, Kind>,
+fn validate_object_refs(
+    object: &Object,
+    schema: &Schema,
+    uid_to_type: &BTreeMap<Uid, TypeName>,
     report: &mut ValidationReport,
 ) {
-    match uid_to_kind.get(&target) {
-        None => report.errors.push(ValidationError::MissingReference {
-            field: field.to_string(),
-            target,
-        }),
-        Some(actual) if *actual != expected => report.errors.push(ValidationError::KindMismatch {
-            field: field.to_string(),
-            expected,
-            actual: actual.clone(),
-        }),
+    let Some(type_schema) = schema.types.get(object.type_name.as_str()) else {
+        return;
+    };
+
+    for (field, field_schema) in &type_schema.fields {
+        if field_schema.required {
+            let Some(value) = object.attrs.get(field) else {
+                report.errors.push(ValidationError::MissingField("attrs"));
+                continue;
+            };
+            if value.is_null() && !field_schema.nullable {
+                report.errors.push(ValidationError::MissingField("attrs"));
+                continue;
+            }
+        }
+        let Some(value) = object.attrs.get(field) else {
+            continue;
+        };
+        validate_field_ref(
+            &object.type_name,
+            field,
+            &field_schema.r#type,
+            value,
+            uid_to_type,
+            report,
+        );
+    }
+}
+
+fn validate_field_ref(
+    type_name: &TypeName,
+    field: &str,
+    field_type: &FieldType,
+    value: &Value,
+    uid_to_type: &BTreeMap<Uid, TypeName>,
+    report: &mut ValidationReport,
+) {
+    match field_type {
+        FieldType::Ref { .. } => {
+            if let Some(uid) = parse_uid(value) {
+                if !uid_to_type.contains_key(&uid) {
+                    report.errors.push(ValidationError::MissingReference {
+                        field: format!("{}.{}", type_name, field),
+                        target: uid,
+                    });
+                }
+            }
+        }
+        FieldType::ListRef { .. } => {
+            if let Some(values) = value.as_array() {
+                for entry in values {
+                    if let Some(uid) = parse_uid(entry) {
+                        if !uid_to_type.contains_key(&uid) {
+                            report.errors.push(ValidationError::MissingReference {
+                                field: format!("{}.{}", type_name, field),
+                                target: uid,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        FieldType::List { item } => {
+            if let Some(values) = value.as_array() {
+                for entry in values {
+                    validate_field_ref(type_name, field, item, entry, uid_to_type, report);
+                }
+            }
+        }
+        FieldType::Map { value: inner } => {
+            if let Some(entries) = value.as_object() {
+                for entry in entries.values() {
+                    validate_field_ref(type_name, field, inner, entry, uid_to_type, report);
+                }
+            }
+        }
         _ => {}
     }
 }
 
-fn validate_generic_refs(
-    attrs: &crate::ir::JsonMap,
-    uid_to_kind: &BTreeMap<Uid, Kind>,
-    report: &mut ValidationReport,
-) {
-    for (key, value) in attrs.iter() {
-        if !(key.ends_with("_uid") || key.ends_with("_uuid")) {
-            continue;
-        }
-        let Some(raw) = value.as_str() else {
-            continue;
-        };
-        let Ok(uid) = Uid::parse_str(raw) else {
-            continue;
-        };
-        if !uid_to_kind.contains_key(&uid) {
-            report.errors.push(ValidationError::MissingReference {
-                field: format!("generic.{key}"),
-                target: uid,
-            });
-        }
-    }
+fn parse_uid(value: &Value) -> Option<Uid> {
+    let raw = value.as_str()?;
+    Uid::parse_str(raw).ok()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::{Attrs, DeviceAttrs, InterfaceAttrs, Object, SiteAttrs};
+    use crate::ir::{FieldSchema, FieldType, JsonMap, Object, Schema, TypeName, TypeSchema};
     use std::collections::BTreeMap;
     use uuid::Uuid;
 
@@ -180,28 +186,23 @@ mod tests {
         let objects = vec![
             Object::new(
                 uid(1),
-                "site=fra1".to_string(),
-                Attrs::Site(SiteAttrs {
-                    name: "FRA1".to_string(),
-                    slug: "fra1".to_string(),
-                    status: None,
-                    description: None,
-                }),
+                TypeName::new("site"),
+                "fra1".to_string(),
+                JsonMap::default(),
             )
             .unwrap(),
             Object::new(
                 uid(2),
-                "site=fra1".to_string(),
-                Attrs::Site(SiteAttrs {
-                    name: "FRA1-dup".to_string(),
-                    slug: "fra1-dup".to_string(),
-                    status: None,
-                    description: None,
-                }),
+                TypeName::new("site"),
+                "fra1".to_string(),
+                JsonMap::default(),
             )
             .unwrap(),
         ];
-        let report = validate_inventory(&Inventory { objects });
+        let report = validate_inventory(&Inventory {
+            schema: None,
+            objects,
+        });
         assert!(report
             .errors
             .iter()
@@ -212,16 +213,15 @@ mod tests {
     fn detects_missing_key() {
         let objects = vec![Object::new(
             uid(30),
+            TypeName::new("site"),
             "".to_string(),
-            Attrs::Site(SiteAttrs {
-                name: "FRA1".to_string(),
-                slug: "fra1".to_string(),
-                status: None,
-                description: None,
-            }),
+            JsonMap::default(),
         )
         .unwrap()];
-        let report = validate_inventory(&Inventory { objects });
+        let report = validate_inventory(&Inventory {
+            schema: None,
+            objects,
+        });
         assert!(report
             .errors
             .iter()
@@ -230,66 +230,81 @@ mod tests {
 
     #[test]
     fn detects_missing_kind() {
-        let object = Object::new_generic(
-            uid(31),
-            Kind::Custom("".to_string()),
-            "custom=empty".to_string(),
-            BTreeMap::new().into(),
-        );
+        let objects = vec![Object {
+            uid: uid(31),
+            type_name: TypeName::new(""),
+            key: "site=fra1".to_string(),
+            attrs: JsonMap::default(),
+        }];
         let report = validate_inventory(&Inventory {
-            objects: vec![object],
+            schema: None,
+            objects,
         });
         assert!(report
             .errors
             .iter()
-            .any(|err| matches!(err, ValidationError::MissingField("kind"))));
+            .any(|err| matches!(err, ValidationError::MissingField("type"))));
     }
 
     #[test]
-    fn detects_kind_mismatch() {
-        let site_uid = uid(10);
-        let wrong_uid = uid(11);
-        let objects = vec![
-            Object::new(
-                site_uid,
-                "site=fra1".to_string(),
-                Attrs::Site(SiteAttrs {
-                    name: "FRA1".to_string(),
-                    slug: "fra1".to_string(),
-                    status: None,
-                    description: None,
-                }),
-            )
-            .unwrap(),
-            Object::new(
-                wrong_uid,
-                "device=leaf01".to_string(),
-                Attrs::Device(DeviceAttrs {
-                    name: "leaf01".to_string(),
-                    site: site_uid,
-                    role: "leaf".to_string(),
-                    device_type: "leaf-switch".to_string(),
-                    status: None,
-                }),
-            )
-            .unwrap(),
-            Object::new(
-                uid(12),
-                "device=leaf01/interface=eth0".to_string(),
-                Attrs::Interface(InterfaceAttrs {
-                    name: "eth0".to_string(),
-                    device: site_uid,
-                    if_type: None,
-                    enabled: None,
-                    description: None,
-                }),
-            )
-            .unwrap(),
-        ];
-        let report = validate_inventory(&Inventory { objects });
+    fn detects_unknown_type() {
+        let objects = vec![Object::new(
+            uid(40),
+            TypeName::new("device"),
+            "leaf01".to_string(),
+            JsonMap::default(),
+        )
+        .unwrap()];
+        let schema = Schema {
+            types: BTreeMap::new(),
+        };
+        let report = validate_inventory(&Inventory {
+            schema: Some(schema),
+            objects,
+        });
         assert!(report
             .errors
             .iter()
-            .any(|err| matches!(err, ValidationError::KindMismatch { .. })));
+            .any(|err| matches!(err, ValidationError::UnknownType(_))));
+    }
+
+    #[test]
+    fn detects_missing_references_with_schema() {
+        let mut fields = BTreeMap::new();
+        fields.insert(
+            "owner".to_string(),
+            FieldSchema {
+                r#type: FieldType::Ref {
+                    target: "person".to_string(),
+                },
+                required: false,
+                nullable: false,
+                description: None,
+            },
+        );
+        let mut types = BTreeMap::new();
+        types.insert("device".to_string(), TypeSchema { fields });
+        let schema = Schema { types };
+
+        let mut attrs = BTreeMap::new();
+        attrs.insert(
+            "owner".to_string(),
+            serde_json::json!(Uuid::from_u128(99).to_string()),
+        );
+        let objects = vec![Object::new(
+            uid(41),
+            TypeName::new("device"),
+            "leaf01".to_string(),
+            attrs.into(),
+        )
+        .unwrap()];
+        let report = validate_inventory(&Inventory {
+            schema: Some(schema),
+            objects,
+        });
+        assert!(report
+            .errors
+            .iter()
+            .any(|err| matches!(err, ValidationError::MissingReference { .. })));
     }
 }

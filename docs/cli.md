@@ -23,7 +23,7 @@ alembic lint --projection examples/projection-netbox.yaml
 ```
 
 - checks retort template references and projection spec consistency
-- warns on x keys emitted but not projected
+- warns on projection-only attrs keys emitted by retort but not consumed
 - exits non-zero if errors are found
 
 ## plan
@@ -46,8 +46,8 @@ alembic plan -f examples/raw.yaml --retort examples/retort.yaml \
 - creates a deterministic plan
 - writes json plan to the output path
 - honors `--allow-delete` if you want delete ops
-- accepts generic kinds and attrs
-- `--projection` applies x -> backend mapping before planning
+- accepts any type string and arbitrary attrs (schema validation is optional)
+- `--projection` applies attrs -> backend mapping before planning
 - `--projection-strict=false` disables custom field existence checks
 - `--projection-propose` prints missing custom fields and tags and offers to create them
 
@@ -91,7 +91,7 @@ alembic extract -o inventory.yaml \
 ```
 
 - observes backend state and emits a canonical inventory
-- `--projection` inverts projection into `x` keys where possible
+- `--projection` inverts projection into `attrs` keys where possible
 - `--retort` is accepted but not inverted yet (warning emitted)
 
 ## cast

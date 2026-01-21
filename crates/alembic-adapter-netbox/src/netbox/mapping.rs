@@ -1,4 +1,4 @@
-use alembic_core::Attrs;
+use alembic_core::TypeName;
 use alembic_engine::{MissingCustomField, Op};
 use anyhow::{anyhow, Result};
 use serde_json::Value;
@@ -62,7 +62,7 @@ pub(super) fn group_custom_fields(
     let mut grouped: BTreeMap<String, CustomFieldProposal> = BTreeMap::new();
     for entry in missing {
         let proposal = grouped.entry(entry.field.clone()).or_default();
-        proposal.object_types.insert(entry.kind.clone());
+        proposal.object_types.insert(entry.type_name.clone());
         let entry_type = custom_field_type(&entry.sample);
         proposal.field_type = merge_field_type(&proposal.field_type, entry_type);
     }
@@ -105,15 +105,23 @@ pub(super) fn merge_field_type(current: &str, incoming: String) -> String {
 }
 
 pub(super) fn should_skip_op(op: &Op) -> bool {
-    match op {
-        Op::Create { kind, desired, .. } => {
-            kind.is_custom() || matches!(desired.base.attrs, Attrs::Generic(_))
-        }
-        Op::Update { kind, desired, .. } => {
-            kind.is_custom() || matches!(desired.base.attrs, Attrs::Generic(_))
-        }
-        Op::Delete { kind, .. } => kind.is_custom(),
-    }
+    let type_name = match op {
+        Op::Create { type_name, .. } => type_name,
+        Op::Update { type_name, .. } => type_name,
+        Op::Delete { type_name, .. } => type_name,
+    };
+    !is_supported_type(type_name)
+}
+
+pub(super) fn is_supported_type(type_name: &TypeName) -> bool {
+    matches!(
+        type_name.as_str(),
+        super::TYPE_DCIM_SITE
+            | super::TYPE_DCIM_DEVICE
+            | super::TYPE_DCIM_INTERFACE
+            | super::TYPE_IPAM_PREFIX
+            | super::TYPE_IPAM_IP_ADDRESS
+    )
 }
 
 /// map string status to netbox site status enum.

@@ -3,7 +3,7 @@
 use crate::projection::{CustomFieldStrategy, ProjectionSpec};
 use crate::types::ObservedObject;
 use crate::Adapter;
-use alembic_core::{uid_v5, Inventory, JsonMap, Kind, Object};
+use alembic_core::{uid_v5, Inventory, JsonMap, Object, TypeName};
 use anyhow::Result;
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -18,42 +18,58 @@ pub async fn extract_inventory(
     adapter: &dyn Adapter,
     projection: Option<&ProjectionSpec>,
 ) -> Result<ExtractReport> {
-    let kinds = vec![
-        Kind::DcimSite,
-        Kind::DcimDevice,
-        Kind::DcimInterface,
-        Kind::IpamPrefix,
-        Kind::IpamIpAddress,
-    ];
-    let observed = adapter.observe(&kinds).await?;
+    let types = projection
+        .map(|spec| {
+            spec.rules
+                .iter()
+                .filter_map(|rule| {
+                    if rule.on_type.trim().is_empty() || rule.on_type == "*" {
+                        None
+                    } else {
+                        Some(TypeName::new(rule.on_type.clone()))
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let observed = adapter.observe(&types).await?;
 
     let mut objects: Vec<ObservedObject> = observed.by_key.values().cloned().collect();
     objects.sort_by(|a, b| {
-        (a.kind.as_string(), a.key.clone()).cmp(&(b.kind.as_string(), b.key.clone()))
+        (a.type_name.as_str().to_string(), a.key.clone())
+            .cmp(&(b.type_name.as_str().to_string(), b.key.clone()))
     });
 
     let mut warnings = Vec::new();
     let mut inventory_objects = Vec::new();
     for object in objects {
-        let uid = uid_v5(&object.kind.as_string(), &object.key);
-        let x = if let Some(spec) = projection {
-            let (x, mut object_warnings) = invert_projection_for_object(spec, &object);
+        let uid = uid_v5(object.type_name.as_str(), &object.key);
+        let attrs_extra = if let Some(spec) = projection {
+            let (attrs_extra, mut object_warnings) = invert_projection_for_object(spec, &object);
             warnings.append(&mut object_warnings);
-            x
+            attrs_extra
         } else {
             JsonMap::default()
         };
+        let mut attrs = object.attrs;
+        merge_attrs(
+            &mut attrs,
+            attrs_extra,
+            &object.type_name,
+            &object.key,
+            &mut warnings,
+        );
         inventory_objects.push(Object {
             uid,
-            kind: object.kind,
+            type_name: object.type_name,
             key: object.key,
-            attrs: object.attrs,
-            x,
+            attrs,
         });
     }
 
     Ok(ExtractReport {
         inventory: Inventory {
+            schema: None,
             objects: inventory_objects,
         },
         warnings,
@@ -65,34 +81,34 @@ fn invert_projection_for_object(
     object: &ObservedObject,
 ) -> (JsonMap, Vec<String>) {
     let mut warnings = Vec::new();
-    let mut x = JsonMap::default();
+    let mut attrs_extra = JsonMap::default();
 
     let mut remaining_fields = object.projection.custom_fields.clone().unwrap_or_default();
     let mut tags = object.projection.tags.clone();
     let local_context = object.projection.local_context.clone();
 
     for rule in &spec.rules {
-        if !rule_matches(&rule.on_kind, &object.kind) {
+        if !rule_matches(&rule.on_type, &object.type_name) {
             continue;
         }
-        if !rule.from_x.transform.is_empty() {
+        if !rule.from_attrs.transform.is_empty() {
             warnings.push(format!(
-                "projection rule {} (kind {}): transforms are not inverted during extract",
-                rule.name, object.kind
+                "projection rule {} (type {}): transforms are not inverted during extract",
+                rule.name, object.type_name
             ));
         }
 
         if let Some(target) = &rule.to.custom_fields {
             invert_custom_fields(
-                &mut x,
+                &mut attrs_extra,
                 &mut remaining_fields,
                 &target.strategy,
-                target.prefix.as_ref().or(rule.from_x.prefix.as_ref()),
+                target.prefix.as_ref().or(rule.from_attrs.prefix.as_ref()),
                 target.field.as_ref(),
-                &rule.from_x.key,
-                &rule.from_x.map,
+                &rule.from_attrs.key,
+                &rule.from_attrs.map,
                 &rule.name,
-                &object.kind,
+                &object.type_name,
                 &mut warnings,
             );
         }
@@ -100,28 +116,40 @@ fn invert_projection_for_object(
         if let Some(target) = &rule.to.tags {
             if target.source != "value" {
                 warnings.push(format!(
-                    "projection rule {} (kind {}): tags source must be 'value'",
-                    rule.name, object.kind
+                    "projection rule {} (type {}): tags source must be 'value'",
+                    rule.name, object.type_name
                 ));
                 continue;
             }
             if let Some(current_tags) = tags.take() {
                 let tag_value = Value::Array(current_tags.into_iter().map(Value::String).collect());
-                if let Some(key) = &rule.from_x.key {
-                    insert_x_value(&mut x, key, tag_value, &rule.name, &mut warnings);
-                } else if !rule.from_x.map.is_empty() {
-                    for key in rule.from_x.map.keys() {
-                        insert_x_value(&mut x, key, tag_value.clone(), &rule.name, &mut warnings);
+                if let Some(key) = &rule.from_attrs.key {
+                    insert_attr_value(&mut attrs_extra, key, tag_value, &rule.name, &mut warnings);
+                } else if !rule.from_attrs.map.is_empty() {
+                    for key in rule.from_attrs.map.keys() {
+                        insert_attr_value(
+                            &mut attrs_extra,
+                            key,
+                            tag_value.clone(),
+                            &rule.name,
+                            &mut warnings,
+                        );
                     }
-                } else if let Some(prefix) = &rule.from_x.prefix {
+                } else if let Some(prefix) = &rule.from_attrs.prefix {
                     let key = format!("{prefix}tags");
                     warnings.push(format!(
-                        "projection rule {} (kind {}): inferred tag key {key}",
-                        rule.name, object.kind
+                        "projection rule {} (type {}): inferred tag key {key}",
+                        rule.name, object.type_name
                     ));
-                    insert_x_value(&mut x, &key, tag_value, &rule.name, &mut warnings);
+                    insert_attr_value(&mut attrs_extra, &key, tag_value, &rule.name, &mut warnings);
                 } else {
-                    insert_x_value(&mut x, "tags", tag_value, &rule.name, &mut warnings);
+                    insert_attr_value(
+                        &mut attrs_extra,
+                        "tags",
+                        tag_value,
+                        &rule.name,
+                        &mut warnings,
+                    );
                 }
             }
         }
@@ -135,37 +163,43 @@ fn invert_projection_for_object(
             };
             let mut remaining_context = fields;
             invert_local_context(
-                &mut x,
+                &mut attrs_extra,
                 &mut remaining_context,
                 &target.strategy,
-                target.prefix.as_ref().or(rule.from_x.prefix.as_ref()),
-                &rule.from_x.map,
+                target.prefix.as_ref().or(rule.from_attrs.prefix.as_ref()),
+                &rule.from_attrs.map,
                 &rule.name,
-                &object.kind,
+                &object.type_name,
                 &mut warnings,
             );
         }
     }
 
     for (field, value) in remaining_fields {
-        insert_x_value(&mut x, &field, value, "unmapped", &mut warnings);
+        insert_attr_value(&mut attrs_extra, &field, value, "unmapped", &mut warnings);
     }
 
     if let Some(unmapped_tags) = tags {
         let tag_value = Value::Array(unmapped_tags.into_iter().map(Value::String).collect());
-        insert_x_value(&mut x, "tags", tag_value, "unmapped", &mut warnings);
+        insert_attr_value(
+            &mut attrs_extra,
+            "tags",
+            tag_value,
+            "unmapped",
+            &mut warnings,
+        );
     }
 
-    (x, warnings)
+    (attrs_extra, warnings)
 }
 
-fn rule_matches(on_kind: &str, kind: &Kind) -> bool {
-    on_kind == "*" || on_kind == kind.as_string()
+fn rule_matches(on_type: &str, type_name: &TypeName) -> bool {
+    on_type == "*" || on_type == type_name.as_str()
 }
 
 #[allow(clippy::too_many_arguments)]
 fn invert_custom_fields(
-    x: &mut JsonMap,
+    attrs_extra: &mut JsonMap,
     remaining: &mut BTreeMap<String, Value>,
     strategy: &CustomFieldStrategy,
     prefix: Option<&String>,
@@ -173,15 +207,15 @@ fn invert_custom_fields(
     rule_key: &Option<String>,
     rule_map: &BTreeMap<String, String>,
     rule: &str,
-    kind: &Kind,
+    type_name: &TypeName,
     warnings: &mut Vec<String>,
 ) {
     match strategy {
         CustomFieldStrategy::StripPrefix => {
             let Some(prefix) = prefix else {
                 warnings.push(format!(
-                    "projection rule {} (kind {}): missing prefix for strip_prefix",
-                    rule, kind
+                    "projection rule {} (type {}): missing prefix for strip_prefix",
+                    rule, type_name
                 ));
                 return;
             };
@@ -189,20 +223,20 @@ fn invert_custom_fields(
             for name in fields {
                 if let Some(value) = remaining.remove(&name) {
                     let key = format!("{prefix}{name}");
-                    insert_x_value(x, &key, value, rule, warnings);
+                    insert_attr_value(attrs_extra, &key, value, rule, warnings);
                 }
             }
         }
         CustomFieldStrategy::Explicit => {
             let mut inverse = BTreeMap::new();
-            for (x_key, field) in rule_map {
-                inverse.insert(field.clone(), x_key.clone());
+            for (attr_key, field) in rule_map {
+                inverse.insert(field.clone(), attr_key.clone());
             }
             let fields: Vec<String> = remaining.keys().cloned().collect();
             for name in fields {
-                if let Some(x_key) = inverse.get(&name) {
+                if let Some(attr_key) = inverse.get(&name) {
                     if let Some(value) = remaining.remove(&name) {
-                        insert_x_value(x, x_key, value, rule, warnings);
+                        insert_attr_value(attrs_extra, attr_key, value, rule, warnings);
                     }
                 }
             }
@@ -215,8 +249,8 @@ fn invert_custom_fields(
                     } else if !rule_map.is_empty() {
                         if rule_map.len() > 1 {
                             warnings.push(format!(
-                                "projection rule {} (kind {}): multiple map keys for direct field {field}",
-                                rule, kind
+                                "projection rule {} (type {}): multiple map keys for direct field {field}",
+                                rule, type_name
                             ));
                         }
                         rule_map
@@ -229,7 +263,7 @@ fn invert_custom_fields(
                     } else {
                         field.clone()
                     };
-                    insert_x_value(x, &key, value, rule, warnings);
+                    insert_attr_value(attrs_extra, &key, value, rule, warnings);
                 }
             } else {
                 let fields: Vec<String> = remaining.keys().cloned().collect();
@@ -240,7 +274,7 @@ fn invert_custom_fields(
                         } else {
                             name
                         };
-                        insert_x_value(x, &key, value, rule, warnings);
+                        insert_attr_value(attrs_extra, &key, value, rule, warnings);
                     }
                 }
             }
@@ -250,21 +284,21 @@ fn invert_custom_fields(
 
 #[allow(clippy::too_many_arguments)]
 fn invert_local_context(
-    x: &mut JsonMap,
+    attrs_extra: &mut JsonMap,
     remaining: &mut BTreeMap<String, Value>,
     strategy: &CustomFieldStrategy,
     prefix: Option<&String>,
     rule_map: &BTreeMap<String, String>,
     rule: &str,
-    kind: &Kind,
+    type_name: &TypeName,
     warnings: &mut Vec<String>,
 ) {
     match strategy {
         CustomFieldStrategy::StripPrefix => {
             let Some(prefix) = prefix else {
                 warnings.push(format!(
-                    "projection rule {} (kind {}): missing prefix for strip_prefix",
-                    rule, kind
+                    "projection rule {} (type {}): missing prefix for strip_prefix",
+                    rule, type_name
                 ));
                 return;
             };
@@ -272,20 +306,20 @@ fn invert_local_context(
             for name in fields {
                 if let Some(value) = remaining.remove(&name) {
                     let key = format!("{prefix}{name}");
-                    insert_x_value(x, &key, value, rule, warnings);
+                    insert_attr_value(attrs_extra, &key, value, rule, warnings);
                 }
             }
         }
         CustomFieldStrategy::Explicit => {
             let mut inverse = BTreeMap::new();
-            for (x_key, field) in rule_map {
-                inverse.insert(field.clone(), x_key.clone());
+            for (attr_key, field) in rule_map {
+                inverse.insert(field.clone(), attr_key.clone());
             }
             let fields: Vec<String> = remaining.keys().cloned().collect();
             for name in fields {
-                if let Some(x_key) = inverse.get(&name) {
+                if let Some(attr_key) = inverse.get(&name) {
                     if let Some(value) = remaining.remove(&name) {
-                        insert_x_value(x, x_key, value, rule, warnings);
+                        insert_attr_value(attrs_extra, attr_key, value, rule, warnings);
                     }
                 }
             }
@@ -299,7 +333,7 @@ fn invert_local_context(
                     } else {
                         name
                     };
-                    insert_x_value(x, &key, value, rule, warnings);
+                    insert_attr_value(attrs_extra, &key, value, rule, warnings);
                 }
             }
         }
@@ -323,20 +357,38 @@ fn extract_root_fields(value: &Value, root: &str) -> Option<BTreeMap<String, Val
     Some(map.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
 }
 
-fn insert_x_value(
-    x: &mut JsonMap,
+fn insert_attr_value(
+    attrs_extra: &mut JsonMap,
     key: &str,
     value: Value,
     rule: &str,
     warnings: &mut Vec<String>,
 ) {
-    if x.contains_key(key) {
+    if attrs_extra.contains_key(key) {
         warnings.push(format!(
-            "projection rule {rule}: duplicate x key {key} during extract"
+            "projection rule {rule}: duplicate attrs key {key} during extract"
         ));
         return;
     }
-    x.insert(key.to_string(), value);
+    attrs_extra.insert(key.to_string(), value);
+}
+
+fn merge_attrs(
+    attrs: &mut JsonMap,
+    attrs_extra: JsonMap,
+    type_name: &TypeName,
+    key: &str,
+    warnings: &mut Vec<String>,
+) {
+    for (attr_key, value) in attrs_extra.0 {
+        if attrs.contains_key(&attr_key) {
+            warnings.push(format!(
+                "extract: duplicate attrs key {attr_key} for type {type_name} key {key}"
+            ));
+            continue;
+        }
+        attrs.insert(attr_key, value);
+    }
 }
 
 #[cfg(test)]
@@ -344,9 +396,11 @@ mod tests {
     use super::*;
     use crate::types::ObservedState;
     use crate::ProjectionData;
-    use alembic_core::Attrs;
+    use alembic_core::{JsonMap, TypeName, Uid};
     use async_trait::async_trait;
     use futures::executor::block_on;
+    use serde_json::json;
+    use std::collections::BTreeMap;
 
     struct MockAdapter {
         observed: ObservedState,
@@ -354,7 +408,7 @@ mod tests {
 
     #[async_trait]
     impl Adapter for MockAdapter {
-        async fn observe(&self, _kinds: &[Kind]) -> anyhow::Result<ObservedState> {
+        async fn observe(&self, _types: &[TypeName]) -> anyhow::Result<ObservedState> {
             Ok(self.observed.clone())
         }
 
@@ -366,14 +420,13 @@ mod tests {
     fn observed_state() -> ObservedState {
         let mut state = ObservedState::default();
         state.insert(ObservedObject {
-            kind: Kind::DcimSite,
+            type_name: TypeName::new("dcim.site"),
             key: "site=fra1".to_string(),
-            attrs: Attrs::Site(alembic_core::SiteAttrs {
-                name: "FRA1".to_string(),
-                slug: "fra1".to_string(),
-                status: Some("active".to_string()),
-                description: None,
-            }),
+            attrs: attrs_map(json!({
+                "name": "FRA1",
+                "slug": "fra1",
+                "status": "active"
+            })),
             projection: ProjectionData {
                 custom_fields: None,
                 tags: None,
@@ -382,6 +435,44 @@ mod tests {
             backend_id: Some(1),
         });
         state
+    }
+
+    fn attrs_map(value: serde_json::Value) -> JsonMap {
+        let serde_json::Value::Object(map) = value else {
+            panic!("attrs must be a json object");
+        };
+        map.into_iter().collect::<BTreeMap<_, _>>().into()
+    }
+
+    fn site_attrs(name: &str, slug: &str, status: Option<&str>) -> JsonMap {
+        let mut value = json!({ "name": name, "slug": slug });
+        if let serde_json::Value::Object(ref mut map) = value {
+            if let Some(status) = status {
+                map.insert("status".to_string(), json!(status));
+            }
+        }
+        attrs_map(value)
+    }
+
+    fn device_attrs(
+        name: &str,
+        site: Uid,
+        role: &str,
+        device_type: &str,
+        status: Option<&str>,
+    ) -> JsonMap {
+        let mut value = json!({
+            "name": name,
+            "site": site.to_string(),
+            "role": role,
+            "device_type": device_type
+        });
+        if let serde_json::Value::Object(ref mut map) = value {
+            if let Some(status) = status {
+                map.insert("status".to_string(), json!(status));
+            }
+        }
+        attrs_map(value)
     }
 
     #[test]
@@ -402,15 +493,15 @@ mod tests {
         let mut custom_fields = BTreeMap::new();
         custom_fields.insert("serial".to_string(), Value::String("abc".to_string()));
         state.insert(ObservedObject {
-            kind: Kind::DcimDevice,
+            type_name: TypeName::new("dcim.device"),
             key: "device=leaf01".to_string(),
-            attrs: Attrs::Device(alembic_core::DeviceAttrs {
-                name: "leaf01".to_string(),
-                site: uid_v5("dcim.site", "site=fra1"),
-                role: "leaf".to_string(),
-                device_type: "leaf-switch".to_string(),
-                status: Some("active".to_string()),
-            }),
+            attrs: device_attrs(
+                "leaf01",
+                uid_v5("dcim.site", "site=fra1"),
+                "leaf",
+                "leaf-switch",
+                Some("active"),
+            ),
             projection: ProjectionData {
                 custom_fields: Some(custom_fields),
                 tags: Some(vec!["fabric".to_string()]),
@@ -425,16 +516,16 @@ version: 1
 backend: netbox
 rules:
   - name: model
-    on_kind: dcim.device
-    from_x:
+    on_type: dcim.device
+    from_attrs:
       prefix: "model."
     to:
       custom_fields:
         strategy: strip_prefix
         prefix: "model."
   - name: tags
-    on_kind: dcim.device
-    from_x:
+    on_type: dcim.device
+    from_attrs:
       key: "model.tags"
     to:
       tags:
@@ -445,11 +536,11 @@ rules:
         let report = block_on(extract_inventory(&adapter, Some(&projection))).unwrap();
         let object = &report.inventory.objects[0];
         assert_eq!(
-            object.x.get("model.serial"),
+            object.attrs.get("model.serial"),
             Some(&Value::String("abc".to_string()))
         );
         assert_eq!(
-            object.x.get("model.tags"),
+            object.attrs.get("model.tags"),
             Some(&Value::Array(vec![Value::String("fabric".to_string())]))
         );
     }
@@ -460,14 +551,9 @@ rules:
         let mut custom_fields = BTreeMap::new();
         custom_fields.insert("owner".to_string(), Value::String("infra".to_string()));
         state.insert(ObservedObject {
-            kind: Kind::DcimSite,
+            type_name: TypeName::new("dcim.site"),
             key: "site=fra1".to_string(),
-            attrs: Attrs::Site(alembic_core::SiteAttrs {
-                name: "FRA1".to_string(),
-                slug: "fra1".to_string(),
-                status: Some("active".to_string()),
-                description: None,
-            }),
+            attrs: site_attrs("FRA1", "fra1", Some("active")),
             projection: ProjectionData {
                 custom_fields: Some(custom_fields),
                 tags: None,
@@ -482,8 +568,8 @@ version: 1
 backend: netbox
 rules:
   - name: noop
-    on_kind: dcim.site
-    from_x:
+    on_type: dcim.site
+    from_attrs:
       key: "model.serial"
     to:
       custom_fields:
@@ -494,7 +580,7 @@ rules:
         let report = block_on(extract_inventory(&adapter, Some(&projection))).unwrap();
         let object = &report.inventory.objects[0];
         assert_eq!(
-            object.x.get("owner"),
+            object.attrs.get("owner"),
             Some(&Value::String("infra".to_string()))
         );
     }
@@ -505,15 +591,15 @@ rules:
         let mut custom_fields = BTreeMap::new();
         custom_fields.insert("serial".to_string(), Value::String("abc".to_string()));
         state.insert(ObservedObject {
-            kind: Kind::DcimDevice,
+            type_name: TypeName::new("dcim.device"),
             key: "device=leaf01".to_string(),
-            attrs: Attrs::Device(alembic_core::DeviceAttrs {
-                name: "leaf01".to_string(),
-                site: uid_v5("dcim.site", "site=fra1"),
-                role: "leaf".to_string(),
-                device_type: "leaf-switch".to_string(),
-                status: Some("active".to_string()),
-            }),
+            attrs: device_attrs(
+                "leaf01",
+                uid_v5("dcim.site", "site=fra1"),
+                "leaf",
+                "leaf-switch",
+                Some("active"),
+            ),
             projection: ProjectionData {
                 custom_fields: Some(custom_fields),
                 tags: None,
@@ -528,8 +614,8 @@ version: 1
 backend: netbox
 rules:
   - name: model
-    on_kind: dcim.device
-    from_x:
+    on_type: dcim.device
+    from_attrs:
       prefix: "model."
       transform:
         - stringify
@@ -555,15 +641,15 @@ rules:
         let mut root = serde_json::Map::new();
         root.insert("system".to_string(), Value::Object(local_map));
         state.insert(ObservedObject {
-            kind: Kind::DcimDevice,
+            type_name: TypeName::new("dcim.device"),
             key: "device=leaf01".to_string(),
-            attrs: Attrs::Device(alembic_core::DeviceAttrs {
-                name: "leaf01".to_string(),
-                site: uid_v5("dcim.site", "site=fra1"),
-                role: "leaf".to_string(),
-                device_type: "leaf-switch".to_string(),
-                status: Some("active".to_string()),
-            }),
+            attrs: device_attrs(
+                "leaf01",
+                uid_v5("dcim.site", "site=fra1"),
+                "leaf",
+                "leaf-switch",
+                Some("active"),
+            ),
             projection: ProjectionData {
                 custom_fields: None,
                 tags: None,
@@ -578,8 +664,8 @@ version: 1
 backend: netbox
 rules:
   - name: local
-    on_kind: dcim.device
-    from_x:
+    on_type: dcim.device
+    from_attrs:
       prefix: "context."
     to:
       local_context:
@@ -592,26 +678,21 @@ rules:
         let report = block_on(extract_inventory(&adapter, Some(&projection))).unwrap();
         let object = &report.inventory.objects[0];
         assert_eq!(
-            object.x.get("context.role"),
+            object.attrs.get("context.role"),
             Some(&Value::String("leaf".to_string()))
         );
     }
 
     #[test]
-    fn extract_warns_on_duplicate_x_key() {
+    fn extract_warns_on_duplicate_attrs_key() {
         let mut state = ObservedState::default();
         let mut custom_fields = BTreeMap::new();
         custom_fields.insert("field_a".to_string(), Value::String("a".to_string()));
         custom_fields.insert("field_b".to_string(), Value::String("b".to_string()));
         state.insert(ObservedObject {
-            kind: Kind::DcimSite,
+            type_name: TypeName::new("dcim.site"),
             key: "site=fra1".to_string(),
-            attrs: Attrs::Site(alembic_core::SiteAttrs {
-                name: "FRA1".to_string(),
-                slug: "fra1".to_string(),
-                status: Some("active".to_string()),
-                description: None,
-            }),
+            attrs: site_attrs("FRA1", "fra1", Some("active")),
             projection: ProjectionData {
                 custom_fields: Some(custom_fields),
                 tags: None,
@@ -626,16 +707,16 @@ version: 1
 backend: netbox
 rules:
   - name: map_a
-    on_kind: dcim.site
-    from_x:
+    on_type: dcim.site
+    from_attrs:
       map:
         model.same: field_a
     to:
       custom_fields:
         strategy: explicit
   - name: map_b
-    on_kind: dcim.site
-    from_x:
+    on_type: dcim.site
+    from_attrs:
       map:
         model.same: field_b
     to:
@@ -648,7 +729,7 @@ rules:
         assert!(report
             .warnings
             .iter()
-            .any(|warn| warn.contains("duplicate x key")));
+            .any(|warn| warn.contains("duplicate attrs key")));
     }
 
     #[test]
@@ -657,15 +738,15 @@ rules:
         let mut custom_fields = BTreeMap::new();
         custom_fields.insert("serial".to_string(), Value::String("abc".to_string()));
         state.insert(ObservedObject {
-            kind: Kind::DcimDevice,
+            type_name: TypeName::new("dcim.device"),
             key: "device=leaf01".to_string(),
-            attrs: Attrs::Device(alembic_core::DeviceAttrs {
-                name: "leaf01".to_string(),
-                site: uid_v5("dcim.site", "site=fra1"),
-                role: "leaf".to_string(),
-                device_type: "leaf-switch".to_string(),
-                status: Some("active".to_string()),
-            }),
+            attrs: device_attrs(
+                "leaf01",
+                uid_v5("dcim.site", "site=fra1"),
+                "leaf",
+                "leaf-switch",
+                Some("active"),
+            ),
             projection: ProjectionData {
                 custom_fields: Some(custom_fields),
                 tags: None,
@@ -680,8 +761,8 @@ version: 1
 backend: netbox
 rules:
   - name: model
-    on_kind: dcim.device
-    from_x:
+    on_type: dcim.device
+    from_attrs:
       map:
         model.serial: serial
         model.serial_v2: serial
@@ -703,15 +784,15 @@ rules:
     fn extract_infers_tag_key_from_prefix() {
         let mut state = ObservedState::default();
         state.insert(ObservedObject {
-            kind: Kind::DcimDevice,
+            type_name: TypeName::new("dcim.device"),
             key: "device=leaf01".to_string(),
-            attrs: Attrs::Device(alembic_core::DeviceAttrs {
-                name: "leaf01".to_string(),
-                site: uid_v5("dcim.site", "site=fra1"),
-                role: "leaf".to_string(),
-                device_type: "leaf-switch".to_string(),
-                status: Some("active".to_string()),
-            }),
+            attrs: device_attrs(
+                "leaf01",
+                uid_v5("dcim.site", "site=fra1"),
+                "leaf",
+                "leaf-switch",
+                Some("active"),
+            ),
             projection: ProjectionData {
                 custom_fields: None,
                 tags: Some(vec!["fabric".to_string()]),
@@ -726,8 +807,8 @@ version: 1
 backend: netbox
 rules:
   - name: tags
-    on_kind: dcim.device
-    from_x:
+    on_type: dcim.device
+    from_attrs:
       prefix: "model."
     to:
       tags:
@@ -738,7 +819,7 @@ rules:
         let report = block_on(extract_inventory(&adapter, Some(&projection))).unwrap();
         let object = &report.inventory.objects[0];
         assert_eq!(
-            object.x.get("model.tags"),
+            object.attrs.get("model.tags"),
             Some(&Value::Array(vec![Value::String("fabric".to_string())]))
         );
         assert!(report
@@ -751,15 +832,15 @@ rules:
     fn extract_inserts_tags_with_default_key() {
         let mut state = ObservedState::default();
         state.insert(ObservedObject {
-            kind: Kind::DcimDevice,
+            type_name: TypeName::new("dcim.device"),
             key: "device=leaf01".to_string(),
-            attrs: Attrs::Device(alembic_core::DeviceAttrs {
-                name: "leaf01".to_string(),
-                site: uid_v5("dcim.site", "site=fra1"),
-                role: "leaf".to_string(),
-                device_type: "leaf-switch".to_string(),
-                status: Some("active".to_string()),
-            }),
+            attrs: device_attrs(
+                "leaf01",
+                uid_v5("dcim.site", "site=fra1"),
+                "leaf",
+                "leaf-switch",
+                Some("active"),
+            ),
             projection: ProjectionData {
                 custom_fields: None,
                 tags: Some(vec!["fabric".to_string()]),
@@ -774,8 +855,8 @@ version: 1
 backend: netbox
 rules:
   - name: tags
-    on_kind: dcim.device
-    from_x:
+    on_type: dcim.device
+    from_attrs:
       key: tags
     to:
       tags:
@@ -786,7 +867,7 @@ rules:
         let report = block_on(extract_inventory(&adapter, Some(&projection))).unwrap();
         let object = &report.inventory.objects[0];
         assert_eq!(
-            object.x.get("tags"),
+            object.attrs.get("tags"),
             Some(&Value::Array(vec![Value::String("fabric".to_string())]))
         );
     }
@@ -795,15 +876,15 @@ rules:
     fn extract_warns_on_non_value_tag_source() {
         let mut state = ObservedState::default();
         state.insert(ObservedObject {
-            kind: Kind::DcimDevice,
+            type_name: TypeName::new("dcim.device"),
             key: "device=leaf01".to_string(),
-            attrs: Attrs::Device(alembic_core::DeviceAttrs {
-                name: "leaf01".to_string(),
-                site: uid_v5("dcim.site", "site=fra1"),
-                role: "leaf".to_string(),
-                device_type: "leaf-switch".to_string(),
-                status: Some("active".to_string()),
-            }),
+            attrs: device_attrs(
+                "leaf01",
+                uid_v5("dcim.site", "site=fra1"),
+                "leaf",
+                "leaf-switch",
+                Some("active"),
+            ),
             projection: ProjectionData {
                 custom_fields: None,
                 tags: Some(vec!["fabric".to_string()]),
@@ -818,8 +899,8 @@ version: 1
 backend: netbox
 rules:
   - name: tags
-    on_kind: dcim.device
-    from_x:
+    on_type: dcim.device
+    from_attrs:
       key: tags
     to:
       tags:
@@ -834,7 +915,7 @@ rules:
             .any(|warn| warn.contains("tags source must be 'value'")));
         let object = &report.inventory.objects[0];
         assert_eq!(
-            object.x.get("tags"),
+            object.attrs.get("tags"),
             Some(&Value::Array(vec![Value::String("fabric".to_string())]))
         );
     }
@@ -845,15 +926,15 @@ rules:
         let mut custom_fields = BTreeMap::new();
         custom_fields.insert("serial".to_string(), Value::String("abc".to_string()));
         state.insert(ObservedObject {
-            kind: Kind::DcimDevice,
+            type_name: TypeName::new("dcim.device"),
             key: "device=leaf01".to_string(),
-            attrs: Attrs::Device(alembic_core::DeviceAttrs {
-                name: "leaf01".to_string(),
-                site: uid_v5("dcim.site", "site=fra1"),
-                role: "leaf".to_string(),
-                device_type: "leaf-switch".to_string(),
-                status: Some("active".to_string()),
-            }),
+            attrs: device_attrs(
+                "leaf01",
+                uid_v5("dcim.site", "site=fra1"),
+                "leaf",
+                "leaf-switch",
+                Some("active"),
+            ),
             projection: ProjectionData {
                 custom_fields: Some(custom_fields),
                 tags: None,
@@ -868,8 +949,8 @@ version: 1
 backend: netbox
 rules:
   - name: model
-    on_kind: dcim.device
-    from_x:
+    on_type: dcim.device
+    from_attrs:
       key: model.serial
     to:
       custom_fields:
@@ -884,7 +965,7 @@ rules:
             .any(|warn| warn.contains("missing prefix")));
         let object = &report.inventory.objects[0];
         assert_eq!(
-            object.x.get("serial"),
+            object.attrs.get("serial"),
             Some(&Value::String("abc".to_string()))
         );
     }
@@ -897,15 +978,15 @@ rules:
         let mut root = serde_json::Map::new();
         root.insert("system".to_string(), Value::Object(local_map));
         state.insert(ObservedObject {
-            kind: Kind::DcimDevice,
+            type_name: TypeName::new("dcim.device"),
             key: "device=leaf01".to_string(),
-            attrs: Attrs::Device(alembic_core::DeviceAttrs {
-                name: "leaf01".to_string(),
-                site: uid_v5("dcim.site", "site=fra1"),
-                role: "leaf".to_string(),
-                device_type: "leaf-switch".to_string(),
-                status: Some("active".to_string()),
-            }),
+            attrs: device_attrs(
+                "leaf01",
+                uid_v5("dcim.site", "site=fra1"),
+                "leaf",
+                "leaf-switch",
+                Some("active"),
+            ),
             projection: ProjectionData {
                 custom_fields: None,
                 tags: None,
@@ -920,8 +1001,8 @@ version: 1
 backend: netbox
 rules:
   - name: local
-    on_kind: dcim.device
-    from_x:
+    on_type: dcim.device
+    from_attrs:
       key: context.role
     to:
       local_context:
@@ -936,6 +1017,6 @@ rules:
             .iter()
             .any(|warn| warn.contains("missing prefix")));
         let object = &report.inventory.objects[0];
-        assert!(object.x.is_empty());
+        assert!(object.attrs.get("context.role").is_none());
     }
 }

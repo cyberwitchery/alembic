@@ -2,8 +2,8 @@ version: 1
 backend: netbox
 rules:
   - name: model_to_custom_fields_devices
-    on_kind: dcim.device
-    from_x:
+    on_type: dcim.device
+    from_attrs:
       map:
         "model.fabric": "fabric"
         "model.role_hint": "role_hint"
@@ -12,8 +12,8 @@ rules:
         strategy: explicit
 
   - name: model_tags
-    on_kind: "*"
-    from_x:
+    on_type: "*"
+    from_attrs:
       key: "model.tags"
     to:
       tags:

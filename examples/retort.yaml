@@ -3,11 +3,11 @@ rules:
   - name: sites
     select: /sites/*
     emit:
-      kind: dcim.site
+      type: dcim.site
       key: "site=${slug}"
       uid:
         v5:
-          kind: "dcim.site"
+          type: "dcim.site"
           stable: "site=${slug}"
       vars:
         slug: { from: .slug, required: true }
@@ -19,11 +19,11 @@ rules:
   - name: devices
     select: /sites/*/devices/*
     emit:
-      kind: dcim.device
+      type: dcim.device
       key: "site=${site_slug}/device=${name}"
       uid:
         v5:
-          kind: "dcim.device"
+          type: "dcim.device"
           stable: "device=${name}"
       vars:
         name: { from: .name, required: true }
@@ -39,9 +39,8 @@ rules:
         device_type: ${device_type}
         site:
           uid:
-            kind: "dcim.site"
+            type: "dcim.site"
             stable: "site=${site_slug}"
-      x:
         model.fabric: ${model_fabric}
         model.role_hint: ${model_role_hint}
         model.tags: ${model_tags}
@@ -49,11 +48,11 @@ rules:
   - name: interfaces
     select: /sites/*/devices/*/interfaces/*
     emit:
-      kind: dcim.interface
+      type: dcim.interface
       key: "device=${device_name}/interface=${name}"
       uid:
         v5:
-          kind: "dcim.interface"
+          type: "dcim.interface"
           stable: "if=${device_name}/${name}"
       vars:
         name: { from: .name, required: true }
@@ -62,17 +61,17 @@ rules:
         name: ${name}
         device:
           uid:
-            kind: "dcim.device"
+            type: "dcim.device"
             stable: "device=${device_name}"
 
   - name: prefixes
     select: /prefixes/*
     emit:
-      kind: ipam.prefix
+      type: ipam.prefix
       key: "prefix=${prefix}"
       uid:
         v5:
-          kind: "ipam.prefix"
+          type: "ipam.prefix"
           stable: "prefix=${prefix}"
       vars:
         prefix: { from: .prefix, required: true }
@@ -81,17 +80,17 @@ rules:
         prefix: ${prefix}
         site:
           uid?:
-            kind: "dcim.site"
+            type: "dcim.site"
             stable: "site=${site_slug}"
 
   - name: ips
     select: /prefixes/*/ips/*
     emit:
-      kind: ipam.ip_address
+      type: ipam.ip_address
       key: "ip=${address}"
       uid:
         v5:
-          kind: "ipam.ip_address"
+          type: "ipam.ip_address"
           stable: "ip=${address}"
       vars:
         address: { from: .address, required: true }
@@ -101,17 +100,17 @@ rules:
         address: ${address}
         assigned_interface:
           uid:
-            kind: "dcim.interface"
+            type: "dcim.interface"
             stable: "if=${device}/${interface}"
 
   - name: evpn
     select: /services/evpn
     emit:
-      kind: services.evpn
+      type: services.evpn
       key: "evpn=${name}"
       uid:
         v5:
-          kind: "services.evpn"
+          type: "services.evpn"
           stable: "evpn=${name}"
       vars:
         name: { from: .name, required: true }

@@ -81,17 +81,17 @@ pub(crate) fn bootstrap_state_from_observed(
     let mut updated = false;
     for object in &desired.objects {
         if state
-            .backend_id(object.base.kind.clone(), object.base.uid)
+            .backend_id(object.base.type_name.clone(), object.base.uid)
             .is_some()
         {
             continue;
         }
         if let Some(obs) = observed.by_key.get(&object.base.key) {
-            if obs.kind != object.base.kind {
+            if obs.type_name != object.base.type_name {
                 continue;
             }
             if let Some(backend_id) = obs.backend_id {
-                state.set_backend_id(object.base.kind.clone(), object.base.uid, backend_id);
+                state.set_backend_id(object.base.type_name.clone(), object.base.uid, backend_id);
                 updated = true;
             }
         }

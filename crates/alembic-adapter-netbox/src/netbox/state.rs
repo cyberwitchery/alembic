@@ -1,6 +1,8 @@
-use alembic_core::{Kind, Uid};
+use alembic_core::Uid;
 use alembic_engine::StateStore;
 use std::collections::BTreeMap;
+
+use super::{TYPE_DCIM_DEVICE, TYPE_DCIM_INTERFACE, TYPE_DCIM_SITE};
 
 pub(super) struct StateMappings {
     pub(super) site_id_to_uid: BTreeMap<u64, Uid>,
@@ -13,19 +15,19 @@ pub(super) fn state_mappings(state: &StateStore) -> StateMappings {
     let mut device_id_to_uid = BTreeMap::new();
     let mut interface_id_to_uid = BTreeMap::new();
 
-    for (kind, mapping) in state.all_mappings() {
-        match kind {
-            Kind::DcimSite => {
+    for (type_name, mapping) in state.all_mappings() {
+        match type_name.as_str() {
+            TYPE_DCIM_SITE => {
                 for (uid, backend_id) in mapping {
                     site_id_to_uid.insert(*backend_id, *uid);
                 }
             }
-            Kind::DcimDevice => {
+            TYPE_DCIM_DEVICE => {
                 for (uid, backend_id) in mapping {
                     device_id_to_uid.insert(*backend_id, *uid);
                 }
             }
-            Kind::DcimInterface => {
+            TYPE_DCIM_INTERFACE => {
                 for (uid, backend_id) in mapping {
                     interface_id_to_uid.insert(*backend_id, *uid);
                 }

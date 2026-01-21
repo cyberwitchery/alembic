@@ -4,6 +4,7 @@ use crate::{plan, sort_ops_for_apply, ProjectedInventory, ProjectedObject, Proje
 use crate::{ObservedState, ProjectionSpec, StateStore};
 use alembic_core::Inventory;
 use anyhow::{anyhow, Result};
+use std::collections::BTreeSet;
 
 pub(crate) struct LoadContext {
     inventory: Inventory,
@@ -32,6 +33,7 @@ impl LoadContext {
                 .map(|base| ProjectedObject {
                     base,
                     projection: ProjectionData::default(),
+                    projection_inputs: BTreeSet::new(),
                 })
                 .collect();
             ProjectedInventory { objects }
@@ -59,17 +61,17 @@ impl<'a> ProjectionContext<'a> {
         projection_strict: bool,
         allow_delete: bool,
     ) -> Result<PlanContext> {
-        let kinds: Vec<_> = self
+        let types: Vec<_> = self
             .projected
             .objects
             .iter()
-            .map(|o| o.base.kind.clone())
+            .map(|o| o.base.type_name.clone())
             .collect();
-        let mut observed = adapter.observe(&kinds).await?;
+        let mut observed = adapter.observe(&types).await?;
         let bootstrapped = crate::bootstrap_state_from_observed(state, &self.projected, &observed);
         if bootstrapped {
             adapter.update_state(state);
-            observed = adapter.observe(&kinds).await?;
+            observed = adapter.observe(&types).await?;
         }
         if projection_strict {
             if let Some(spec) = self.projection {
@@ -128,9 +130,9 @@ impl<'a> ApplyContext<'a> {
 
         for applied in &report.applied {
             if let Some(backend_id) = applied.backend_id {
-                state.set_backend_id(applied.kind.clone(), applied.uid, backend_id);
+                state.set_backend_id(applied.type_name.clone(), applied.uid, backend_id);
             } else {
-                state.remove_backend_id(applied.kind.clone(), applied.uid);
+                state.remove_backend_id(applied.type_name.clone(), applied.uid);
             }
         }
 
