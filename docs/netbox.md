@@ -1,61 +1,37 @@
 # netbox adapter
 
-the netbox adapter maps alembic ir to netbox api calls using the `netbox` crate.
+the netbox adapter maps alembic ir objects to netbox endpoints dynamically. it uses the
+`core/object-types` endpoint to resolve a `type` like `dcim.site` into its REST endpoint
+and supported feature set.
 
-## required netbox objects
+## object types and endpoints
 
-alembic expects these objects to exist in netbox (by natural key):
+- the adapter uses `object_types.rest_api_endpoint` for each type.
+- if a type has no REST endpoint in netbox, apply/observe will fail.
 
-- device roles (matched by `name`)
-- device types (matched by `model`)
-- sites (matched by `slug`)
+## attrs mapping
 
-if these are missing, create them in netbox before running `alembic plan`.
+- `attrs` are sent as-is in create/update requests, so they must match the netbox API field names.
+- nested references should be provided as alembic uids (string UUIDs). the adapter resolves those
+  to backend integer ids before sending requests.
+- if a referenced uid cannot be resolved (not in state or created earlier in the same apply),
+  apply fails with a missing reference error.
 
-## mapping summary (mvp)
+## keys and matching
 
-- `dcim.site`
-  - create/update via `WritableSiteRequest` / `PatchedWritableSiteRequest`
-  - matching by `slug`
-  - projected custom fields/tags patched when configured
+- keys are used to bootstrap state when no mapping exists.
+- key format is `field=value[/field=value...]` (used as query filters when resolving backend ids).
+- for observed objects, keys are derived in this order: `slug`, `name`, `cid`, `prefix`, `address`,
+  falling back to `id`.
 
-- `dcim.device`
-  - create/update via `CreateDeviceRequest` / `UpdateDeviceRequest`
-  - site resolved via state store
-  - role/type resolved by lookup
-  - matching by `name`
-  - projected custom fields/tags/local context patched when configured
+## projection data
 
-- `dcim.interface`
-  - create/update via `WritableInterfaceRequest` / `PatchedWritableInterfaceRequest`
-  - device resolved via state store (device name used for reference)
-  - limited interface type support (see below)
-  - projected custom fields/tags patched when configured
-
-- `ipam.prefix`
-  - create/update via `CreatePrefixRequest` / `UpdatePrefixRequest`
-  - site optional (mapped via scope_type/scope_id)
-  - projected custom fields/tags patched when configured
-
-- `ipam.ip_address`
-  - create/update via `CreateIpAddressRequest` / `UpdateIpAddressRequest`
-  - assigned interface optional
-  - projected custom fields/tags patched when configured
-
-## interface types
-
-supported in the adapter:
-
-- `1000base-t`
-- `virtual`
-- `bridge`
-- `lag`
-
-other values return an error. extend `interface_type_from_str` if you need more.
+- `custom_fields`, `tags`, and `local_context_data` are removed from `attrs` during observe and
+  stored in the projection payload.
+- on apply, projection patches are sent only if the type advertises support via the
+  object type `features` field.
 
 ## known limitations
 
-- ip -> interface assignment is only observed when netbox returns `assigned_object_type == dcim.interface`.
-- projection-only attrs are ignored for diffing when a projection spec is supplied.
-- generic objects are skipped with a warning in apply.
-- projection proposal can create missing custom fields and tags when enabled.
+- without explicit schema metadata, any string that parses as a UUID is treated as a reference.
+- netbox endpoints that do not accept patch or projection fields will return errors on apply.

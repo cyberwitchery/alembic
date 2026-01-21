@@ -10,7 +10,6 @@ use alembic_engine::{
 };
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
-use serde_json;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;

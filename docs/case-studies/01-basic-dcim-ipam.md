@@ -1,3 +1,12 @@
+# case study: basic dcim + ipam
+
+## goal
+
+create a site, device, two interfaces, a prefix, and an ip address, then converge netbox.
+
+## inventory
+
+```yaml
 objects:
   - uid: "f1c8a9d4-2a3b-4c5d-8e9f-0123456789ab"
     type: dcim.manufacturer
@@ -27,7 +36,6 @@ objects:
     attrs:
       name: "FRA1"
       slug: "fra1"
-      status: "active"
 
   - uid: "7b8f7a92-8fd0-4667-9a4b-9f3b5c9a4b1a"
     type: dcim.device
@@ -72,3 +80,19 @@ objects:
       address: "10.0.0.10/24"
       assigned_interface: "5a1c43a4-4f52-4d07-8a2f-88ad1fbdf8c0"
       description: "leaf01 eth0"
+```
+
+## commands
+
+```bash
+alembic plan -f /path/to/basic.yaml -o /tmp/plan.json \
+  --netbox-url http://localhost:8000 --netbox-token $NETBOX_TOKEN
+
+alembic apply -p /tmp/plan.json \
+  --netbox-url http://localhost:8000 --netbox-token $NETBOX_TOKEN --allow-delete
+```
+
+## notes
+
+- use uid strings to reference other objects.
+- keys are used only for bootstrap or when state is missing.

@@ -15,3 +15,4 @@ this directory contains the canonical documentation for alembic.
 - `docs/netbox.md` - netbox adapter mapping and constraints
 - `docs/projection.md` - backend projection spec for attrs data
 - `docs/development.md` - building, testing, and release flow
+- `docs/case-studies/README.md` - end-to-end examples and walkthroughs

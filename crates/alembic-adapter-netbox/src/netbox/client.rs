@@ -4,6 +4,8 @@ use netbox::{Client, ClientConfig, QueryBuilder};
 use serde::de::DeserializeOwned;
 use std::collections::{BTreeMap, BTreeSet};
 
+use super::registry::ObjectTypeRegistry;
+
 pub(super) struct NetBoxClient {
     client: Client,
 }
@@ -77,6 +79,13 @@ impl NetBoxClient {
             custom_fields_by_type: by_type,
             tags,
         })
+    }
+
+    pub(super) async fn fetch_object_types(&self) -> Result<ObjectTypeRegistry> {
+        let types = self
+            .list_all(&self.client.core().object_types(), None)
+            .await?;
+        ObjectTypeRegistry::from_object_types(types)
     }
 }
 

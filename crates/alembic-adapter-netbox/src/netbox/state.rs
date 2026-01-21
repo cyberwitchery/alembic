@@ -2,45 +2,31 @@ use alembic_core::Uid;
 use alembic_engine::StateStore;
 use std::collections::BTreeMap;
 
-use super::{TYPE_DCIM_DEVICE, TYPE_DCIM_INTERFACE, TYPE_DCIM_SITE};
-
+#[derive(Debug, Default)]
 pub(super) struct StateMappings {
-    pub(super) site_id_to_uid: BTreeMap<u64, Uid>,
-    pub(super) device_id_to_uid: BTreeMap<u64, Uid>,
-    pub(super) interface_id_to_uid: BTreeMap<u64, Uid>,
+    pub(super) by_type: BTreeMap<String, BTreeMap<u64, Uid>>,
+}
+
+impl StateMappings {
+    pub(super) fn uid_for(&self, type_name: &str, backend_id: u64) -> Option<Uid> {
+        self.by_type
+            .get(type_name)
+            .and_then(|mapping| mapping.get(&backend_id).copied())
+    }
 }
 
 pub(super) fn state_mappings(state: &StateStore) -> StateMappings {
-    let mut site_id_to_uid = BTreeMap::new();
-    let mut device_id_to_uid = BTreeMap::new();
-    let mut interface_id_to_uid = BTreeMap::new();
+    let mut by_type = BTreeMap::new();
 
     for (type_name, mapping) in state.all_mappings() {
-        match type_name.as_str() {
-            TYPE_DCIM_SITE => {
-                for (uid, backend_id) in mapping {
-                    site_id_to_uid.insert(*backend_id, *uid);
-                }
-            }
-            TYPE_DCIM_DEVICE => {
-                for (uid, backend_id) in mapping {
-                    device_id_to_uid.insert(*backend_id, *uid);
-                }
-            }
-            TYPE_DCIM_INTERFACE => {
-                for (uid, backend_id) in mapping {
-                    interface_id_to_uid.insert(*backend_id, *uid);
-                }
-            }
-            _ => {}
+        let mut id_to_uid = BTreeMap::new();
+        for (uid, backend_id) in mapping {
+            id_to_uid.insert(*backend_id, *uid);
         }
+        by_type.insert(type_name.as_str().to_string(), id_to_uid);
     }
 
-    StateMappings {
-        site_id_to_uid,
-        device_id_to_uid,
-        interface_id_to_uid,
-    }
+    StateMappings { by_type }
 }
 
 pub(super) fn resolved_from_state(state: &StateStore) -> BTreeMap<Uid, u64> {
