@@ -3,7 +3,7 @@
 use crate::projection::ProjectedInventory;
 use crate::state::StateStore;
 use crate::types::{FieldChange, ObservedState, Op, Plan};
-use alembic_core::{Attrs, Kind, Uid};
+use alembic_core::{uid_v5, Attrs, Kind};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -66,7 +66,10 @@ pub fn plan(
             let uid = backend_to_uid
                 .get(&(*backend_id, kind.clone()))
                 .copied()
-                .unwrap_or_else(Uid::nil);
+                .unwrap_or_else(|| {
+                    let kind_str = kind.as_string();
+                    uid_v5(&kind_str, &obs.key)
+                });
             ops.push(Op::Delete {
                 uid,
                 kind: kind.clone(),
@@ -129,10 +132,11 @@ fn diff_attrs(existing: &Attrs, desired: &Attrs) -> Vec<FieldChange> {
 
     for key in keys.iter() {
         let from = existing_map.get(key).cloned().unwrap_or(Value::Null);
-        let to = desired_map.get(key).cloned().unwrap_or(Value::Null);
-        if to.is_null() {
+        let desired_has = desired_map.contains_key(key);
+        if !desired_has {
             continue;
         }
+        let to = desired_map.get(key).cloned().unwrap_or(Value::Null);
         if from != to {
             changes.push(FieldChange {
                 field: key.clone(),
@@ -150,9 +154,6 @@ fn diff_object(
     desired: &crate::projection::ProjectedObject,
 ) -> Vec<FieldChange> {
     let mut changes = diff_attrs(&existing.attrs, &desired.base.attrs);
-    if matches!(desired.base.kind, Kind::IpamPrefix) {
-        changes.retain(|change| change.field != "site");
-    }
 
     if let Some(desired_fields) = &desired.projection.custom_fields {
         let existing_subset = existing

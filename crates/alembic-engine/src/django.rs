@@ -604,7 +604,8 @@ mod tests {
                         device_type: "leaf-switch".to_string(),
                         status: None,
                     }),
-                ),
+                )
+                .unwrap(),
                 Object::new(
                     Uuid::from_u128(2),
                     "site=fra1".to_string(),
@@ -614,7 +615,8 @@ mod tests {
                         status: None,
                         description: None,
                     }),
-                ),
+                )
+                .unwrap(),
                 Object::new(
                     Uuid::from_u128(3),
                     "interface=eth0".to_string(),
@@ -625,7 +627,8 @@ mod tests {
                         enabled: None,
                         description: None,
                     }),
-                ),
+                )
+                .unwrap(),
             ],
         }
     }

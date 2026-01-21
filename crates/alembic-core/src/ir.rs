@@ -289,19 +289,34 @@ pub struct Object {
     pub x: JsonMap,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ObjectError {
+    GenericAttrsRequireKind,
+}
+
+impl fmt::Display for ObjectError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ObjectError::GenericAttrsRequireKind => {
+                f.write_str("generic attrs require explicit kind")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ObjectError {}
+
 impl Object {
     /// create an object and infer its kind from attrs.
-    pub fn new(uid: Uid, key: String, attrs: Attrs) -> Self {
-        let kind = attrs
-            .kind()
-            .unwrap_or_else(|| panic!("generic attrs require explicit kind"));
-        Self {
+    pub fn new(uid: Uid, key: String, attrs: Attrs) -> Result<Self, ObjectError> {
+        let kind = attrs.kind().ok_or(ObjectError::GenericAttrsRequireKind)?;
+        Ok(Self {
             uid,
             kind,
             key,
             attrs,
             x: JsonMap::default(),
-        }
+        })
     }
 
     /// create a generic object with an explicit kind.
@@ -444,7 +459,8 @@ mod tests {
                 status: Some("active".to_string()),
                 description: Some("test".to_string()),
             }),
-        );
+        )
+        .unwrap();
 
         let value = serde_json::to_value(&object).unwrap();
         let decoded: Object = serde_json::from_value(value).unwrap();
@@ -553,7 +569,8 @@ mod tests {
                 status: None,
                 description: None,
             }),
-        );
+        )
+        .unwrap();
         object
             .x
             .insert("example.note".to_string(), Value::String("ok".to_string()));

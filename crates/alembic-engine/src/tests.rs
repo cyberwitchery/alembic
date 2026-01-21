@@ -233,7 +233,8 @@ fn detects_duplicate_uids() {
                 status: None,
                 description: None,
             }),
-        ),
+        )
+        .unwrap(),
         Object::new(
             uid(1),
             "site=b".to_string(),
@@ -243,7 +244,8 @@ fn detects_duplicate_uids() {
                 status: None,
                 description: None,
             }),
-        ),
+        )
+        .unwrap(),
     ];
     let inventory = Inventory { objects };
     let result = validate(&inventory);
@@ -262,7 +264,8 @@ fn detects_missing_references() {
             enabled: Some(true),
             description: None,
         }),
-    )];
+    )
+    .unwrap()];
     let inventory = Inventory { objects };
     let result = validate(&inventory);
     assert!(result.is_err());
@@ -283,7 +286,8 @@ fn plans_in_stable_order() {
                 device_type: "leaf-switch".to_string(),
                 status: None,
             }),
-        ),
+        )
+        .unwrap(),
         Object::new(
             site_uid,
             "site=fra1".to_string(),
@@ -293,7 +297,8 @@ fn plans_in_stable_order() {
                 status: None,
                 description: None,
             }),
-        ),
+        )
+        .unwrap(),
     ];
 
     let inventory = Inventory { objects };
@@ -328,7 +333,8 @@ fn detects_attribute_diff() {
                 status: None,
                 description: None,
             }),
-        )],
+        )
+        .unwrap()],
     };
 
     let mut observed = ObservedState::default();
@@ -410,7 +416,8 @@ fn planner_includes_projected_custom_fields() {
             status: None,
             description: None,
         }),
-    );
+    )
+    .unwrap();
     object.x.insert("model.fabric".to_string(), json!("fra1"));
 
     let spec: crate::ProjectionSpec = serde_yaml::from_str(
@@ -472,7 +479,8 @@ fn planner_ignores_optional_nulls() {
             status: None,
             description: None,
         }),
-    );
+    )
+    .unwrap();
     let projected = project_default(std::slice::from_ref(&desired));
 
     let mut observed = ObservedState::default();
@@ -505,7 +513,8 @@ fn planner_ignores_unprojected_custom_fields() {
             status: None,
             description: None,
         }),
-    );
+    )
+    .unwrap();
     let mut desired_fields = BTreeMap::new();
     desired_fields.insert("fabric".to_string(), json!("fra1"));
     let projected = ProjectedInventory {
@@ -552,7 +561,8 @@ fn planner_matches_backend_id_by_kind() {
             device_type: "leaf".to_string(),
             status: None,
         }),
-    );
+    )
+    .unwrap();
     let projected = project_default(std::slice::from_ref(&desired));
 
     let mut observed = ObservedState::default();
@@ -584,7 +594,7 @@ fn planner_matches_backend_id_by_kind() {
 }
 
 #[test]
-fn planner_ignores_prefix_site_diff() {
+fn planner_includes_prefix_site_diff() {
     let desired = Object::new(
         uid(83),
         "prefix=10.0.0.0/24".to_string(),
@@ -593,7 +603,8 @@ fn planner_ignores_prefix_site_diff() {
             site: Some(uid(1)),
             description: None,
         }),
-    );
+    )
+    .unwrap();
     let projected = project_default(std::slice::from_ref(&desired));
 
     let mut observed = ObservedState::default();
@@ -611,7 +622,13 @@ fn planner_ignores_prefix_site_diff() {
 
     let state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
     let plan = plan(&projected, &observed, &state, false);
-    assert!(plan.ops.is_empty());
+    assert_eq!(plan.ops.len(), 1);
+    match &plan.ops[0] {
+        Op::Update { changes, .. } => {
+            assert!(changes.iter().any(|change| change.field == "site"));
+        }
+        _ => panic!("expected update"),
+    }
 }
 
 #[test]
@@ -713,7 +730,8 @@ fn apply_order_puts_deletes_last() {
                         status: None,
                         description: None,
                     }),
-                ),
+                )
+                .unwrap(),
                 projection: crate::ProjectionData::default(),
             },
         },
@@ -753,7 +771,8 @@ fn build_plan_creates_ops() {
                 status: None,
                 description: None,
             }),
-        )],
+        )
+        .unwrap()],
     };
     let adapter = TestAdapter {
         observed: ObservedState::default(),
@@ -777,7 +796,8 @@ fn build_plan_bootstraps_state_by_key() {
                 status: None,
                 description: None,
             }),
-        )],
+        )
+        .unwrap()],
     };
     let mut observed = ObservedState::default();
     observed.insert(ObservedObject {
@@ -832,7 +852,8 @@ fn build_plan_reobserves_after_bootstrap() {
                 status: None,
                 description: None,
             }),
-        )],
+        )
+        .unwrap()],
     };
     let mut first = ObservedState::default();
     first.insert(ObservedObject {

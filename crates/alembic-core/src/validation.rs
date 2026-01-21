@@ -14,10 +14,10 @@ pub enum ValidationError {
     #[error("missing field: {0}")]
     MissingField(&'static str),
     #[error("missing reference {field} -> {target}")]
-    MissingReference { field: &'static str, target: Uid },
+    MissingReference { field: String, target: Uid },
     #[error("kind mismatch for {field}: expected {expected}, got {actual}")]
     KindMismatch {
-        field: &'static str,
+        field: String,
         expected: Kind,
         actual: Kind,
     },
@@ -111,7 +111,10 @@ fn validate_object_refs(
                 check_ref("prefix.site", target, Kind::DcimSite, uid_to_kind, report);
             }
         }
-        Attrs::Site(_) | Attrs::Generic(_) => {}
+        Attrs::Generic(attrs) => {
+            validate_generic_refs(attrs, uid_to_kind, report);
+        }
+        Attrs::Site(_) => {}
     }
 }
 
@@ -124,15 +127,40 @@ fn check_ref(
     report: &mut ValidationReport,
 ) {
     match uid_to_kind.get(&target) {
-        None => report
-            .errors
-            .push(ValidationError::MissingReference { field, target }),
+        None => report.errors.push(ValidationError::MissingReference {
+            field: field.to_string(),
+            target,
+        }),
         Some(actual) if *actual != expected => report.errors.push(ValidationError::KindMismatch {
-            field,
+            field: field.to_string(),
             expected,
             actual: actual.clone(),
         }),
         _ => {}
+    }
+}
+
+fn validate_generic_refs(
+    attrs: &crate::ir::JsonMap,
+    uid_to_kind: &BTreeMap<Uid, Kind>,
+    report: &mut ValidationReport,
+) {
+    for (key, value) in attrs.iter() {
+        if !(key.ends_with("_uid") || key.ends_with("_uuid")) {
+            continue;
+        }
+        let Some(raw) = value.as_str() else {
+            continue;
+        };
+        let Ok(uid) = Uid::parse_str(raw) else {
+            continue;
+        };
+        if !uid_to_kind.contains_key(&uid) {
+            report.errors.push(ValidationError::MissingReference {
+                field: format!("generic.{key}"),
+                target: uid,
+            });
+        }
     }
 }
 
@@ -159,7 +187,8 @@ mod tests {
                     status: None,
                     description: None,
                 }),
-            ),
+            )
+            .unwrap(),
             Object::new(
                 uid(2),
                 "site=fra1".to_string(),
@@ -169,7 +198,8 @@ mod tests {
                     status: None,
                     description: None,
                 }),
-            ),
+            )
+            .unwrap(),
         ];
         let report = validate_inventory(&Inventory { objects });
         assert!(report
@@ -189,7 +219,8 @@ mod tests {
                 status: None,
                 description: None,
             }),
-        )];
+        )
+        .unwrap()];
         let report = validate_inventory(&Inventory { objects });
         assert!(report
             .errors
@@ -228,7 +259,8 @@ mod tests {
                     status: None,
                     description: None,
                 }),
-            ),
+            )
+            .unwrap(),
             Object::new(
                 wrong_uid,
                 "device=leaf01".to_string(),
@@ -239,7 +271,8 @@ mod tests {
                     device_type: "leaf-switch".to_string(),
                     status: None,
                 }),
-            ),
+            )
+            .unwrap(),
             Object::new(
                 uid(12),
                 "device=leaf01/interface=eth0".to_string(),
@@ -250,7 +283,8 @@ mod tests {
                     enabled: None,
                     description: None,
                 }),
-            ),
+            )
+            .unwrap(),
         ];
         let report = validate_inventory(&Inventory { objects });
         assert!(report
