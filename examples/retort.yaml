@@ -1,10 +1,93 @@
 version: 1
+schema:
+  types:
+    dcim.site:
+      key:
+        site:
+          type: slug
+      fields:
+        name:
+          type: string
+        slug:
+          type: slug
+    dcim.device:
+      key:
+        site:
+          type: slug
+        device:
+          type: slug
+      fields:
+        name:
+          type: string
+        role:
+          type: string
+        device_type:
+          type: string
+        site:
+          type: ref
+          target: dcim.site
+        model.fabric:
+          type: string
+        model.role_hint:
+          type: string
+        model.tags:
+          type: list
+          item:
+            type: string
+    dcim.interface:
+      key:
+        device:
+          type: slug
+        interface:
+          type: slug
+      fields:
+        name:
+          type: string
+        device:
+          type: ref
+          target: dcim.device
+    ipam.prefix:
+      key:
+        prefix:
+          type: prefix
+      fields:
+        prefix:
+          type: prefix
+        site:
+          type: ref
+          target: dcim.site
+    ipam.ip_address:
+      key:
+        ip:
+          type: ip_address
+      fields:
+        address:
+          type: ip_address
+        assigned_interface:
+          type: ref
+          target: dcim.interface
+    services.evpn:
+      key:
+        evpn:
+          type: slug
+      fields:
+        name:
+          type: string
+        asn:
+          type: int
+        vtep_pool:
+          type: string
+        route_targets:
+          type: map
+          value:
+            type: string
 rules:
   - name: sites
     select: /sites/*
     emit:
       type: dcim.site
-      key: "site=${slug}"
+      key:
+        site: "${slug}"
       uid:
         v5:
           type: "dcim.site"
@@ -20,7 +103,9 @@ rules:
     select: /sites/*/devices/*
     emit:
       type: dcim.device
-      key: "site=${site_slug}/device=${name}"
+      key:
+        site: "${site_slug}"
+        device: "${name}"
       uid:
         v5:
           type: "dcim.device"
@@ -49,7 +134,9 @@ rules:
     select: /sites/*/devices/*/interfaces/*
     emit:
       type: dcim.interface
-      key: "device=${device_name}/interface=${name}"
+      key:
+        device: "${device_name}"
+        interface: "${name}"
       uid:
         v5:
           type: "dcim.interface"
@@ -68,7 +155,8 @@ rules:
     select: /prefixes/*
     emit:
       type: ipam.prefix
-      key: "prefix=${prefix}"
+      key:
+        prefix: "${prefix}"
       uid:
         v5:
           type: "ipam.prefix"
@@ -87,7 +175,8 @@ rules:
     select: /prefixes/*/ips/*
     emit:
       type: ipam.ip_address
-      key: "ip=${address}"
+      key:
+        ip: "${address}"
       uid:
         v5:
           type: "ipam.ip_address"
@@ -107,7 +196,8 @@ rules:
     select: /services/evpn
     emit:
       type: services.evpn
-      key: "evpn=${name}"
+      key:
+        evpn: "${name}"
       uid:
         v5:
           type: "services.evpn"

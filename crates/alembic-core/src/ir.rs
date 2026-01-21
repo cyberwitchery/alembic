@@ -67,6 +67,65 @@ impl From<JsonMap> for BTreeMap<String, Value> {
     }
 }
 
+/// structured key for object identity.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Key(pub BTreeMap<String, Value>);
+
+impl Key {
+    pub fn into_inner(self) -> BTreeMap<String, Value> {
+        self.0
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl Deref for Key {
+    type Target = BTreeMap<String, Value>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for Key {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl From<BTreeMap<String, Value>> for Key {
+    fn from(map: BTreeMap<String, Value>) -> Self {
+        Self(map)
+    }
+}
+
+impl From<Key> for BTreeMap<String, Value> {
+    fn from(map: Key) -> Self {
+        map.0
+    }
+}
+
+pub fn key_string(key: &Key) -> String {
+    key.0
+        .iter()
+        .map(|(field, value)| format!("{field}={}", key_value_to_string(value)))
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn key_value_to_string(value: &Value) -> String {
+    match value {
+        Value::String(value) => value.clone(),
+        Value::Number(value) => value.to_string(),
+        Value::Bool(value) => value.to_string(),
+        Value::Null => "null".to_string(),
+        _ => serde_json::to_string(value).unwrap_or_default(),
+    }
+}
+
 pub const ALEMBIC_UID_NAMESPACE: Uuid = Uuid::from_bytes([
     0x45, 0x93, 0x1a, 0x5f, 0x6c, 0x2b, 0x49, 0x6a, 0x9b, 0x6f, 0x8f, 0x77, 0x7d, 0x4f, 0x3a, 0x1c,
 ]);
@@ -142,6 +201,7 @@ pub struct FieldSchema {
 /// schema metadata for a type.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TypeSchema {
+    pub key: BTreeMap<String, FieldSchema>,
     #[serde(default)]
     pub fields: BTreeMap<String, FieldSchema>,
 }
@@ -161,8 +221,8 @@ pub struct Object {
     /// canonical type for the object.
     #[serde(rename = "type", alias = "kind")]
     pub type_name: TypeName,
-    /// human key used for matching when state is missing.
-    pub key: String,
+    /// structured key used for matching when state is missing.
+    pub key: Key,
     /// attributes payload for this object.
     #[serde(default, rename = "attrs")]
     pub attrs: JsonMap,
@@ -171,12 +231,14 @@ pub struct Object {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ObjectError {
     MissingType,
+    MissingKey,
 }
 
 impl fmt::Display for ObjectError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ObjectError::MissingType => f.write_str("object type must be set"),
+            ObjectError::MissingKey => f.write_str("object key must be set"),
         }
     }
 }
@@ -188,11 +250,14 @@ impl Object {
     pub fn new(
         uid: Uid,
         type_name: TypeName,
-        key: String,
+        key: Key,
         attrs: JsonMap,
     ) -> Result<Self, ObjectError> {
         if type_name.is_empty() {
             return Err(ObjectError::MissingType);
+        }
+        if key.is_empty() {
+            return Err(ObjectError::MissingKey);
         }
         Ok(Self {
             uid,
@@ -206,9 +271,8 @@ impl Object {
 /// top-level inventory of objects.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Inventory {
-    /// optional schema definitions for type metadata.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub schema: Option<Schema>,
+    /// schema definitions for type metadata.
+    pub schema: Schema,
     /// list of objects in this inventory.
     #[serde(default)]
     pub objects: Vec<Object>,
@@ -220,12 +284,14 @@ mod tests {
 
     #[test]
     fn object_roundtrip_json() {
+        let mut key = BTreeMap::new();
+        key.insert("slug".to_string(), serde_json::json!("fra1"));
         let mut attrs = BTreeMap::new();
         attrs.insert("name".to_string(), serde_json::json!("FRA1"));
         let object = Object::new(
             Uuid::from_u128(1),
             TypeName::new("dcim.site"),
-            "site=fra1".to_string(),
+            Key::from(key),
             attrs.into(),
         )
         .unwrap();
@@ -240,13 +306,15 @@ mod tests {
 
     #[test]
     fn object_roundtrip_json_only_attrs() {
+        let mut key = BTreeMap::new();
+        key.insert("slug".to_string(), serde_json::json!("fra1"));
         let mut attrs = BTreeMap::new();
         attrs.insert("name".to_string(), serde_json::json!("FRA1"));
         attrs.insert("extra".to_string(), serde_json::json!(true));
         let object = Object::new(
             Uuid::from_u128(2),
             TypeName::new("dcim.site"),
-            "site=fra1".to_string(),
+            Key::from(key),
             attrs.into(),
         )
         .unwrap();

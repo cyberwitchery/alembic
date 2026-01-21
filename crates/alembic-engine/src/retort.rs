@@ -1,6 +1,6 @@
 //! retort mapping: compile raw yaml into canonical ir.
 
-use alembic_core::{uid_v5, Inventory, JsonMap, Object, TypeName, Uid};
+use alembic_core::{key_string, uid_v5, Inventory, JsonMap, Key, Object, Schema, TypeName, Uid};
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
 use serde_json::{Map as JsonObject, Value as JsonValue};
@@ -12,6 +12,7 @@ use uuid::Uuid;
 #[derive(Debug, Deserialize)]
 pub struct Retort {
     pub version: u32,
+    pub schema: Schema,
     #[serde(default)]
     pub rules: Vec<Rule>,
 }
@@ -42,7 +43,7 @@ pub enum EmitSpec {
 pub struct Emit {
     #[serde(rename = "type", alias = "kind")]
     pub type_name: String,
-    pub key: String,
+    pub key: BTreeMap<String, YamlValue>,
     #[serde(default)]
     pub uid: Option<EmitUid>,
     #[serde(default)]
@@ -154,7 +155,7 @@ pub fn compile_retort(raw: &YamlValue, retort: &Retort) -> Result<Inventory> {
                 let emit_specific_vars = extract_vars(raw, &path, &emit.vars, &rule.name)?;
                 emit_vars.extend(emit_specific_vars);
 
-                let key = render_template(&emit.key, &emit_vars, &rule.name, "key")?;
+                let key = render_key(&emit.key, &emit_vars, &rule.name)?;
                 let uid = resolve_emit_uid(emit, &emit_vars, &rule.name, &key)?;
                 let type_name = TypeName::new(render_template(
                     &emit.type_name,
@@ -174,7 +175,7 @@ pub fn compile_retort(raw: &YamlValue, retort: &Retort) -> Result<Inventory> {
     });
 
     let inventory = Inventory {
-        schema: None,
+        schema: retort.schema.clone(),
         objects,
     };
     crate::validate(&inventory)?;
@@ -184,7 +185,7 @@ pub fn compile_retort(raw: &YamlValue, retort: &Retort) -> Result<Inventory> {
 fn build_object(
     uid: Uid,
     type_name: TypeName,
-    key: String,
+    key: Key,
     attrs: JsonObject<String, JsonValue>,
 ) -> Result<Object> {
     let attrs_value = JsonValue::Object(attrs);
@@ -237,12 +238,12 @@ fn resolve_emit_uid(
     emit: &Emit,
     vars: &BTreeMap<String, JsonValue>,
     rule: &str,
-    key: &str,
+    key: &Key,
 ) -> Result<Uid> {
     match emit.uid.as_ref() {
         Some(EmitUid::V5 { v5 }) => resolve_uid_v5(v5, vars, rule, "uid"),
         Some(EmitUid::Template(template)) => resolve_uid_template(template, vars, rule),
-        None => Ok(uid_v5(&emit.type_name, key)),
+        None => Ok(uid_v5(&emit.type_name, &key_string(key))),
     }
 }
 
@@ -300,6 +301,23 @@ fn render_attrs(
         }
     }
     Ok(map)
+}
+
+fn render_key(
+    key: &BTreeMap<String, YamlValue>,
+    vars: &BTreeMap<String, JsonValue>,
+    rule: &str,
+) -> Result<Key> {
+    let mut map = BTreeMap::new();
+    for (field, value) in key {
+        let context = format!("key.{field}");
+        let rendered = render_yaml_value(value, vars, rule, &context, false)?;
+        let Some(value) = rendered else {
+            return Err(anyhow!("rule {rule}: missing value for {context}"));
+        };
+        map.insert(field.clone(), value);
+    }
+    Ok(Key::from(map))
 }
 
 fn render_yaml_value(
@@ -710,8 +728,8 @@ fn yaml_to_json(value: YamlValue) -> Result<JsonValue> {
     serde_json::to_value(value).map_err(|err| anyhow!("yaml to json failed: {err}"))
 }
 
-fn inventory_sort_key(type_name: &TypeName, key: &str) -> (String, String) {
-    (type_name.as_str().to_string(), key.to_string())
+fn inventory_sort_key(type_name: &TypeName, key: &Key) -> (String, String) {
+    (type_name.as_str().to_string(), key_string(key))
 }
 
 #[cfg(test)]
@@ -818,12 +836,24 @@ sites:
         let retort = parse_yaml(
             r#"
 version: 1
+schema:
+  types:
+    dcim.site:
+      key:
+        site:
+          type: slug
+      fields:
+        name:
+          type: string
+        slug:
+          type: slug
 rules:
   - name: sites
     select: /sites/*
     emit:
       type: dcim.site
-      key: "site=${slug}"
+      key:
+        site: "${slug}"
       vars:
         slug: { from: .slug, required: true }
         name: { from: .name, required: true }
@@ -837,8 +867,8 @@ rules:
         let state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
         let observed = ObservedState::default();
         let projected = crate::project_default(&inventory.objects);
-        let first = plan(&projected, &observed, &state, false);
-        let second = plan(&projected, &observed, &state, false);
+        let first = plan(&projected, &observed, &state, &inventory.schema, false);
+        let second = plan(&projected, &observed, &state, &inventory.schema, false);
         assert_eq!(first.ops, second.ops);
     }
 
@@ -907,6 +937,24 @@ fabrics:
         let retort = parse_yaml(
             r#"
 version: 1
+schema:
+  types:
+    dcim.site:
+      key:
+        site:
+          type: slug
+      fields:
+        name:
+          type: string
+        slug:
+          type: slug
+    custom.vrf:
+      key:
+        vrf:
+          type: slug
+      fields:
+        name:
+          type: string
 rules:
   - name: fabric
     select: /fabrics/*
@@ -915,12 +963,14 @@ rules:
       vrf_name: { from: .vrf_name, required: true }
     emit:
       - type: dcim.site
-        key: "site=${site_slug}"
+        key:
+          site: "${site_slug}"
         attrs:
           name: ${site_slug}
           slug: ${site_slug}
       - type: custom.vrf
-        key: "vrf=${vrf_name}"
+        key:
+          vrf: "${vrf_name}"
         attrs:
           name: ${vrf_name}
 "#,
@@ -945,6 +995,27 @@ fabrics:
         let retort = parse_yaml(
             r#"
 version: 1
+schema:
+  types:
+    dcim.site:
+      key:
+        site:
+          type: slug
+      fields:
+        name:
+          type: string
+        slug:
+          type: slug
+    custom.vrf:
+      key:
+        vrf:
+          type: slug
+      fields:
+        name:
+          type: string
+        site:
+          type: ref
+          target: dcim.site
 rules:
   - name: fabric
     select: /fabrics/*
@@ -958,13 +1029,15 @@ rules:
           stable: "site=${site_slug}"
     emit:
       - type: dcim.site
-        key: "site=${site_slug}"
+        key:
+          site: "${site_slug}"
         uid: ${uids.site}
         attrs:
           name: ${site_slug}
           slug: ${site_slug}
       - type: custom.vrf
-        key: "vrf=${vrf_name}"
+        key:
+          vrf: "${vrf_name}"
         attrs:
           name: ${vrf_name}
           site: ${uids.site}
@@ -1010,6 +1083,22 @@ fabrics:
         let retort = parse_yaml(
             r#"
 version: 1
+schema:
+  types:
+    dcim.site:
+      key:
+        site:
+          type: slug
+      fields:
+        slug:
+          type: slug
+    custom.vrf:
+      key:
+        vrf:
+          type: slug
+      fields:
+        name:
+          type: string
 rules:
   - name: fabric
     select: /fabrics/*
@@ -1018,11 +1107,13 @@ rules:
       vrf_name: { from: .vrf_name, required: true }
     emit:
       - type: dcim.site
-        key: "site=${site_slug}"
+        key:
+          site: "${site_slug}"
         attrs:
           slug: ${site_slug}
       - type: custom.vrf
-        key: "vrf=${vrf_name}"
+        key:
+          vrf: "${vrf_name}"
         attrs:
           name: ${vrf_name}
 "#,
@@ -1052,6 +1143,22 @@ items:
         let retort = parse_yaml(
             r#"
 version: 1
+schema:
+  types:
+    custom.first:
+      key:
+        first:
+          type: slug
+      fields:
+        name:
+          type: string
+    custom.second:
+      key:
+        second:
+          type: slug
+      fields:
+        name:
+          type: string
 rules:
   - name: items
     select: /items/*
@@ -1059,11 +1166,13 @@ rules:
       name: { from: .name, required: true }
     emit:
       - type: custom.first
-        key: "first=${name}"
+        key:
+          first: "${name}"
         attrs:
           name: ${name}
       - type: custom.second
-        key: "second=${name}"
+        key:
+          second: "${name}"
         vars:
           name: { from: .override_name, required: true }
         attrs:

@@ -2,7 +2,7 @@
 
 use crate::projection::{BackendCapabilities, ProjectedObject, ProjectionData};
 use crate::state::StateStore;
-use alembic_core::{JsonMap, TypeName, Uid};
+use alembic_core::{key_string, JsonMap, Key, Schema, TypeName, Uid};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -41,7 +41,7 @@ pub enum Op {
     Delete {
         uid: Uid,
         type_name: TypeName,
-        key: String,
+        key: Key,
         #[serde(skip_serializing_if = "Option::is_none")]
         backend_id: Option<u64>,
     },
@@ -50,6 +50,8 @@ pub enum Op {
 /// full plan document.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Plan {
+    /// schema definitions required for apply.
+    pub schema: Schema,
     /// ordered list of operations.
     pub ops: Vec<Op>,
 }
@@ -60,7 +62,7 @@ pub struct ObservedObject {
     /// object type.
     pub type_name: TypeName,
     /// human key for matching.
-    pub key: String,
+    pub key: Key,
     /// observed attrs mapped to ir types.
     pub attrs: JsonMap,
     /// observed projection data.
@@ -75,7 +77,7 @@ pub struct ObservedState {
     /// observed objects keyed by backend id.
     pub by_backend_id: BTreeMap<(TypeName, u64), ObservedObject>,
     /// observed objects keyed by natural key.
-    pub by_key: BTreeMap<String, ObservedObject>,
+    pub by_key: BTreeMap<(TypeName, String), ObservedObject>,
     /// backend capabilities (custom fields, tags).
     pub capabilities: BackendCapabilities,
 }
@@ -87,7 +89,8 @@ impl ObservedState {
             self.by_backend_id
                 .insert((object.type_name.clone(), id), object.clone());
         }
-        self.by_key.insert(object.key.clone(), object);
+        self.by_key
+            .insert((object.type_name.clone(), key_string(&object.key)), object);
     }
 }
 
@@ -113,7 +116,7 @@ pub struct ApplyReport {
 /// adapter contract for backend-specific io.
 #[async_trait]
 pub trait Adapter: Send + Sync {
-    async fn observe(&self, types: &[TypeName]) -> anyhow::Result<ObservedState>;
-    async fn apply(&self, ops: &[Op]) -> anyhow::Result<ApplyReport>;
+    async fn observe(&self, schema: &Schema, types: &[TypeName]) -> anyhow::Result<ObservedState>;
+    async fn apply(&self, schema: &Schema, ops: &[Op]) -> anyhow::Result<ApplyReport>;
     fn update_state(&self, _state: &StateStore) {}
 }

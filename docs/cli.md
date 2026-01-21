@@ -46,7 +46,7 @@ alembic plan -f examples/raw.yaml --retort examples/retort.yaml \
 - creates a deterministic plan
 - writes json plan to the output path
 - honors `--allow-delete` if you want delete ops
-- accepts any type string and arbitrary attrs (schema validation is optional)
+- accepts any type string and arbitrary attrs (schema validation is required)
 - `--projection` applies attrs -> backend mapping before planning
 - `--projection-strict=false` disables custom field existence checks
 - `--projection-propose` prints missing custom fields and tags and offers to create them
@@ -87,12 +87,13 @@ alembic project -f examples/raw.yaml --retort examples/retort.yaml \
 alembic extract -o inventory.yaml \
   --netbox-url https://netbox.example.com \
   --netbox-token $NETBOX_TOKEN \
+  --retort examples/retort.yaml \
   --projection examples/projection-netbox.yaml
 ```
 
 - observes backend state and emits a canonical inventory
 - `--projection` inverts projection into `attrs` keys where possible
-- `--retort` is accepted but not inverted yet (warning emitted)
+- `--retort` provides required schema metadata (retort inversion is not implemented; warning emitted)
 
 ## cast
 

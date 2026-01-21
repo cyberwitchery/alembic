@@ -7,17 +7,99 @@ model multi-tenant ipam with vrfs and vlans.
 ## inventory
 
 ```yaml
+schema:
+  types:
+    tenancy.tenant_group:
+      key:
+        slug:
+          type: slug
+      fields:
+        name:
+          type: string
+        slug:
+          type: slug
+    tenancy.tenant:
+      key:
+        slug:
+          type: slug
+      fields:
+        name:
+          type: string
+        slug:
+          type: slug
+        group:
+          type: ref
+          target: tenancy.tenant_group
+    ipam.vrf:
+      key:
+        name:
+          type: slug
+      fields:
+        name:
+          type: string
+        rd:
+          type: string
+        tenant:
+          type: ref
+          target: tenancy.tenant
+    ipam.vlan_group:
+      key:
+        name:
+          type: slug
+      fields:
+        name:
+          type: string
+        slug:
+          type: slug
+        scope_type:
+          type: string
+        scope_id:
+          type: ref
+          target: tenancy.tenant
+    ipam.vlan:
+      key:
+        vid:
+          type: int
+      fields:
+        name:
+          type: string
+        vid:
+          type: int
+        group:
+          type: ref
+          target: ipam.vlan_group
+        tenant:
+          type: ref
+          target: tenancy.tenant
+    ipam.prefix:
+      key:
+        prefix:
+          type: prefix
+      fields:
+        prefix:
+          type: prefix
+        vrf:
+          type: ref
+          target: ipam.vrf
+        vlan:
+          type: ref
+          target: ipam.vlan
+        tenant:
+          type: ref
+          target: tenancy.tenant
 objects:
   - uid: "11111111-1111-1111-1111-111111111111"
     type: tenancy.tenant_group
-    key: "slug=customers"
+    key:
+      slug: "customers"
     attrs:
       name: "customers"
       slug: "customers"
 
   - uid: "22222222-2222-2222-2222-222222222222"
     type: tenancy.tenant
-    key: "slug=acme"
+    key:
+      slug: "acme"
     attrs:
       name: "acme"
       slug: "acme"
@@ -25,7 +107,8 @@ objects:
 
   - uid: "33333333-3333-3333-3333-333333333333"
     type: ipam.vrf
-    key: "name=acme-vrf"
+    key:
+      name: "acme-vrf"
     attrs:
       name: "acme-vrf"
       rd: "65000:10"
@@ -33,7 +116,8 @@ objects:
 
   - uid: "44444444-4444-4444-4444-444444444444"
     type: ipam.vlan_group
-    key: "name=acme-vlans"
+    key:
+      name: "acme-vlans"
     attrs:
       name: "acme-vlans"
       slug: "acme-vlans"
@@ -42,7 +126,8 @@ objects:
 
   - uid: "55555555-5555-5555-5555-555555555555"
     type: ipam.vlan
-    key: "vid=100"
+    key:
+      vid: 100
     attrs:
       name: "acme-frontend"
       vid: 100
@@ -51,7 +136,8 @@ objects:
 
   - uid: "66666666-6666-6666-6666-666666666666"
     type: ipam.prefix
-    key: "prefix=10.10.0.0/24"
+    key:
+      prefix: "10.10.0.0/24"
     attrs:
       prefix: "10.10.0.0/24"
       vrf: "33333333-3333-3333-3333-333333333333"

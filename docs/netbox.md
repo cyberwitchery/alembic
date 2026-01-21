@@ -20,9 +20,8 @@ and supported feature set.
 ## keys and matching
 
 - keys are used to bootstrap state when no mapping exists.
-- key format is `field=value[/field=value...]` (used as query filters when resolving backend ids).
-- for observed objects, keys are derived in this order: `slug`, `name`, `cid`, `prefix`, `address`,
-  falling back to `id`.
+- keys are structured maps; the adapter uses the schema key fields when observing objects.
+- key fields are used as query filters when resolving backend ids for updates/deletes.
 
 ## projection data
 
@@ -33,5 +32,5 @@ and supported feature set.
 
 ## known limitations
 
-- without explicit schema metadata, any string that parses as a UUID is treated as a reference.
+- only fields typed as `ref`/`list_ref` are resolved to backend ids during apply.
 - netbox endpoints that do not accept patch or projection fields will return errors on apply.

@@ -9,10 +9,22 @@ author a simple model in yaml and converge it into netbox.
 1) write an inventory file
 
 ```yaml
+schema:
+  types:
+    dcim.site:
+      key:
+        slug:
+          type: slug
+      fields:
+        name:
+          type: string
+        slug:
+          type: slug
 objects:
   - uid: "11111111-1111-1111-1111-111111111111"
     type: dcim.site
-    key: "slug=lab1"
+    key:
+      slug: "lab1"
     attrs:
       name: "lab1"
       slug: "lab1"

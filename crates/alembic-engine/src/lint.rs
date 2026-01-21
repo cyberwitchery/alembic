@@ -62,12 +62,14 @@ fn lint_retort_templates(retort: &Retort, report: &mut LintReport) {
             allowed_vars.extend(emit.vars.keys().cloned());
             allowed_vars.extend(uid_vars.iter().cloned());
 
-            lint_template_string(
-                &emit.key,
-                &allowed_vars,
-                report,
-                &format!("retort rule {} emit key", rule.name),
-            );
+            for (key, value) in &emit.key {
+                lint_template_value(
+                    value,
+                    &allowed_vars,
+                    report,
+                    &format!("retort rule {} emit key.{key}", rule.name),
+                );
+            }
 
             if let Some(uid_spec) = &emit.uid {
                 match uid_spec {
@@ -277,6 +279,13 @@ mod tests {
         let retort = parse_retort(
             r#"
 version: 1
+schema:
+  types:
+    dcim.device:
+      key:
+        device:
+          type: slug
+      fields: {}
 rules:
   - name: devices
     select: devices
@@ -285,7 +294,8 @@ rules:
         from: name
     emit:
       type: dcim.device
-      key: "device=${missing}"
+      key:
+        device: "device=${missing}"
       attrs: {}
 "#,
         );
@@ -300,12 +310,20 @@ rules:
         let retort = parse_retort(
             r#"
 version: 1
+schema:
+  types:
+    dcim.site:
+      key:
+        site:
+          type: slug
+      fields: {}
 rules:
   - name: sites
     select: sites
     emit:
       type: dcim.site
-      key: "site=fra1"
+      key:
+        site: "fra1"
       attrs: {}
 "#,
         );

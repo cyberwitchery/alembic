@@ -67,11 +67,11 @@ impl<'a> ProjectionContext<'a> {
             .iter()
             .map(|o| o.base.type_name.clone())
             .collect();
-        let mut observed = adapter.observe(&types).await?;
+        let mut observed = adapter.observe(&self.inventory.schema, &types).await?;
         let bootstrapped = crate::bootstrap_state_from_observed(state, &self.projected, &observed);
         if bootstrapped {
             adapter.update_state(state);
-            observed = adapter.observe(&types).await?;
+            observed = adapter.observe(&self.inventory.schema, &types).await?;
         }
         if projection_strict {
             if let Some(spec) = self.projection {
@@ -83,6 +83,7 @@ impl<'a> ProjectionContext<'a> {
             projected: self.projected,
             observed,
             allow_delete,
+            schema: self.inventory.schema,
         })
     }
 }
@@ -91,11 +92,18 @@ pub(crate) struct PlanContext {
     projected: ProjectedInventory,
     observed: ObservedState,
     allow_delete: bool,
+    schema: alembic_core::Schema,
 }
 
 impl PlanContext {
     pub(crate) fn plan(self, state: &StateStore) -> Plan {
-        plan(&self.projected, &self.observed, state, self.allow_delete)
+        plan(
+            &self.projected,
+            &self.observed,
+            state,
+            &self.schema,
+            self.allow_delete,
+        )
     }
 }
 
@@ -126,7 +134,7 @@ impl<'a> ApplyContext<'a> {
         state: &mut StateStore,
     ) -> Result<ApplyReport> {
         let ordered = sort_ops_for_apply(&self.plan.ops);
-        let report = adapter.apply(&ordered).await?;
+        let report = adapter.apply(&self.plan.schema, &ordered).await?;
 
         for applied in &report.applied {
             if let Some(backend_id) = applied.backend_id {

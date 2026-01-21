@@ -12,10 +12,19 @@ include:
   - other.yaml
 imports:
   - more.yaml
+schema:
+  types:
+    dcim.site:
+      key:
+        slug: { type: slug }
+      fields:
+        name: { type: string }
+        slug: { type: slug }
 objects:
   - uid: "..."
     type: dcim.site
-    key: "site=fra1"
+    key:
+      slug: "fra1"
     attrs:
       name: "FRA1"
       slug: "fra1"
@@ -26,14 +35,16 @@ objects:
 - paths in `include/imports` are resolved relative to the current file.
 - files are loaded once (deduplicated by canonical path).
 
-## schema (optional)
+## schema
 
-brew files can also define schema metadata alongside objects.
+brew files must define schema metadata alongside objects.
 
 ```yaml
 schema:
   types:
     services.vpn:
+      key:
+        vpn: { type: slug }
       fields:
         name: { type: string, required: true }
         peers: { type: list, item: { type: json } }

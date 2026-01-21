@@ -1,6 +1,6 @@
 //! django app generation from alembic ir.
 
-use alembic_core::{Inventory, TypeName};
+use alembic_core::{key_string, Inventory, TypeName};
 use anyhow::Result;
 use std::collections::BTreeSet;
 use std::fs;
@@ -109,8 +109,8 @@ pub fn emit_django_app(
 fn inventory_types(inventory: &Inventory) -> Vec<TypeName> {
     let mut objects = inventory.objects.clone();
     objects.sort_by(|a, b| {
-        (a.type_name.as_str().to_string(), a.key.clone())
-            .cmp(&(b.type_name.as_str().to_string(), b.key.clone()))
+        (a.type_name.as_str().to_string(), key_string(&a.key))
+            .cmp(&(b.type_name.as_str().to_string(), key_string(&b.key)))
     });
 
     let mut seen = BTreeSet::new();
@@ -588,7 +588,9 @@ fn default_views_stub() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alembic_core::{Inventory, JsonMap, Object, TypeName};
+    use alembic_core::{
+        FieldSchema, FieldType, Inventory, JsonMap, Object, Schema, TypeName, TypeSchema,
+    };
     use serde_json::{json, Value};
     use std::collections::BTreeMap;
     use tempfile::tempdir;
@@ -603,47 +605,88 @@ mod tests {
         )
     }
 
+    fn key_str(raw: &str) -> alembic_core::Key {
+        let mut map = BTreeMap::new();
+        for segment in raw.split('/') {
+            let (field, value) = segment
+                .split_once('=')
+                .unwrap_or_else(|| panic!("invalid key segment: {segment}"));
+            map.insert(field.to_string(), Value::String(value.to_string()));
+        }
+        alembic_core::Key::from(map)
+    }
+
     fn obj(uid: u128, type_name: &str, key: &str, attrs: JsonMap) -> Object {
         Object::new(
             Uuid::from_u128(uid),
             TypeName::new(type_name),
-            key.to_string(),
+            key_str(key),
             attrs,
         )
         .unwrap()
     }
 
+    fn schema_for(objects: &[Object]) -> Schema {
+        let mut types: BTreeMap<String, TypeSchema> = BTreeMap::new();
+        for object in objects {
+            let entry = types
+                .entry(object.type_name.as_str().to_string())
+                .or_insert_with(|| TypeSchema {
+                    key: BTreeMap::new(),
+                    fields: BTreeMap::new(),
+                });
+            for field in object.key.keys() {
+                entry.key.entry(field.clone()).or_insert(FieldSchema {
+                    r#type: FieldType::Json,
+                    required: true,
+                    nullable: false,
+                    description: None,
+                });
+            }
+            for field in object.attrs.keys() {
+                entry.fields.entry(field.clone()).or_insert(FieldSchema {
+                    r#type: FieldType::Json,
+                    required: false,
+                    nullable: true,
+                    description: None,
+                });
+            }
+        }
+        Schema { types }
+    }
+
     fn sample_inventory() -> Inventory {
+        let objects = vec![
+            obj(
+                1,
+                "dcim.device",
+                "device=leaf01",
+                attrs_map(vec![
+                    ("name", json!("leaf01")),
+                    ("site", json!(Uuid::from_u128(2).to_string())),
+                    ("role", json!("leaf")),
+                    ("device_type", json!("leaf-switch")),
+                ]),
+            ),
+            obj(
+                2,
+                "dcim.site",
+                "site=fra1",
+                attrs_map(vec![("name", json!("FRA1")), ("slug", json!("fra1"))]),
+            ),
+            obj(
+                3,
+                "dcim.interface",
+                "interface=eth0",
+                attrs_map(vec![
+                    ("name", json!("eth0")),
+                    ("device", json!(Uuid::from_u128(1).to_string())),
+                ]),
+            ),
+        ];
         Inventory {
-            schema: None,
-            objects: vec![
-                obj(
-                    1,
-                    "dcim.device",
-                    "device=leaf01",
-                    attrs_map(vec![
-                        ("name", json!("leaf01")),
-                        ("site", json!(Uuid::from_u128(2).to_string())),
-                        ("role", json!("leaf")),
-                        ("device_type", json!("leaf-switch")),
-                    ]),
-                ),
-                obj(
-                    2,
-                    "dcim.site",
-                    "site=fra1",
-                    attrs_map(vec![("name", json!("FRA1")), ("slug", json!("fra1"))]),
-                ),
-                obj(
-                    3,
-                    "dcim.interface",
-                    "interface=eth0",
-                    attrs_map(vec![
-                        ("name", json!("eth0")),
-                        ("device", json!(Uuid::from_u128(1).to_string())),
-                    ]),
-                ),
-            ],
+            schema: schema_for(&objects),
+            objects,
         }
     }
 

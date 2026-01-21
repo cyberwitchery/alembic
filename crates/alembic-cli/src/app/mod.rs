@@ -262,17 +262,19 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
             netbox_url,
             netbox_token,
         } => {
-            if let Some(retort_path) = retort.as_deref() {
-                let _ = load_retort(retort_path)?;
-                eprintln!("warning: retort inversion is not implemented; ignoring --retort");
-            }
+            let retort_path = retort
+                .as_deref()
+                .ok_or_else(|| anyhow!("extract requires a retort with schema"))?;
+            let retort = load_retort(retort_path)?;
+            eprintln!("warning: retort inversion is not implemented; using schema only");
             let projection = load_projection_optional(projection.as_deref())?;
             let (url, token) = netbox_credentials(netbox_url, netbox_token)?;
             let adapter = NetBoxAdapter::new(&url, &token, load_state()?)?;
             let ExtractReport {
                 inventory,
                 warnings,
-            } = alembic_engine::extract_inventory(&adapter, projection.as_ref()).await?;
+            } = alembic_engine::extract_inventory(&adapter, &retort.schema, projection.as_ref())
+                .await?;
             for warning in warnings {
                 eprintln!("warning: {warning}");
             }
@@ -683,7 +685,7 @@ async fn build_plan_with_proposal(
         .iter()
         .map(|o| o.base.type_name.clone())
         .collect();
-    let mut observed = adapter.observe(&types).await?;
+    let mut observed = adapter.observe(&inventory.schema, &types).await?;
     let missing = missing_custom_fields(spec, &inventory.objects, &observed.capabilities)?;
     if !missing.is_empty() {
         eprintln!("projection proposal: missing custom fields");
@@ -731,7 +733,13 @@ async fn build_plan_with_proposal(
             &observed.capabilities,
         )?;
     }
-    Ok(plan(&projected, &observed, state, allow_delete))
+    Ok(plan(
+        &projected,
+        &observed,
+        state,
+        &inventory.schema,
+        allow_delete,
+    ))
 }
 
 fn confirm(prompt: &str) -> Result<bool> {
@@ -749,7 +757,22 @@ mod tests {
     use super::test_support::*;
     use super::*;
     use alembic_engine::Op;
+    use std::collections::BTreeMap;
     use tempfile::tempdir;
+
+    fn key_str(raw: &str) -> alembic_core::Key {
+        let mut map = BTreeMap::new();
+        for segment in raw.split('/') {
+            let (field, value) = segment
+                .split_once('=')
+                .unwrap_or_else(|| panic!("invalid key segment: {segment}"));
+            map.insert(
+                field.to_string(),
+                serde_json::Value::String(value.to_string()),
+            );
+        }
+        alembic_core::Key::from(map)
+    }
 
     #[test]
     fn state_path_uses_dot_alembic() {
@@ -802,10 +825,13 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("plan.json");
         let plan = Plan {
+            schema: alembic_core::Schema {
+                types: BTreeMap::new(),
+            },
             ops: vec![Op::Delete {
                 uid: uuid::Uuid::from_u128(1),
                 type_name: alembic_core::TypeName::new("dcim.site"),
-                key: "site=fra1".to_string(),
+                key: key_str("site=fra1"),
                 backend_id: Some(1),
             }],
         };
@@ -995,10 +1021,22 @@ mod tests {
         std::fs::write(
             &brew,
             r#"
+schema:
+  types:
+    dcim.site:
+      key:
+        site:
+          type: slug
+      fields:
+        name:
+          type: string
+        slug:
+          type: slug
 objects:
   - uid: "00000000-0000-0000-0000-000000000001"
     type: dcim.site
-    key: "site=fra1"
+    key:
+      site: "fra1"
     attrs:
       name: "FRA1"
       slug: "fra1"
@@ -1009,6 +1047,8 @@ objects:
             &retort,
             r#"
 version: 1
+schema:
+  types: {}
 rules: []
 "#,
         )
@@ -1053,12 +1093,24 @@ sites:
             &retort,
             r#"
 version: 1
+schema:
+  types:
+    dcim.site:
+      key:
+        site:
+          type: slug
+      fields:
+        name:
+          type: string
+        slug:
+          type: slug
 rules:
   - name: sites
     select: /sites/*
     emit:
       type: dcim.site
-      key: "site=${slug}"
+      key:
+        site: "${slug}"
       vars:
         slug: { from: .slug, required: true }
         name: { from: .name, required: true }
@@ -1080,7 +1132,9 @@ rules:
         let inv_path = dir.path().join("ir.json");
         let proj_path = dir.path().join("projected.json");
         let inventory = alembic_core::Inventory {
-            schema: None,
+            schema: alembic_core::Schema {
+                types: BTreeMap::new(),
+            },
             objects: Vec::new(),
         };
         let projected = ProjectedInventory {
@@ -1101,10 +1155,22 @@ rules:
         std::fs::write(
             &brew,
             r#"
+schema:
+  types:
+    dcim.site:
+      key:
+        site:
+          type: slug
+      fields:
+        name:
+          type: string
+        slug:
+          type: slug
 objects:
   - uid: "00000000-0000-0000-0000-000000000001"
     type: dcim.site
-    key: "site=fra1"
+    key:
+      site: "fra1"
     attrs:
       name: "FRA1"
       slug: "fra1"
@@ -1142,12 +1208,24 @@ sites:
             &retort,
             r#"
 version: 1
+schema:
+  types:
+    dcim.site:
+      key:
+        site:
+          type: slug
+      fields:
+        name:
+          type: string
+        slug:
+          type: slug
 rules:
   - name: sites
     select: /sites/*
     emit:
       type: dcim.site
-      key: "site=${slug}"
+      key:
+        site: "${slug}"
       vars:
         slug: { from: .slug, required: true }
         name: { from: .name, required: true }
@@ -1194,12 +1272,24 @@ sites:
             &retort,
             r#"
 version: 1
+schema:
+  types:
+    dcim.site:
+      key:
+        site:
+          type: slug
+      fields:
+        name:
+          type: string
+        slug:
+          type: slug
 rules:
   - name: sites
     select: /sites/*
     emit:
       type: dcim.site
-      key: "site=${slug}"
+      key:
+        site: "${slug}"
       vars:
         slug: { from: .slug, required: true }
         name: { from: .name, required: true }
@@ -1244,10 +1334,22 @@ rules: []
         std::fs::write(
             &brew,
             r#"
+schema:
+  types:
+    dcim.site:
+      key:
+        site:
+          type: slug
+      fields:
+        name:
+          type: string
+        slug:
+          type: slug
 objects:
   - uid: "00000000-0000-0000-0000-000000000001"
     type: dcim.site
-    key: "site=fra1"
+    key:
+      site: "fra1"
     attrs:
       name: "FRA1"
       slug: "fra1"

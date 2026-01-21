@@ -749,12 +749,26 @@ fn rule_error(rule: &str, type_name: &TypeName, attr_key: &str, message: &str) -
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alembic_core::{JsonMap, TypeName, Uid};
+    use alembic_core::{JsonMap, Key, TypeName, Uid};
     use serde_json::json;
     use uuid::Uuid;
 
     fn uid(value: u128) -> Uid {
         Uuid::from_u128(value)
+    }
+
+    fn key_str(raw: &str) -> Key {
+        let mut map = BTreeMap::new();
+        for segment in raw.split('/') {
+            let (field, value) = segment
+                .split_once('=')
+                .unwrap_or_else(|| panic!("invalid key segment: {segment}"));
+            map.insert(
+                field.to_string(),
+                serde_json::Value::String(value.to_string()),
+            );
+        }
+        Key::from(map)
     }
 
     fn site_object(extra_attrs: BTreeMap<String, Value>) -> Object {
@@ -765,7 +779,7 @@ mod tests {
         Object::new(
             uid(1),
             TypeName::new("dcim.site"),
-            "site=fra1".to_string(),
+            key_str("site=fra1"),
             JsonMap::from(attrs),
         )
         .unwrap()
@@ -781,7 +795,7 @@ mod tests {
         Object::new(
             uid(2),
             TypeName::new("dcim.device"),
-            "device=leaf01".to_string(),
+            key_str("device=leaf01"),
             JsonMap::from(attrs),
         )
         .unwrap()

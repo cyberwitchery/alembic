@@ -147,10 +147,22 @@ pub(crate) fn write_site_brew(dir: &Path) -> PathBuf {
     std::fs::write(
         &brew,
         r#"
+schema:
+  types:
+    dcim.site:
+      key:
+        site:
+          type: slug
+      fields:
+        name:
+          type: string
+        slug:
+          type: slug
 objects:
   - uid: "00000000-0000-0000-0000-000000000001"
     type: dcim.site
-    key: "site=fra1"
+    key:
+      site: "fra1"
     attrs:
       name: "FRA1"
       slug: "fra1"

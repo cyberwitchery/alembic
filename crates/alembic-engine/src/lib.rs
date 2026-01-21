@@ -11,7 +11,7 @@ mod retort;
 mod state;
 mod types;
 
-use alembic_core::{validate_inventory, Inventory};
+use alembic_core::{key_string, validate_inventory, Inventory};
 use anyhow::{anyhow, Result};
 
 #[cfg(test)]
@@ -86,7 +86,10 @@ pub(crate) fn bootstrap_state_from_observed(
         {
             continue;
         }
-        if let Some(obs) = observed.by_key.get(&object.base.key) {
+        if let Some(obs) = observed
+            .by_key
+            .get(&(object.base.type_name.clone(), key_string(&object.base.key)))
+        {
             if obs.type_name != object.base.type_name {
                 continue;
             }

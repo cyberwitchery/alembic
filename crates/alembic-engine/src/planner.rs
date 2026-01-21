@@ -3,7 +3,7 @@
 use crate::projection::ProjectedInventory;
 use crate::state::StateStore;
 use crate::types::{FieldChange, ObservedState, Op, Plan};
-use alembic_core::{uid_v5, JsonMap, TypeName};
+use alembic_core::{key_string, uid_v5, JsonMap, Key, TypeName};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -12,6 +12,7 @@ pub fn plan(
     desired: &ProjectedInventory,
     observed: &ObservedState,
     state: &StateStore,
+    schema: &alembic_core::Schema,
     allow_delete: bool,
 ) -> Plan {
     let mut ops = Vec::new();
@@ -38,7 +39,11 @@ pub fn plan(
                     .by_backend_id
                     .get(&(object.base.type_name.clone(), id))
             })
-            .or_else(|| observed.by_key.get(&object.base.key));
+            .or_else(|| {
+                observed
+                    .by_key
+                    .get(&(object.base.type_name.clone(), key_string(&object.base.key)))
+            });
 
         if let Some(obs) = observed_object {
             let changes = diff_object(obs, object);
@@ -71,7 +76,7 @@ pub fn plan(
             let uid = backend_to_uid
                 .get(&(*backend_id, type_name.clone()))
                 .copied()
-                .unwrap_or_else(|| uid_v5(type_name.as_str(), &obs.key));
+                .unwrap_or_else(|| uid_v5(type_name.as_str(), &key_string(&obs.key)));
             ops.push(Op::Delete {
                 uid,
                 type_name: type_name.clone(),
@@ -83,7 +88,10 @@ pub fn plan(
 
     ops.sort_by_key(op_order_key);
 
-    Plan { ops }
+    Plan {
+        schema: schema.clone(),
+        ops,
+    }
 }
 
 /// compute field-level diffs for attrs.
@@ -174,8 +182,8 @@ fn diff_object(
 }
 
 /// stable sort key for desired objects.
-fn op_sort_key(type_name: &TypeName, key: &str) -> (String, String) {
-    (type_name.as_str().to_string(), key.to_string())
+fn op_sort_key(type_name: &TypeName, key: &Key) -> (String, String) {
+    (type_name.as_str().to_string(), key_string(key))
 }
 
 /// stable sort key for plan operations.
@@ -183,11 +191,11 @@ fn op_order_key(op: &Op) -> (String, u8, String) {
     let (type_name, key, weight) = match op {
         Op::Create {
             type_name, desired, ..
-        } => (type_name.clone(), desired.base.key.clone(), 0),
+        } => (type_name.clone(), key_string(&desired.base.key), 0u8),
         Op::Update {
             type_name, desired, ..
-        } => (type_name.clone(), desired.base.key.clone(), 1),
-        Op::Delete { type_name, key, .. } => (type_name.clone(), key.clone(), 2),
+        } => (type_name.clone(), key_string(&desired.base.key), 1u8),
+        Op::Delete { type_name, key, .. } => (type_name.clone(), key_string(key), 2u8),
     };
     (type_name.as_str().to_string(), weight, key)
 }

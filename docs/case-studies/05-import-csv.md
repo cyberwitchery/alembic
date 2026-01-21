@@ -16,6 +16,27 @@ fra1,leaf02
 
 ```yaml
 version: 1
+schema:
+  types:
+    dcim.site:
+      key:
+        slug:
+          type: slug
+      fields:
+        name:
+          type: string
+        slug:
+          type: slug
+    dcim.device:
+      key:
+        name:
+          type: slug
+      fields:
+        name:
+          type: string
+        site:
+          type: ref
+          target: dcim.site
 rules:
   - name: devices
     select: rows
@@ -26,14 +47,16 @@ rules:
         from: device
     emit:
       type: dcim.device
-      key: "name=${device}"
+      key:
+        name: "${device}"
       attrs:
         name: "${device}"
         site: "${uids.site}"
     uids:
       site:
-        type: dcim.site
-        stable: "slug=${site}"
+        v5:
+          type: dcim.site
+          stable: "slug=${site}"
 ```
 
 ## commands

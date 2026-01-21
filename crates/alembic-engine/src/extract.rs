@@ -3,7 +3,7 @@
 use crate::projection::{CustomFieldStrategy, ProjectionSpec};
 use crate::types::ObservedObject;
 use crate::Adapter;
-use alembic_core::{uid_v5, Inventory, JsonMap, Object, TypeName};
+use alembic_core::{key_string, uid_v5, Inventory, JsonMap, Object, Schema, TypeName};
 use anyhow::Result;
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -16,6 +16,7 @@ pub struct ExtractReport {
 
 pub async fn extract_inventory(
     adapter: &dyn Adapter,
+    schema: &Schema,
     projection: Option<&ProjectionSpec>,
 ) -> Result<ExtractReport> {
     let types = projection
@@ -32,18 +33,18 @@ pub async fn extract_inventory(
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    let observed = adapter.observe(&types).await?;
+    let observed = adapter.observe(schema, &types).await?;
 
     let mut objects: Vec<ObservedObject> = observed.by_key.values().cloned().collect();
     objects.sort_by(|a, b| {
-        (a.type_name.as_str().to_string(), a.key.clone())
-            .cmp(&(b.type_name.as_str().to_string(), b.key.clone()))
+        (a.type_name.as_str().to_string(), key_string(&a.key))
+            .cmp(&(b.type_name.as_str().to_string(), key_string(&b.key)))
     });
 
     let mut warnings = Vec::new();
     let mut inventory_objects = Vec::new();
     for object in objects {
-        let uid = uid_v5(object.type_name.as_str(), &object.key);
+        let uid = uid_v5(object.type_name.as_str(), &key_string(&object.key));
         let attrs_extra = if let Some(spec) = projection {
             let (attrs_extra, mut object_warnings) = invert_projection_for_object(spec, &object);
             warnings.append(&mut object_warnings);
@@ -56,7 +57,7 @@ pub async fn extract_inventory(
             &mut attrs,
             attrs_extra,
             &object.type_name,
-            &object.key,
+            &key_string(&object.key),
             &mut warnings,
         );
         inventory_objects.push(Object {
@@ -69,7 +70,7 @@ pub async fn extract_inventory(
 
     Ok(ExtractReport {
         inventory: Inventory {
-            schema: None,
+            schema: schema.clone(),
             objects: inventory_objects,
         },
         warnings,
@@ -396,7 +397,7 @@ mod tests {
     use super::*;
     use crate::types::ObservedState;
     use crate::ProjectionData;
-    use alembic_core::{JsonMap, TypeName, Uid};
+    use alembic_core::{FieldSchema, FieldType, JsonMap, Key, Schema, TypeName, TypeSchema, Uid};
     use async_trait::async_trait;
     use futures::executor::block_on;
     use serde_json::json;
@@ -408,11 +409,19 @@ mod tests {
 
     #[async_trait]
     impl Adapter for MockAdapter {
-        async fn observe(&self, _types: &[TypeName]) -> anyhow::Result<ObservedState> {
+        async fn observe(
+            &self,
+            _schema: &Schema,
+            _types: &[TypeName],
+        ) -> anyhow::Result<ObservedState> {
             Ok(self.observed.clone())
         }
 
-        async fn apply(&self, _ops: &[crate::Op]) -> anyhow::Result<crate::ApplyReport> {
+        async fn apply(
+            &self,
+            _schema: &Schema,
+            _ops: &[crate::Op],
+        ) -> anyhow::Result<crate::ApplyReport> {
             unimplemented!("not used in extract tests")
         }
     }
@@ -421,7 +430,7 @@ mod tests {
         let mut state = ObservedState::default();
         state.insert(ObservedObject {
             type_name: TypeName::new("dcim.site"),
-            key: "site=fra1".to_string(),
+            key: key_str("site=fra1"),
             attrs: attrs_map(json!({
                 "name": "FRA1",
                 "slug": "fra1",
@@ -437,11 +446,54 @@ mod tests {
         state
     }
 
+    fn key_str(raw: &str) -> Key {
+        let mut map = BTreeMap::new();
+        for segment in raw.split('/') {
+            let (field, value) = segment
+                .split_once('=')
+                .unwrap_or_else(|| panic!("invalid key segment: {segment}"));
+            map.insert(
+                field.to_string(),
+                serde_json::Value::String(value.to_string()),
+            );
+        }
+        Key::from(map)
+    }
+
     fn attrs_map(value: serde_json::Value) -> JsonMap {
         let serde_json::Value::Object(map) = value else {
             panic!("attrs must be a json object");
         };
         map.into_iter().collect::<BTreeMap<_, _>>().into()
+    }
+
+    fn schema_for_observed(state: &ObservedState) -> Schema {
+        let mut types: BTreeMap<String, TypeSchema> = BTreeMap::new();
+        for object in state.by_key.values() {
+            let entry = types
+                .entry(object.type_name.as_str().to_string())
+                .or_insert_with(|| TypeSchema {
+                    key: BTreeMap::new(),
+                    fields: BTreeMap::new(),
+                });
+            for field in object.key.keys() {
+                entry.key.entry(field.clone()).or_insert(FieldSchema {
+                    r#type: FieldType::Json,
+                    required: true,
+                    nullable: false,
+                    description: None,
+                });
+            }
+            for field in object.attrs.keys() {
+                entry.fields.entry(field.clone()).or_insert(FieldSchema {
+                    r#type: FieldType::Json,
+                    required: false,
+                    nullable: true,
+                    description: None,
+                });
+            }
+        }
+        Schema { types }
     }
 
     fn site_attrs(name: &str, slug: &str, status: Option<&str>) -> JsonMap {
@@ -480,10 +532,11 @@ mod tests {
         let adapter = MockAdapter {
             observed: observed_state(),
         };
-        let report = block_on(extract_inventory(&adapter, None)).unwrap();
+        let schema = schema_for_observed(&adapter.observed);
+        let report = block_on(extract_inventory(&adapter, &schema, None)).unwrap();
         assert_eq!(report.inventory.objects.len(), 1);
         let object = &report.inventory.objects[0];
-        assert_eq!(object.key, "site=fra1");
+        assert_eq!(object.key, key_str("site=fra1"));
         assert_eq!(object.uid, uid_v5("dcim.site", "site=fra1"));
     }
 
@@ -494,7 +547,7 @@ mod tests {
         custom_fields.insert("serial".to_string(), Value::String("abc".to_string()));
         state.insert(ObservedObject {
             type_name: TypeName::new("dcim.device"),
-            key: "device=leaf01".to_string(),
+            key: key_str("device=leaf01"),
             attrs: device_attrs(
                 "leaf01",
                 uid_v5("dcim.site", "site=fra1"),
@@ -510,6 +563,7 @@ mod tests {
             backend_id: Some(2),
         });
         let adapter = MockAdapter { observed: state };
+        let schema = schema_for_observed(&adapter.observed);
         let projection: ProjectionSpec = serde_yaml::from_str(
             r#"
 version: 1
@@ -533,7 +587,7 @@ rules:
 "#,
         )
         .unwrap();
-        let report = block_on(extract_inventory(&adapter, Some(&projection))).unwrap();
+        let report = block_on(extract_inventory(&adapter, &schema, Some(&projection))).unwrap();
         let object = &report.inventory.objects[0];
         assert_eq!(
             object.attrs.get("model.serial"),
@@ -552,7 +606,7 @@ rules:
         custom_fields.insert("owner".to_string(), Value::String("infra".to_string()));
         state.insert(ObservedObject {
             type_name: TypeName::new("dcim.site"),
-            key: "site=fra1".to_string(),
+            key: key_str("site=fra1"),
             attrs: site_attrs("FRA1", "fra1", Some("active")),
             projection: ProjectionData {
                 custom_fields: Some(custom_fields),
@@ -577,7 +631,8 @@ rules:
 "#,
         )
         .unwrap();
-        let report = block_on(extract_inventory(&adapter, Some(&projection))).unwrap();
+        let schema = schema_for_observed(&adapter.observed);
+        let report = block_on(extract_inventory(&adapter, &schema, Some(&projection))).unwrap();
         let object = &report.inventory.objects[0];
         assert_eq!(
             object.attrs.get("owner"),
@@ -592,7 +647,7 @@ rules:
         custom_fields.insert("serial".to_string(), Value::String("abc".to_string()));
         state.insert(ObservedObject {
             type_name: TypeName::new("dcim.device"),
-            key: "device=leaf01".to_string(),
+            key: key_str("device=leaf01"),
             attrs: device_attrs(
                 "leaf01",
                 uid_v5("dcim.site", "site=fra1"),
@@ -626,7 +681,8 @@ rules:
 "#,
         )
         .unwrap();
-        let report = block_on(extract_inventory(&adapter, Some(&projection))).unwrap();
+        let schema = schema_for_observed(&adapter.observed);
+        let report = block_on(extract_inventory(&adapter, &schema, Some(&projection))).unwrap();
         assert!(report
             .warnings
             .iter()
@@ -642,7 +698,7 @@ rules:
         root.insert("system".to_string(), Value::Object(local_map));
         state.insert(ObservedObject {
             type_name: TypeName::new("dcim.device"),
-            key: "device=leaf01".to_string(),
+            key: key_str("device=leaf01"),
             attrs: device_attrs(
                 "leaf01",
                 uid_v5("dcim.site", "site=fra1"),
@@ -675,7 +731,8 @@ rules:
 "#,
         )
         .unwrap();
-        let report = block_on(extract_inventory(&adapter, Some(&projection))).unwrap();
+        let schema = schema_for_observed(&adapter.observed);
+        let report = block_on(extract_inventory(&adapter, &schema, Some(&projection))).unwrap();
         let object = &report.inventory.objects[0];
         assert_eq!(
             object.attrs.get("context.role"),
@@ -691,7 +748,7 @@ rules:
         custom_fields.insert("field_b".to_string(), Value::String("b".to_string()));
         state.insert(ObservedObject {
             type_name: TypeName::new("dcim.site"),
-            key: "site=fra1".to_string(),
+            key: key_str("site=fra1"),
             attrs: site_attrs("FRA1", "fra1", Some("active")),
             projection: ProjectionData {
                 custom_fields: Some(custom_fields),
@@ -725,7 +782,8 @@ rules:
 "#,
         )
         .unwrap();
-        let report = block_on(extract_inventory(&adapter, Some(&projection))).unwrap();
+        let schema = schema_for_observed(&adapter.observed);
+        let report = block_on(extract_inventory(&adapter, &schema, Some(&projection))).unwrap();
         assert!(report
             .warnings
             .iter()
@@ -739,7 +797,7 @@ rules:
         custom_fields.insert("serial".to_string(), Value::String("abc".to_string()));
         state.insert(ObservedObject {
             type_name: TypeName::new("dcim.device"),
-            key: "device=leaf01".to_string(),
+            key: key_str("device=leaf01"),
             attrs: device_attrs(
                 "leaf01",
                 uid_v5("dcim.site", "site=fra1"),
@@ -773,7 +831,8 @@ rules:
 "#,
         )
         .unwrap();
-        let report = block_on(extract_inventory(&adapter, Some(&projection))).unwrap();
+        let schema = schema_for_observed(&adapter.observed);
+        let report = block_on(extract_inventory(&adapter, &schema, Some(&projection))).unwrap();
         assert!(report
             .warnings
             .iter()
@@ -785,7 +844,7 @@ rules:
         let mut state = ObservedState::default();
         state.insert(ObservedObject {
             type_name: TypeName::new("dcim.device"),
-            key: "device=leaf01".to_string(),
+            key: key_str("device=leaf01"),
             attrs: device_attrs(
                 "leaf01",
                 uid_v5("dcim.site", "site=fra1"),
@@ -816,7 +875,8 @@ rules:
 "#,
         )
         .unwrap();
-        let report = block_on(extract_inventory(&adapter, Some(&projection))).unwrap();
+        let schema = schema_for_observed(&adapter.observed);
+        let report = block_on(extract_inventory(&adapter, &schema, Some(&projection))).unwrap();
         let object = &report.inventory.objects[0];
         assert_eq!(
             object.attrs.get("model.tags"),
@@ -833,7 +893,7 @@ rules:
         let mut state = ObservedState::default();
         state.insert(ObservedObject {
             type_name: TypeName::new("dcim.device"),
-            key: "device=leaf01".to_string(),
+            key: key_str("device=leaf01"),
             attrs: device_attrs(
                 "leaf01",
                 uid_v5("dcim.site", "site=fra1"),
@@ -864,7 +924,8 @@ rules:
 "#,
         )
         .unwrap();
-        let report = block_on(extract_inventory(&adapter, Some(&projection))).unwrap();
+        let schema = schema_for_observed(&adapter.observed);
+        let report = block_on(extract_inventory(&adapter, &schema, Some(&projection))).unwrap();
         let object = &report.inventory.objects[0];
         assert_eq!(
             object.attrs.get("tags"),
@@ -877,7 +938,7 @@ rules:
         let mut state = ObservedState::default();
         state.insert(ObservedObject {
             type_name: TypeName::new("dcim.device"),
-            key: "device=leaf01".to_string(),
+            key: key_str("device=leaf01"),
             attrs: device_attrs(
                 "leaf01",
                 uid_v5("dcim.site", "site=fra1"),
@@ -908,7 +969,8 @@ rules:
 "#,
         )
         .unwrap();
-        let report = block_on(extract_inventory(&adapter, Some(&projection))).unwrap();
+        let schema = schema_for_observed(&adapter.observed);
+        let report = block_on(extract_inventory(&adapter, &schema, Some(&projection))).unwrap();
         assert!(report
             .warnings
             .iter()
@@ -927,7 +989,7 @@ rules:
         custom_fields.insert("serial".to_string(), Value::String("abc".to_string()));
         state.insert(ObservedObject {
             type_name: TypeName::new("dcim.device"),
-            key: "device=leaf01".to_string(),
+            key: key_str("device=leaf01"),
             attrs: device_attrs(
                 "leaf01",
                 uid_v5("dcim.site", "site=fra1"),
@@ -958,7 +1020,8 @@ rules:
 "#,
         )
         .unwrap();
-        let report = block_on(extract_inventory(&adapter, Some(&projection))).unwrap();
+        let schema = schema_for_observed(&adapter.observed);
+        let report = block_on(extract_inventory(&adapter, &schema, Some(&projection))).unwrap();
         assert!(report
             .warnings
             .iter()
@@ -979,7 +1042,7 @@ rules:
         root.insert("system".to_string(), Value::Object(local_map));
         state.insert(ObservedObject {
             type_name: TypeName::new("dcim.device"),
-            key: "device=leaf01".to_string(),
+            key: key_str("device=leaf01"),
             attrs: device_attrs(
                 "leaf01",
                 uid_v5("dcim.site", "site=fra1"),
@@ -1011,7 +1074,8 @@ rules:
 "#,
         )
         .unwrap();
-        let report = block_on(extract_inventory(&adapter, Some(&projection))).unwrap();
+        let schema = schema_for_observed(&adapter.observed);
+        let report = block_on(extract_inventory(&adapter, &schema, Some(&projection))).unwrap();
         assert!(report
             .warnings
             .iter()

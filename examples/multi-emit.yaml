@@ -4,6 +4,33 @@
 # such as creating a site, vrf, and route targets from one fabric definition.
 
 version: 1
+schema:
+  types:
+    dcim.site:
+      key:
+        site:
+          type: slug
+      fields:
+        name:
+          type: string
+        slug:
+          type: slug
+    ipam.vrf:
+      key:
+        vrf:
+          type: slug
+      fields:
+        name:
+          type: string
+        rd:
+          type: string
+        route_targets:
+          type: map
+          value:
+            type: string
+        site:
+          type: ref
+          target: dcim.site
 rules:
   # Single fabric definition emits site + vrf + route targets
   - name: fabric
@@ -25,14 +52,16 @@ rules:
           stable: "vrf=${vrf_name}"
     emit:
       - type: dcim.site
-        key: "site=${site_slug}"
+        key:
+          site: "${site_slug}"
         uid: ${uids.site}
         attrs:
           name: ${name}
           slug: ${site_slug}
 
       - type: ipam.vrf
-        key: "vrf=${vrf_name}"
+        key:
+          vrf: "${vrf_name}"
         uid: ${uids.vrf}
         attrs:
           name: ${vrf_name}

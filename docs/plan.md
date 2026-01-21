@@ -12,7 +12,7 @@ plans are json files that can be re-applied. the plan is deterministic for a giv
       "uid": "...",
       "type_name": "dcim.site",
       "desired": {
-        "base": { "uid": "...", "type": "dcim.site", "key": "site=fra1", "attrs": { "...": "..." } },
+        "base": { "uid": "...", "type": "dcim.site", "key": { "slug": "fra1" }, "attrs": { "...": "..." } },
         "projection": { "custom_fields": { "...": "..." }, "tags": ["..."] }
       }
     },
@@ -30,7 +30,7 @@ plans are json files that can be re-applied. the plan is deterministic for a giv
       "op": "delete",
       "uid": "...",
       "type_name": "ipam.ip_address",
-      "key": "ip=10.0.0.10/24",
+      "key": { "address": "10.0.0.10/24" },
       "backend_id": 456
     }
   ]
@@ -43,3 +43,4 @@ plans are json files that can be re-applied. the plan is deterministic for a giv
 - `backend_id` is optional and may be absent for creates or if not known.
 - deletes are only applied when `--allow-delete` is set.
 - `projection` is present only when projection rules apply to an object, and diffs include projected fields.
+- the plan embeds the schema used during planning to drive apply-time reference resolution.

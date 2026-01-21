@@ -95,7 +95,7 @@ impl NetBoxAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alembic_core::{JsonMap, TypeName, Uid};
+    use alembic_core::{JsonMap, Key, TypeName, Uid};
     use alembic_engine::{Op, ProjectedObject, ProjectionData};
     use httpmock::Method::{GET, POST};
     use httpmock::{Mock, MockServer};
@@ -117,14 +117,14 @@ mod tests {
             .into()
     }
 
-    fn obj(uid: Uid, type_name: &str, key: &str, attrs: serde_json::Value) -> alembic_core::Object {
-        alembic_core::Object::new(
-            uid,
-            TypeName::new(type_name),
-            key.to_string(),
-            attrs_map(attrs),
-        )
-        .unwrap()
+    fn key(field: &str, value: serde_json::Value) -> Key {
+        let mut map = std::collections::BTreeMap::new();
+        map.insert(field.to_string(), value);
+        Key::from(map)
+    }
+
+    fn obj(uid: Uid, type_name: &str, key: Key, attrs: serde_json::Value) -> alembic_core::Object {
+        alembic_core::Object::new(uid, TypeName::new(type_name), key, attrs_map(attrs)).unwrap()
     }
 
     fn projected(base: alembic_core::Object) -> ProjectedObject {
@@ -218,12 +218,49 @@ mod tests {
                 .json_body(page(json!([{"id": 1, "name": "fabric", "slug": "fabric"}])));
         });
 
+        let schema = alembic_core::Schema {
+            types: std::collections::BTreeMap::from([
+                (
+                    "dcim.device".to_string(),
+                    alembic_core::TypeSchema {
+                        key: std::collections::BTreeMap::from([(
+                            "name".to_string(),
+                            alembic_core::FieldSchema {
+                                r#type: alembic_core::FieldType::String,
+                                required: true,
+                                nullable: false,
+                                description: None,
+                            },
+                        )]),
+                        fields: std::collections::BTreeMap::new(),
+                    },
+                ),
+                (
+                    "dcim.site".to_string(),
+                    alembic_core::TypeSchema {
+                        key: std::collections::BTreeMap::from([(
+                            "name".to_string(),
+                            alembic_core::FieldSchema {
+                                r#type: alembic_core::FieldType::String,
+                                required: true,
+                                nullable: false,
+                                description: None,
+                            },
+                        )]),
+                        fields: std::collections::BTreeMap::new(),
+                    },
+                ),
+            ]),
+        };
         let observed = adapter
-            .observe(&[TypeName::new("dcim.device")])
+            .observe(&schema, &[TypeName::new("dcim.device")])
             .await
             .unwrap();
 
-        let device = observed.by_key.get("name=leaf01").unwrap();
+        let device = observed
+            .by_key
+            .get(&(TypeName::new("dcim.device"), "name=leaf01".to_string()))
+            .unwrap();
         let site_uid = uid(1).to_string();
         assert_eq!(
             device.attrs.get("name").and_then(|v| v.as_str()),
@@ -283,7 +320,7 @@ mod tests {
                 desired: projected(obj(
                     uid(2),
                     "dcim.device",
-                    "name=leaf01",
+                    key("name", json!("leaf01")),
                     json!({
                         "name": "leaf01",
                         "site": uid(1).to_string()
@@ -296,13 +333,87 @@ mod tests {
                 desired: projected(obj(
                     uid(1),
                     "dcim.site",
-                    "name=fra1",
+                    key("name", json!("fra1")),
                     json!({ "name": "FRA1", "slug": "fra1" }),
                 )),
             },
         ];
 
-        let report = adapter.apply(&ops).await.unwrap();
+        let schema = alembic_core::Schema {
+            types: std::collections::BTreeMap::from([
+                (
+                    "dcim.device".to_string(),
+                    alembic_core::TypeSchema {
+                        key: std::collections::BTreeMap::from([(
+                            "name".to_string(),
+                            alembic_core::FieldSchema {
+                                r#type: alembic_core::FieldType::String,
+                                required: true,
+                                nullable: false,
+                                description: None,
+                            },
+                        )]),
+                        fields: std::collections::BTreeMap::from([
+                            (
+                                "name".to_string(),
+                                alembic_core::FieldSchema {
+                                    r#type: alembic_core::FieldType::String,
+                                    required: true,
+                                    nullable: false,
+                                    description: None,
+                                },
+                            ),
+                            (
+                                "site".to_string(),
+                                alembic_core::FieldSchema {
+                                    r#type: alembic_core::FieldType::Ref {
+                                        target: "dcim.site".to_string(),
+                                    },
+                                    required: true,
+                                    nullable: false,
+                                    description: None,
+                                },
+                            ),
+                        ]),
+                    },
+                ),
+                (
+                    "dcim.site".to_string(),
+                    alembic_core::TypeSchema {
+                        key: std::collections::BTreeMap::from([(
+                            "name".to_string(),
+                            alembic_core::FieldSchema {
+                                r#type: alembic_core::FieldType::String,
+                                required: true,
+                                nullable: false,
+                                description: None,
+                            },
+                        )]),
+                        fields: std::collections::BTreeMap::from([
+                            (
+                                "name".to_string(),
+                                alembic_core::FieldSchema {
+                                    r#type: alembic_core::FieldType::String,
+                                    required: true,
+                                    nullable: false,
+                                    description: None,
+                                },
+                            ),
+                            (
+                                "slug".to_string(),
+                                alembic_core::FieldSchema {
+                                    r#type: alembic_core::FieldType::String,
+                                    required: true,
+                                    nullable: false,
+                                    description: None,
+                                },
+                            ),
+                        ]),
+                    },
+                ),
+            ]),
+        };
+        let report = adapter.apply(&schema, &ops).await.unwrap();
         assert_eq!(report.applied.len(), 2);
     }
 

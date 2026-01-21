@@ -6,12 +6,21 @@ retort is a small mapping layer that compiles raw yaml into the canonical ir. it
 
 ```yaml
 version: 1
+schema:
+  types:
+    dcim.site:
+      key:
+        site: { type: slug }
+      fields:
+        name: { type: string }
+        slug: { type: slug }
 rules:
   - name: sites
     select: /sites/*
     emit:
       type: dcim.site
-      key: "site=${slug}"
+      key:
+        site: "${slug}"
       uid:
         v5:
           type: "dcim.site"
@@ -74,13 +83,15 @@ rules:
           stable: "vrf=${vrf_name}"
     emit:
       - type: dcim.site
-        key: "site=${site_slug}"
+        key:
+          site: "${site_slug}"
         uid: ${uids.site}
         attrs:
           name: ${site_slug}
           slug: ${site_slug}
       - type: ipam.vrf
-        key: "vrf=${vrf_name}"
+        key:
+          vrf: "${vrf_name}"
         uid: ${uids.vrf}
         attrs:
           name: ${vrf_name}
