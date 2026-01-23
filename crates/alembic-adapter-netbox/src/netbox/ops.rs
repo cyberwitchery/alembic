@@ -111,13 +111,7 @@ impl Adapter for NetBoxAdapter {
                             None => None,
                         };
                         self.apply_update(
-                            *uid,
-                            type_name,
-                            desired,
-                            id,
-                            &resolved,
-                            &registry,
-                            schema,
+                            *uid, type_name, desired, id, &resolved, &registry, schema,
                         )
                         .await
                         .map(|backend_id| AppliedOp {

@@ -111,13 +111,7 @@ impl Adapter for NautobotAdapter {
                             None => None,
                         };
                         self.apply_update(
-                            *uid,
-                            type_name,
-                            desired,
-                            id,
-                            &resolved,
-                            &registry,
-                            schema,
+                            *uid, type_name, desired, id, &resolved, &registry, schema,
                         )
                         .await
                         .map(|backend_id| AppliedOp {
@@ -312,7 +306,7 @@ impl NautobotAdapter {
                 return Err(anyhow!("{} does not support custom_fields", type_name));
             }
             body.insert(
-                "_custom_field_data".to_string(), 
+                "_custom_field_data".to_string(),
                 Value::Object(custom_fields.clone().into_iter().collect()),
             );
         }
@@ -359,13 +353,15 @@ fn extract_attrs(value: Value) -> Result<(String, JsonMap)> {
 }
 
 fn extract_projection(attrs: &mut JsonMap) -> ProjectionData {
-    let custom_fields = attrs.remove("_custom_field_data").and_then(|value| match value {
-        Value::Object(map) => Some(map.into_iter().collect()),
-        _ => None,
-    });
+    let custom_fields = attrs
+        .remove("_custom_field_data")
+        .and_then(|value| match value {
+            Value::Object(map) => Some(map.into_iter().collect()),
+            _ => None,
+        });
     // Fallback or cleanup if custom_fields is also present (NetBox compatibility)
     if custom_fields.is_none() {
-         let _ = attrs.remove("custom_fields");
+        let _ = attrs.remove("custom_fields");
     }
 
     let tags = attrs.remove("tags").and_then(parse_tags);
@@ -690,7 +686,11 @@ fn describe_missing_refs(ops: &[Op], resolved: &BTreeMap<Uid, String>) -> String
         .join(", ")
 }
 
-fn collect_missing_refs(value: &Value, resolved: &BTreeMap<Uid, String>, missing: &mut BTreeSet<Uid>) {
+fn collect_missing_refs(
+    value: &Value,
+    resolved: &BTreeMap<Uid, String>,
+    missing: &mut BTreeSet<Uid>,
+) {
     match value {
         Value::String(raw) => {
             if let Ok(uid) = Uid::parse_str(raw) {

@@ -52,18 +52,17 @@ impl NautobotClient {
     }
 
     pub(super) async fn fetch_capabilities(&self) -> Result<BackendCapabilities> {
-        let fields = self.list_all(&self.client.extras().custom_fields(), None).await?;
+        let fields = self
+            .list_all(&self.client.extras().custom_fields(), None)
+            .await?;
         let mut by_type: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         for field in fields {
             let key = field.key.clone().unwrap_or_else(|| slugify(&field.label));
             for content_type in field.content_types {
-                by_type
-                    .entry(content_type)
-                    .or_default()
-                    .insert(key.clone());
+                by_type.entry(content_type).or_default().insert(key.clone());
             }
         }
-        
+
         let tags = self.list_all(&self.client.extras().tags(), None).await?;
         let tag_names: BTreeSet<String> = tags.into_iter().map(|t| t.name).collect();
 

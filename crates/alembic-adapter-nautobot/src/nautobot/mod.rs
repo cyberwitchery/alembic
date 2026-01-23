@@ -37,13 +37,13 @@ impl NautobotAdapter {
         let grouped = group_custom_fields(missing);
         for (field, entry) in grouped {
             let field_type = map_field_type(&entry.field_type);
-            
+
             let type_value = match field_type {
-                 CustomFieldTypeChoices::Text => "text",
-                 CustomFieldTypeChoices::Integer => "integer",
-                 CustomFieldTypeChoices::Boolean => "boolean",
-                 CustomFieldTypeChoices::Json => "json",
-                 _ => "text",
+                CustomFieldTypeChoices::Text => "text",
+                CustomFieldTypeChoices::Integer => "integer",
+                CustomFieldTypeChoices::Boolean => "boolean",
+                CustomFieldTypeChoices::Json => "json",
+                _ => "text",
             };
 
             let request = serde_json::json!({
@@ -70,7 +70,7 @@ impl NautobotAdapter {
             let request = serde_json::json!({
                 "name": tag,
                 "slug": slugify(&tag),
-                "content_types": [] 
+                "content_types": []
             });
             let _ = self.client.extras().tags().create(&request).await?;
         }

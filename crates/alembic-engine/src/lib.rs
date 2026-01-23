@@ -31,7 +31,8 @@ pub use projection::{
 pub use retort::{compile_retort, is_brew_format, load_raw_yaml, load_retort, Retort};
 pub use state::StateStore;
 pub use types::{
-    Adapter, AppliedOp, ApplyReport, BackendId, FieldChange, ObservedObject, ObservedState, Op, Plan,
+    Adapter, AppliedOp, ApplyReport, BackendId, FieldChange, ObservedObject, ObservedState, Op,
+    Plan,
 };
 
 /// validate an inventory and return an aggregated error on failure.
@@ -94,7 +95,11 @@ pub(crate) fn bootstrap_state_from_observed(
                 continue;
             }
             if let Some(backend_id) = &obs.backend_id {
-                state.set_backend_id(object.base.type_name.clone(), object.base.uid, backend_id.clone());
+                state.set_backend_id(
+                    object.base.type_name.clone(),
+                    object.base.uid,
+                    backend_id.clone(),
+                );
                 updated = true;
             }
         }

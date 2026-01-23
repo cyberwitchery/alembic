@@ -22,10 +22,10 @@ impl ObjectTypeRegistry {
         for content_type in types {
             let app_label = content_type.app_label;
             let model = content_type.model;
-            
+
             let endpoint_type = format!("{}.{}", app_label, model);
             let endpoint = format!("{}/{}/", app_label, pluralize(&model).replace('_', "-"));
-            
+
             let features: BTreeSet<String> = ["custom-fields", "tags", "local-context"]
                 .iter()
                 .map(|s| s.to_string())
@@ -36,15 +36,13 @@ impl ObjectTypeRegistry {
                 endpoint: endpoint.clone(),
                 features,
             };
-            
+
             registry.by_endpoint.insert(endpoint, endpoint_type.clone());
             registry.by_type.insert(endpoint_type, info);
         }
 
         if registry.by_type.is_empty() {
-            return Err(anyhow!(
-                "nautobot returned no content types"
-            ));
+            return Err(anyhow!("nautobot returned no content types"));
         }
 
         Ok(registry)
@@ -81,13 +79,15 @@ fn normalize_endpoint(endpoint: &str) -> Option<String> {
     let path = path.strip_prefix("api/").unwrap_or(path);
     let trimmed = path.trim_end_matches('/');
     let mut segments: Vec<&str> = trimmed.split('/').collect();
-    
+
     if let Some(last) = segments.last().copied() {
-        if !last.is_empty() && (last.chars().all(|ch| ch.is_ascii_digit()) || uuid::Uuid::parse_str(last).is_ok()) {
+        if !last.is_empty()
+            && (last.chars().all(|ch| ch.is_ascii_digit()) || uuid::Uuid::parse_str(last).is_ok())
+        {
             segments.pop();
         }
     }
-    
+
     if segments.is_empty() {
         return None;
     }
