@@ -121,7 +121,7 @@ impl Runner for FixtureRunner {
 
 pub(crate) fn write_minimal_brew(dir: &Path) -> PathBuf {
     let brew = dir.join("brew.yaml");
-    std::fs::write(&brew, "objects: []\n").unwrap();
+    std::fs::write(&brew, "schema:\n  types: {}\nobjects: []\n").unwrap();
     brew
 }
 

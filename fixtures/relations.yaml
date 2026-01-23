@@ -1,14 +1,82 @@
+schema:
+  types:
+    dcim.site:
+      key:
+        site:
+          type: slug
+      fields:
+        name:
+          type: string
+        slug:
+          type: slug
+    dcim.device:
+      key:
+        site:
+          type: slug
+        device:
+          type: slug
+      fields:
+        name:
+          type: string
+        site:
+          type: ref
+          target: dcim.site
+        role:
+          type: string
+        device_type:
+          type: string
+    dcim.interface:
+      key:
+        device:
+          type: slug
+        interface:
+          type: slug
+      fields:
+        name:
+          type: string
+        device:
+          type: ref
+          target: dcim.device
+        enabled:
+          type: bool
+    ipam.prefix:
+      key:
+        prefix:
+          type: prefix
+      fields:
+        prefix:
+          type: prefix
+        site:
+          type: ref
+          target: dcim.site
+        description:
+          type: string
+    ipam.ip_address:
+      key:
+        ip:
+          type: ip_address
+      fields:
+        address:
+          type: ip_address
+        assigned_interface:
+          type: ref
+          target: dcim.interface
+        description:
+          type: string
 objects:
   - uid: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
     type: dcim.site
-    key: "site=ams1"
+    key:
+      site: "ams1"
     attrs:
       name: "AMS1"
       slug: "ams1"
 
   - uid: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
     type: dcim.device
-    key: "site=ams1/device=spine01"
+    key:
+      site: "ams1"
+      device: "spine01"
     attrs:
       name: "spine01"
       site: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
@@ -17,7 +85,9 @@ objects:
 
   - uid: "cccccccc-cccc-cccc-cccc-cccccccccccc"
     type: dcim.interface
-    key: "device=spine01/interface=eth0"
+    key:
+      device: "spine01"
+      interface: "eth0"
     attrs:
       name: "eth0"
       device: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
@@ -25,7 +95,8 @@ objects:
 
   - uid: "dddddddd-dddd-dddd-dddd-dddddddddddd"
     type: ipam.prefix
-    key: "prefix=192.0.2.0/24"
+    key:
+      prefix: "192.0.2.0/24"
     attrs:
       prefix: "192.0.2.0/24"
       site: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
@@ -33,7 +104,8 @@ objects:
 
   - uid: "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"
     type: ipam.ip_address
-    key: "ip=192.0.2.10/24"
+    key:
+      ip: "192.0.2.10/24"
     attrs:
       address: "192.0.2.10/24"
       assigned_interface: "cccccccc-cccc-cccc-cccc-cccccccccccc"

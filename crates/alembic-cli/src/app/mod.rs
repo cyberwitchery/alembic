@@ -1405,13 +1405,24 @@ objects:
         let _guard = cwd_lock().lock().await;
         let dir = tempdir().unwrap();
         let out = dir.path().join("inventory.yaml");
+        let retort_path = dir.path().join("retort.yaml");
+        std::fs::write(
+            &retort_path,
+            r#"
+version: 1
+schema:
+  types: {}
+rules: []
+"#,
+        )
+        .unwrap();
         let cwd = std::env::current_dir().unwrap();
         std::env::set_current_dir(dir.path()).unwrap();
 
         let cli = Cli {
             command: Command::Extract {
                 output: out,
-                retort: None,
+                retort: Some(retort_path),
                 projection: None,
                 netbox_url: None,
                 netbox_token: None,

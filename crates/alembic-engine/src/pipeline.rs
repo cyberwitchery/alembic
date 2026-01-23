@@ -137,8 +137,8 @@ impl<'a> ApplyContext<'a> {
         let report = adapter.apply(&self.plan.schema, &ordered).await?;
 
         for applied in &report.applied {
-            if let Some(backend_id) = applied.backend_id {
-                state.set_backend_id(applied.type_name.clone(), applied.uid, backend_id);
+            if let Some(backend_id) = &applied.backend_id {
+                state.set_backend_id(applied.type_name.clone(), applied.uid, backend_id.clone());
             } else {
                 state.remove_backend_id(applied.type_name.clone(), applied.uid);
             }

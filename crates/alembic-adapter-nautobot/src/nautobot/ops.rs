@@ -1,7 +1,7 @@
 use super::mapping::build_tag_inputs;
 use super::registry::ObjectTypeRegistry;
 use super::state::{resolved_from_state, state_mappings};
-use super::NetBoxAdapter;
+use super::NautobotAdapter;
 use alembic_core::{key_string, JsonMap, Key, Schema, TypeName, TypeSchema, Uid};
 use alembic_engine::{
     Adapter, AppliedOp, ApplyReport, BackendId, ObservedObject, ObservedState, Op, ProjectedObject,
@@ -9,12 +9,12 @@ use alembic_engine::{
 };
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
-use netbox::{BulkDelete, QueryBuilder, Resource};
+use nautobot::{BulkDelete, QueryBuilder, Resource};
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[async_trait]
-impl Adapter for NetBoxAdapter {
+impl Adapter for NautobotAdapter {
     async fn observe(&self, schema: &Schema, types: &[TypeName]) -> Result<ObservedState> {
         let registry: ObjectTypeRegistry = self.client.fetch_object_types().await?;
         let mut state = ObservedState::default();
@@ -50,7 +50,7 @@ impl Adapter for NetBoxAdapter {
                     key,
                     attrs,
                     projection,
-                    backend_id: Some(BackendId::Int(backend_id)),
+                    backend_id: Some(BackendId::String(backend_id)),
                 });
             }
         }
@@ -96,7 +96,7 @@ impl Adapter for NetBoxAdapter {
                         .map(|backend_id| AppliedOp {
                             uid: *uid,
                             type_name: type_name.clone(),
-                            backend_id: Some(BackendId::Int(backend_id)),
+                            backend_id: Some(BackendId::String(backend_id)),
                         }),
                     Op::Update {
                         uid,
@@ -106,8 +106,8 @@ impl Adapter for NetBoxAdapter {
                         ..
                     } => {
                         let id = match backend_id {
-                            Some(BackendId::Int(id)) => Some(*id),
-                            Some(_) => return Err(anyhow!("netbox requires integer backend id")),
+                            Some(BackendId::String(id)) => Some(id.clone()),
+                            Some(_) => return Err(anyhow!("nautobot requires string backend id")),
                             None => None,
                         };
                         self.apply_update(
@@ -123,7 +123,7 @@ impl Adapter for NetBoxAdapter {
                         .map(|backend_id| AppliedOp {
                             uid: *uid,
                             type_name: type_name.clone(),
-                            backend_id: Some(BackendId::Int(backend_id)),
+                            backend_id: Some(BackendId::String(backend_id)),
                         })
                     }
                     Op::Delete { .. } => continue,
@@ -131,8 +131,8 @@ impl Adapter for NetBoxAdapter {
 
                 match result {
                     Ok(applied_op) => {
-                        if let Some(BackendId::Int(backend_id)) = applied_op.backend_id {
-                            resolved.insert(applied_op.uid, backend_id);
+                        if let Some(BackendId::String(backend_id)) = &applied_op.backend_id {
+                            resolved.insert(applied_op.uid, backend_id.clone());
                         }
                         applied.push(applied_op);
                         progress = true;
@@ -158,10 +158,10 @@ impl Adapter for NetBoxAdapter {
                 backend_id,
             } = op
             {
-                let id = if let Some(BackendId::Int(id)) = backend_id {
-                    id
-                } else if let Some(id) = resolved.get(&uid).copied() {
-                    id
+                let id = if let Some(BackendId::String(id)) = backend_id {
+                    id.clone()
+                } else if let Some(id) = resolved.get(&uid) {
+                    id.clone()
                 } else {
                     let info = registry
                         .info_for(&type_name)
@@ -180,10 +180,9 @@ impl Adapter for NetBoxAdapter {
                     .info_for(&type_name)
                     .ok_or_else(|| anyhow!("unsupported type {}", type_name))?;
                 let resource: Resource<Value> = self.client.resource(info.endpoint.clone());
-                let batch = [BulkDelete::new(id)];
-                resource.bulk_delete(&batch).await?;
+                resource.delete(&id).await?;
                 applied.push(AppliedOp {
-                    uid,
+                    uid: uid,
                     type_name: type_name.clone(),
                     backend_id: None,
                 });
@@ -205,16 +204,16 @@ impl Adapter for NetBoxAdapter {
     }
 }
 
-impl NetBoxAdapter {
+impl NautobotAdapter {
     async fn apply_create(
         &self,
         uid: Uid,
         type_name: &TypeName,
         desired: &ProjectedObject,
-        resolved: &mut BTreeMap<Uid, u64>,
+        resolved: &mut BTreeMap<Uid, String>,
         registry: &ObjectTypeRegistry,
         schema: &Schema,
-    ) -> Result<u64> {
+    ) -> Result<String> {
         let info = registry
             .info_for(type_name)
             .ok_or_else(|| anyhow!("unsupported type {}", type_name))?;
@@ -227,10 +226,11 @@ impl NetBoxAdapter {
         let response: Value = resource.create(&body).await?;
         let backend_id = response
             .get("id")
-            .and_then(Value::as_u64)
-            .ok_or_else(|| anyhow!("create {} returned no id", type_name))?;
-        resolved.insert(uid, backend_id);
-        self.apply_projection_patch(type_name, &info, backend_id, &desired.projection)
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow!("create {} returned no id", type_name))?
+            .to_string();
+        resolved.insert(uid, backend_id.clone());
+        self.apply_projection_patch(type_name, &info, &backend_id, &desired.projection)
             .await?;
         Ok(backend_id)
     }
@@ -240,11 +240,11 @@ impl NetBoxAdapter {
         uid: Uid,
         type_name: &TypeName,
         desired: &ProjectedObject,
-        backend_id: Option<u64>,
-        resolved: &BTreeMap<Uid, u64>,
+        backend_id: Option<String>,
+        resolved: &BTreeMap<Uid, String>,
         registry: &ObjectTypeRegistry,
         schema: &Schema,
-    ) -> Result<u64> {
+    ) -> Result<String> {
         let info = registry
             .info_for(type_name)
             .ok_or_else(|| anyhow!("unsupported type {}", type_name))?;
@@ -254,7 +254,7 @@ impl NetBoxAdapter {
             .ok_or_else(|| anyhow!("missing schema for {}", type_name))?;
         let id = if let Some(id) = backend_id {
             id
-        } else if let Some(id) = resolved.get(&uid).copied() {
+        } else if let Some(id) = resolved.get(&uid).cloned() {
             id
         } else {
             self.lookup_backend_id(type_name, &info, type_schema, &desired.base.key, resolved)
@@ -263,8 +263,8 @@ impl NetBoxAdapter {
         };
         let resource: Resource<Value> = self.client.resource(info.endpoint.clone());
         let body = build_request_body(type_schema, &desired.base.attrs, resolved)?;
-        let _response = resource.patch(id, &body).await?;
-        self.apply_projection_patch(type_name, &info, id, &desired.projection)
+        let _response = resource.patch(&id, &body).await?;
+        self.apply_projection_patch(type_name, &info, &id, &desired.projection)
             .await?;
         Ok(id)
     }
@@ -275,8 +275,8 @@ impl NetBoxAdapter {
         info: &super::registry::ObjectTypeInfo,
         type_schema: &TypeSchema,
         key: &Key,
-        resolved: &BTreeMap<Uid, u64>,
-    ) -> Result<u64> {
+        resolved: &BTreeMap<Uid, String>,
+    ) -> Result<String> {
         let query = query_from_key(type_schema, key, resolved)?;
         let resource: Resource<Value> = self.client.resource(info.endpoint.clone());
         let page = resource.list(Some(query)).await?;
@@ -286,7 +286,8 @@ impl NetBoxAdapter {
             .next()
             .ok_or_else(|| anyhow!("{} not found for key {}", type_name, key_string(key)))?;
         item.get("id")
-            .and_then(Value::as_u64)
+            .and_then(Value::as_str)
+            .map(|s| s.to_string())
             .ok_or_else(|| anyhow!("{} lookup missing id", type_name))
     }
 
@@ -294,7 +295,7 @@ impl NetBoxAdapter {
         &self,
         type_name: &TypeName,
         info: &super::registry::ObjectTypeInfo,
-        backend_id: u64,
+        backend_id: &str,
         projection: &ProjectionData,
     ) -> Result<()> {
         if projection.custom_fields.is_none()
@@ -311,7 +312,7 @@ impl NetBoxAdapter {
                 return Err(anyhow!("{} does not support custom_fields", type_name));
             }
             body.insert(
-                "custom_fields".to_string(),
+                "_custom_field_data".to_string(), 
                 Value::Object(custom_fields.clone().into_iter().collect()),
             );
         }
@@ -341,14 +342,15 @@ impl NetBoxAdapter {
     }
 }
 
-fn extract_attrs(value: Value) -> Result<(u64, JsonMap)> {
+fn extract_attrs(value: Value) -> Result<(String, JsonMap)> {
     let Value::Object(mut map) = value else {
         return Err(anyhow!("expected object payload"));
     };
     let backend_id = map
         .get("id")
-        .and_then(Value::as_u64)
-        .ok_or_else(|| anyhow!("missing id in payload"))?;
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("missing id in payload"))?
+        .to_string();
     map.remove("id");
     map.remove("url");
     map.remove("display");
@@ -357,10 +359,15 @@ fn extract_attrs(value: Value) -> Result<(u64, JsonMap)> {
 }
 
 fn extract_projection(attrs: &mut JsonMap) -> ProjectionData {
-    let custom_fields = attrs.remove("custom_fields").and_then(|value| match value {
+    let custom_fields = attrs.remove("_custom_field_data").and_then(|value| match value {
         Value::Object(map) => Some(map.into_iter().collect()),
         _ => None,
     });
+    // Fallback or cleanup if custom_fields is also present (NetBox compatibility)
+    if custom_fields.is_none() {
+         let _ = attrs.remove("custom_fields");
+    }
+
     let tags = attrs.remove("tags").and_then(parse_tags);
     let local_context = attrs.remove("local_context_data");
 
@@ -415,8 +422,9 @@ fn normalize_attrs(
         attrs.remove("assigned_object_id"),
     ) {
         if kind == "dcim.interface" {
-            if let Some(id) = as_u64(&id_value) {
-                if let Some(uid) = mappings.uid_for("dcim.interface", id) {
+            // Nautobot: assigned_object_id is UUID string
+            if let Some(str_val) = as_string(&id_value) {
+                if let Some(uid) = mappings.uid_for("dcim.interface", &str_val) {
                     attrs.insert(
                         "assigned_interface".to_string(),
                         Value::String(uid.to_string()),
@@ -429,8 +437,8 @@ fn normalize_attrs(
         (attrs.remove("scope_type"), attrs.remove("scope_id"))
     {
         if scope == "dcim.site" {
-            if let Some(id) = as_u64(&id_value) {
-                if let Some(uid) = mappings.uid_for("dcim.site", id) {
+            if let Some(str_val) = as_string(&id_value) {
+                if let Some(uid) = mappings.uid_for("dcim.site", &str_val) {
                     attrs.insert("site".to_string(), Value::String(uid.to_string()));
                 }
             }
@@ -470,10 +478,9 @@ fn normalize_value(
     }
 }
 
-fn as_u64(value: &Value) -> Option<u64> {
+fn as_string(value: &Value) -> Option<String> {
     match value {
-        Value::Number(num) => num.as_u64(),
-        Value::String(raw) => raw.parse().ok(),
+        Value::String(s) => Some(s.clone()),
         _ => None,
     }
 }
@@ -483,7 +490,7 @@ fn uid_for_nested_object(
     registry: &ObjectTypeRegistry,
     mappings: &super::state::StateMappings,
 ) -> Option<Uid> {
-    let id = map.get("id")?.as_u64()?;
+    let id = map.get("id")?.as_str()?;
     let endpoint = map
         .get("url")
         .and_then(Value::as_str)
@@ -505,7 +512,7 @@ fn build_key_from_schema(type_schema: &TypeSchema, attrs: &JsonMap) -> Result<Ke
 fn build_request_body(
     type_schema: &TypeSchema,
     attrs: &JsonMap,
-    resolved: &BTreeMap<Uid, u64>,
+    resolved: &BTreeMap<Uid, String>,
 ) -> Result<Value> {
     let mut map = Map::new();
     for (key, value) in attrs.iter() {
@@ -528,7 +535,7 @@ fn build_request_body(
 fn resolve_value_for_type(
     field_type: &alembic_core::FieldType,
     value: Value,
-    resolved: &BTreeMap<Uid, u64>,
+    resolved: &BTreeMap<Uid, String>,
 ) -> Result<Value> {
     match field_type {
         alembic_core::FieldType::Ref { .. } => resolve_ref_value(value, resolved),
@@ -539,19 +546,19 @@ fn resolve_value_for_type(
     }
 }
 
-fn resolve_ref_value(value: Value, resolved: &BTreeMap<Uid, u64>) -> Result<Value> {
+fn resolve_ref_value(value: Value, resolved: &BTreeMap<Uid, String>) -> Result<Value> {
     let Value::String(raw) = value else {
         return Err(anyhow!("ref value must be a uuid string"));
     };
     let uid = Uid::parse_str(&raw).map_err(|_| anyhow!("ref value is not a uuid: {raw}"))?;
     let id = resolved
         .get(&uid)
-        .copied()
+        .cloned()
         .ok_or_else(|| anyhow!("missing referenced uid {uid}"))?;
-    Ok(Value::Number(id.into()))
+    Ok(Value::String(id))
 }
 
-fn resolve_list_ref_value(value: Value, resolved: &BTreeMap<Uid, u64>) -> Result<Value> {
+fn resolve_list_ref_value(value: Value, resolved: &BTreeMap<Uid, String>) -> Result<Value> {
     let Value::Array(items) = value else {
         return Err(anyhow!("list_ref value must be an array"));
     };
@@ -565,7 +572,7 @@ fn resolve_list_ref_value(value: Value, resolved: &BTreeMap<Uid, u64>) -> Result
 fn resolve_list_value(
     item_type: &alembic_core::FieldType,
     value: Value,
-    resolved: &BTreeMap<Uid, u64>,
+    resolved: &BTreeMap<Uid, String>,
 ) -> Result<Value> {
     let Value::Array(items) = value else {
         return Err(anyhow!("list value must be an array"));
@@ -580,7 +587,7 @@ fn resolve_list_value(
 fn resolve_map_value(
     value_type: &alembic_core::FieldType,
     value: Value,
-    resolved: &BTreeMap<Uid, u64>,
+    resolved: &BTreeMap<Uid, String>,
 ) -> Result<Value> {
     let Value::Object(map) = value else {
         return Err(anyhow!("map value must be an object"));
@@ -595,7 +602,7 @@ fn resolve_map_value(
 fn query_from_key(
     type_schema: &TypeSchema,
     key: &Key,
-    resolved: &BTreeMap<Uid, u64>,
+    resolved: &BTreeMap<Uid, String>,
 ) -> Result<QueryBuilder> {
     let mut query = QueryBuilder::new();
     for (field, value) in key.iter() {
@@ -613,7 +620,7 @@ fn add_query_filters(
     field: &str,
     field_type: &alembic_core::FieldType,
     value: &Value,
-    resolved: &BTreeMap<Uid, u64>,
+    resolved: &BTreeMap<Uid, String>,
 ) -> Result<QueryBuilder> {
     match field_type {
         alembic_core::FieldType::Ref { .. } => {
@@ -637,16 +644,16 @@ fn add_query_filters(
     }
 }
 
-fn resolve_query_ref(value: &Value, resolved: &BTreeMap<Uid, u64>) -> Result<String> {
+fn resolve_query_ref(value: &Value, resolved: &BTreeMap<Uid, String>) -> Result<String> {
     let Value::String(raw) = value else {
         return Err(anyhow!("ref value must be a uuid string"));
     };
     let uid = Uid::parse_str(raw).map_err(|_| anyhow!("ref value is not a uuid: {raw}"))?;
     let id = resolved
         .get(&uid)
-        .copied()
+        .cloned()
         .ok_or_else(|| anyhow!("missing referenced uid {uid}"))?;
-    Ok(id.to_string())
+    Ok(id)
 }
 
 fn value_to_query_value(value: &Value) -> Result<String> {
@@ -667,7 +674,7 @@ fn is_missing_ref_error(err: &anyhow::Error) -> bool {
     err.to_string().contains("missing referenced uid")
 }
 
-fn describe_missing_refs(ops: &[Op], resolved: &BTreeMap<Uid, u64>) -> String {
+fn describe_missing_refs(ops: &[Op], resolved: &BTreeMap<Uid, String>) -> String {
     let mut missing = BTreeSet::new();
     for op in ops {
         if let Op::Create { desired, .. } | Op::Update { desired, .. } = op {
@@ -683,7 +690,7 @@ fn describe_missing_refs(ops: &[Op], resolved: &BTreeMap<Uid, u64>) -> String {
         .join(", ")
 }
 
-fn collect_missing_refs(value: &Value, resolved: &BTreeMap<Uid, u64>, missing: &mut BTreeSet<Uid>) {
+fn collect_missing_refs(value: &Value, resolved: &BTreeMap<Uid, String>, missing: &mut BTreeSet<Uid>) {
     match value {
         Value::String(raw) => {
             if let Ok(uid) = Uid::parse_str(raw) {

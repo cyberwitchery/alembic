@@ -1,0 +1,20 @@
+[package]
+name = "alembic-adapter-nautobot"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+alembic-core = { path = "../alembic-core" }
+alembic-engine = { path = "../alembic-engine" }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+nautobot = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+httpmock = "0.6"
+tempfile = "3"

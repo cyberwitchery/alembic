@@ -21,7 +21,7 @@ pub fn plan(
 
     for (type_name, mapping) in state.all_mappings() {
         for (uid, backend_id) in mapping {
-            backend_to_uid.insert((*backend_id, type_name.clone()), *uid);
+            backend_to_uid.insert((backend_id.clone(), type_name.clone()), *uid);
         }
     }
 
@@ -53,11 +53,11 @@ pub fn plan(
                     type_name: object.base.type_name.clone(),
                     desired: object.clone(),
                     changes,
-                    backend_id: obs.backend_id,
+                    backend_id: obs.backend_id.clone(),
                 });
             }
-            if let Some(backend_id) = obs.backend_id {
-                matched.insert(backend_id);
+            if let Some(backend_id) = &obs.backend_id {
+                matched.insert(backend_id.clone());
             }
         } else {
             ops.push(Op::Create {
@@ -74,14 +74,14 @@ pub fn plan(
                 continue;
             }
             let uid = backend_to_uid
-                .get(&(*backend_id, type_name.clone()))
+                .get(&(backend_id.clone(), type_name.clone()))
                 .copied()
                 .unwrap_or_else(|| uid_v5(type_name.as_str(), &key_string(&obs.key)));
             ops.push(Op::Delete {
                 uid,
                 type_name: type_name.clone(),
                 key: obs.key.clone(),
-                backend_id: Some(*backend_id),
+                backend_id: Some(backend_id.clone()),
             });
         }
     }

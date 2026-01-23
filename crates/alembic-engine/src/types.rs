@@ -6,6 +6,36 @@ use alembic_core::{key_string, JsonMap, Key, Schema, TypeName, Uid};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::fmt;
+
+/// generic backend identifier (integer or string/uuid).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum BackendId {
+    Int(u64),
+    String(String),
+}
+
+impl fmt::Display for BackendId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            BackendId::Int(id) => write!(f, "{}", id),
+            BackendId::String(id) => write!(f, "{}", id),
+        }
+    }
+}
+
+impl From<u64> for BackendId {
+    fn from(id: u64) -> Self {
+        BackendId::Int(id)
+    }
+}
+
+impl From<String> for BackendId {
+    fn from(id: String) -> Self {
+        BackendId::String(id)
+    }
+}
 
 /// field-level change for an update op.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -35,7 +65,7 @@ pub enum Op {
         desired: ProjectedObject,
         changes: Vec<FieldChange>,
         #[serde(skip_serializing_if = "Option::is_none")]
-        backend_id: Option<u64>,
+        backend_id: Option<BackendId>,
     },
     /// delete a backend object.
     Delete {
@@ -43,7 +73,7 @@ pub enum Op {
         type_name: TypeName,
         key: Key,
         #[serde(skip_serializing_if = "Option::is_none")]
-        backend_id: Option<u64>,
+        backend_id: Option<BackendId>,
     },
 }
 
@@ -68,14 +98,14 @@ pub struct ObservedObject {
     /// observed projection data.
     pub projection: ProjectionData,
     /// backend id when known.
-    pub backend_id: Option<u64>,
+    pub backend_id: Option<BackendId>,
 }
 
 /// observed backend state indexed by id and key.
 #[derive(Debug, Default, Clone)]
 pub struct ObservedState {
     /// observed objects keyed by backend id.
-    pub by_backend_id: BTreeMap<(TypeName, u64), ObservedObject>,
+    pub by_backend_id: BTreeMap<(TypeName, BackendId), ObservedObject>,
     /// observed objects keyed by natural key.
     pub by_key: BTreeMap<(TypeName, String), ObservedObject>,
     /// backend capabilities (custom fields, tags).
@@ -85,9 +115,9 @@ pub struct ObservedState {
 impl ObservedState {
     /// insert an observed object into both indexes.
     pub fn insert(&mut self, object: ObservedObject) {
-        if let Some(id) = object.backend_id {
+        if let Some(id) = &object.backend_id {
             self.by_backend_id
-                .insert((object.type_name.clone(), id), object.clone());
+                .insert((object.type_name.clone(), id.clone()), object.clone());
         }
         self.by_key
             .insert((object.type_name.clone(), key_string(&object.key)), object);
@@ -103,7 +133,7 @@ pub struct AppliedOp {
     pub type_name: TypeName,
     #[serde(skip_serializing_if = "Option::is_none")]
     /// backend id returned by the adapter, if any.
-    pub backend_id: Option<u64>,
+    pub backend_id: Option<BackendId>,
 }
 
 /// aggregated apply report.

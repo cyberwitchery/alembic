@@ -1,5 +1,6 @@
 //! local uid -> backend id state store.
 
+use crate::types::BackendId;
 use alembic_core::{TypeName, Uid};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -11,7 +12,7 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 struct StateData {
     #[serde(default)]
-    mappings: BTreeMap<TypeName, BTreeMap<Uid, u64>>,
+    mappings: BTreeMap<TypeName, BTreeMap<Uid, BackendId>>,
 }
 
 /// state store wrapper with load/save helpers.
@@ -52,15 +53,15 @@ impl StateStore {
     }
 
     /// lookup a backend id by type + uid.
-    pub fn backend_id(&self, type_name: TypeName, uid: Uid) -> Option<u64> {
+    pub fn backend_id(&self, type_name: TypeName, uid: Uid) -> Option<BackendId> {
         self.data
             .mappings
             .get(&type_name)
-            .and_then(|map| map.get(&uid).copied())
+            .and_then(|map| map.get(&uid).cloned())
     }
 
     /// set a backend id mapping.
-    pub fn set_backend_id(&mut self, type_name: TypeName, uid: Uid, backend_id: u64) {
+    pub fn set_backend_id(&mut self, type_name: TypeName, uid: Uid, backend_id: BackendId) {
         self.data
             .mappings
             .entry(type_name)
@@ -76,7 +77,7 @@ impl StateStore {
     }
 
     /// return all mappings for external use.
-    pub fn all_mappings(&self) -> &BTreeMap<TypeName, BTreeMap<Uid, u64>> {
+    pub fn all_mappings(&self) -> &BTreeMap<TypeName, BTreeMap<Uid, BackendId>> {
         &self.data.mappings
     }
 }
