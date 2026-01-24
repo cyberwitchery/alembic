@@ -4,7 +4,7 @@ use super::state::{resolved_from_state, state_mappings};
 use super::NautobotAdapter;
 use alembic_core::{key_string, JsonMap, Key, Schema, TypeName, TypeSchema, Uid};
 use alembic_engine::{
-    Adapter, AppliedOp, ApplyReport, BackendId, ObservedObject, ObservedState, Op, ProjectedObject,
+    Adapter, AppliedOp, ApplyReport, BackendId, ObservedObject, ObservedState, Op,
     ProjectionData, StateStore,
 };
 use anyhow::{anyhow, Context, Result};
@@ -92,40 +92,22 @@ impl Adapter for NautobotAdapter {
 
             for op in current {
                 let result = match &op {
-                    Op::Create {
-                        uid,
-                        type_name,
-                        desired,
-                    } => self
-                        .apply_create(*uid, type_name, desired, &mut resolved, &registry, schema)
+                    Op::Create { .. } => self
+                        .apply_create(&op, &mut resolved, &registry, schema)
                         .await
                         .map(|backend_id| AppliedOp {
-                            uid: *uid,
-                            type_name: type_name.clone(),
+                            uid: op.uid(),
+                            type_name: op.type_name().clone(),
                             backend_id: Some(BackendId::String(backend_id)),
                         }),
-                    Op::Update {
-                        uid,
-                        type_name,
-                        desired,
-                        backend_id,
-                        ..
-                    } => {
-                        let id = match backend_id {
-                            Some(BackendId::String(id)) => Some(id.clone()),
-                            Some(_) => return Err(anyhow!("nautobot requires string backend id")),
-                            None => None,
-                        };
-                        self.apply_update(
-                            *uid, type_name, desired, id, &resolved, &registry, schema,
-                        )
+                    Op::Update { .. } => self
+                        .apply_update(&op, &resolved, &registry, schema)
                         .await
                         .map(|backend_id| AppliedOp {
-                            uid: *uid,
-                            type_name: type_name.clone(),
+                            uid: op.uid(),
+                            type_name: op.type_name().clone(),
                             backend_id: Some(BackendId::String(backend_id)),
-                        })
-                    }
+                        }),
                     Op::Delete { .. } => continue,
                 };
 
@@ -213,13 +195,19 @@ impl Adapter for NautobotAdapter {
 impl NautobotAdapter {
     async fn apply_create(
         &self,
-        uid: Uid,
-        type_name: &TypeName,
-        desired: &ProjectedObject,
+        op: &Op,
         resolved: &mut BTreeMap<Uid, String>,
         registry: &ObjectTypeRegistry,
         schema: &Schema,
     ) -> Result<String> {
+        let (uid, type_name, desired) = match op {
+            Op::Create {
+                uid,
+                type_name,
+                desired,
+            } => (*uid, type_name, desired),
+            _ => return Err(anyhow!("expected create operation")),
+        };
         let info = registry
             .info_for(type_name)
             .ok_or_else(|| anyhow!("unsupported type {}", type_name))?;
@@ -243,14 +231,28 @@ impl NautobotAdapter {
 
     async fn apply_update(
         &self,
-        uid: Uid,
-        type_name: &TypeName,
-        desired: &ProjectedObject,
-        backend_id: Option<String>,
+        op: &Op,
         resolved: &BTreeMap<Uid, String>,
         registry: &ObjectTypeRegistry,
         schema: &Schema,
     ) -> Result<String> {
+        let (uid, type_name, desired, backend_id) = match op {
+            Op::Update {
+                uid,
+                type_name,
+                desired,
+                backend_id,
+                ..
+            } => {
+                let id = match backend_id {
+                    Some(BackendId::String(id)) => Some(id.clone()),
+                    Some(_) => return Err(anyhow!("nautobot requires string backend id")),
+                    None => None,
+                };
+                (*uid, type_name, desired, id)
+            }
+            _ => return Err(anyhow!("expected update operation")),
+        };
         let info = registry
             .info_for(type_name)
             .ok_or_else(|| anyhow!("unsupported type {}", type_name))?;

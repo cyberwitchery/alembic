@@ -77,6 +77,26 @@ pub enum Op {
     },
 }
 
+impl Op {
+    /// returns the ir uid for this operation.
+    pub fn uid(&self) -> Uid {
+        match self {
+            Op::Create { uid, .. } => *uid,
+            Op::Update { uid, .. } => *uid,
+            Op::Delete { uid, .. } => *uid,
+        }
+    }
+
+    /// returns the type name for this operation.
+    pub fn type_name(&self) -> &TypeName {
+        match self {
+            Op::Create { type_name, .. } => type_name,
+            Op::Update { type_name, .. } => type_name,
+            Op::Delete { type_name, .. } => type_name,
+        }
+    }
+}
+
 /// full plan document.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Plan {
