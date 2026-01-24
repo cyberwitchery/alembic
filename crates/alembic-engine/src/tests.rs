@@ -761,7 +761,10 @@ fn state_store_roundtrip() {
     store.save().unwrap();
 
     let reloaded = StateStore::load(&path).unwrap();
-    assert_eq!(reloaded.backend_id(t("dcim.site"), uid(99)), Some(BackendId::Int(123)));
+    assert_eq!(
+        reloaded.backend_id(t("dcim.site"), uid(99)),
+        Some(BackendId::Int(123))
+    );
     assert!(reloaded.all_mappings().contains_key(&t("dcim.site")));
 
     let mut reloaded = reloaded;
@@ -921,7 +924,10 @@ fn build_plan_bootstraps_state_by_key() {
     let plan =
         futures::executor::block_on(build_plan(&adapter, &inventory, &mut state, false)).unwrap();
     assert!(plan.ops.is_empty());
-    assert_eq!(state.backend_id(t("dcim.site"), uid(1)), Some(BackendId::Int(10)));
+    assert_eq!(
+        state.backend_id(t("dcim.site"), uid(1)),
+        Some(BackendId::Int(10))
+    );
 }
 
 #[test]
@@ -1019,5 +1025,8 @@ fn apply_plan_updates_state() {
         ops: vec![],
     };
     futures::executor::block_on(apply_plan(&adapter, &plan, &mut state, true)).unwrap();
-    assert_eq!(state.backend_id(t("dcim.site"), uid(1)), Some(BackendId::Int(55)));
+    assert_eq!(
+        state.backend_id(t("dcim.site"), uid(1)),
+        Some(BackendId::Int(55))
+    );
 }

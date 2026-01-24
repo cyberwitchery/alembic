@@ -511,7 +511,7 @@ impl CommandRunner {
             }
         })?;
         if output.status.success() {
-            return Ok(())
+            return Ok(());
         }
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -581,7 +581,7 @@ fn ensure_django_project(runner: &dyn Runner, output_dir: &Path, project_name: &
     let manage_py = output_dir.join("manage.py");
     let project_dir = output_dir.join(project_name);
     if manage_py.exists() && project_dir.exists() {
-        return Ok(())
+        return Ok(());
     }
     runner.run(
         "django-admin",
@@ -602,7 +602,7 @@ fn ensure_django_app(
 ) -> Result<()> {
     let app_dir = output_dir.join(app_name);
     if app_dir.join("apps.py").exists() {
-        return Ok(())
+        return Ok(());
     }
     ensure_app_name_available(runner, output_dir, app_name, python)?;
     runner.run(
@@ -653,7 +653,9 @@ fn ensure_app_name_available(
 
 fn validate_python_identifier(name: &str, label: &str) -> Result<()> {
     let mut chars = name.chars();
-    let Some(first) = chars.next() else { return Err(anyhow!("{label} name is empty")) };
+    let Some(first) = chars.next() else {
+        return Err(anyhow!("{label} name is empty"));
+    };
     if !(first.is_ascii_alphabetic() || first == '_') {
         return Err(anyhow!(
             "invalid {label} name '{name}': must start with a letter or underscore"
@@ -689,7 +691,8 @@ fn ensure_installed_apps_entries(
         }
         let end = contents[start..]
             .find(']')
-            .ok_or_else(|| anyhow!("settings.py missing INSTALLED_APPS closing bracket"))? + start;
+            .ok_or_else(|| anyhow!("settings.py missing INSTALLED_APPS closing bracket"))?
+            + start;
         contents.insert_str(end, &format!("    \"{}\",\n", entry));
     }
     fs::write(&settings_path, contents)
@@ -703,7 +706,7 @@ fn ensure_project_urls(output_dir: &Path, project_name: &str, app_name: &str) ->
         fs::read_to_string(&urls_path).with_context(|| format!("read {}", urls_path.display()))?;
 
     if contents.contains("include(") && contents.contains(&format!("{}.urls", app_name)) {
-        return Ok(())
+        return Ok(());
     }
 
     let mut import_fixed = false;
@@ -723,11 +726,14 @@ fn ensure_project_urls(output_dir: &Path, project_name: &str, app_name: &str) ->
         contents = format!("from django.urls import include, path\n{}", contents);
     }
 
-    if !contents.contains(&format!("include(\"{}.urls\")", app_name)) && !contents.contains(&format!("include('{}'.urls')", app_name)) {
+    if !contents.contains(&format!("include(\"{}.urls\")", app_name))
+        && !contents.contains(&format!("include('{}'.urls')", app_name))
+    {
         if let Some(pos) = contents.find("urlpatterns = [") {
             let insert_pos = contents[pos..]
                 .find(']')
-                .ok_or_else(|| anyhow!("urls.py missing urlpatterns closing bracket"))? + pos;
+                .ok_or_else(|| anyhow!("urls.py missing urlpatterns closing bracket"))?
+                + pos;
             contents.insert_str(
                 insert_pos,
                 &format!("    path(\"api/\", include(\"{}.urls\")),\n", app_name),
@@ -759,7 +765,17 @@ async fn build_plan_with_proposal(
     projection: Option<&ProjectionSpec>,
     projection_strict: bool,
 ) -> Result<Plan> {
-    let Some(spec) = projection else { return build_plan_with_projection(adapter, inventory, state, allow_delete, None, projection_strict).await };
+    let Some(spec) = projection else {
+        return build_plan_with_projection(
+            adapter,
+            inventory,
+            state,
+            allow_delete,
+            None,
+            projection_strict,
+        )
+        .await;
+    };
     let projected = apply_projection(spec, &inventory.objects)?;
     let types: Vec<_> = projected
         .objects
@@ -1447,7 +1463,9 @@ objects:
             },
         };
         let err = run(cli).await.unwrap_err();
-        assert!(err.to_string().contains("missing --netbox-url or NETBOX_URL"));
+        assert!(err
+            .to_string()
+            .contains("missing --netbox-url or NETBOX_URL"));
         std::env::set_current_dir(cwd).unwrap();
     }
 
@@ -1472,7 +1490,9 @@ objects:
             },
         };
         let err = run(cli).await.unwrap_err();
-        assert!(err.to_string().contains("missing --netbox-url or NETBOX_URL"));
+        assert!(err
+            .to_string()
+            .contains("missing --netbox-url or NETBOX_URL"));
         std::env::set_current_dir(cwd).unwrap();
     }
 
