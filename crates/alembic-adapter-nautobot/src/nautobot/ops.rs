@@ -4,8 +4,8 @@ use super::state::{resolved_from_state, state_mappings};
 use super::NautobotAdapter;
 use alembic_core::{key_string, JsonMap, Key, Schema, TypeName, TypeSchema, Uid};
 use alembic_engine::{
-    Adapter, AppliedOp, ApplyReport, BackendId, ObservedObject, ObservedState, Op,
-    ProjectionData, StateStore,
+    Adapter, AppliedOp, ApplyReport, BackendId, ObservedObject, ObservedState, Op, ProjectionData,
+    StateStore,
 };
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
