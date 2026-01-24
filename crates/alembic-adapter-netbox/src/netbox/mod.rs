@@ -146,7 +146,7 @@ mod tests {
 
     fn state_with_mappings(path: &std::path::Path) -> StateStore {
         let mut store = StateStore::load(path).unwrap();
-        store.set_backend_id(TypeName::new("dcim.site"), uid(1), 1);
+        store.set_backend_id(TypeName::new("dcim.site"), uid(1), alembic_engine::BackendId::Int(1));
         store
     }
 

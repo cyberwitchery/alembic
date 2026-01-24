@@ -1,0 +1,12 @@
+schema:
+  types:
+    extras.tag:
+      key: { name: { type: string } }
+      fields: {}
+    dcim.locationtype:
+      key: { name: { type: string } }
+      fields: {}
+    dcim.location:
+      key: { name: { type: string } }
+      fields: {}
+objects: []

@@ -395,7 +395,7 @@ fn merge_attrs(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::ObservedState;
+    use crate::types::{BackendId, ObservedState};
     use crate::ProjectionData;
     use alembic_core::{FieldSchema, FieldType, JsonMap, Key, Schema, TypeName, TypeSchema, Uid};
     use async_trait::async_trait;
@@ -441,7 +441,7 @@ mod tests {
                 tags: None,
                 local_context: None,
             },
-            backend_id: Some(1),
+            backend_id: Some(BackendId::Int(1)),
         });
         state
     }
@@ -560,7 +560,7 @@ mod tests {
                 tags: Some(vec!["fabric".to_string()]),
                 local_context: None,
             },
-            backend_id: Some(2),
+            backend_id: Some(BackendId::Int(2)),
         });
         let adapter = MockAdapter { observed: state };
         let schema = schema_for_observed(&adapter.observed);
@@ -613,7 +613,7 @@ rules:
                 tags: None,
                 local_context: None,
             },
-            backend_id: Some(1),
+            backend_id: Some(BackendId::Int(1)),
         });
         let adapter = MockAdapter { observed: state };
         let projection: ProjectionSpec = serde_yaml::from_str(
@@ -660,7 +660,7 @@ rules:
                 tags: None,
                 local_context: None,
             },
-            backend_id: Some(2),
+            backend_id: Some(BackendId::Int(2)),
         });
         let adapter = MockAdapter { observed: state };
         let projection: ProjectionSpec = serde_yaml::from_str(
@@ -711,7 +711,7 @@ rules:
                 tags: None,
                 local_context: Some(Value::Object(root)),
             },
-            backend_id: Some(2),
+            backend_id: Some(BackendId::Int(2)),
         });
         let adapter = MockAdapter { observed: state };
         let projection: ProjectionSpec = serde_yaml::from_str(
@@ -755,7 +755,7 @@ rules:
                 tags: None,
                 local_context: None,
             },
-            backend_id: Some(1),
+            backend_id: Some(BackendId::Int(1)),
         });
         let adapter = MockAdapter { observed: state };
         let projection: ProjectionSpec = serde_yaml::from_str(
@@ -810,7 +810,7 @@ rules:
                 tags: None,
                 local_context: None,
             },
-            backend_id: Some(2),
+            backend_id: Some(BackendId::Int(2)),
         });
         let adapter = MockAdapter { observed: state };
         let projection: ProjectionSpec = serde_yaml::from_str(
@@ -857,7 +857,7 @@ rules:
                 tags: Some(vec!["fabric".to_string()]),
                 local_context: None,
             },
-            backend_id: Some(2),
+            backend_id: Some(BackendId::Int(2)),
         });
         let adapter = MockAdapter { observed: state };
         let projection: ProjectionSpec = serde_yaml::from_str(
@@ -906,7 +906,7 @@ rules:
                 tags: Some(vec!["fabric".to_string()]),
                 local_context: None,
             },
-            backend_id: Some(2),
+            backend_id: Some(BackendId::Int(2)),
         });
         let adapter = MockAdapter { observed: state };
         let projection: ProjectionSpec = serde_yaml::from_str(
@@ -951,7 +951,7 @@ rules:
                 tags: Some(vec!["fabric".to_string()]),
                 local_context: None,
             },
-            backend_id: Some(2),
+            backend_id: Some(BackendId::Int(2)),
         });
         let adapter = MockAdapter { observed: state };
         let projection: ProjectionSpec = serde_yaml::from_str(
@@ -1002,7 +1002,7 @@ rules:
                 tags: None,
                 local_context: None,
             },
-            backend_id: Some(2),
+            backend_id: Some(BackendId::Int(2)),
         });
         let adapter = MockAdapter { observed: state };
         let projection: ProjectionSpec = serde_yaml::from_str(
@@ -1055,7 +1055,7 @@ rules:
                 tags: None,
                 local_context: Some(Value::Object(root)),
             },
-            backend_id: Some(2),
+            backend_id: Some(BackendId::Int(2)),
         });
         let adapter = MockAdapter { observed: state };
         let projection: ProjectionSpec = serde_yaml::from_str(

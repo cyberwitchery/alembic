@@ -25,7 +25,7 @@ fn attrs_map(value: serde_json::Value) -> JsonMap {
 
 fn key_str(raw: &str) -> Key {
     let mut map = BTreeMap::new();
-    for segment in raw.split('/') {
+    for segment in raw.split(';') {
         let (field, value) = segment
             .split_once('=')
             .unwrap_or_else(|| panic!("invalid key segment: {segment}"));
@@ -235,17 +235,6 @@ objects:
         format!(
             r#"imports:
   - {}
-schema:
-  types:
-    dcim.site:
-      key:
-        site:
-          type: slug
-      fields:
-        name:
-          type: string
-        slug:
-          type: slug
 objects:
   - uid: "00000000-0000-0000-0000-000000000021"
     type: dcim.site
@@ -382,7 +371,7 @@ fn detects_missing_references() {
     let objects = vec![obj(
         uid(2),
         "dcim.interface",
-        "device=leaf01/interface=eth0",
+        "device=leaf01;interface=eth0",
         json!({
             "name": "eth0",
             "device": uid(3).to_string(),
@@ -443,7 +432,7 @@ fn plans_in_stable_order() {
         obj(
             device_uid,
             "dcim.device",
-            "site=fra1/device=leaf01",
+            "site=fra1;device=leaf01",
             json!({
                 "name": "leaf01",
                 "site": site_uid.to_string(),
@@ -494,7 +483,7 @@ fn detects_attribute_diff() {
         key: key_str("site=fra1"),
         attrs: attrs_map(json!({ "name": "OLD", "slug": "fra1" })),
         projection: crate::ProjectionData::default(),
-        backend_id: Some(100),
+        backend_id: Some(BackendId::Int(100)),
     });
 
     let state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
@@ -533,7 +522,7 @@ fn detects_generic_payload_diff() {
         key: key_str("vpn=corp"),
         attrs: from.into(),
         projection: crate::ProjectionData::default(),
-        backend_id: Some(10),
+        backend_id: Some(BackendId::Int(10)),
     });
 
     let state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
@@ -636,7 +625,7 @@ fn planner_ignores_optional_nulls() {
             "description": ""
         })),
         projection: crate::ProjectionData::default(),
-        backend_id: Some(1),
+        backend_id: Some(BackendId::Int(1)),
     });
 
     let state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
@@ -680,7 +669,7 @@ fn planner_ignores_unprojected_custom_fields() {
             tags: None,
             local_context: None,
         },
-        backend_id: Some(1),
+        backend_id: Some(BackendId::Int(1)),
     });
 
     let state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
@@ -693,7 +682,7 @@ fn planner_matches_backend_id_by_kind() {
     let desired = obj(
         uid(82),
         "dcim.device",
-        "site=fra1/device=leaf01",
+        "site=fra1;device=leaf01",
         json!({
             "name": "leaf01",
             "site": uid(1).to_string(),
@@ -710,21 +699,21 @@ fn planner_matches_backend_id_by_kind() {
         key: key_str("site=fra1/device=leaf01"),
         attrs: desired.attrs.clone(),
         projection: crate::ProjectionData::default(),
-        backend_id: Some(1),
+        backend_id: Some(BackendId::Int(1)),
     });
     observed.insert(ObservedObject {
         type_name: t("dcim.interface"),
-        key: key_str("device=leaf01/interface=eth0"),
+        key: key_str("device=leaf01;interface=eth0"),
         attrs: attrs_map(json!({
             "name": "eth0",
             "device": uid(82).to_string()
         })),
         projection: crate::ProjectionData::default(),
-        backend_id: Some(1),
+        backend_id: Some(BackendId::Int(1)),
     });
 
     let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
-    state.set_backend_id(t("dcim.device"), desired.uid, 1);
+    state.set_backend_id(t("dcim.device"), desired.uid, BackendId::Int(1));
     let plan = plan(&projected, &observed, &state, &schema, false);
     assert!(plan.ops.is_empty());
 }
@@ -749,7 +738,7 @@ fn planner_includes_prefix_site_diff() {
         key: key_str("prefix=10.0.0.0/24"),
         attrs: attrs_map(json!({ "prefix": "10.0.0.0/24" })),
         projection: crate::ProjectionData::default(),
-        backend_id: Some(1),
+        backend_id: Some(BackendId::Int(1)),
     });
 
     let state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
@@ -768,11 +757,11 @@ fn state_store_roundtrip() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("state.json");
     let mut store = StateStore::load(&path).unwrap();
-    store.set_backend_id(t("dcim.site"), uid(99), 123);
+    store.set_backend_id(t("dcim.site"), uid(99), BackendId::Int(123));
     store.save().unwrap();
 
     let reloaded = StateStore::load(&path).unwrap();
-    assert_eq!(reloaded.backend_id(t("dcim.site"), uid(99)), Some(123));
+    assert_eq!(reloaded.backend_id(t("dcim.site"), uid(99)), Some(BackendId::Int(123)));
     assert!(reloaded.all_mappings().contains_key(&t("dcim.site")));
 
     let mut reloaded = reloaded;
@@ -826,7 +815,7 @@ fn plan_generates_deletes_when_enabled() {
         key: key_str("site=orphan"),
         attrs: attrs_map(json!({ "name": "orphan", "slug": "orphan" })),
         projection: crate::ProjectionData::default(),
-        backend_id: Some(10),
+        backend_id: Some(BackendId::Int(10)),
     });
 
     let state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
@@ -842,7 +831,7 @@ fn apply_order_puts_deletes_last() {
             uid: uid(1),
             type_name: t("dcim.device"),
             key: key_str("site=fra1/device=leaf01"),
-            backend_id: Some(2),
+            backend_id: Some(BackendId::Int(2)),
         },
         Op::Create {
             uid: uid(2),
@@ -922,7 +911,7 @@ fn build_plan_bootstraps_state_by_key() {
         key: key_str("site=fra1"),
         attrs: attrs_map(json!({ "name": "FRA1", "slug": "fra1" })),
         projection: crate::ProjectionData::default(),
-        backend_id: Some(10),
+        backend_id: Some(BackendId::Int(10)),
     });
     let adapter = TestAdapter {
         observed,
@@ -932,7 +921,7 @@ fn build_plan_bootstraps_state_by_key() {
     let plan =
         futures::executor::block_on(build_plan(&adapter, &inventory, &mut state, false)).unwrap();
     assert!(plan.ops.is_empty());
-    assert_eq!(state.backend_id(t("dcim.site"), uid(1)), Some(10));
+    assert_eq!(state.backend_id(t("dcim.site"), uid(1)), Some(BackendId::Int(10)));
 }
 
 #[test]
@@ -974,7 +963,7 @@ fn build_plan_reobserves_after_bootstrap() {
         key: key_str("site=fra1"),
         attrs: attrs_map(json!({ "name": "FRA1", "slug": "fra1" })),
         projection: crate::ProjectionData::default(),
-        backend_id: Some(1),
+        backend_id: Some(BackendId::Int(1)),
     });
     let mut second = first.clone();
     second.capabilities = crate::BackendCapabilities::default();
@@ -1003,7 +992,7 @@ fn apply_plan_blocks_deletes_without_flag() {
             uid: uid(1),
             type_name: t("dcim.site"),
             key: key_str("site=fra1"),
-            backend_id: Some(1),
+            backend_id: Some(BackendId::Int(1)),
         }],
     };
     let result = futures::executor::block_on(apply_plan(&adapter, &plan, &mut state, false));
@@ -1018,7 +1007,7 @@ fn apply_plan_updates_state() {
             applied: vec![AppliedOp {
                 uid: uid(1),
                 type_name: t("dcim.site"),
-                backend_id: Some(55),
+                backend_id: Some(BackendId::Int(55)),
             }],
         },
     };
@@ -1030,5 +1019,5 @@ fn apply_plan_updates_state() {
         ops: vec![],
     };
     futures::executor::block_on(apply_plan(&adapter, &plan, &mut state, true)).unwrap();
-    assert_eq!(state.backend_id(t("dcim.site"), uid(1)), Some(55));
+    assert_eq!(state.backend_id(t("dcim.site"), uid(1)), Some(BackendId::Int(55)));
 }

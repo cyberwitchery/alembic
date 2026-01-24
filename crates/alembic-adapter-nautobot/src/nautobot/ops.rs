@@ -9,7 +9,7 @@ use alembic_engine::{
 };
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
-use nautobot::{BulkDelete, QueryBuilder, Resource};
+use nautobot::{QueryBuilder, Resource};
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -66,6 +66,12 @@ impl Adapter for NautobotAdapter {
             let state_guard = self.state_guard()?;
             resolved_from_state(&state_guard)
         };
+
+        for op in ops {
+            if let Op::Create { uid, .. } = op {
+                resolved.remove(uid);
+            }
+        }
 
         let mut creates_updates = Vec::new();
         let mut deletes = Vec::new();
@@ -174,9 +180,15 @@ impl Adapter for NautobotAdapter {
                     .info_for(&type_name)
                     .ok_or_else(|| anyhow!("unsupported type {}", type_name))?;
                 let resource: Resource<Value> = self.client.resource(info.endpoint.clone());
-                resource.delete(&id).await?;
+                match resource.delete(&id).await {
+                    Ok(_) => {}
+                    Err(err) if is_404_error(&err) => {
+                        eprintln!("warning: {} already deleted", type_name);
+                    }
+                    Err(err) => return Err(err.into()),
+                }
                 applied.push(AppliedOp {
-                    uid: uid,
+                    uid,
                     type_name: type_name.clone(),
                     backend_id: None,
                 });
@@ -455,14 +467,21 @@ fn normalize_value(
                 .collect(),
         ),
         Value::Object(map) => {
+            if let Some(id) = map.get("id").and_then(Value::as_str) {
+                if let Some(uid) = uid_for_nested_object(&map, registry, mappings) {
+                    return Value::String(uid.to_string());
+                }
+                // If it looks like a resource summary but isn't managed by us,
+                // fall back to the ID string to match desired state UUIDs.
+                if map.contains_key("url") || map.contains_key("object_type") {
+                    return Value::String(id.to_string());
+                }
+            }
             if let Some(value) = map.get("value").and_then(Value::as_str) {
                 let label_only = map.keys().all(|key| key == "value" || key == "label");
                 if label_only {
                     return Value::String(value.to_string());
                 }
-            }
-            if let Some(uid) = uid_for_nested_object(&map, registry, mappings) {
-                return Value::String(uid.to_string());
             }
             let mut normalized = Map::new();
             for (key, value) in map {
@@ -491,7 +510,7 @@ fn uid_for_nested_object(
         .get("url")
         .and_then(Value::as_str)
         .and_then(|url| registry.type_name_for_endpoint(url))?;
-    mappings.uid_for(endpoint, id).or_else(|| Some(Uid::nil()))
+    mappings.uid_for(endpoint, id)
 }
 
 fn build_key_from_schema(type_schema: &TypeSchema, attrs: &JsonMap) -> Result<Key> {
@@ -667,7 +686,12 @@ fn supports_feature(features: &BTreeSet<String>, candidates: &[&str]) -> bool {
 }
 
 fn is_missing_ref_error(err: &anyhow::Error) -> bool {
-    err.to_string().contains("missing referenced uid")
+    let msg = err.to_string();
+    msg.contains("missing referenced uid") || msg.contains("Related object not found")
+}
+
+fn is_404_error(err: &nautobot::Error) -> bool {
+    err.to_string().contains("status 404")
 }
 
 fn describe_missing_refs(ops: &[Op], resolved: &BTreeMap<Uid, String>) -> String {

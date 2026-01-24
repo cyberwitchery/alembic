@@ -24,7 +24,16 @@ impl ObjectTypeRegistry {
             let model = content_type.model;
 
             let endpoint_type = format!("{}.{}", app_label, model);
-            let endpoint = format!("{}/{}/", app_label, pluralize(&model).replace('_', "-"));
+            let endpoint_name = if let Some(display) = content_type.display {
+                if let Some((_, name)) = display.split_once('|') {
+                    name.trim().replace(' ', "-")
+                } else {
+                    model.clone()
+                }
+            } else {
+                model.clone()
+            };
+            let endpoint = format!("{}/{}/", app_label, pluralize(&endpoint_name));
 
             let features: BTreeSet<String> = ["custom-fields", "tags", "local-context"]
                 .iter()

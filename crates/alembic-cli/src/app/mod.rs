@@ -1,5 +1,6 @@
 //! cli entrypoint for alembic.
 
+use alembic_adapter_nautobot::NautobotAdapter;
 use alembic_adapter_netbox::NetBoxAdapter;
 use alembic_engine::Adapter;
 use alembic_engine::{
@@ -9,7 +10,7 @@ use alembic_engine::{
     Retort, StateStore,
 };
 use anyhow::{anyhow, Context, Result};
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
@@ -20,10 +21,16 @@ mod test_support;
 /// top-level cli definition.
 #[derive(Parser)]
 #[command(name = "alembic")]
-#[command(about = "Data-model-first converger + loader for NetBox")]
+#[command(about = "Data-model-first converger + loader for DCIM/IPAM")]
 pub(crate) struct Cli {
     #[command(subcommand)]
     command: Command,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum Backend {
+    Netbox,
+    Nautobot,
 }
 
 /// cli subcommands.
@@ -56,10 +63,16 @@ enum Command {
         projection_propose: bool,
         #[arg(short = 'o', long)]
         output: PathBuf,
+        #[arg(long, default_value = "netbox")]
+        backend: Backend,
         #[arg(long)]
         netbox_url: Option<String>,
         #[arg(long)]
         netbox_token: Option<String>,
+        #[arg(long)]
+        nautobot_url: Option<String>,
+        #[arg(long)]
+        nautobot_token: Option<String>,
         #[arg(long, default_value_t = false)]
         dry_run: bool,
         #[arg(long, default_value_t = false)]
@@ -68,10 +81,16 @@ enum Command {
     Apply {
         #[arg(short = 'p', long)]
         plan: PathBuf,
+        #[arg(long, default_value = "netbox")]
+        backend: Backend,
         #[arg(long)]
         netbox_url: Option<String>,
         #[arg(long)]
         netbox_token: Option<String>,
+        #[arg(long)]
+        nautobot_url: Option<String>,
+        #[arg(long)]
+        nautobot_token: Option<String>,
         #[arg(long, default_value_t = false)]
         allow_delete: bool,
     },
@@ -100,10 +119,16 @@ enum Command {
         retort: Option<PathBuf>,
         #[arg(long)]
         projection: Option<PathBuf>,
+        #[arg(long, default_value = "netbox")]
+        backend: Backend,
         #[arg(long)]
         netbox_url: Option<String>,
         #[arg(long)]
         netbox_token: Option<String>,
+        #[arg(long)]
+        nautobot_url: Option<String>,
+        #[arg(long)]
+        nautobot_token: Option<String>,
     },
     Cast {
         #[command(subcommand)]
@@ -175,29 +200,55 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
             projection_strict,
             projection_propose,
             output,
+            backend,
             netbox_url,
             netbox_token,
+            nautobot_url,
+            nautobot_token,
             dry_run,
             allow_delete,
         } => {
             let inventory = load_inventory(&file, retort.as_deref())?;
             let mut state = load_state()?;
             let projection = load_projection_optional(projection.as_deref())?;
-            let (url, token) = netbox_credentials(netbox_url, netbox_token)?;
-            let adapter = NetBoxAdapter::new(&url, &token, state.clone())?;
+
+            let adapter = create_adapter(
+                backend,
+                netbox_url.clone(),
+                netbox_token.clone(),
+                nautobot_url,
+                nautobot_token,
+                state.clone(),
+            )?;
+
             let plan = if projection_propose {
-                build_plan_with_proposal(
-                    &adapter,
-                    &inventory,
-                    &mut state,
-                    allow_delete,
-                    projection.as_ref(),
-                    projection_strict,
-                )
-                .await?
+                if let Backend::Nautobot = backend {
+                    return Err(anyhow!(
+                        "projection proposal not yet supported for nautobot backend"
+                    ));
+                }
+
+                match backend {
+                    Backend::Netbox => {
+                        let (url, token) = resolve_credentials("NETBOX", netbox_url, netbox_token)?;
+                        let adapter = NetBoxAdapter::new(&url, &token, state.clone())?;
+                        build_plan_with_proposal(
+                            &adapter,
+                            &inventory,
+                            &mut state,
+                            allow_delete,
+                            projection.as_ref(),
+                            projection_strict,
+                        )
+                        .await?
+                    }
+                    Backend::Nautobot => {
+                        return Err(anyhow!("proposal not supported for nautobot"))
+                    }
+                }
             } else {
                 build_plan_with_projection(
-                    &adapter,
+                    adapter.as_ref(),
                     &inventory,
                     &mut state,
                     allow_delete,
@@ -217,15 +268,24 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
         }
         Command::Apply {
             plan,
+            backend,
             netbox_url,
             netbox_token,
+            nautobot_url,
+            nautobot_token,
             allow_delete,
         } => {
             let mut state = load_state()?;
-            let (url, token) = netbox_credentials(netbox_url, netbox_token)?;
-            let adapter = NetBoxAdapter::new(&url, &token, state.clone())?;
+            let adapter = create_adapter(
+                backend,
+                netbox_url,
+                netbox_token,
+                nautobot_url,
+                nautobot_token,
+                state.clone(),
+            )?;
             let plan = read_plan(&plan)?;
-            let report = apply_plan(&adapter, &plan, &mut state, allow_delete).await?;
+            let report = apply_plan(adapter.as_ref(), &plan, &mut state, allow_delete).await?;
             state.save()?;
             println!("applied {} operations", report.applied.len());
         }
@@ -259,8 +319,11 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
             output,
             retort,
             projection,
+            backend,
             netbox_url,
             netbox_token,
+            nautobot_url,
+            nautobot_token,
         } => {
             let retort_path = retort
                 .as_deref()
@@ -268,13 +331,23 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
             let retort = load_retort(retort_path)?;
             eprintln!("warning: retort inversion is not implemented; using schema only");
             let projection = load_projection_optional(projection.as_deref())?;
-            let (url, token) = netbox_credentials(netbox_url, netbox_token)?;
-            let adapter = NetBoxAdapter::new(&url, &token, load_state()?)?;
+            let adapter = create_adapter(
+                backend,
+                netbox_url,
+                netbox_token,
+                nautobot_url,
+                nautobot_token,
+                load_state()?,
+            )?;
             let ExtractReport {
                 inventory,
                 warnings,
-            } = alembic_engine::extract_inventory(&adapter, &retort.schema, projection.as_ref())
-                .await?;
+            } = alembic_engine::extract_inventory(
+                adapter.as_ref(),
+                &retort.schema,
+                projection.as_ref(),
+            )
+            .await?;
             for warning in warnings {
                 eprintln!("warning: {warning}");
             }
@@ -309,18 +382,51 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
     Ok(())
 }
 
-/// load state from the default path.
+fn create_adapter(
+    backend: Backend,
+    netbox_url: Option<String>,
+    netbox_token: Option<String>,
+    nautobot_url: Option<String>,
+    nautobot_token: Option<String>,
+    state: StateStore,
+) -> Result<Box<dyn Adapter>> {
+    match backend {
+        Backend::Netbox => {
+            let (url, token) = resolve_credentials("NETBOX", netbox_url, netbox_token)?;
+            Ok(Box::new(NetBoxAdapter::new(&url, &token, state)?))
+        }
+        Backend::Nautobot => {
+            let (url, token) = resolve_credentials("NAUTOBOT", nautobot_url, nautobot_token)?;
+            Ok(Box::new(NautobotAdapter::new(&url, &token, state)?))
+        }
+    }
+}
+
+fn resolve_credentials(
+    prefix: &str,
+    url: Option<String>,
+    token: Option<String>,
+) -> Result<(String, String)> {
+    let env_url = format!("{}_URL", prefix);
+    let env_token = format!("{}_TOKEN", prefix);
+    let url = url
+        .or_else(|| std::env::var(&env_url).ok())
+        .ok_or_else(|| anyhow!("missing --{}-url or {}", prefix.to_lowercase(), env_url))?;
+    let token = token
+        .or_else(|| std::env::var(&env_token).ok())
+        .ok_or_else(|| anyhow!("missing --{}-token or {}", prefix.to_lowercase(), env_token))?;
+    Ok((url, token))
+}
+
 fn load_state() -> Result<StateStore> {
     let path = state_path(Path::new("."));
     StateStore::load(path)
 }
 
-/// build the default state store path under the workspace root.
 fn state_path(root: &Path) -> PathBuf {
     root.join(".alembic").join("state.json")
 }
 
-/// write a plan file to disk.
 fn write_plan(path: &Path, plan: &Plan) -> Result<()> {
     let raw = serde_json::to_string_pretty(plan)?;
     fs::write(path, raw).with_context(|| format!("write plan: {}", path.display()))
@@ -336,21 +442,9 @@ fn write_projected(path: &Path, projected: &ProjectedInventory) -> Result<()> {
     fs::write(path, raw).with_context(|| format!("write projected ir: {}", path.display()))
 }
 
-/// read a plan file from disk.
 fn read_plan(path: &Path) -> Result<Plan> {
     let raw = fs::read_to_string(path).with_context(|| format!("read plan: {}", path.display()))?;
     serde_json::from_str(&raw).with_context(|| format!("parse plan: {}", path.display()))
-}
-
-/// resolve netbox credentials from flags or environment.
-fn netbox_credentials(url: Option<String>, token: Option<String>) -> Result<(String, String)> {
-    let url = url
-        .or_else(|| std::env::var("NETBOX_URL").ok())
-        .ok_or_else(|| anyhow!("missing --netbox-url or NETBOX_URL"))?;
-    let token = token
-        .or_else(|| std::env::var("NETBOX_TOKEN").ok())
-        .ok_or_else(|| anyhow!("missing --netbox-token or NETBOX_TOKEN"))?;
-    Ok((url, token))
 }
 
 fn load_inventory(path: &Path, retort: Option<&Path>) -> Result<alembic_core::Inventory> {
@@ -417,13 +511,16 @@ impl CommandRunner {
             }
         })?;
         if output.status.success() {
-            return Ok(());
+            return Ok(())
         }
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
         Err(anyhow!(
-            "command failed: {program} {}\nstdout:\n{stdout}\nstderr:\n{stderr}",
-            args.join(" ")
+            "command failed: {program} {args_str}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+            program = program,
+            args_str = args.join(" "),
+            stdout = stdout,
+            stderr = stderr,
         ))
     }
 }
@@ -484,7 +581,7 @@ fn ensure_django_project(runner: &dyn Runner, output_dir: &Path, project_name: &
     let manage_py = output_dir.join("manage.py");
     let project_dir = output_dir.join(project_name);
     if manage_py.exists() && project_dir.exists() {
-        return Ok(());
+        return Ok(())
     }
     runner.run(
         "django-admin",
@@ -505,7 +602,7 @@ fn ensure_django_app(
 ) -> Result<()> {
     let app_dir = output_dir.join(app_name);
     if app_dir.join("apps.py").exists() {
-        return Ok(());
+        return Ok(())
     }
     ensure_app_name_available(runner, output_dir, app_name, python)?;
     runner.run(
@@ -529,7 +626,7 @@ fn ensure_python_has_drf(runner: &dyn Runner, python: &str) -> Result<()> {
     match runner.run(python, &["-c", "import rest_framework"], None) {
         Ok(()) => Ok(()),
         Err(_) => Err(anyhow!(
-            "djangorestframework is not available for {}; install it (pip install djangorestframework)",
+            " djangorestframework is not available for {}; install it (pip install djangorestframework)",
             python
         )),
     }
@@ -556,9 +653,7 @@ fn ensure_app_name_available(
 
 fn validate_python_identifier(name: &str, label: &str) -> Result<()> {
     let mut chars = name.chars();
-    let Some(first) = chars.next() else {
-        return Err(anyhow!("{label} name is empty"));
-    };
+    let Some(first) = chars.next() else { return Err(anyhow!("{label} name is empty")) };
     if !(first.is_ascii_alphabetic() || first == '_') {
         return Err(anyhow!(
             "invalid {label} name '{name}': must start with a letter or underscore"
@@ -587,16 +682,15 @@ fn ensure_installed_apps_entries(
         .find("INSTALLED_APPS")
         .ok_or_else(|| anyhow!("settings.py missing INSTALLED_APPS"))?;
     for entry in entries {
-        let quoted = format!("\"{entry}\"");
-        let single_quoted = format!("'{entry}'");
+        let quoted = format!("\"{}\"", entry);
+        let single_quoted = format!("'{}'", entry);
         if contents.contains(&quoted) || contents.contains(&single_quoted) {
             continue;
         }
         let end = contents[start..]
             .find(']')
-            .ok_or_else(|| anyhow!("settings.py missing INSTALLED_APPS closing bracket"))?
-            + start;
-        contents.insert_str(end, &format!("    \"{entry}\",\n"));
+            .ok_or_else(|| anyhow!("settings.py missing INSTALLED_APPS closing bracket"))? + start;
+        contents.insert_str(end, &format!("    \"{}\",\n", entry));
     }
     fs::write(&settings_path, contents)
         .with_context(|| format!("write {}", settings_path.display()))?;
@@ -608,8 +702,8 @@ fn ensure_project_urls(output_dir: &Path, project_name: &str, app_name: &str) ->
     let mut contents =
         fs::read_to_string(&urls_path).with_context(|| format!("read {}", urls_path.display()))?;
 
-    if contents.contains("include(") && contents.contains(&format!("{app_name}.urls")) {
-        return Ok(());
+    if contents.contains("include(") && contents.contains(&format!("{}.urls", app_name)) {
+        return Ok(())
     }
 
     let mut import_fixed = false;
@@ -626,20 +720,17 @@ fn ensure_project_urls(output_dir: &Path, project_name: &str, app_name: &str) ->
         }
     }
     if !import_fixed {
-        contents = format!("from django.urls import include, path\n{contents}");
+        contents = format!("from django.urls import include, path\n{}", contents);
     }
 
-    if !contents.contains(&format!("include(\"{app_name}.urls\")"))
-        && !contents.contains(&format!("include('{app_name}.urls')"))
-    {
+    if !contents.contains(&format!("include(\"{}.urls\")", app_name)) && !contents.contains(&format!("include('{}'.urls')", app_name)) {
         if let Some(pos) = contents.find("urlpatterns = [") {
             let insert_pos = contents[pos..]
                 .find(']')
-                .ok_or_else(|| anyhow!("urls.py missing urlpatterns closing bracket"))?
-                + pos;
+                .ok_or_else(|| anyhow!("urls.py missing urlpatterns closing bracket"))? + pos;
             contents.insert_str(
                 insert_pos,
-                &format!("    path(\"api/\", include(\"{app_name}.urls\")),\n"),
+                &format!("    path(\"api/\", include(\"{}.urls\")),\n", app_name),
             );
         }
     }
@@ -668,17 +759,7 @@ async fn build_plan_with_proposal(
     projection: Option<&ProjectionSpec>,
     projection_strict: bool,
 ) -> Result<Plan> {
-    let Some(spec) = projection else {
-        return build_plan_with_projection(
-            adapter,
-            inventory,
-            state,
-            allow_delete,
-            None,
-            projection_strict,
-        )
-        .await;
-    };
+    let Some(spec) = projection else { return build_plan_with_projection(adapter, inventory, state, allow_delete, None, projection_strict).await };
     let projected = apply_projection(spec, &inventory.objects)?;
     let types: Vec<_> = projected
         .objects
@@ -782,8 +863,9 @@ mod tests {
     }
 
     #[test]
-    fn netbox_credentials_prefers_args() {
-        let creds = netbox_credentials(
+    fn resolve_credentials_prefers_args() {
+        let creds = resolve_credentials(
+            "NETBOX",
             Some("http://example".to_string()),
             Some("token".to_string()),
         )
@@ -793,7 +875,7 @@ mod tests {
     }
 
     #[test]
-    fn netbox_credentials_from_env() {
+    fn resolve_credentials_from_env() {
         let _guard = env_lock().lock().unwrap();
         let old_url = std::env::var("NETBOX_URL").ok();
         let old_token = std::env::var("NETBOX_TOKEN").ok();
@@ -801,7 +883,7 @@ mod tests {
         std::env::set_var("NETBOX_TOKEN", "envtoken");
 
         let result = std::panic::catch_unwind(|| {
-            let creds = netbox_credentials(None, None).unwrap();
+            let creds = resolve_credentials("NETBOX", None, None).unwrap();
             assert_eq!(creds.0, "http://env");
             assert_eq!(creds.1, "envtoken");
         });
@@ -832,7 +914,7 @@ mod tests {
                 uid: uuid::Uuid::from_u128(1),
                 type_name: alembic_core::TypeName::new("dcim.site"),
                 key: key_str("site=fra1"),
-                backend_id: Some(1),
+                backend_id: Some(alembic_engine::BackendId::Int(1)),
             }],
         };
 
@@ -842,14 +924,14 @@ mod tests {
     }
 
     #[test]
-    fn netbox_credentials_missing_is_error() {
+    fn resolve_credentials_missing_is_error() {
         let _guard = env_lock().lock().unwrap();
         let old_url = std::env::var("NETBOX_URL").ok();
         let old_token = std::env::var("NETBOX_TOKEN").ok();
         std::env::remove_var("NETBOX_URL");
         std::env::remove_var("NETBOX_TOKEN");
 
-        let result = netbox_credentials(None, None);
+        let result = resolve_credentials("NETBOX", None, None);
         assert!(result.is_err());
 
         if let Some(value) = old_url {
@@ -1020,8 +1102,7 @@ mod tests {
         let retort = dir.path().join("retort.yaml");
         std::fs::write(
             &brew,
-            r#"
-schema:
+            r#"schema:
   types:
     dcim.site:
       key:
@@ -1045,8 +1126,7 @@ objects:
         .unwrap();
         std::fs::write(
             &retort,
-            r#"
-version: 1
+            r#"version: 1
 schema:
   types: {}
 rules: []
@@ -1064,8 +1144,7 @@ rules: []
         let raw = dir.path().join("raw.yaml");
         std::fs::write(
             &raw,
-            r#"
-sites:
+            r#"sites:
   - slug: fra1
     name: FRA1
 "#,
@@ -1082,8 +1161,7 @@ sites:
         let retort = dir.path().join("retort.yaml");
         std::fs::write(
             &raw,
-            r#"
-sites:
+            r#"sites:
   - slug: fra1
     name: FRA1
 "#,
@@ -1091,8 +1169,7 @@ sites:
         .unwrap();
         std::fs::write(
             &retort,
-            r#"
-version: 1
+            r#"version: 1
 schema:
   types:
     dcim.site:
@@ -1154,8 +1231,7 @@ rules:
         let brew = dir.path().join("brew.yaml");
         std::fs::write(
             &brew,
-            r#"
-schema:
+            r#"schema:
   types:
     dcim.site:
       key:
@@ -1197,8 +1273,7 @@ objects:
         let out = dir.path().join("ir.json");
         std::fs::write(
             &raw,
-            r#"
-sites:
+            r#"sites:
   - slug: fra1
     name: FRA1
 "#,
@@ -1206,8 +1281,7 @@ sites:
         .unwrap();
         std::fs::write(
             &retort,
-            r#"
-version: 1
+            r#"version: 1
 schema:
   types:
     dcim.site:
@@ -1261,8 +1335,7 @@ rules:
         let out = dir.path().join("projected.json");
         std::fs::write(
             &raw,
-            r#"
-sites:
+            r#"sites:
   - slug: fra1
     name: FRA1
 "#,
@@ -1270,8 +1343,7 @@ sites:
         .unwrap();
         std::fs::write(
             &retort,
-            r#"
-version: 1
+            r#"version: 1
 schema:
   types:
     dcim.site:
@@ -1301,8 +1373,7 @@ rules:
         .unwrap();
         std::fs::write(
             &projection,
-            r#"
-version: 1
+            r#"version: 1
 backend: netbox
 rules: []
 "#,
@@ -1333,8 +1404,7 @@ rules: []
         let out = dir.path().join("plan.json");
         std::fs::write(
             &brew,
-            r#"
-schema:
+            r#"schema:
   types:
     dcim.site:
       key:
@@ -1367,14 +1437,17 @@ objects:
                 projection_strict: true,
                 projection_propose: false,
                 output: out,
+                backend: Backend::Netbox,
                 netbox_url: None,
                 netbox_token: None,
+                nautobot_url: None,
+                nautobot_token: None,
                 dry_run: false,
                 allow_delete: false,
             },
         };
         let err = run(cli).await.unwrap_err();
-        assert!(err.to_string().contains("missing --netbox-url"));
+        assert!(err.to_string().contains("missing --netbox-url or NETBOX_URL"));
         std::env::set_current_dir(cwd).unwrap();
     }
 
@@ -1390,46 +1463,129 @@ objects:
         let cli = Cli {
             command: Command::Apply {
                 plan: plan_path,
+                backend: Backend::Netbox,
                 netbox_url: None,
                 netbox_token: None,
+                nautobot_url: None,
+                nautobot_token: None,
                 allow_delete: false,
             },
         };
         let err = run(cli).await.unwrap_err();
-        assert!(err.to_string().contains("missing --netbox-url"));
+        assert!(err.to_string().contains("missing --netbox-url or NETBOX_URL"));
         std::env::set_current_dir(cwd).unwrap();
     }
 
     #[tokio::test]
-    async fn run_extract_missing_credentials_errors() {
+    async fn run_plan_nautobot_backend() {
+        use httpmock::Method::GET;
+        use httpmock::MockServer;
+        use serde_json::json;
+
         let _guard = cwd_lock().lock().await;
+        let server = MockServer::start();
         let dir = tempdir().unwrap();
-        let out = dir.path().join("inventory.yaml");
-        let retort_path = dir.path().join("retort.yaml");
+        let brew = dir.path().join("brew.yaml");
+        let out = dir.path().join("plan.json");
         std::fs::write(
-            &retort_path,
+            &brew,
             r#"
-version: 1
 schema:
-  types: {}
-rules: []
+  types:
+    dcim.device:
+      key:
+        name:
+          type: string
+      fields:
+        name:
+          type: string
+objects:
+  - uid: "00000000-0000-0000-0000-000000000001"
+    type: dcim.device
+    key:
+      name: "leaf01"
+    attrs:
+      name: "leaf01"
 "#,
         )
         .unwrap();
+
+        let _content_types = server.mock(|when, then| {
+            when.method(GET)
+                .path("/api/extras/content-types/")
+                .query_param("limit", "200")
+                .query_param("offset", "0");
+            then.status(200).json_body(json!({
+                "count": 1,
+                "next": null,
+                "previous": null,
+                "results": [{
+                    "app_label": "dcim",
+                    "model": "device",
+                    "display": "Device"
+                }]
+            }));
+        });
+
+        let _custom_fields = server.mock(|when, then| {
+            when.method(GET).path("/api/extras/custom-fields/");
+            then.status(200).json_body(json!({
+                "count": 0,
+                "next": null,
+                "previous": null,
+                "results": []
+            }));
+        });
+
+        let _tags = server.mock(|when, then| {
+            when.method(GET).path("/api/extras/tags/");
+            then.status(200).json_body(json!({
+                "count": 0,
+                "next": null,
+                "previous": null,
+                "results": []
+            }));
+        });
+
+        let _devices = server.mock(|when, then| {
+            when.method(GET)
+                .path("/api/dcim/devices/")
+                .query_param("limit", "200")
+                .query_param("offset", "0");
+            then.status(200).json_body(json!({
+                "count": 0,
+                "next": null,
+                "previous": null,
+                "results": []
+            }));
+        });
+
         let cwd = std::env::current_dir().unwrap();
         std::env::set_current_dir(dir.path()).unwrap();
 
         let cli = Cli {
-            command: Command::Extract {
-                output: out,
-                retort: Some(retort_path),
+            command: Command::Plan {
+                file: brew,
+                retort: None,
                 projection: None,
+                projection_strict: true,
+                projection_propose: false,
+                output: out.clone(),
+                backend: Backend::Nautobot,
                 netbox_url: None,
                 netbox_token: None,
+                nautobot_url: Some(server.base_url()),
+                nautobot_token: Some("token".to_string()),
+                dry_run: false,
+                allow_delete: false,
             },
         };
-        let err = run(cli).await.unwrap_err();
-        assert!(err.to_string().contains("missing --netbox-url"));
+        run(cli).await.unwrap();
+
+        let raw = std::fs::read_to_string(&out).unwrap();
+        assert!(raw.contains("\"op\": \"create\""));
+        assert!(raw.contains("\"type_name\": \"dcim.device\""));
+
         std::env::set_current_dir(cwd).unwrap();
     }
 }

@@ -30,16 +30,12 @@ alembic lint --projection examples/projection-netbox.yaml
 
 ```bash
 alembic plan -f examples/brew.yaml -o plan.json \
-  --netbox-url https://netbox.example.com \
-  --netbox-token $NETBOX_TOKEN
+  --backend nautobot \
+  --nautobot-url https://nautobot.example.com \
+  --nautobot-token $NAUTOBOT_TOKEN
 
-alembic plan -f examples/raw.yaml --retort examples/retort.yaml -o plan.json \
+alembic plan -f examples/brew.yaml -o plan.json \
   --netbox-url https://netbox.example.com \
-  --netbox-token $NETBOX_TOKEN
-
-alembic plan -f examples/raw.yaml --retort examples/retort.yaml \
-  --projection examples/projection-netbox.yaml \
-  -o plan.json --netbox-url https://netbox.example.com \
   --netbox-token $NETBOX_TOKEN
 ```
 
@@ -47,21 +43,24 @@ alembic plan -f examples/raw.yaml --retort examples/retort.yaml \
 - writes json plan to the output path
 - honors `--allow-delete` if you want delete ops
 - accepts any type string and arbitrary attrs (schema validation is required)
+- `--backend` selects the target adapter (default: `netbox`, supported: `netbox`, `nautobot`)
 - `--projection` applies attrs -> backend mapping before planning
 - `--projection-strict=false` disables custom field existence checks
-- `--projection-propose` prints missing custom fields and tags and offers to create them
+- `--projection-propose` prints missing custom fields and tags and offers to create them (NetBox only)
 
 ## apply
 
 ```bash
 alembic apply -p plan.json \
-  --netbox-url https://netbox.example.com \
-  --netbox-token $NETBOX_TOKEN \
+  --backend nautobot \
+  --nautobot-url https://nautobot.example.com \
+  --nautobot-token $NAUTOBOT_TOKEN \
   --allow-delete
 ```
 
 - applies a plan file
 - deletes are blocked unless `--allow-delete` is provided
+- ensure the `--backend` matches the one used during planning
 
 ## distill
 
@@ -85,10 +84,10 @@ alembic project -f examples/raw.yaml --retort examples/retort.yaml \
 
 ```bash
 alembic extract -o inventory.yaml \
-  --netbox-url https://netbox.example.com \
-  --netbox-token $NETBOX_TOKEN \
-  --retort examples/retort.yaml \
-  --projection examples/projection-netbox.yaml
+  --backend nautobot \
+  --nautobot-url https://nautobot.example.com \
+  --nautobot-token $NAUTOBOT_TOKEN \
+  --retort examples/retort.yaml
 ```
 
 - observes backend state and emits a canonical inventory
@@ -115,3 +114,5 @@ alembic cast django -f examples/brew.yaml -o ./out \
 
 - `NETBOX_URL`
 - `NETBOX_TOKEN`
+- `NAUTOBOT_URL`
+- `NAUTOBOT_TOKEN`

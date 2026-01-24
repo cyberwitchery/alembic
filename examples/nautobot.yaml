@@ -1,0 +1,55 @@
+schema:
+  types:
+    extras.tag:
+      key:
+        name:
+          type: string
+      fields:
+        name:
+          type: string
+        color:
+          type: string
+        content_types:
+          type: json
+    dcim.locationtype:
+      key:
+        name:
+          type: string
+      fields:
+        name:
+          type: string
+    dcim.location:
+      key:
+        name:
+          type: string
+      fields:
+        name:
+          type: string
+        status:
+          type: string
+        location_type:
+          type: ref
+          target: dcim.locationtype
+objects:
+  - uid: "00000000-0000-0000-0000-000000000001"
+    type: extras.tag
+    key:
+      name: "Alembic Test"
+    attrs:
+      name: "Alembic Test"
+      color: "ff0000"
+      content_types: ["dcim.device"]
+  - uid: "00000000-0000-0000-0000-000000000002"
+    type: dcim.locationtype
+    key:
+      name: "Site"
+    attrs:
+      name: "Site"
+  - uid: "00000000-0000-0000-0000-000000000003"
+    type: dcim.location
+    key:
+      name: "FRA1"
+    attrs:
+      name: "FRA1"
+      status: "6f7f1c2c-2b9a-4f5b-a187-2d757fe48abd"
+      location_type: "00000000-0000-0000-0000-000000000002"

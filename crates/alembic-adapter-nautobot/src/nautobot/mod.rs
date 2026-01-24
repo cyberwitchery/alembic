@@ -12,8 +12,6 @@ use nautobot::models::CustomFieldTypeChoices;
 use std::collections::BTreeSet;
 use std::sync::MutexGuard;
 
-#[cfg(test)]
-use alembic_engine::Adapter;
 use client::NautobotClient;
 use mapping::*;
 

@@ -61,17 +61,21 @@ impl<'a> ProjectionContext<'a> {
         projection_strict: bool,
         allow_delete: bool,
     ) -> Result<PlanContext> {
-        let types: Vec<_> = self
+        let mut types: BTreeSet<_> = self
             .projected
             .objects
             .iter()
             .map(|o| o.base.type_name.clone())
             .collect();
-        let mut observed = adapter.observe(&self.inventory.schema, &types).await?;
+        for type_name in self.inventory.schema.types.keys() {
+            types.insert(alembic_core::TypeName::new(type_name));
+        }
+        let types_vec: Vec<_> = types.into_iter().collect();
+        let mut observed = adapter.observe(&self.inventory.schema, &types_vec).await?;
         let bootstrapped = crate::bootstrap_state_from_observed(state, &self.projected, &observed);
         if bootstrapped {
             adapter.update_state(state);
-            observed = adapter.observe(&self.inventory.schema, &types).await?;
+            observed = adapter.observe(&self.inventory.schema, &types_vec).await?;
         }
         if projection_strict {
             if let Some(spec) = self.projection {

@@ -67,6 +67,12 @@ impl Adapter for NetBoxAdapter {
             resolved_from_state(&state_guard)
         };
 
+        for op in ops {
+            if let Op::Create { uid, .. } = op {
+                resolved.remove(uid);
+            }
+        }
+
         let mut creates_updates = Vec::new();
         let mut deletes = Vec::new();
         for op in ops {
@@ -175,7 +181,13 @@ impl Adapter for NetBoxAdapter {
                     .ok_or_else(|| anyhow!("unsupported type {}", type_name))?;
                 let resource: Resource<Value> = self.client.resource(info.endpoint.clone());
                 let batch = [BulkDelete::new(id)];
-                resource.bulk_delete(&batch).await?;
+                match resource.bulk_delete(&batch).await {
+                    Ok(_) => {}
+                    Err(err) if is_404_error(&err) => {
+                        eprintln!("warning: {} already deleted", type_name);
+                    }
+                    Err(err) => return Err(err.into()),
+                }
                 applied.push(AppliedOp {
                     uid,
                     type_name: type_name.clone(),
@@ -445,14 +457,21 @@ fn normalize_value(
                 .collect(),
         ),
         Value::Object(map) => {
+            if let Some(id) = map.get("id").and_then(as_u64) {
+                if let Some(uid) = uid_for_nested_object(&map, registry, mappings) {
+                    return Value::String(uid.to_string());
+                }
+                // If it looks like a resource summary but isn't managed by us,
+                // fall back to the ID integer to match desired state integers.
+                if map.contains_key("url") || map.contains_key("display") {
+                    return Value::Number(id.into());
+                }
+            }
             if let Some(value) = map.get("value").and_then(Value::as_str) {
                 let label_only = map.keys().all(|key| key == "value" || key == "label");
                 if label_only {
                     return Value::String(value.to_string());
                 }
-            }
-            if let Some(uid) = uid_for_nested_object(&map, registry, mappings) {
-                return Value::String(uid.to_string());
             }
             let mut normalized = Map::new();
             for (key, value) in map {
@@ -482,7 +501,7 @@ fn uid_for_nested_object(
         .get("url")
         .and_then(Value::as_str)
         .and_then(|url| registry.type_name_for_endpoint(url))?;
-    mappings.uid_for(endpoint, id).or_else(|| Some(Uid::nil()))
+    mappings.uid_for(endpoint, id)
 }
 
 fn build_key_from_schema(type_schema: &TypeSchema, attrs: &JsonMap) -> Result<Key> {
@@ -659,6 +678,10 @@ fn supports_feature(features: &BTreeSet<String>, candidates: &[&str]) -> bool {
 
 fn is_missing_ref_error(err: &anyhow::Error) -> bool {
     err.to_string().contains("missing referenced uid")
+}
+
+fn is_404_error(err: &netbox::Error) -> bool {
+    err.to_string().contains("status 404")
 }
 
 fn describe_missing_refs(ops: &[Op], resolved: &BTreeMap<Uid, u64>) -> String {

@@ -214,7 +214,6 @@ pub fn sort_ops_for_apply(ops: &[Op]) -> Vec<Op> {
 
     creates_updates.sort_by_key(op_order_key);
     deletes.sort_by_key(op_order_key);
-    deletes.reverse();
 
     creates_updates.into_iter().chain(deletes).collect()
 }
