@@ -170,3 +170,38 @@ pub trait Adapter: Send + Sync {
     async fn apply(&self, schema: &Schema, ops: &[Op]) -> anyhow::Result<ApplyReport>;
     fn update_state(&self, _state: &StateStore) {}
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alembic_core::{Key, TypeName, Uid};
+
+    #[test]
+    fn backend_id_serialization() {
+        let int_id = BackendId::Int(123);
+        let json = serde_json::to_string(&int_id).unwrap();
+        assert_eq!(json, "123");
+        let back: BackendId = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, int_id);
+
+        let str_id = BackendId::String("uuid".to_string());
+        let json = serde_json::to_string(&str_id).unwrap();
+        assert_eq!(json, "\"uuid\"");
+        let back: BackendId = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, str_id);
+    }
+
+    #[test]
+    fn op_helpers() {
+        let uid = Uid::from_u128(1);
+        let type_name = TypeName::new("test.type");
+        let op = Op::Delete {
+            uid,
+            type_name: type_name.clone(),
+            key: Key::default(),
+            backend_id: None,
+        };
+        assert_eq!(op.uid(), uid);
+        assert_eq!(op.type_name(), &type_name);
+    }
+}

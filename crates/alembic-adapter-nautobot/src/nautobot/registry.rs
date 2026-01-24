@@ -122,3 +122,60 @@ fn pluralize(value: &str) -> String {
     }
     format!("{value}s")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nautobot::models::ContentType;
+
+    #[test]
+    fn registry_from_content_types() {
+        let types = vec![
+            ContentType {
+                app_label: "dcim".to_string(),
+                model: "device".to_string(),
+                display: Some("dcim | device".to_string()),
+                ..Default::default()
+            },
+            ContentType {
+                app_label: "dcim".to_string(),
+                model: "locationtype".to_string(),
+                display: Some("dcim | location type".to_string()),
+                ..Default::default()
+            },
+        ];
+
+        let registry = ObjectTypeRegistry::from_content_types(types).unwrap();
+        let device = registry.info_for(&TypeName::new("dcim.device")).unwrap();
+        assert_eq!(device.endpoint, "dcim/devices/");
+
+        let loc_type = registry
+            .info_for(&TypeName::new("dcim.locationtype"))
+            .unwrap();
+        assert_eq!(loc_type.endpoint, "dcim/location-types/");
+    }
+
+    #[test]
+    fn endpoint_normalization() {
+        assert_eq!(
+            normalize_endpoint("http://localhost/api/dcim/devices/"),
+            Some("dcim/devices/".to_string())
+        );
+        assert_eq!(
+            normalize_endpoint("/api/dcim/devices/6d74797d-de61-46b6-95e4-27c5eadb8fc6/"),
+            Some("dcim/devices/".to_string())
+        );
+        assert_eq!(
+            normalize_endpoint("dcim/devices"),
+            Some("dcim/devices/".to_string())
+        );
+    }
+
+    #[test]
+    fn pluralization_rules() {
+        assert_eq!(pluralize("device"), "devices");
+        assert_eq!(pluralize("location-type"), "location-types");
+        assert_eq!(pluralize("address"), "addresses");
+        assert_eq!(pluralize("facility"), "facilities");
+    }
+}

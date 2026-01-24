@@ -702,6 +702,35 @@ fn describe_missing_refs(ops: &[Op], resolved: &BTreeMap<Uid, u64>) -> String {
         .join(", ")
 }
 
+#[cfg(test)]
+mod test_normalization {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_normalize_value_netbox() {
+        let registry = ObjectTypeRegistry::default();
+        let mappings = super::super::state::StateMappings::default();
+
+        // Test summary object to integer ID normalization
+        let summary = json!({
+            "id": 5,
+            "url": "http://localhost/api/dcim/sites/5/",
+            "display": "FRA1"
+        });
+        let normalized = normalize_value(summary, &registry, &mappings);
+        assert_eq!(normalized, json!(5));
+
+        // Test value/label normalization
+        let status = json!({
+            "value": "active",
+            "label": "Active"
+        });
+        let normalized = normalize_value(status, &registry, &mappings);
+        assert_eq!(normalized, json!("active"));
+    }
+}
+
 fn collect_missing_refs(value: &Value, resolved: &BTreeMap<Uid, u64>, missing: &mut BTreeSet<Uid>) {
     match value {
         Value::String(raw) => {

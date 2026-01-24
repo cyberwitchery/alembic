@@ -712,6 +712,35 @@ fn describe_missing_refs(ops: &[Op], resolved: &BTreeMap<Uid, String>) -> String
         .join(", ")
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_normalize_value_nautobot() {
+        let registry = ObjectTypeRegistry::default();
+        let mappings = super::super::state::StateMappings::default();
+
+        // Test summary object to UUID string normalization
+        let summary = json!({
+            "id": "6f7f1c2c-2b9a-4f5b-a187-2d757fe48abd",
+            "url": "http://localhost/api/extras/statuses/6f7f1c2c-2b9a-4f5b-a187-2d757fe48abd/",
+            "display": "Active"
+        });
+        let normalized = normalize_value(summary, &registry, &mappings);
+        assert_eq!(normalized, json!("6f7f1c2c-2b9a-4f5b-a187-2d757fe48abd"));
+
+        // Test simple value map normalization
+        let choice = json!({
+            "value": "active",
+            "label": "Active"
+        });
+        let normalized = normalize_value(choice, &registry, &mappings);
+        assert_eq!(normalized, json!("active"));
+    }
+}
+
 fn collect_missing_refs(
     value: &Value,
     resolved: &BTreeMap<Uid, String>,
