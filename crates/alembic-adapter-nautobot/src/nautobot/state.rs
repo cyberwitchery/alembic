@@ -42,3 +42,44 @@ pub(super) fn resolved_from_state(state: &StateStore) -> BTreeMap<Uid, String> {
     }
     resolved
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alembic_core::TypeName;
+    use tempfile::tempdir;
+
+    #[test]
+    fn test_state_mappings() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        let mut store = StateStore::load(path).unwrap();
+        let uid = Uid::from_u128(1);
+        let type_name = TypeName::new("dcim.site");
+        store.set_backend_id(
+            type_name.clone(),
+            uid,
+            BackendId::String("uuid-1".to_string()),
+        );
+
+        let mappings = state_mappings(&store);
+        assert_eq!(mappings.uid_for("dcim.site", "uuid-1"), Some(uid));
+        assert_eq!(mappings.uid_for("dcim.site", "none"), None);
+    }
+
+    #[test]
+    fn test_resolved_from_state() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        let mut store = StateStore::load(path).unwrap();
+        let uid = Uid::from_u128(1);
+        store.set_backend_id(
+            TypeName::new("t"),
+            uid,
+            BackendId::String("uuid-1".to_string()),
+        );
+
+        let resolved = resolved_from_state(&store);
+        assert_eq!(resolved.get(&uid).unwrap(), "uuid-1");
+    }
+}

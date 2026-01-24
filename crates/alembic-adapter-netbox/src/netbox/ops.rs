@@ -702,9 +702,33 @@ fn describe_missing_refs(ops: &[Op], resolved: &BTreeMap<Uid, u64>) -> String {
         .join(", ")
 }
 
+fn collect_missing_refs(value: &Value, resolved: &BTreeMap<Uid, u64>, missing: &mut BTreeSet<Uid>) {
+    match value {
+        Value::String(raw) => {
+            if let Ok(uid) = Uid::parse_str(raw) {
+                if !resolved.contains_key(&uid) {
+                    missing.insert(uid);
+                }
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                collect_missing_refs(item, resolved, missing);
+            }
+        }
+        Value::Object(map) => {
+            for value in map.values() {
+                collect_missing_refs(value, resolved, missing);
+            }
+        }
+        _ => {}
+    }
+}
+
 #[cfg(test)]
 mod test_normalization {
     use super::*;
+    use alembic_core::FieldSchema;
     use serde_json::json;
 
     #[test]
@@ -729,27 +753,161 @@ mod test_normalization {
         let normalized = normalize_value(status, &registry, &mappings);
         assert_eq!(normalized, json!("active"));
     }
-}
 
-fn collect_missing_refs(value: &Value, resolved: &BTreeMap<Uid, u64>, missing: &mut BTreeSet<Uid>) {
-    match value {
-        Value::String(raw) => {
-            if let Ok(uid) = Uid::parse_str(raw) {
-                if !resolved.contains_key(&uid) {
-                    missing.insert(uid);
-                }
-            }
-        }
-        Value::Array(items) => {
-            for item in items {
-                collect_missing_refs(item, resolved, missing);
-            }
-        }
-        Value::Object(map) => {
-            for value in map.values() {
-                collect_missing_refs(value, resolved, missing);
-            }
-        }
-        _ => {}
+    #[test]
+    fn test_normalize_attrs_netbox() {
+        let registry = ObjectTypeRegistry::default();
+        let mappings = super::super::state::StateMappings::default();
+        let mut attrs = JsonMap::default();
+        attrs.insert("type".to_string(), json!("1000base-t"));
+
+        normalize_attrs(&mut attrs, &registry, &mappings);
+        assert_eq!(attrs.get("if_type").unwrap(), &json!("1000base-t"));
+    }
+
+    #[test]
+    fn test_extract_projection_netbox() {
+        let mut attrs = JsonMap::default();
+        attrs.insert("custom_fields".to_string(), json!({"fabric": "fra1"}));
+        attrs.insert("tags".to_string(), json!(["tag1"]));
+
+        let projection = extract_projection(&mut attrs);
+        assert_eq!(
+            projection.custom_fields.unwrap().get("fabric").unwrap(),
+            &json!("fra1")
+        );
+        assert_eq!(projection.tags.unwrap(), vec!["tag1"]);
+    }
+
+    #[test]
+    fn test_build_key_from_schema() {
+        let mut types = BTreeMap::new();
+        types.insert(
+            "name".to_string(),
+            FieldSchema {
+                r#type: alembic_core::FieldType::String,
+                required: true,
+                nullable: false,
+                description: None,
+            },
+        );
+        let type_schema = TypeSchema {
+            key: types,
+            fields: BTreeMap::new(),
+        };
+        let mut attrs = JsonMap::default();
+        attrs.insert("name".to_string(), json!("leaf01"));
+
+        let key = build_key_from_schema(&type_schema, &attrs).unwrap();
+        assert_eq!(key.get("name").unwrap(), &json!("leaf01"));
+    }
+
+    #[test]
+    fn test_build_request_body() {
+        let mut fields = BTreeMap::new();
+        fields.insert(
+            "site".to_string(),
+            FieldSchema {
+                r#type: alembic_core::FieldType::Ref {
+                    target: "dcim.site".to_string(),
+                },
+                required: true,
+                nullable: false,
+                description: None,
+            },
+        );
+        let type_schema = TypeSchema {
+            key: BTreeMap::new(),
+            fields,
+        };
+        let mut attrs = JsonMap::default();
+        let site_uid = Uid::from_u128(1);
+        attrs.insert("site".to_string(), json!(site_uid.to_string()));
+
+        let mut resolved = BTreeMap::new();
+        resolved.insert(site_uid, 5);
+
+        let body = build_request_body(&type_schema, &attrs, &resolved).unwrap();
+        assert_eq!(body.get("site").unwrap(), &json!(5));
+    }
+
+    #[test]
+    fn test_resolve_value_for_type() {
+        let resolved = BTreeMap::from([(Uid::from_u128(1), 5u64)]);
+
+        // Ref
+        let val = resolve_value_for_type(
+            &alembic_core::FieldType::Ref {
+                target: "t".to_string(),
+            },
+            json!(Uid::from_u128(1).to_string()),
+            &resolved,
+        )
+        .unwrap();
+        assert_eq!(val, json!(5));
+
+        // ListRef
+        let val = resolve_value_for_type(
+            &alembic_core::FieldType::ListRef {
+                target: "t".to_string(),
+            },
+            json!([Uid::from_u128(1).to_string()]),
+            &resolved,
+        )
+        .unwrap();
+        assert_eq!(val, json!([5]));
+    }
+
+    #[test]
+    fn test_supports_feature() {
+        let mut features = BTreeSet::new();
+        features.insert("tags".to_string());
+        assert!(supports_feature(&features, &["tags"]));
+        assert!(!supports_feature(&features, &["custom-fields"]));
+    }
+
+    #[test]
+    fn test_query_from_key() {
+        let mut key_fields = BTreeMap::new();
+        key_fields.insert(
+            "name".to_string(),
+            FieldSchema {
+                r#type: alembic_core::FieldType::String,
+                required: true,
+                nullable: false,
+                description: None,
+            },
+        );
+        key_fields.insert(
+            "site".to_string(),
+            FieldSchema {
+                r#type: alembic_core::FieldType::Ref {
+                    target: "dcim.site".to_string(),
+                },
+                required: true,
+                nullable: false,
+                description: None,
+            },
+        );
+        let type_schema = TypeSchema {
+            key: key_fields,
+            fields: BTreeMap::new(),
+        };
+
+        let site_uid = Uid::from_u128(1);
+        let mut key_map = BTreeMap::new();
+        key_map.insert("name".to_string(), json!("leaf01"));
+        key_map.insert("site".to_string(), json!(site_uid.to_string()));
+        let key = Key::from(key_map);
+
+        let mut resolved = BTreeMap::new();
+        resolved.insert(site_uid, 5u64);
+
+        let query = query_from_key(&type_schema, &key, &resolved).unwrap();
+        let json = serde_json::to_value(&query).unwrap();
+        let pairs = json.as_array().unwrap();
+        assert_eq!(pairs.len(), 2);
+        assert!(pairs.iter().any(|p| p == &json!(["name", "leaf01"])));
+        assert!(pairs.iter().any(|p| p == &json!(["site", "5"])));
     }
 }

@@ -393,6 +393,7 @@ fn value_type_label(value: &Value) -> String {
 mod tests {
     use super::*;
     use crate::ir::{FieldSchema, FieldType, JsonMap, Key, Object, Schema, TypeName, TypeSchema};
+    use serde_json::json;
     use std::collections::BTreeMap;
     use uuid::Uuid;
 
@@ -561,5 +562,163 @@ mod tests {
             .errors
             .iter()
             .any(|err| matches!(err, ValidationError::MissingReference { .. })));
+    }
+
+    #[test]
+    fn test_field_value_validation() {
+        let uid_to_type = BTreeMap::from([(uid(1), TypeName::new("target"))]);
+        let mut report = ValidationReport::default();
+
+        // Test Type Mismatch
+        let schema = FieldSchema {
+            r#type: FieldType::Int,
+            required: true,
+            nullable: false,
+            description: None,
+        };
+        validate_field_value(
+            &TypeName::new("test"),
+            "field",
+            &schema,
+            &json!("not-int"),
+            &uid_to_type,
+            &mut report,
+        );
+        assert!(report
+            .errors
+            .iter()
+            .any(|e| matches!(e, ValidationError::InvalidValue { .. })));
+
+        // Test Enum
+        let schema = FieldSchema {
+            r#type: FieldType::Enum {
+                values: vec!["a".to_string(), "b".to_string()],
+            },
+            required: true,
+            nullable: false,
+            description: None,
+        };
+        report.errors.clear();
+        validate_field_value(
+            &TypeName::new("test"),
+            "field",
+            &schema,
+            &json!("c"),
+            &uid_to_type,
+            &mut report,
+        );
+        assert!(report
+            .errors
+            .iter()
+            .any(|e| matches!(e, ValidationError::InvalidValue { .. })));
+
+        // Test Reference Type Mismatch
+        let schema = FieldSchema {
+            r#type: FieldType::Ref {
+                target: "wrong".to_string(),
+            },
+            required: true,
+            nullable: false,
+            description: None,
+        };
+        report.errors.clear();
+        validate_field_value(
+            &TypeName::new("test"),
+            "field",
+            &schema,
+            &json!(uid(1).to_string()),
+            &uid_to_type,
+            &mut report,
+        );
+        assert!(report
+            .errors
+            .iter()
+            .any(|e| matches!(e, ValidationError::ReferenceTypeMismatch { .. })));
+
+        // Test ListRef
+        let schema = FieldSchema {
+            r#type: FieldType::ListRef {
+                target: "target".to_string(),
+            },
+            required: true,
+            nullable: false,
+            description: None,
+        };
+        report.errors.clear();
+        validate_field_value(
+            &TypeName::new("test"),
+            "field",
+            &schema,
+            &json!([uid(1).to_string()]),
+            &uid_to_type,
+            &mut report,
+        );
+        assert!(report.errors.is_empty());
+
+        // Test Map
+        let schema = FieldSchema {
+            r#type: FieldType::Map {
+                value: Box::new(FieldType::Int),
+            },
+            required: true,
+            nullable: false,
+            description: None,
+        };
+        report.errors.clear();
+        validate_field_value(
+            &TypeName::new("test"),
+            "field",
+            &schema,
+            &json!({"a": 1, "b": "not-int"}),
+            &uid_to_type,
+            &mut report,
+        );
+        assert!(report
+            .errors
+            .iter()
+            .any(|e| matches!(e, ValidationError::InvalidValue { .. })));
+
+        // Test Uuid
+        let schema = FieldSchema {
+            r#type: FieldType::Uuid,
+            required: true,
+            nullable: false,
+            description: None,
+        };
+        report.errors.clear();
+        validate_field_value(
+            &TypeName::new("test"),
+            "field",
+            &schema,
+            &json!("not-a-uuid"),
+            &uid_to_type,
+            &mut report,
+        );
+        assert!(report
+            .errors
+            .iter()
+            .any(|e| matches!(e, ValidationError::InvalidValue { .. })));
+
+        // Test List of Refs
+        let schema = FieldSchema {
+            r#type: FieldType::List {
+                item: Box::new(FieldType::Ref {
+                    target: "target".to_string(),
+                }),
+            },
+            required: true,
+            nullable: false,
+            description: None,
+        };
+        report.errors.clear();
+        validate_field_value(
+            &TypeName::new("test"),
+            "field",
+            &schema,
+            &json!([uid(1).to_string()]),
+            &uid_to_type,
+            &mut report,
+        );
+        assert!(report.errors.is_empty());
     }
 }

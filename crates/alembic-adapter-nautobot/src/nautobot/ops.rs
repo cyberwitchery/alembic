@@ -712,35 +712,6 @@ fn describe_missing_refs(ops: &[Op], resolved: &BTreeMap<Uid, String>) -> String
         .join(", ")
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn test_normalize_value_nautobot() {
-        let registry = ObjectTypeRegistry::default();
-        let mappings = super::super::state::StateMappings::default();
-
-        // Test summary object to UUID string normalization
-        let summary = json!({
-            "id": "6f7f1c2c-2b9a-4f5b-a187-2d757fe48abd",
-            "url": "http://localhost/api/extras/statuses/6f7f1c2c-2b9a-4f5b-a187-2d757fe48abd/",
-            "display": "Active"
-        });
-        let normalized = normalize_value(summary, &registry, &mappings);
-        assert_eq!(normalized, json!("6f7f1c2c-2b9a-4f5b-a187-2d757fe48abd"));
-
-        // Test simple value map normalization
-        let choice = json!({
-            "value": "active",
-            "label": "Active"
-        });
-        let normalized = normalize_value(choice, &registry, &mappings);
-        assert_eq!(normalized, json!("active"));
-    }
-}
-
 fn collect_missing_refs(
     value: &Value,
     resolved: &BTreeMap<Uid, String>,
@@ -765,5 +736,229 @@ fn collect_missing_refs(
             }
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alembic_core::FieldSchema;
+    use serde_json::json;
+
+    #[test]
+    fn test_normalize_value_nautobot() {
+        let registry = ObjectTypeRegistry::default();
+        let mappings = super::super::state::StateMappings::default();
+
+        // Test summary object to UUID string normalization
+        let summary = json!({
+            "id": "6f7f1c2c-2b9a-4f5b-a187-2d757fe48abd",
+            "url": "http://localhost/api/extras/statuses/6f7f1c2c-2b9a-4f5b-a187-2d757fe48abd/",
+            "display": "Active"
+        });
+        let normalized = normalize_value(summary, &registry, &mappings);
+        assert_eq!(normalized, json!("6f7f1c2c-2b9a-4f5b-a187-2d757fe48abd"));
+
+        // Test simple value map normalization
+        let choice = json!({
+            "value": "active",
+            "label": "Active"
+        });
+        let normalized = normalize_value(choice, &registry, &mappings);
+        assert_eq!(normalized, json!("active"));
+    }
+
+    #[test]
+    fn test_normalize_attrs_nautobot() {
+        let registry = ObjectTypeRegistry::default();
+        let mappings = super::super::state::StateMappings::default();
+        let mut attrs = JsonMap::default();
+        attrs.insert("type".to_string(), json!("1000base-t"));
+
+        normalize_attrs(&mut attrs, &registry, &mappings);
+        assert_eq!(attrs.get("if_type").unwrap(), &json!("1000base-t"));
+        assert!(!attrs.contains_key("type"));
+    }
+
+    #[test]
+    fn test_extract_projection_nautobot() {
+        let mut attrs = JsonMap::default();
+        attrs.insert("_custom_field_data".to_string(), json!({"fabric": "fra1"}));
+        attrs.insert("tags".to_string(), json!(["tag1"]));
+
+        let projection = extract_projection(&mut attrs);
+        assert_eq!(
+            projection.custom_fields.unwrap().get("fabric").unwrap(),
+            &json!("fra1")
+        );
+        assert_eq!(projection.tags.unwrap(), vec!["tag1"]);
+        assert!(!attrs.contains_key("_custom_field_data"));
+        assert!(!attrs.contains_key("tags"));
+    }
+
+    #[test]
+    fn test_build_key_from_schema() {
+        let mut types = BTreeMap::new();
+        types.insert(
+            "name".to_string(),
+            FieldSchema {
+                r#type: alembic_core::FieldType::String,
+                required: true,
+                nullable: false,
+                description: None,
+            },
+        );
+        let type_schema = TypeSchema {
+            key: types,
+            fields: BTreeMap::new(),
+        };
+        let mut attrs = JsonMap::default();
+        attrs.insert("name".to_string(), json!("leaf01"));
+
+        let key = build_key_from_schema(&type_schema, &attrs).unwrap();
+        assert_eq!(key.get("name").unwrap(), &json!("leaf01"));
+    }
+
+    #[test]
+    fn test_build_request_body() {
+        let mut fields = BTreeMap::new();
+        fields.insert(
+            "site".to_string(),
+            FieldSchema {
+                r#type: alembic_core::FieldType::Ref {
+                    target: "dcim.site".to_string(),
+                },
+                required: true,
+                nullable: false,
+                description: None,
+            },
+        );
+        let type_schema = TypeSchema {
+            key: BTreeMap::new(),
+            fields,
+        };
+        let mut attrs = JsonMap::default();
+        let site_uid = Uid::from_u128(1);
+        attrs.insert("site".to_string(), json!(site_uid.to_string()));
+
+        let mut resolved = BTreeMap::new();
+        resolved.insert(site_uid, "site-uuid".to_string());
+
+        let body = build_request_body(&type_schema, &attrs, &resolved).unwrap();
+        assert_eq!(body.get("site").unwrap(), &json!("site-uuid"));
+    }
+
+    #[test]
+    fn test_resolve_value_for_type() {
+        let resolved = BTreeMap::from([(Uid::from_u128(1), "uuid-1".to_string())]);
+
+        // Ref
+        let val = resolve_value_for_type(
+            &alembic_core::FieldType::Ref {
+                target: "t".to_string(),
+            },
+            json!(Uid::from_u128(1).to_string()),
+            &resolved,
+        )
+        .unwrap();
+        assert_eq!(val, json!("uuid-1"));
+
+        // ListRef
+        let val = resolve_value_for_type(
+            &alembic_core::FieldType::ListRef {
+                target: "t".to_string(),
+            },
+            json!([Uid::from_u128(1).to_string()]),
+            &resolved,
+        )
+        .unwrap();
+        assert_eq!(val, json!(["uuid-1"]));
+
+        // List
+        let val = resolve_value_for_type(
+            &alembic_core::FieldType::List {
+                item: Box::new(alembic_core::FieldType::String),
+            },
+            json!(["a"]),
+            &resolved,
+        )
+        .unwrap();
+        assert_eq!(val, json!(["a"]));
+    }
+
+    #[test]
+    fn test_supports_feature() {
+        let mut features = BTreeSet::new();
+        features.insert("tags".to_string());
+        assert!(supports_feature(&features, &["tags"]));
+        assert!(!supports_feature(&features, &["custom-fields"]));
+    }
+
+    #[test]
+    fn test_is_missing_ref_error() {
+        assert!(is_missing_ref_error(&anyhow!("missing referenced uid 123")));
+        assert!(is_missing_ref_error(&anyhow!(
+            "Related object not found using the provided attributes"
+        )));
+        assert!(!is_missing_ref_error(&anyhow!("other error")));
+    }
+
+    #[test]
+    fn test_query_from_key() {
+        let mut key_fields = BTreeMap::new();
+        key_fields.insert(
+            "name".to_string(),
+            FieldSchema {
+                r#type: alembic_core::FieldType::String,
+                required: true,
+                nullable: false,
+                description: None,
+            },
+        );
+        key_fields.insert(
+            "site".to_string(),
+            FieldSchema {
+                r#type: alembic_core::FieldType::Ref {
+                    target: "dcim.site".to_string(),
+                },
+                required: true,
+                nullable: false,
+                description: None,
+            },
+        );
+        let type_schema = TypeSchema {
+            key: key_fields,
+            fields: BTreeMap::new(),
+        };
+
+        let site_uid = Uid::from_u128(1);
+        let mut key_map = BTreeMap::new();
+        key_map.insert("name".to_string(), json!("leaf01"));
+        key_map.insert("site".to_string(), json!(site_uid.to_string()));
+        let key = Key::from(key_map);
+
+        let mut resolved = BTreeMap::new();
+        resolved.insert(site_uid, "site-uuid".to_string());
+
+        let query = query_from_key(&type_schema, &key, &resolved).unwrap();
+        let json = serde_json::to_value(&query).unwrap();
+        let pairs = json.as_array().unwrap();
+        assert_eq!(pairs.len(), 2);
+        assert!(pairs.iter().any(|p| p == &json!(["name", "leaf01"])));
+        assert!(pairs.iter().any(|p| p == &json!(["site", "site-uuid"])));
+    }
+
+    #[test]
+    fn test_normalize_value_complex() {
+        let registry = ObjectTypeRegistry::default();
+        let mappings = super::super::state::StateMappings::default();
+
+        // Test array of summary objects
+        let input = json!([
+            {"id": "uuid-1", "url": "/api/t/1/", "display": "D1"},
+            {"id": "uuid-2", "url": "/api/t/2/", "display": "D2"}
+        ]);
+        let normalized = normalize_value(input, &registry, &mappings);
+        assert_eq!(normalized, json!(["uuid-1", "uuid-2"]));
     }
 }

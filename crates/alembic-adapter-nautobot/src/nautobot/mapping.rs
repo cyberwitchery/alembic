@@ -18,6 +18,9 @@ pub(super) fn slugify(input: &str) -> String {
     while out.ends_with('-') {
         out.pop();
     }
+    while out.starts_with('-') {
+        out.remove(0);
+    }
     out
 }
 
@@ -84,4 +87,48 @@ pub(super) fn merge_field_type(current: &str, incoming: String) -> String {
         return "boolean".to_string();
     }
     "integer".to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_slugify() {
+        assert_eq!(slugify("Hello World"), "hello-world");
+        assert_eq!(slugify("EVPN Fabric!"), "evpn-fabric");
+        assert_eq!(slugify("---test---"), "test");
+    }
+
+    #[test]
+    fn test_build_tag_inputs() {
+        let tags = vec!["Alembic Test".to_string()];
+        let inputs = build_tag_inputs(&tags);
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(
+            inputs[0],
+            json!({"name": "Alembic Test", "slug": "alembic-test"})
+        );
+    }
+
+    #[test]
+    fn test_custom_field_type() {
+        assert_eq!(custom_field_type(&json!("string")), "text");
+        assert_eq!(custom_field_type(&json!(123)), "integer");
+        assert_eq!(custom_field_type(&json!(1.23)), "decimal");
+        assert_eq!(custom_field_type(&json!(true)), "boolean");
+        assert_eq!(custom_field_type(&json!([1, 2])), "json");
+    }
+
+    #[test]
+    fn test_merge_field_type() {
+        assert_eq!(merge_field_type("", "text".to_string()), "text");
+        assert_eq!(merge_field_type("integer", "json".to_string()), "json");
+        assert_eq!(merge_field_type("integer", "text".to_string()), "text");
+        assert_eq!(
+            merge_field_type("integer", "decimal".to_string()),
+            "decimal"
+        );
+    }
 }
