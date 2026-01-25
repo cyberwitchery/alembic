@@ -692,4 +692,108 @@ mod tests {
         assert!(!schema.nullable);
         assert!(schema.description.is_none());
     }
+
+    #[test]
+    fn field_type_all_simple_variants() {
+        let simple_types = vec![
+            ("string", FieldType::String),
+            ("int", FieldType::Int),
+            ("float", FieldType::Float),
+            ("bool", FieldType::Bool),
+            ("uuid", FieldType::Uuid),
+            ("date", FieldType::Date),
+            ("datetime", FieldType::Datetime),
+            ("time", FieldType::Time),
+            ("json", FieldType::Json),
+            ("ip_address", FieldType::IpAddress),
+            ("cidr", FieldType::Cidr),
+            ("prefix", FieldType::Prefix),
+            ("mac", FieldType::Mac),
+            ("slug", FieldType::Slug),
+        ];
+        for (name, expected) in simple_types {
+            let json = serde_json::json!({ "type": name });
+            let schema: FieldSchema = serde_json::from_value(json).unwrap();
+            assert_eq!(schema.r#type, expected, "failed for {}", name);
+        }
+    }
+
+    #[test]
+    fn field_type_list_ref() {
+        let json = serde_json::json!({
+            "type": "list_ref",
+            "target": "dcim.device"
+        });
+        let schema: FieldSchema = serde_json::from_value(json).unwrap();
+        assert_eq!(
+            schema.r#type,
+            FieldType::ListRef {
+                target: "dcim.device".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn field_type_unknown_errors() {
+        let json = serde_json::json!({ "type": "unknown_type" });
+        let result: Result<FieldSchema, _> = serde_json::from_value(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn field_type_enum_missing_values_errors() {
+        let json = serde_json::json!({ "type": "enum" });
+        let result: Result<FieldSchema, _> = serde_json::from_value(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn field_type_list_missing_item_errors() {
+        let json = serde_json::json!({ "type": "list" });
+        let result: Result<FieldSchema, _> = serde_json::from_value(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn field_type_map_missing_value_errors() {
+        let json = serde_json::json!({ "type": "map" });
+        let result: Result<FieldSchema, _> = serde_json::from_value(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn field_type_ref_missing_target_errors() {
+        let json = serde_json::json!({ "type": "ref" });
+        let result: Result<FieldSchema, _> = serde_json::from_value(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn key_into_inner_and_is_empty() {
+        let key = Key::default();
+        assert!(key.is_empty());
+        let inner = key.into_inner();
+        assert!(inner.is_empty());
+
+        let mut k = BTreeMap::new();
+        k.insert("a".to_string(), serde_json::json!(1));
+        let key = Key::from(k);
+        assert!(!key.is_empty());
+    }
+
+    #[test]
+    fn json_map_into_inner_and_is_empty() {
+        let map = JsonMap::default();
+        assert!(map.is_empty());
+        let inner = map.into_inner();
+        assert!(inner.is_empty());
+    }
+
+    #[test]
+    fn object_with_empty_key_errors() {
+        let key = Key::default();
+        let attrs = JsonMap::default();
+        let result = Object::new(Uuid::from_u128(1), TypeName::new("dcim.site"), key, attrs);
+        assert!(result.is_err());
+    }
 }

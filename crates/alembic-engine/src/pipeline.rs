@@ -12,7 +12,7 @@ pub(crate) struct LoadContext {
 
 impl LoadContext {
     pub(crate) fn from_ref(inventory: &Inventory) -> Result<Self> {
-        crate::validate(inventory)?;
+        crate::report_to_result(crate::validate(inventory))?;
         Ok(Self {
             inventory: inventory.clone(),
         })

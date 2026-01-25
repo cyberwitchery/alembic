@@ -43,6 +43,32 @@ pub enum ValidationError {
     },
 }
 
+impl ValidationError {
+    /// return the uid associated with this error, if any.
+    pub fn uid(&self) -> Option<Uid> {
+        match self {
+            ValidationError::DuplicateUid(uid) => Some(*uid),
+            ValidationError::MissingReference { target, .. } => Some(*target),
+            ValidationError::ReferenceTypeMismatch { target, .. } => Some(*target),
+            _ => None,
+        }
+    }
+
+    /// return a key-like string associated with this error, if any.
+    pub fn key_hint(&self) -> Option<String> {
+        match self {
+            ValidationError::DuplicateKey(key) => {
+                if let Some((_, k)) = key.split_once("::") {
+                    Some(k.to_string())
+                } else {
+                    Some(key.clone())
+                }
+            }
+            _ => None,
+        }
+    }
+}
+
 /// aggregated validation report.
 #[derive(Debug, Default, Clone)]
 pub struct ValidationReport {
@@ -53,6 +79,11 @@ impl ValidationReport {
     /// return true when no errors are present.
     pub fn is_ok(&self) -> bool {
         self.errors.is_empty()
+    }
+
+    /// return true when errors are present.
+    pub fn is_err(&self) -> bool {
+        !self.errors.is_empty()
     }
 }
 

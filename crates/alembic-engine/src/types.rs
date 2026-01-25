@@ -1,6 +1,6 @@
 //! core engine types and adapter contract.
 
-use crate::projection::{BackendCapabilities, ProjectedObject, ProjectionData};
+use crate::projection::{BackendCapabilities, MissingCustomField, ProjectedObject, ProjectionData};
 use crate::state::StateStore;
 use alembic_core::{key_string, JsonMap, Key, Schema, TypeName, Uid};
 use async_trait::async_trait;
@@ -98,12 +98,41 @@ impl Op {
 }
 
 /// full plan document.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Plan {
     /// schema definitions required for apply.
     pub schema: Schema,
     /// ordered list of operations.
     pub ops: Vec<Op>,
+    /// high-level summary of the plan.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<PlanSummary>,
+}
+
+/// high-level summary of plan operations.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PlanSummary {
+    /// number of objects to create.
+    pub create: usize,
+    /// number of objects to update.
+    pub update: usize,
+    /// number of objects to delete.
+    pub delete: usize,
+}
+
+impl Plan {
+    /// build a summary for the current plan.
+    pub fn summary(&self) -> PlanSummary {
+        let mut summary = PlanSummary::default();
+        for op in &self.ops {
+            match op {
+                Op::Create { .. } => summary.create += 1,
+                Op::Update { .. } => summary.update += 1,
+                Op::Delete { .. } => summary.delete += 1,
+            }
+        }
+        summary
+    }
 }
 
 /// observed backend object representation.
@@ -168,6 +197,12 @@ pub struct ApplyReport {
 pub trait Adapter: Send + Sync {
     async fn observe(&self, schema: &Schema, types: &[TypeName]) -> anyhow::Result<ObservedState>;
     async fn apply(&self, schema: &Schema, ops: &[Op]) -> anyhow::Result<ApplyReport>;
+    async fn create_custom_fields(&self, _missing: &[MissingCustomField]) -> anyhow::Result<()> {
+        Ok(())
+    }
+    async fn create_tags(&self, _tags: &[String]) -> anyhow::Result<()> {
+        Ok(())
+    }
     fn update_state(&self, _state: &StateStore) {}
 }
 

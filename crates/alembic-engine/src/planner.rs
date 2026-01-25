@@ -88,10 +88,13 @@ pub fn plan(
 
     ops.sort_by_key(op_order_key);
 
-    Plan {
+    let mut plan = Plan {
         schema: schema.clone(),
         ops,
-    }
+        summary: None,
+    };
+    plan.summary = Some(plan.summary());
+    plan
 }
 
 /// compute field-level diffs for attrs.

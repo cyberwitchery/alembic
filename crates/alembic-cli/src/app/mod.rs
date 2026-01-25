@@ -2,6 +2,7 @@
 
 use alembic_adapter_nautobot::NautobotAdapter;
 use alembic_adapter_netbox::NetBoxAdapter;
+use alembic_core::ValidationError;
 use alembic_engine::Adapter;
 use alembic_engine::{
     apply_plan, apply_projection, build_plan_with_projection, compile_retort, is_brew_format,
@@ -31,6 +32,8 @@ pub(crate) struct Cli {
 enum Backend {
     Netbox,
     Nautobot,
+    Generic,
+    Peeringdb,
 }
 
 /// cli subcommands.
@@ -73,6 +76,8 @@ enum Command {
         nautobot_url: Option<String>,
         #[arg(long)]
         nautobot_token: Option<String>,
+        #[arg(long)]
+        generic_config: Option<PathBuf>,
         #[arg(long, default_value_t = false)]
         dry_run: bool,
         #[arg(long, default_value_t = false)]
@@ -91,8 +96,12 @@ enum Command {
         nautobot_url: Option<String>,
         #[arg(long)]
         nautobot_token: Option<String>,
+        #[arg(long)]
+        generic_config: Option<PathBuf>,
         #[arg(long, default_value_t = false)]
         allow_delete: bool,
+        #[arg(short = 'i', long, default_value_t = false)]
+        interactive: bool,
     },
     Distill {
         #[arg(short = 'f', long)]
@@ -129,6 +138,8 @@ enum Command {
         nautobot_url: Option<String>,
         #[arg(long)]
         nautobot_token: Option<String>,
+        #[arg(long)]
+        generic_config: Option<PathBuf>,
     },
     Cast {
         #[command(subcommand)]
@@ -168,8 +179,25 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
             if let Some(spec) = load_projection_optional(projection.as_deref())? {
                 let _ = apply_projection(&spec, &inventory.objects)?;
             }
-            alembic_engine::validate(&inventory)?;
-            println!("ok");
+            let report = alembic_engine::validate(&inventory);
+            if report.is_ok() {
+                println!("ok");
+            } else {
+                let content = fs::read_to_string(&file).ok();
+                for error in report.errors {
+                    let line_info = if let Some(c) = &content {
+                        find_error_location(c, &error)
+                    } else {
+                        None
+                    };
+
+                    match line_info {
+                        Some(line) => eprintln!("{}:{}: error: {}", file.display(), line, error),
+                        None => eprintln!("{}: error: {}", file.display(), error),
+                    }
+                }
+                return Err(anyhow!("validation failed"));
+            }
         }
         Command::Lint { retort, projection } => {
             let retort = load_retort_optional(retort.as_deref())?;
@@ -205,6 +233,7 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
             netbox_token,
             nautobot_url,
             nautobot_token,
+            generic_config,
             dry_run,
             allow_delete,
         } => {
@@ -218,34 +247,21 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
                 netbox_token.clone(),
                 nautobot_url,
                 nautobot_token,
+                generic_config,
                 state.clone(),
             )?;
 
             let plan = if projection_propose {
-                if let Backend::Nautobot = backend {
-                    return Err(anyhow!(
-                        "projection proposal not yet supported for nautobot backend"
-                    ));
-                }
-
-                match backend {
-                    Backend::Netbox => {
-                        let (url, token) = resolve_credentials("NETBOX", netbox_url, netbox_token)?;
-                        let adapter = NetBoxAdapter::new(&url, &token, state.clone())?;
-                        build_plan_with_proposal(
-                            &adapter,
-                            &inventory,
-                            &mut state,
-                            allow_delete,
-                            projection.as_ref(),
-                            projection_strict,
-                        )
-                        .await?
-                    }
-                    Backend::Nautobot => {
-                        return Err(anyhow!("proposal not supported for nautobot"))
-                    }
-                }
+                build_plan_with_proposal(
+                    adapter.as_ref(),
+                    &inventory,
+                    &mut state,
+                    allow_delete,
+                    projection.as_ref(),
+                    projection_strict,
+                    backend,
+                )
+                .await?
             } else {
                 build_plan_with_projection(
                     adapter.as_ref(),
@@ -263,6 +279,12 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
             } else {
                 write_plan(&output, &plan)?;
                 state.save()?;
+                if let Some(s) = &plan.summary {
+                    println!(
+                        "plan: {} to create, {} to update, {} to delete",
+                        s.create, s.update, s.delete
+                    );
+                }
                 println!("plan written to {}", output.display());
             }
         }
@@ -273,7 +295,9 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
             netbox_token,
             nautobot_url,
             nautobot_token,
+            generic_config,
             allow_delete,
+            interactive,
         } => {
             let mut state = load_state()?;
             let adapter = create_adapter(
@@ -282,12 +306,59 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
                 netbox_token,
                 nautobot_url,
                 nautobot_token,
+                generic_config,
                 state.clone(),
             )?;
             let plan = read_plan(&plan)?;
-            let report = apply_plan(adapter.as_ref(), &plan, &mut state, allow_delete).await?;
-            state.save()?;
-            println!("applied {} operations", report.applied.len());
+
+            if interactive {
+                let ordered = alembic_engine::sort_ops_for_apply(&plan.ops);
+                let mut applied_count = 0;
+                for op in ordered {
+                    let prompt = match &op {
+                        alembic_engine::Op::Create {
+                            type_name, desired, ..
+                        } => format!(
+                            "create {} {}? [y/N] ",
+                            type_name,
+                            alembic_core::key_string(&desired.base.key)
+                        ),
+                        alembic_engine::Op::Update {
+                            type_name, desired, ..
+                        } => format!(
+                            "update {} {}? [y/N] ",
+                            type_name,
+                            alembic_core::key_string(&desired.base.key)
+                        ),
+                        alembic_engine::Op::Delete { type_name, key, .. } => format!(
+                            "delete {} {}? [y/N] ",
+                            type_name,
+                            alembic_core::key_string(key)
+                        ),
+                    };
+                    if confirm(&prompt)? {
+                        let report = adapter.apply(&plan.schema, &[op]).await?;
+                        for applied in &report.applied {
+                            if let Some(backend_id) = &applied.backend_id {
+                                state.set_backend_id(
+                                    applied.type_name.clone(),
+                                    applied.uid,
+                                    backend_id.clone(),
+                                );
+                            } else {
+                                state.remove_backend_id(applied.type_name.clone(), applied.uid);
+                            }
+                        }
+                        applied_count += report.applied.len();
+                    }
+                }
+                state.save()?;
+                println!("applied {} operations", applied_count);
+            } else {
+                let report = apply_plan(adapter.as_ref(), &plan, &mut state, allow_delete).await?;
+                state.save()?;
+                println!("applied {} operations", report.applied.len());
+            }
         }
         Command::Distill {
             file,
@@ -324,6 +395,7 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
             netbox_token,
             nautobot_url,
             nautobot_token,
+            generic_config,
         } => {
             let retort_path = retort
                 .as_deref()
@@ -337,6 +409,7 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
                 netbox_token,
                 nautobot_url,
                 nautobot_token,
+                generic_config,
                 load_state()?,
             )?;
             let ExtractReport {
@@ -388,6 +461,7 @@ fn create_adapter(
     netbox_token: Option<String>,
     nautobot_url: Option<String>,
     nautobot_token: Option<String>,
+    generic_config: Option<PathBuf>,
     state: StateStore,
 ) -> Result<Box<dyn Adapter>> {
     match backend {
@@ -398,6 +472,23 @@ fn create_adapter(
         Backend::Nautobot => {
             let (url, token) = resolve_credentials("NAUTOBOT", nautobot_url, nautobot_token)?;
             Ok(Box::new(NautobotAdapter::new(&url, &token, state)?))
+        }
+        Backend::Generic => {
+            let path = generic_config
+                .ok_or_else(|| anyhow!("--generic-config required for generic backend"))?;
+            let content = fs::read_to_string(&path)
+                .with_context(|| format!("read generic config: {}", path.display()))?;
+            let config: alembic_adapter_generic::GenericConfig = serde_yaml::from_str(&content)
+                .with_context(|| format!("parse generic config: {}", path.display()))?;
+            Ok(Box::new(alembic_adapter_generic::GenericAdapter::new(
+                config, state,
+            )?))
+        }
+        Backend::Peeringdb => {
+            let api_key = std::env::var("PEERINGDB_API_KEY").ok();
+            Ok(Box::new(alembic_adapter_peeringdb::PeeringDBAdapter::new(
+                api_key.as_deref(),
+            )?))
         }
     }
 }
@@ -758,12 +849,13 @@ fn run_manage_migrate(runner: &dyn Runner, output_dir: &Path, python: &str) -> R
 }
 
 async fn build_plan_with_proposal(
-    adapter: &NetBoxAdapter,
+    adapter: &dyn Adapter,
     inventory: &alembic_core::Inventory,
     state: &mut StateStore,
     allow_delete: bool,
     projection: Option<&ProjectionSpec>,
     projection_strict: bool,
+    backend: Backend,
 ) -> Result<Plan> {
     let Some(spec) = projection else {
         return build_plan_with_projection(
@@ -793,7 +885,8 @@ async fn build_plan_with_proposal(
             );
         }
         eprintln!();
-        if confirm("create missing custom fields in netbox? [y/N] ")? {
+        let prompt = format!("create missing custom fields in {:?}? [y/N] ", backend);
+        if confirm(&prompt)? {
             adapter.create_custom_fields(&missing).await?;
             for entry in &missing {
                 observed
@@ -815,7 +908,8 @@ async fn build_plan_with_proposal(
             );
         }
         eprintln!();
-        if confirm("create missing tags in netbox? [y/N] ")? {
+        let prompt = format!("create missing tags in {:?}? [y/N] ", backend);
+        if confirm(&prompt)? {
             let tags: Vec<String> = missing_tags.iter().map(|entry| entry.tag.clone()).collect();
             adapter.create_tags(&tags).await?;
             for tag in tags {
@@ -847,6 +941,25 @@ fn confirm(prompt: &str) -> Result<bool> {
     let mut input = String::new();
     io::stdin().read_line(&mut input)?;
     Ok(matches!(input.trim().to_lowercase().as_str(), "y" | "yes"))
+}
+
+fn find_error_location(content: &str, error: &ValidationError) -> Option<usize> {
+    if let Some(uid) = error.uid() {
+        let pattern = uid.to_string();
+        for (i, line) in content.lines().enumerate() {
+            if line.contains(&pattern) {
+                return Some(i + 1);
+            }
+        }
+    }
+    if let Some(hint) = error.key_hint() {
+        for (i, line) in content.lines().enumerate() {
+            if line.contains(&hint) {
+                return Some(i + 1);
+            }
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -932,6 +1045,7 @@ mod tests {
                 key: key_str("site=fra1"),
                 backend_id: Some(alembic_engine::BackendId::Int(1)),
             }],
+            summary: None,
         };
 
         write_plan(&path, &plan).unwrap();
@@ -1458,6 +1572,7 @@ objects:
                 netbox_token: None,
                 nautobot_url: None,
                 nautobot_token: None,
+                generic_config: None,
                 dry_run: false,
                 allow_delete: false,
             },
@@ -1486,7 +1601,9 @@ objects:
                 netbox_token: None,
                 nautobot_url: None,
                 nautobot_token: None,
+                generic_config: None,
                 allow_delete: false,
+                interactive: false,
             },
         };
         let err = run(cli).await.unwrap_err();
@@ -1496,7 +1613,7 @@ objects:
         std::env::set_current_dir(cwd).unwrap();
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn run_plan_nautobot_backend() {
         use httpmock::Method::GET;
         use httpmock::MockServer;
@@ -1596,6 +1713,7 @@ objects:
                 netbox_token: None,
                 nautobot_url: Some(server.base_url()),
                 nautobot_token: Some("token".to_string()),
+                generic_config: None,
                 dry_run: false,
                 allow_delete: false,
             },

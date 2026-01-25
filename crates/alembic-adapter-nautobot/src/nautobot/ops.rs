@@ -12,12 +12,12 @@ use async_trait::async_trait;
 use nautobot::{QueryBuilder, Resource};
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 #[async_trait]
 impl Adapter for NautobotAdapter {
     async fn observe(&self, schema: &Schema, types: &[TypeName]) -> Result<ObservedState> {
         let registry: ObjectTypeRegistry = self.client.fetch_object_types().await?;
-        let mut state = ObservedState::default();
         let mappings = {
             let state_guard = self.state_guard()?;
             state_mappings(&state_guard)
@@ -29,29 +29,49 @@ impl Adapter for NautobotAdapter {
             types.iter().cloned().collect()
         };
 
+        let mut tasks = Vec::new();
         for type_name in requested {
             let info = registry
                 .info_for(&type_name)
-                .ok_or_else(|| anyhow!("unsupported type {}", type_name))?;
+                .ok_or_else(|| anyhow!("unsupported type {}", type_name))?
+                .clone();
             let type_schema = schema
                 .types
                 .get(type_name.as_str())
-                .ok_or_else(|| anyhow!("missing schema for {}", type_name))?;
-            let resource: Resource<Value> = self.client.resource(info.endpoint.clone());
-            let objects = self.client.list_all(&resource, None).await?;
+                .ok_or_else(|| anyhow!("missing schema for {}", type_name))?
+                .clone();
+            let client = Arc::clone(&self.client);
+            let registry = registry.clone();
+            let mappings = mappings.clone();
+
+            tasks.push(tokio::spawn(async move {
+                let resource: Resource<Value> = client.resource(info.endpoint.clone());
+                let objects = client.list_all(&resource, None).await?;
+                let mut observed = Vec::new();
+                for object in objects {
+                    let (backend_id, mut attrs) = extract_attrs(object)?;
+                    let projection = extract_projection(&mut attrs);
+                    normalize_attrs(&mut attrs, &registry, &mappings);
+                    let key = build_key_from_schema(&type_schema, &attrs)
+                        .with_context(|| format!("build key for {}", type_name))?;
+                    observed.push(ObservedObject {
+                        type_name: type_name.clone(),
+                        key,
+                        attrs,
+                        projection,
+                        backend_id: Some(BackendId::String(backend_id)),
+                    });
+                }
+                Ok::<Vec<ObservedObject>, anyhow::Error>(observed)
+            }));
+        }
+
+        let mut state = ObservedState::default();
+        let results = futures::future::join_all(tasks).await;
+        for result in results {
+            let objects = result??;
             for object in objects {
-                let (backend_id, mut attrs) = extract_attrs(object)?;
-                let projection = extract_projection(&mut attrs);
-                normalize_attrs(&mut attrs, &registry, &mappings);
-                let key = build_key_from_schema(type_schema, &attrs)
-                    .with_context(|| format!("build key for {}", type_name))?;
-                state.insert(ObservedObject {
-                    type_name: type_name.clone(),
-                    key,
-                    attrs,
-                    projection,
-                    backend_id: Some(BackendId::String(backend_id)),
-                });
+                state.insert(object);
             }
         }
 
@@ -178,6 +198,17 @@ impl Adapter for NautobotAdapter {
         }
 
         Ok(ApplyReport { applied })
+    }
+
+    async fn create_custom_fields(
+        &self,
+        missing: &[alembic_engine::MissingCustomField],
+    ) -> Result<()> {
+        self.create_custom_fields(missing).await
+    }
+
+    async fn create_tags(&self, tags: &[String]) -> Result<()> {
+        self.create_tags(tags).await
     }
 
     fn update_state(&self, state: &StateStore) {

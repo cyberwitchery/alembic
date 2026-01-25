@@ -27,12 +27,16 @@ these can be provided via environment variables or CLI flags (`--nautobot-url`, 
 ## projection data
 
 - `custom_fields` and `tags` are supported.
-- `local_context_data` is currently not implemented for nautobot.
-- custom fields are handled via the `custom_fields` attribute on nautobot objects.
+- `local_context_data` is supported in both observation and apply phases.
+- custom fields are handled via the `_custom_field_data` attribute on nautobot objects.
 - tags are handled as a list of names or slug-like identifiers.
+
+## features
+
+- projection proposal (`--projection-propose`) is implemented.
+- local context data support is implemented.
 
 ## known limitations
 
-- `local_context_data` support is missing.
-- projection proposal (`--projection-propose`) is not yet implemented for nautobot.
-- nautobot version 2.x is recommended; some endpoints might differ in older versions.
+- advanced relation inversion in extraction is limited to summary objects and some specific cases like `assigned_object`.
+- performance: resource observation is currently sequential.

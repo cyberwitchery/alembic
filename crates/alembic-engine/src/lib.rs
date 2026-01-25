@@ -11,7 +11,7 @@ mod retort;
 mod state;
 mod types;
 
-use alembic_core::{key_string, validate_inventory, Inventory};
+use alembic_core::{key_string, validate_inventory, Inventory, ValidationReport};
 use anyhow::{anyhow, Result};
 
 #[cfg(test)]
@@ -29,15 +29,19 @@ pub use projection::{
     ProjectedInventory, ProjectedObject, ProjectionData, ProjectionSpec,
 };
 pub use retort::{compile_retort, is_brew_format, load_raw_yaml, load_retort, Retort};
-pub use state::StateStore;
+pub use state::{StateData, StateStore};
 pub use types::{
     Adapter, AppliedOp, ApplyReport, BackendId, FieldChange, ObservedObject, ObservedState, Op,
     Plan,
 };
 
-/// validate an inventory and return an aggregated error on failure.
-pub fn validate(inventory: &Inventory) -> Result<()> {
-    let report = validate_inventory(inventory);
+/// validate an inventory and return the report.
+pub fn validate(inventory: &Inventory) -> ValidationReport {
+    validate_inventory(inventory)
+}
+
+/// helper to format a validation report into a Result.
+pub fn report_to_result(report: ValidationReport) -> Result<()> {
     if report.is_ok() {
         return Ok(());
     }

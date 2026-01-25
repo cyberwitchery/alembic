@@ -181,6 +181,17 @@ impl Adapter for NetBoxAdapter {
         Ok(ApplyReport { applied })
     }
 
+    async fn create_custom_fields(
+        &self,
+        missing: &[alembic_engine::MissingCustomField],
+    ) -> Result<()> {
+        self.create_custom_fields(missing).await
+    }
+
+    async fn create_tags(&self, tags: &[String]) -> Result<()> {
+        self.create_tags(tags).await
+    }
+
     fn update_state(&self, state: &StateStore) {
         match self.state_guard() {
             Ok(mut guard) => {

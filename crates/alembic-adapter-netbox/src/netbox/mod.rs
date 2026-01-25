@@ -454,4 +454,251 @@ mod tests {
         assert_eq!(inputs[0].name, "EVPN Fabric");
         assert_eq!(inputs[0].slug, "evpn-fabric");
     }
+
+    #[tokio::test]
+    async fn apply_handles_update_operation() {
+        use alembic_engine::FieldChange;
+        use httpmock::Method::PATCH;
+
+        let server = MockServer::start();
+        let dir = tempdir().unwrap();
+        let mut state = StateStore::load(dir.path().join("state.json")).unwrap();
+        state.set_backend_id(
+            TypeName::new("dcim.site"),
+            uid(1),
+            alembic_engine::BackendId::Int(1),
+        );
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token", state).unwrap();
+
+        let _object_types = mock_list(
+            &server,
+            "/api/core/object-types/",
+            json!([{
+                "app_label": "dcim",
+                "model": "site",
+                "rest_api_endpoint": "/api/dcim/sites/",
+                "features": ["custom-fields", "tags"]
+            }]),
+        );
+        let _site_update = server.mock(|when, then| {
+            when.method(PATCH).path("/api/dcim/sites/1/");
+            then.status(200)
+                .json_body(json!({ "id": 1, "name": "FRA1-Updated", "slug": "fra1" }));
+        });
+
+        let mut key = std::collections::BTreeMap::new();
+        key.insert("slug".to_string(), json!("fra1"));
+        let mut attrs = std::collections::BTreeMap::new();
+        attrs.insert("name".to_string(), json!("FRA1-Updated"));
+
+        let ops = vec![Op::Update {
+            uid: uid(1),
+            type_name: TypeName::new("dcim.site"),
+            backend_id: Some(alembic_engine::BackendId::Int(1)),
+            desired: alembic_engine::ProjectedObject {
+                base: alembic_core::Object {
+                    uid: uid(1),
+                    type_name: TypeName::new("dcim.site"),
+                    key: alembic_core::Key::from(key),
+                    attrs: alembic_core::JsonMap::from(attrs),
+                },
+                projection: alembic_engine::ProjectionData::default(),
+                projection_inputs: std::collections::BTreeSet::new(),
+            },
+            changes: vec![FieldChange {
+                field: "name".to_string(),
+                from: json!("FRA1"),
+                to: json!("FRA1-Updated"),
+            }],
+        }];
+
+        let schema = alembic_core::Schema {
+            types: std::collections::BTreeMap::from([(
+                "dcim.site".to_string(),
+                alembic_core::TypeSchema {
+                    key: std::collections::BTreeMap::from([(
+                        "slug".to_string(),
+                        alembic_core::FieldSchema {
+                            r#type: alembic_core::FieldType::String,
+                            required: true,
+                            nullable: false,
+                            description: None,
+                        },
+                    )]),
+                    fields: std::collections::BTreeMap::from([(
+                        "name".to_string(),
+                        alembic_core::FieldSchema {
+                            r#type: alembic_core::FieldType::String,
+                            required: true,
+                            nullable: false,
+                            description: None,
+                        },
+                    )]),
+                },
+            )]),
+        };
+        let report = adapter.apply(&schema, &ops).await.unwrap();
+        assert_eq!(report.applied.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn apply_handles_delete_operation() {
+        use httpmock::Method::DELETE;
+
+        let server = MockServer::start();
+        let dir = tempdir().unwrap();
+        let mut state = StateStore::load(dir.path().join("state.json")).unwrap();
+        state.set_backend_id(
+            TypeName::new("dcim.site"),
+            uid(1),
+            alembic_engine::BackendId::Int(1),
+        );
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token", state).unwrap();
+
+        let _object_types = mock_list(
+            &server,
+            "/api/core/object-types/",
+            json!([{
+                "app_label": "dcim",
+                "model": "site",
+                "rest_api_endpoint": "/api/dcim/sites/",
+                "features": ["custom-fields", "tags"]
+            }]),
+        );
+        let _site_delete = server.mock(|when, then| {
+            when.method(DELETE).path("/api/dcim/sites/");
+            then.status(204);
+        });
+
+        let ops = vec![Op::Delete {
+            uid: uid(1),
+            type_name: TypeName::new("dcim.site"),
+            key: key("slug", json!("fra1")),
+            backend_id: Some(alembic_engine::BackendId::Int(1)),
+        }];
+
+        let schema = alembic_core::Schema {
+            types: std::collections::BTreeMap::from([(
+                "dcim.site".to_string(),
+                alembic_core::TypeSchema {
+                    key: std::collections::BTreeMap::from([(
+                        "slug".to_string(),
+                        alembic_core::FieldSchema {
+                            r#type: alembic_core::FieldType::String,
+                            required: true,
+                            nullable: false,
+                            description: None,
+                        },
+                    )]),
+                    fields: std::collections::BTreeMap::new(),
+                },
+            )]),
+        };
+        let report = adapter.apply(&schema, &ops).await.unwrap();
+        assert_eq!(report.applied.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn observe_handles_empty_types_list() {
+        let server = MockServer::start();
+        let dir = tempdir().unwrap();
+        let state = StateStore::load(dir.path().join("state.json")).unwrap();
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token", state).unwrap();
+
+        let _object_types = mock_list(
+            &server,
+            "/api/core/object-types/",
+            json!([{
+                "app_label": "dcim",
+                "model": "site",
+                "rest_api_endpoint": "/api/dcim/sites/",
+                "features": ["custom-fields", "tags"]
+            }]),
+        );
+        let _sites = mock_list(&server, "/api/dcim/sites/", json!([]));
+        let _custom_fields = server.mock(|when, then| {
+            when.method(GET).path("/api/extras/custom-fields/");
+            then.status(200).json_body(page(json!([])));
+        });
+        let _tags = server.mock(|when, then| {
+            when.method(GET)
+                .path("/api/extras/tags/")
+                .query_param("limit", "200")
+                .query_param("offset", "0");
+            then.status(200).json_body(page(json!([])));
+        });
+
+        let schema = alembic_core::Schema {
+            types: std::collections::BTreeMap::from([(
+                "dcim.site".to_string(),
+                alembic_core::TypeSchema {
+                    key: std::collections::BTreeMap::from([(
+                        "slug".to_string(),
+                        alembic_core::FieldSchema {
+                            r#type: alembic_core::FieldType::String,
+                            required: true,
+                            nullable: false,
+                            description: None,
+                        },
+                    )]),
+                    fields: std::collections::BTreeMap::new(),
+                },
+            )]),
+        };
+        // Empty types list should observe all types from registry
+        let observed = adapter.observe(&schema, &[]).await.unwrap();
+        assert!(observed.by_key.is_empty());
+    }
+
+    #[tokio::test]
+    async fn create_custom_fields_works() {
+        let server = MockServer::start();
+        let dir = tempdir().unwrap();
+        let state = StateStore::load(dir.path().join("state.json")).unwrap();
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token", state).unwrap();
+
+        let _cf_create = server.mock(|when, then| {
+            when.method(POST).path("/api/extras/custom-fields/");
+            then.status(201).json_body(json!({
+                "id": 1,
+                "url": "http://localhost/api/extras/custom-fields/1/",
+                "display_url": "http://localhost/extras/custom-fields/1/",
+                "display": "alembic_test",
+                "name": "alembic_test",
+                "label": "alembic_test",
+                "object_types": ["dcim.site"],
+                "type": {"value": "text", "label": "Text"},
+                "related_object_type": null,
+                "group_name": "",
+                "description": "",
+                "required": false,
+                "unique": false,
+                "search_weight": 1000,
+                "filter_logic": {"value": "loose", "label": "Loose"},
+                "ui_visible": {"value": "always", "label": "Always"},
+                "ui_editable": {"value": "yes", "label": "Yes"},
+                "is_cloneable": true,
+                "default": null,
+                "related_object_filter": null,
+                "weight": 100,
+                "validation_minimum": null,
+                "validation_maximum": null,
+                "validation_regex": "",
+                "choice_set": null,
+                "comments": "",
+                "created": "2024-01-01T00:00:00Z",
+                "last_updated": "2024-01-01T00:00:00Z"
+            }));
+        });
+
+        let missing = vec![alembic_engine::MissingCustomField {
+            rule: "test".to_string(),
+            type_name: "dcim.site".to_string(),
+            attr_key: "cf_test".to_string(),
+            field: "alembic_test".to_string(),
+            sample: json!("example"),
+        }];
+
+        adapter.create_custom_fields(&missing).await.unwrap();
+    }
 }

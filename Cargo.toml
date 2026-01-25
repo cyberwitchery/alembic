@@ -5,7 +5,7 @@ members = [
   "crates/alembic-engine",
   "crates/alembic-adapter-netbox",
   "crates/alembic-adapter-nautobot",
-  "crates/alembic-cli",
+  "crates/alembic-cli", "crates/alembic-adapter-generic", "crates/alembic-adapter-peeringdb",
 ]
 
 [workspace.package]
@@ -23,5 +23,5 @@ thiserror = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 uuid = { version = "1", features = ["serde", "v4", "v5"] }
 netbox = "0.2.1"
-nautobot = "0.1.1"
-reqwest = "0.12"
+nautobot = "0.2.0"
+reqwest = { version = "0.12", features = ["json"] }

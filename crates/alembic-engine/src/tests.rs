@@ -809,6 +809,45 @@ fn state_store_save_errors_on_bad_parent() {
     assert!(err.to_string().contains("create state dir"));
 }
 
+#[tokio::test]
+async fn state_store_async_roundtrip() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("async_state.json");
+    let mut store = StateStore::load(&path).unwrap();
+    store.set_backend_id(t("dcim.site"), uid(100), BackendId::Int(456));
+    store.save_async().await.unwrap();
+
+    let mut reloaded = StateStore::load(&path).unwrap();
+    reloaded.load_async().await.unwrap();
+    assert_eq!(
+        reloaded.backend_id(t("dcim.site"), uid(100)),
+        Some(BackendId::Int(456))
+    );
+}
+
+#[tokio::test]
+async fn state_store_load_async_no_backend() {
+    let mut store = StateStore::new(None, StateData::default());
+    // Should succeed without error even with no backend
+    store.load_async().await.unwrap();
+}
+
+#[tokio::test]
+async fn state_store_save_async_no_backend() {
+    let store = StateStore::new(None, StateData::default());
+    // Should succeed without error even with no backend
+    store.save_async().await.unwrap();
+}
+
+#[test]
+fn state_store_new_without_backend() {
+    let data = StateData::default();
+    let store = StateStore::new(None, data);
+    assert!(store.all_mappings().is_empty());
+    // save should succeed with no backend
+    store.save().unwrap();
+}
+
 #[test]
 fn plan_generates_deletes_when_enabled() {
     let desired = inv(vec![]);
@@ -1000,6 +1039,7 @@ fn apply_plan_blocks_deletes_without_flag() {
             key: key_str("site=fra1"),
             backend_id: Some(BackendId::Int(1)),
         }],
+        summary: None,
     };
     let result = futures::executor::block_on(apply_plan(&adapter, &plan, &mut state, false));
     assert!(result.is_err());
@@ -1023,6 +1063,7 @@ fn apply_plan_updates_state() {
             types: BTreeMap::new(),
         },
         ops: vec![],
+        summary: None,
     };
     futures::executor::block_on(apply_plan(&adapter, &plan, &mut state, true)).unwrap();
     assert_eq!(

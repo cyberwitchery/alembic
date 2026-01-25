@@ -11,6 +11,21 @@ alembic/
     alembic-cli
 ```
 
+## Project Status
+
+- **NetBox**: 100% (stable)
+- **Nautobot**: 100% (stable, concurrent observation, projection proposal)
+- **Generic REST**: Initial release (specification-driven)
+- **PeeringDB**: Read-only support
+
+### Core Features
+
+- Concurrent observation for Nautobot adapter
+- Plan summary output
+- Interactive apply mode (`--interactive`)
+- Enhanced error reporting with source location hints
+- Pluggable state store backends (`StateBackend` trait)
+
 ## build
 
 ```bash

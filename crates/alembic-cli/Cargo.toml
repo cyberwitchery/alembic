@@ -9,12 +9,15 @@ alembic-core = { path = "../alembic-core" }
 alembic-engine = { path = "../alembic-engine" }
 alembic-adapter-netbox = { path = "../alembic-adapter-netbox" }
 alembic-adapter-nautobot = { path = "../alembic-adapter-nautobot" }
+alembic-adapter-generic = { path = "../alembic-adapter-generic" }
+alembic-adapter-peeringdb = { path = "../alembic-adapter-peeringdb" }
 anyhow.workspace = true
 clap.workspace = true
 serde_json.workspace = true
+serde_yaml.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
-httpmock = "0.6"
+httpmock = "0.7"
 tempfile = "3"
 uuid.workspace = true

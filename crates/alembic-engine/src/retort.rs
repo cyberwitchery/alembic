@@ -178,7 +178,7 @@ pub fn compile_retort(raw: &YamlValue, retort: &Retort) -> Result<Inventory> {
         schema: retort.schema.clone(),
         objects,
     };
-    crate::validate(&inventory)?;
+    crate::report_to_result(crate::validate(&inventory))?;
     Ok(inventory)
 }
 

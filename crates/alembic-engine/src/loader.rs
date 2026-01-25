@@ -30,7 +30,7 @@ pub fn load_brew(path: impl AsRef<Path>) -> Result<Inventory> {
     load_recursive(path, &mut visited, &mut objects, &mut schema)?;
     let schema = schema.ok_or_else(|| anyhow!("brew is missing a schema block"))?;
     let inventory = Inventory { schema, objects };
-    validate(&inventory)?;
+    crate::report_to_result(validate(&inventory))?;
     Ok(inventory)
 }
 
