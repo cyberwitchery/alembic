@@ -35,8 +35,5 @@ these can be provided via environment variables or CLI flags (`--nautobot-url`, 
 
 - projection proposal (`--projection-propose`) is implemented.
 - local context data support is implemented.
-
-## known limitations
-
-- advanced relation inversion in extraction is limited to summary objects and some specific cases like `assigned_object`.
-- performance: resource observation is currently sequential.
+- schema-aware relation inversion in extraction: nested references are resolved to alembic UIDs
+  using schema information to determine target types and key fields.

@@ -485,10 +485,8 @@ fn create_adapter(
             )?))
         }
         Backend::Peeringdb => {
-            let api_key = std::env::var("PEERINGDB_API_KEY").ok();
-            Ok(Box::new(alembic_adapter_peeringdb::PeeringDBAdapter::new(
-                api_key.as_deref(),
-            )?))
+            // API key is read from PEERINGDB_API_KEY env var by the peeringdb-rs crate
+            Ok(Box::new(alembic_adapter_peeringdb::PeeringDBAdapter::new()))
         }
     }
 }
