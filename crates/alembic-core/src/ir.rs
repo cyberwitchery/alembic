@@ -5,7 +5,52 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::ops::{Deref, DerefMut};
+use std::path::PathBuf;
 use uuid::Uuid;
+
+/// Source location for tracking where an object was defined.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceLocation {
+    /// Path to the source file.
+    pub file: PathBuf,
+    /// Line number in the file (1-indexed), if known.
+    pub line: Option<usize>,
+    /// Column number in the file (1-indexed), if known.
+    pub column: Option<usize>,
+}
+
+impl SourceLocation {
+    /// Create a source location with just a file path.
+    pub fn file(path: impl Into<PathBuf>) -> Self {
+        Self {
+            file: path.into(),
+            line: None,
+            column: None,
+        }
+    }
+
+    /// Create a source location with file and line number.
+    pub fn file_line(path: impl Into<PathBuf>, line: usize) -> Self {
+        Self {
+            file: path.into(),
+            line: Some(line),
+            column: None,
+        }
+    }
+}
+
+impl fmt::Display for SourceLocation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.file.display())?;
+        if let Some(line) = self.line {
+            write!(f, ":{}", line)?;
+            if let Some(col) = self.column {
+                write!(f, ":{}", col)?;
+            }
+        }
+        Ok(())
+    }
+}
 
 /// stable object identifier (uuid).
 pub type Uid = Uuid;
@@ -464,7 +509,7 @@ pub struct Schema {
 }
 
 /// object envelope for the ir.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Object {
     /// stable identifier for the object.
     pub uid: Uid,
@@ -476,6 +521,19 @@ pub struct Object {
     /// attributes payload for this object.
     #[serde(default, rename = "attrs")]
     pub attrs: JsonMap,
+    /// source location where this object was defined (not serialized).
+    #[serde(skip)]
+    pub source: Option<SourceLocation>,
+}
+
+impl PartialEq for Object {
+    fn eq(&self, other: &Self) -> bool {
+        // Source location is intentionally excluded from equality
+        self.uid == other.uid
+            && self.type_name == other.type_name
+            && self.key == other.key
+            && self.attrs == other.attrs
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -514,7 +572,14 @@ impl Object {
             type_name,
             key,
             attrs,
+            source: None,
         })
+    }
+
+    /// Set the source location for this object.
+    pub fn with_source(mut self, source: SourceLocation) -> Self {
+        self.source = Some(source);
+        self
     }
 }
 

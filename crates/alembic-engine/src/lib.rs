@@ -11,7 +11,7 @@ mod retort;
 mod state;
 mod types;
 
-use alembic_core::{key_string, validate_inventory, Inventory, ValidationReport};
+use alembic_core::{key_string, validate_inventory, Inventory, Object, ValidationReport};
 use anyhow::{anyhow, Result};
 
 #[cfg(test)]
@@ -42,12 +42,18 @@ pub fn validate(inventory: &Inventory) -> ValidationReport {
 
 /// helper to format a validation report into a Result.
 pub fn report_to_result(report: ValidationReport) -> Result<()> {
+    report_to_result_with_sources(report, &[])
+}
+
+/// helper to format a validation report with source locations into a Result.
+pub fn report_to_result_with_sources(report: ValidationReport, objects: &[Object]) -> Result<()> {
     if report.is_ok() {
         return Ok(());
     }
 
+    let located_errors = report.with_sources(objects);
     let mut message = String::from("validation failed:\n");
-    for error in report.errors {
+    for error in located_errors {
         message.push_str(&format!("- {error}\n"));
     }
     Err(anyhow!(message))

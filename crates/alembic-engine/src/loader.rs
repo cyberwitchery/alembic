@@ -1,7 +1,7 @@
 //! brew file loading with include/import support.
 
-use crate::validate;
-use alembic_core::{Inventory, Schema};
+use crate::{report_to_result_with_sources, validate};
+use alembic_core::{Inventory, Schema, SourceLocation};
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
 use std::collections::BTreeSet;
@@ -30,7 +30,7 @@ pub fn load_brew(path: impl AsRef<Path>) -> Result<Inventory> {
     load_recursive(path, &mut visited, &mut objects, &mut schema)?;
     let schema = schema.ok_or_else(|| anyhow!("brew is missing a schema block"))?;
     let inventory = Inventory { schema, objects };
-    crate::report_to_result(validate(&inventory))?;
+    report_to_result_with_sources(validate(&inventory), &inventory.objects)?;
     Ok(inventory)
 }
 
@@ -70,7 +70,13 @@ fn load_recursive(
     }
 
     merge_schema(schema, brew.schema)?;
-    objects.extend(brew.objects);
+
+    // Set source location on each object from this file
+    let source = SourceLocation::file(&canonical);
+    for object in brew.objects {
+        objects.push(object.with_source(source.clone()));
+    }
+
     Ok(())
 }
 

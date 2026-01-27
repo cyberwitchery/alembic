@@ -1,8 +1,9 @@
 //! validation utilities for the ir.
 
-use crate::ir::{key_string, FieldType, Inventory, Object, Schema, TypeName, Uid};
+use crate::ir::{key_string, FieldType, Inventory, Object, Schema, SourceLocation, TypeName, Uid};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
 use thiserror::Error;
 
 /// validation errors emitted during graph validation.
@@ -67,6 +68,56 @@ impl ValidationError {
             _ => None,
         }
     }
+
+    /// return the type name associated with this error, if any.
+    pub fn type_hint(&self) -> Option<String> {
+        match self {
+            ValidationError::UnknownType(t) => Some(t.clone()),
+            ValidationError::MissingKeyField { type_name, .. }
+            | ValidationError::ExtraKeyField { type_name, .. }
+            | ValidationError::MissingAttrField { type_name, .. }
+            | ValidationError::ExtraAttrField { type_name, .. } => Some(type_name.clone()),
+            ValidationError::InvalidValue { field, .. } => {
+                field.split('.').next().map(|s| s.to_string())
+            }
+            ValidationError::MissingReference { field, .. }
+            | ValidationError::ReferenceTypeMismatch { field, .. } => {
+                field.split('.').next().map(|s| s.to_string())
+            }
+            ValidationError::DuplicateKey(key) => key.split("::").next().map(|s| s.to_string()),
+            _ => None,
+        }
+    }
+}
+
+/// A validation error with optional source location.
+#[derive(Debug, Clone)]
+pub struct LocatedError {
+    pub error: ValidationError,
+    pub source: Option<SourceLocation>,
+}
+
+impl LocatedError {
+    pub fn new(error: ValidationError) -> Self {
+        Self {
+            error,
+            source: None,
+        }
+    }
+
+    pub fn with_source(error: ValidationError, source: Option<SourceLocation>) -> Self {
+        Self { error, source }
+    }
+}
+
+impl fmt::Display for LocatedError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(source) = &self.source {
+            write!(f, "{}: {}", source, self.error)
+        } else {
+            write!(f, "{}", self.error)
+        }
+    }
 }
 
 /// aggregated validation report.
@@ -84,6 +135,53 @@ impl ValidationReport {
     /// return true when errors are present.
     pub fn is_err(&self) -> bool {
         !self.errors.is_empty()
+    }
+
+    /// Enrich errors with source locations from objects.
+    ///
+    /// This matches errors to objects based on UIDs, types, and keys,
+    /// and attaches the object's source location to the error.
+    pub fn with_sources(self, objects: &[Object]) -> Vec<LocatedError> {
+        // Build lookup maps
+        let uid_to_source: BTreeMap<Uid, Option<SourceLocation>> =
+            objects.iter().map(|o| (o.uid, o.source.clone())).collect();
+        let key_to_source: BTreeMap<String, Option<SourceLocation>> = objects
+            .iter()
+            .map(|o| {
+                let key = format!("{}::{}", o.type_name, key_string(&o.key));
+                (key, o.source.clone())
+            })
+            .collect();
+        let type_to_source: BTreeMap<String, Option<SourceLocation>> = objects
+            .iter()
+            .filter_map(|o| o.source.clone().map(|s| (o.type_name.to_string(), Some(s))))
+            .collect();
+
+        self.errors
+            .into_iter()
+            .map(|error| {
+                let source = error
+                    .uid()
+                    .and_then(|uid| uid_to_source.get(&uid).cloned().flatten())
+                    .or_else(|| {
+                        error.key_hint().and_then(|_| {
+                            // For DuplicateKey errors, try to find source
+                            if let ValidationError::DuplicateKey(key) = &error {
+                                key_to_source.get(key).cloned().flatten()
+                            } else {
+                                None
+                            }
+                        })
+                    })
+                    .or_else(|| {
+                        // Try to match by type name in the error
+                        error
+                            .type_hint()
+                            .and_then(|t| type_to_source.get(&t).cloned().flatten())
+                    });
+                LocatedError::with_source(error, source)
+            })
+            .collect()
     }
 }
 
@@ -478,6 +576,7 @@ mod tests {
             type_name: TypeName::new("site"),
             key: Key::default(),
             attrs: JsonMap::default(),
+            source: None,
         }];
         let report = validate_inventory(&Inventory {
             schema: Schema {
@@ -506,6 +605,7 @@ mod tests {
             type_name: TypeName::new(""),
             key: Key::from(key),
             attrs: JsonMap::default(),
+            source: None,
         }];
         let report = validate_inventory(&Inventory {
             schema: Schema {

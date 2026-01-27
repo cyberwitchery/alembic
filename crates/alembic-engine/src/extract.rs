@@ -65,6 +65,7 @@ pub async fn extract_inventory(
             type_name: object.type_name,
             key: object.key,
             attrs,
+            source: None,
         });
     }
 

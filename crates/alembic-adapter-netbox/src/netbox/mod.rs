@@ -501,6 +501,7 @@ mod tests {
                     type_name: TypeName::new("dcim.site"),
                     key: alembic_core::Key::from(key),
                     attrs: alembic_core::JsonMap::from(attrs),
+                    source: None,
                 },
                 projection: alembic_engine::ProjectionData::default(),
                 projection_inputs: std::collections::BTreeSet::new(),
