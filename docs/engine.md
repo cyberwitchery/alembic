@@ -32,7 +32,7 @@ the planner diffs desired ir against observed state and emits:
 - `update` ops when attrs differ
 - `delete` ops for observed objects not in desired (gated by `--allow-delete`)
 
-plans are stable-sorted by type name and key.
+plans are stable-sorted by type name and key (canonical JSON of the key map).
 
 ## apply ordering
 

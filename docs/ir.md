@@ -82,3 +82,4 @@ objects:
 
 - primary match: state store mapping (`uid` -> backend id)
 - fallback match: `key`
+- keys are canonicalized as stable JSON (sorted map) for matching and sorting; any characters are safe in values
