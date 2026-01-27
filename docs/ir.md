@@ -44,6 +44,18 @@ schema:
 
 supported field types include primitives (string, int, float, bool, uuid), structured types (list, map, json), and typed references (`ref`, `list_ref`).
 
+### format constraints
+
+string fields can optionally declare `format` and/or `pattern` constraints:
+
+```yaml
+fields:
+  slug: { type: string, format: slug }
+  hostname: { type: string, pattern: "^[a-z0-9-]+$" }
+```
+
+`format` supports: `slug`, `ip_address`, `cidr`, `prefix`, `mac`, `uuid`.
+
 ## relationships
 
 references are expressed by uid strings in `attrs` and validated when the schema declares a `ref` or `list_ref` target.

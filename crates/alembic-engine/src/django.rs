@@ -641,6 +641,8 @@ mod tests {
                     required: true,
                     nullable: false,
                     description: None,
+                    format: None,
+                    pattern: None,
                 });
             }
             for field in object.attrs.keys() {
@@ -649,6 +651,8 @@ mod tests {
                     required: false,
                     nullable: true,
                     description: None,
+                    format: None,
+                    pattern: None,
                 });
             }
         }

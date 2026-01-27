@@ -25,3 +25,5 @@ uuid = { version = "1", features = ["serde", "v4", "v5"] }
 netbox = "0.2.1"
 nautobot = "0.2.0"
 reqwest = { version = "0.12", features = ["json"] }
+regex = "1"
+ipnet = "2"

@@ -179,6 +179,8 @@ mod tests {
                     required: true,
                     nullable: false,
                     description: None,
+                    format: None,
+                    pattern: None,
                 },
             )]),
             fields: BTreeMap::new(),

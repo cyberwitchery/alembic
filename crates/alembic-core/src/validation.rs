@@ -1,9 +1,14 @@
 //! validation utilities for the ir.
 
-use crate::ir::{key_string, FieldType, Inventory, Object, Schema, SourceLocation, TypeName, Uid};
+use crate::ir::{
+    key_string, FieldFormat, FieldType, Inventory, Object, Schema, SourceLocation, TypeName, Uid,
+};
+use ipnet::IpNet;
+use regex::Regex;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::net::IpAddr;
 use thiserror::Error;
 
 /// validation errors emitted during graph validation.
@@ -358,6 +363,8 @@ fn validate_field_value(
                         required: true,
                         nullable: false,
                         description: None,
+                        format: None,
+                        pattern: None,
                     };
                     validate_field_value(type_name, field, &schema, entry, uid_to_type, report);
                 }
@@ -377,6 +384,8 @@ fn validate_field_value(
                         required: true,
                         nullable: false,
                         description: None,
+                        format: None,
+                        pattern: None,
                     };
                     validate_field_value(type_name, field, &schema, entry, uid_to_type, report);
                 }
@@ -415,6 +424,8 @@ fn validate_field_value(
             }
         }
     }
+
+    validate_string_constraints(type_name, field, field_schema, value, report);
 }
 
 fn parse_uid(value: &Value) -> Option<Uid> {
@@ -452,6 +463,83 @@ fn validate_ref(
             expected: target.to_string(),
             actual: actual.to_string(),
         });
+    }
+}
+
+fn validate_string_constraints(
+    type_name: &TypeName,
+    field: &str,
+    field_schema: &crate::ir::FieldSchema,
+    value: &Value,
+    report: &mut ValidationReport,
+) {
+    if field_schema.format.is_none() && field_schema.pattern.is_none() {
+        return;
+    }
+
+    let Some(raw) = value.as_str() else {
+        report.errors.push(ValidationError::InvalidValue {
+            field: format!("{type_name}.{field}"),
+            expected: "string".to_string(),
+            actual: value_type_label(value),
+        });
+        return;
+    };
+
+    if let Some(format) = &field_schema.format {
+        if !matches_format(format, raw) {
+            report.errors.push(ValidationError::InvalidValue {
+                field: format!("{type_name}.{field}"),
+                expected: format_label(format),
+                actual: raw.to_string(),
+            });
+        }
+    }
+
+    if let Some(pattern) = &field_schema.pattern {
+        match Regex::new(pattern) {
+            Ok(regex) => {
+                if !regex.is_match(raw) {
+                    report.errors.push(ValidationError::InvalidValue {
+                        field: format!("{type_name}.{field}"),
+                        expected: format!("pattern({pattern})"),
+                        actual: raw.to_string(),
+                    });
+                }
+            }
+            Err(err) => {
+                report.errors.push(ValidationError::InvalidValue {
+                    field: format!("{type_name}.{field}"),
+                    expected: format!("pattern({pattern})"),
+                    actual: format!("invalid pattern: {err}"),
+                });
+            }
+        }
+    }
+}
+
+fn matches_format(format: &FieldFormat, raw: &str) -> bool {
+    match format {
+        FieldFormat::Slug => Regex::new(r"^[a-z0-9]+(?:[a-z0-9_-]*[a-z0-9])?$")
+            .map(|re| re.is_match(raw))
+            .unwrap_or(false),
+        FieldFormat::IpAddress => raw.parse::<IpAddr>().is_ok(),
+        FieldFormat::Cidr | FieldFormat::Prefix => raw.parse::<IpNet>().is_ok(),
+        FieldFormat::Mac => Regex::new(r"^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$")
+            .map(|re| re.is_match(raw))
+            .unwrap_or(false),
+        FieldFormat::Uuid => Uid::parse_str(raw).is_ok(),
+    }
+}
+
+fn format_label(format: &FieldFormat) -> String {
+    match format {
+        FieldFormat::Slug => "format(slug)".to_string(),
+        FieldFormat::IpAddress => "format(ip_address)".to_string(),
+        FieldFormat::Cidr => "format(cidr)".to_string(),
+        FieldFormat::Prefix => "format(prefix)".to_string(),
+        FieldFormat::Mac => "format(mac)".to_string(),
+        FieldFormat::Uuid => "format(uuid)".to_string(),
     }
 }
 
@@ -543,6 +631,8 @@ mod tests {
                     required: true,
                     nullable: false,
                     description: None,
+                    format: None,
+                    pattern: None,
                 },
             )]),
             fields: BTreeMap::new(),
@@ -650,6 +740,8 @@ mod tests {
                 required: true,
                 nullable: false,
                 description: None,
+                format: None,
+                pattern: None,
             },
         );
         let mut fields = BTreeMap::new();
@@ -662,6 +754,8 @@ mod tests {
                 required: false,
                 nullable: false,
                 description: None,
+                format: None,
+                pattern: None,
             },
         );
         let mut types = BTreeMap::new();
@@ -706,6 +800,8 @@ mod tests {
             required: true,
             nullable: false,
             description: None,
+            format: None,
+            pattern: None,
         };
         validate_field_value(
             &TypeName::new("test"),
@@ -728,6 +824,8 @@ mod tests {
             required: true,
             nullable: false,
             description: None,
+            format: None,
+            pattern: None,
         };
         report.errors.clear();
         validate_field_value(
@@ -751,6 +849,8 @@ mod tests {
             required: true,
             nullable: false,
             description: None,
+            format: None,
+            pattern: None,
         };
         report.errors.clear();
         validate_field_value(
@@ -774,6 +874,8 @@ mod tests {
             required: true,
             nullable: false,
             description: None,
+            format: None,
+            pattern: None,
         };
         report.errors.clear();
         validate_field_value(
@@ -794,6 +896,8 @@ mod tests {
             required: true,
             nullable: false,
             description: None,
+            format: None,
+            pattern: None,
         };
         report.errors.clear();
         validate_field_value(
@@ -815,6 +919,8 @@ mod tests {
             required: true,
             nullable: false,
             description: None,
+            format: None,
+            pattern: None,
         };
         report.errors.clear();
         validate_field_value(
@@ -840,6 +946,8 @@ mod tests {
             required: true,
             nullable: false,
             description: None,
+            format: None,
+            pattern: None,
         };
         report.errors.clear();
         validate_field_value(

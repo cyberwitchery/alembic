@@ -154,21 +154,7 @@ impl From<Key> for BTreeMap<String, Value> {
 }
 
 pub fn key_string(key: &Key) -> String {
-    key.0
-        .iter()
-        .map(|(field, value)| format!("{field}={}", key_value_to_string(value)))
-        .collect::<Vec<_>>()
-        .join("/")
-}
-
-fn key_value_to_string(value: &Value) -> String {
-    match value {
-        Value::String(value) => value.clone(),
-        Value::Number(value) => value.to_string(),
-        Value::Bool(value) => value.to_string(),
-        Value::Null => "null".to_string(),
-        _ => serde_json::to_string(value).unwrap_or_default(),
-    }
+    serde_json::to_string(&key.0).unwrap_or_default()
 }
 
 pub const ALEMBIC_UID_NAMESPACE: Uuid = Uuid::from_bytes([
@@ -228,6 +214,18 @@ pub enum FieldType {
     Map { value: Box<FieldType> },
     Ref { target: String },
     ListRef { target: String },
+}
+
+/// format constraints for string fields.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FieldFormat {
+    Slug,
+    IpAddress,
+    Cidr,
+    Prefix,
+    Mac,
+    Uuid,
 }
 
 impl Serialize for FieldType {
@@ -387,6 +385,18 @@ fn parse_simple_field_type(raw: &str) -> Result<FieldType, String> {
     }
 }
 
+fn parse_field_format(raw: &str) -> Result<FieldFormat, String> {
+    match raw {
+        "slug" => Ok(FieldFormat::Slug),
+        "ip_address" => Ok(FieldFormat::IpAddress),
+        "cidr" => Ok(FieldFormat::Cidr),
+        "prefix" => Ok(FieldFormat::Prefix),
+        "mac" => Ok(FieldFormat::Mac),
+        "uuid" => Ok(FieldFormat::Uuid),
+        _ => Err(format!("unknown field format {raw}")),
+    }
+}
+
 /// schema metadata for a single field.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct FieldSchema {
@@ -395,6 +405,10 @@ pub struct FieldSchema {
     pub required: bool,
     #[serde(default)]
     pub nullable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<FieldFormat>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pattern: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
 }
@@ -419,6 +433,16 @@ impl<'de> Deserialize<'de> for FieldSchema {
             .unwrap_or(false);
         let description = map
             .get("description")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
+
+        let format = map
+            .get("format")
+            .and_then(serde_json::Value::as_str)
+            .map(|raw| parse_field_format(raw).map_err(serde::de::Error::custom))
+            .transpose()?;
+        let pattern = map
+            .get("pattern")
             .and_then(serde_json::Value::as_str)
             .map(str::to_string);
 
@@ -488,6 +512,8 @@ impl<'de> Deserialize<'de> for FieldSchema {
             r#type: field_type,
             required,
             nullable,
+            format,
+            pattern,
             description,
         })
     }
@@ -685,8 +711,9 @@ mod tests {
         k.insert("b".to_string(), serde_json::json!("s"));
         let key = Key::from(k);
         let s = key_string(&key);
-        assert!(s.contains("a=1"));
-        assert!(s.contains("b=s"));
+        let parsed: serde_json::Value = serde_json::from_str(&s).unwrap();
+        let expected = serde_json::json!({"a": 1, "b": "s"});
+        assert_eq!(parsed, expected);
     }
 
     #[test]
@@ -739,6 +766,18 @@ mod tests {
     }
 
     #[test]
+    fn field_schema_format_and_pattern() {
+        let json = serde_json::json!({
+            "type": "string",
+            "format": "slug",
+            "pattern": "^[a-z0-9-]+$"
+        });
+        let schema: FieldSchema = serde_json::from_value(json).unwrap();
+        assert_eq!(schema.format, Some(FieldFormat::Slug));
+        assert_eq!(schema.pattern.as_deref(), Some("^[a-z0-9-]+$"));
+    }
+
+    #[test]
     fn test_type_name() {
         let t = TypeName::new("test");
         assert_eq!(t.as_str(), "test");
@@ -755,6 +794,8 @@ mod tests {
         let schema: FieldSchema = serde_json::from_value(json).unwrap();
         assert!(!schema.required);
         assert!(!schema.nullable);
+        assert!(schema.format.is_none());
+        assert!(schema.pattern.is_none());
         assert!(schema.description.is_none());
     }
 

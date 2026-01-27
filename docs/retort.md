@@ -65,7 +65,16 @@ rules:
 
 a single rule can emit multiple objects by using a list for `emit`:
 
+```
+
+format constraints can be used inside the schema block:
+
 ```yaml
+fields:
+  slug: { type: string, format: slug }
+  name: { type: string, pattern: "^[A-Z0-9-]+$" }
+```
+yaml
 rules:
   - name: fabric
     select: /fabrics/*

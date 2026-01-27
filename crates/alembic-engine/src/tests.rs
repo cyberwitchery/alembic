@@ -61,6 +61,8 @@ fn schema_for(objects: &[Object]) -> Schema {
                 required: true,
                 nullable: false,
                 description: None,
+                format: None,
+                pattern: None,
             });
         }
         for field in object.attrs.keys() {
@@ -69,6 +71,8 @@ fn schema_for(objects: &[Object]) -> Schema {
                 required: false,
                 nullable: true,
                 description: None,
+                format: None,
+                pattern: None,
             });
         }
     }
@@ -392,6 +396,8 @@ fn detects_missing_references() {
                                 required: true,
                                 nullable: false,
                                 description: None,
+                                format: None,
+                                pattern: None,
                             },
                         ),
                         (
@@ -401,6 +407,8 @@ fn detects_missing_references() {
                                 required: true,
                                 nullable: false,
                                 description: None,
+                                format: None,
+                                pattern: None,
                             },
                         ),
                     ]),
@@ -413,6 +421,8 @@ fn detects_missing_references() {
                             required: true,
                             nullable: false,
                             description: None,
+                            format: None,
+                            pattern: None,
                         },
                     )]),
                 },

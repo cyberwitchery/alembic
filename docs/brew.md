@@ -64,7 +64,16 @@ json is supported when the file extension is `.json`.
 
 raw yaml uses any shape you want, and a retort mapping compiles it into the ir.
 
-```bash
+```
+
+string fields can optionally use `format` and/or `pattern`:
+
+```yaml
+fields:
+  slug: { type: string, format: slug }
+  name: { type: string, pattern: "^[A-Z0-9-]+$" }
+```
+bash
 alembic distill -f examples/raw.yaml --retort examples/retort.yaml -o ir.json
 ```
 

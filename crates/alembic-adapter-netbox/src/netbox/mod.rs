@@ -95,7 +95,7 @@ impl NetBoxAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alembic_core::{JsonMap, Key, TypeName, Uid};
+    use alembic_core::{key_string, JsonMap, Key, TypeName, Uid};
     use alembic_engine::{Op, ProjectedObject, ProjectionData};
     use httpmock::Method::{GET, POST};
     use httpmock::{Mock, MockServer};
@@ -234,6 +234,8 @@ mod tests {
                                 required: true,
                                 nullable: false,
                                 description: None,
+                                format: None,
+                                pattern: None,
                             },
                         )]),
                         fields: std::collections::BTreeMap::new(),
@@ -249,6 +251,8 @@ mod tests {
                                 required: true,
                                 nullable: false,
                                 description: None,
+                                format: None,
+                                pattern: None,
                             },
                         )]),
                         fields: std::collections::BTreeMap::new(),
@@ -263,7 +267,10 @@ mod tests {
 
         let device = observed
             .by_key
-            .get(&(TypeName::new("dcim.device"), "name=leaf01".to_string()))
+            .get(&(
+                TypeName::new("dcim.device"),
+                key_string(&key("name", json!("leaf01"))),
+            ))
             .unwrap();
         let site_uid = uid(1).to_string();
         assert_eq!(
@@ -355,6 +362,8 @@ mod tests {
                                 required: true,
                                 nullable: false,
                                 description: None,
+                                format: None,
+                                pattern: None,
                             },
                         )]),
                         fields: std::collections::BTreeMap::from([
@@ -365,6 +374,8 @@ mod tests {
                                     required: true,
                                     nullable: false,
                                     description: None,
+                                    format: None,
+                                    pattern: None,
                                 },
                             ),
                             (
@@ -376,6 +387,8 @@ mod tests {
                                     required: true,
                                     nullable: false,
                                     description: None,
+                                    format: None,
+                                    pattern: None,
                                 },
                             ),
                         ]),
@@ -391,6 +404,8 @@ mod tests {
                                 required: true,
                                 nullable: false,
                                 description: None,
+                                format: None,
+                                pattern: None,
                             },
                         )]),
                         fields: std::collections::BTreeMap::from([
@@ -401,6 +416,8 @@ mod tests {
                                     required: true,
                                     nullable: false,
                                     description: None,
+                                    format: None,
+                                    pattern: None,
                                 },
                             ),
                             (
@@ -410,6 +427,8 @@ mod tests {
                                     required: true,
                                     nullable: false,
                                     description: None,
+                                    format: None,
+                                    pattern: None,
                                 },
                             ),
                         ]),
@@ -524,6 +543,8 @@ mod tests {
                             required: true,
                             nullable: false,
                             description: None,
+                            format: None,
+                            pattern: None,
                         },
                     )]),
                     fields: std::collections::BTreeMap::from([(
@@ -533,6 +554,8 @@ mod tests {
                             required: true,
                             nullable: false,
                             description: None,
+                            format: None,
+                            pattern: None,
                         },
                     )]),
                 },
@@ -589,6 +612,8 @@ mod tests {
                             required: true,
                             nullable: false,
                             description: None,
+                            format: None,
+                            pattern: None,
                         },
                     )]),
                     fields: std::collections::BTreeMap::new(),
@@ -640,6 +665,8 @@ mod tests {
                             required: true,
                             nullable: false,
                             description: None,
+                            format: None,
+                            pattern: None,
                         },
                     )]),
                     fields: std::collections::BTreeMap::new(),

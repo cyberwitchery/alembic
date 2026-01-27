@@ -907,6 +907,8 @@ mod tests {
                 required: true,
                 nullable: false,
                 description: None,
+                format: None,
+                pattern: None,
             },
         );
         schema.types.insert("dcim.device".to_string(), type_schema);
@@ -960,6 +962,8 @@ mod tests {
                 required: true,
                 nullable: false,
                 description: None,
+                format: None,
+                pattern: None,
             },
         );
         let type_schema = TypeSchema {
@@ -985,6 +989,8 @@ mod tests {
                 required: true,
                 nullable: false,
                 description: None,
+                format: None,
+                pattern: None,
             },
         );
         let type_schema = TypeSchema {
@@ -1067,6 +1073,8 @@ mod tests {
                 required: true,
                 nullable: false,
                 description: None,
+                format: None,
+                pattern: None,
             },
         );
         key_fields.insert(
@@ -1078,6 +1086,8 @@ mod tests {
                 required: true,
                 nullable: false,
                 description: None,
+                format: None,
+                pattern: None,
             },
         );
         let type_schema = TypeSchema {

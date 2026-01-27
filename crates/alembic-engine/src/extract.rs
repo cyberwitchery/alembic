@@ -398,7 +398,9 @@ mod tests {
     use super::*;
     use crate::types::{BackendId, ObservedState};
     use crate::ProjectionData;
-    use alembic_core::{FieldSchema, FieldType, JsonMap, Key, Schema, TypeName, TypeSchema, Uid};
+    use alembic_core::{
+        key_string, FieldSchema, FieldType, JsonMap, Key, Schema, TypeName, TypeSchema, Uid,
+    };
     use async_trait::async_trait;
     use futures::executor::block_on;
     use serde_json::json;
@@ -483,6 +485,8 @@ mod tests {
                     required: true,
                     nullable: false,
                     description: None,
+                    format: None,
+                    pattern: None,
                 });
             }
             for field in object.attrs.keys() {
@@ -491,6 +495,8 @@ mod tests {
                     required: false,
                     nullable: true,
                     description: None,
+                    format: None,
+                    pattern: None,
                 });
             }
         }
@@ -537,8 +543,9 @@ mod tests {
         let report = block_on(extract_inventory(&adapter, &schema, None)).unwrap();
         assert_eq!(report.inventory.objects.len(), 1);
         let object = &report.inventory.objects[0];
-        assert_eq!(object.key, key_str("site=fra1"));
-        assert_eq!(object.uid, uid_v5("dcim.site", "site=fra1"));
+        let key = key_str("site=fra1");
+        assert_eq!(object.key, key);
+        assert_eq!(object.uid, uid_v5("dcim.site", &key_string(&key)));
     }
 
     #[test]

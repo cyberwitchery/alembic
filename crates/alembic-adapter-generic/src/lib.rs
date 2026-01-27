@@ -210,6 +210,10 @@ impl GenericAdapter {
 impl Adapter for GenericAdapter {
     async fn observe(&self, schema: &Schema, types: &[TypeName]) -> Result<ObservedState> {
         let mut state = ObservedState::default();
+        let mappings = {
+            let guard = self.state_guard()?;
+            state_mappings(&guard)
+        };
         let requested: BTreeSet<TypeName> = if types.is_empty() {
             self.config
                 .types
@@ -236,6 +240,7 @@ impl Adapter for GenericAdapter {
 
             let client = self.client.clone();
             let base_url = self.config.base_url.clone();
+            let mappings = mappings.clone();
 
             tasks.push(tokio::spawn(async move {
                 let url = format!(
@@ -277,6 +282,7 @@ impl Adapter for GenericAdapter {
                         _ => return Err(anyhow!("expected object in results")),
                     };
 
+                    let attrs = normalize_attrs_refs(&attrs, &type_schema, &mappings);
                     let key = build_key_from_schema(&type_schema, &attrs)?;
 
                     observed.push(ObservedObject {
@@ -410,6 +416,31 @@ fn resolve_path(value: &serde_json::Value, path: &str) -> Result<serde_json::Val
     Ok(current.clone())
 }
 
+#[derive(Debug, Default, Clone)]
+struct StateMappings {
+    by_type: BTreeMap<String, BTreeMap<BackendId, Uid>>,
+}
+
+impl StateMappings {
+    fn uid_for(&self, type_name: &str, backend_id: &BackendId) -> Option<Uid> {
+        self.by_type
+            .get(type_name)
+            .and_then(|mapping| mapping.get(backend_id).copied())
+    }
+}
+
+fn state_mappings(state: &StateStore) -> StateMappings {
+    let mut by_type = BTreeMap::new();
+    for (type_name, mapping) in state.all_mappings() {
+        let mut id_to_uid = BTreeMap::new();
+        for (uid, backend_id) in mapping {
+            id_to_uid.insert(backend_id.clone(), *uid);
+        }
+        by_type.insert(type_name.as_str().to_string(), id_to_uid);
+    }
+    StateMappings { by_type }
+}
+
 fn build_key_from_schema(type_schema: &alembic_core::TypeSchema, attrs: &JsonMap) -> Result<Key> {
     let mut map = BTreeMap::new();
     for field in type_schema.key.keys() {
@@ -429,6 +460,74 @@ fn resolved_from_state(state: &StateStore) -> BTreeMap<Uid, BackendId> {
         }
     }
     resolved
+}
+
+fn normalize_attrs_refs(
+    attrs: &JsonMap,
+    type_schema: &alembic_core::TypeSchema,
+    mappings: &StateMappings,
+) -> JsonMap {
+    let mut normalized = attrs.clone();
+    for (field, schema) in &type_schema.fields {
+        match &schema.r#type {
+            alembic_core::FieldType::Ref { target } => {
+                if let Some(value) = attrs.get(field) {
+                    normalized.insert(
+                        field.clone(),
+                        normalize_ref_value(value.clone(), target, mappings),
+                    );
+                }
+            }
+            alembic_core::FieldType::ListRef { target } => {
+                if let Some(value) = attrs.get(field) {
+                    let updated = if let serde_json::Value::Array(items) = value {
+                        let mapped = items
+                            .iter()
+                            .cloned()
+                            .map(|item| normalize_ref_value(item, target, mappings))
+                            .collect::<Vec<_>>();
+                        serde_json::Value::Array(mapped)
+                    } else {
+                        value.clone()
+                    };
+                    normalized.insert(field.clone(), updated);
+                }
+            }
+            _ => {}
+        }
+    }
+    normalized
+}
+
+fn normalize_ref_value(
+    value: serde_json::Value,
+    target: &str,
+    mappings: &StateMappings,
+) -> serde_json::Value {
+    if value.is_null() {
+        return value;
+    }
+    let backend_id = match backend_id_from_value(&value) {
+        Some(id) => id,
+        None => return value,
+    };
+    mappings
+        .uid_for(target, &backend_id)
+        .map(|uid| serde_json::Value::String(uid.to_string()))
+        .unwrap_or(value)
+}
+
+fn backend_id_from_value(value: &serde_json::Value) -> Option<BackendId> {
+    match value {
+        serde_json::Value::Number(n) => n.as_u64().map(BackendId::Int).or_else(|| {
+            n.as_i64()
+                .and_then(|v| u64::try_from(v).ok())
+                .map(BackendId::Int)
+        }),
+        serde_json::Value::String(s) => Some(BackendId::String(s.clone())),
+        serde_json::Value::Object(map) => map.get("id").and_then(backend_id_from_value),
+        _ => None,
+    }
 }
 
 fn resolve_attrs(
@@ -544,6 +643,8 @@ mod tests {
                 required: true,
                 nullable: false,
                 description: None,
+                format: None,
+                pattern: None,
             },
         );
         device_fields.insert(
@@ -555,6 +656,8 @@ mod tests {
                 required: true,
                 nullable: false,
                 description: None,
+                format: None,
+                pattern: None,
             },
         );
 
@@ -566,6 +669,8 @@ mod tests {
                 required: true,
                 nullable: false,
                 description: None,
+                format: None,
+                pattern: None,
             },
         );
         types.insert(
@@ -584,6 +689,8 @@ mod tests {
                 required: true,
                 nullable: false,
                 description: None,
+                format: None,
+                pattern: None,
             },
         );
 
@@ -595,6 +702,8 @@ mod tests {
                 required: true,
                 nullable: false,
                 description: None,
+                format: None,
+                pattern: None,
             },
         );
         types.insert(
@@ -979,6 +1088,49 @@ mod tests {
 
         mock.assert();
         assert_eq!(state.by_key.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_observe_resolves_ref_ids_to_uids() {
+        let server = MockServer::start();
+        let mock = server.mock(|when, then| {
+            when.method(GET).path("/api/devices");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(serde_json::json!({
+                    "results": [
+                        {"id": 1, "name": "device1", "site": 7}
+                    ]
+                }));
+        });
+
+        let mut state = new_state_store();
+        let site_uid = Uid::new_v4();
+        state.set_backend_id(
+            TypeName::new("site".to_string()),
+            site_uid,
+            BackendId::Int(7),
+        );
+
+        let config = test_config(&server.base_url());
+        let adapter = GenericAdapter::new(config, state).unwrap();
+        let schema = test_schema();
+
+        let observed = adapter
+            .observe(&schema, &[TypeName::new("device".to_string())])
+            .await
+            .unwrap();
+
+        mock.assert();
+        let device = observed
+            .by_key
+            .values()
+            .next()
+            .expect("expected observed device");
+        assert_eq!(
+            device.attrs.get("site"),
+            Some(&serde_json::Value::String(site_uid.to_string()))
+        );
     }
 
     #[tokio::test]

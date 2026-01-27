@@ -71,13 +71,27 @@ fn load_recursive(
 
     merge_schema(schema, brew.schema)?;
 
-    // Set source location on each object from this file
-    let source = SourceLocation::file(&canonical);
+    // Set source location on each object from this file, with line numbers
     for object in brew.objects {
-        objects.push(object.with_source(source.clone()));
+        let line = find_uid_line(&content, &object.uid.to_string());
+        let source = match line {
+            Some(n) => SourceLocation::file_line(&canonical, n),
+            None => SourceLocation::file(&canonical),
+        };
+        objects.push(object.with_source(source));
     }
 
     Ok(())
+}
+
+/// Find the line number (1-indexed) where a UID appears in the content.
+fn find_uid_line(content: &str, uid: &str) -> Option<usize> {
+    for (idx, line) in content.lines().enumerate() {
+        if line.contains(uid) {
+            return Some(idx + 1); // 1-indexed line numbers
+        }
+    }
+    None
 }
 
 fn merge_schema(current: &mut Option<Schema>, incoming: Option<Schema>) -> Result<()> {
