@@ -277,31 +277,34 @@ fn render_field(field: &FieldSpec) -> String {
         args.push("null=True".to_string());
     }
 
-    let args_str = if args.is_empty() {
-        String::new()
-    } else {
-        format!("({})", args.join(", "))
-    };
+    let args_str = args.join(", ");
 
     match &field.field_type {
         DjangoFieldType::Char => {
+            if args_str.is_empty() {
+                format!("{} = models.CharField(max_length=255)", field.name)
+            } else {
+                format!(
+                    "{} = models.CharField(max_length=255, {})",
+                    field.name, args_str
+                )
+            }
+        }
+        DjangoFieldType::Text => format!("{} = models.TextField({})", field.name, args_str),
+        DjangoFieldType::Integer => format!("{} = models.IntegerField({})", field.name, args_str),
+        DjangoFieldType::Float => format!("{} = models.FloatField({})", field.name, args_str),
+        DjangoFieldType::Boolean => format!("{} = models.BooleanField({})", field.name, args_str),
+        DjangoFieldType::Uuid => format!("{} = models.UUIDField({})", field.name, args_str),
+        DjangoFieldType::Date => format!("{} = models.DateField({})", field.name, args_str),
+        DjangoFieldType::DateTime => format!("{} = models.DateTimeField({})", field.name, args_str),
+        DjangoFieldType::Time => format!("{} = models.TimeField({})", field.name, args_str),
+        DjangoFieldType::Json => format!("{} = models.JSONField({})", field.name, args_str),
+        DjangoFieldType::Slug => format!("{} = models.SlugField({})", field.name, args_str),
+        DjangoFieldType::IpAddress => {
             format!(
-                "{} = models.CharField(max_length=255{})",
+                "{} = models.GenericIPAddressField({})",
                 field.name, args_str
             )
-        }
-        DjangoFieldType::Text => format!("{} = models.TextField{}", field.name, args_str),
-        DjangoFieldType::Integer => format!("{} = models.IntegerField{}", field.name, args_str),
-        DjangoFieldType::Float => format!("{} = models.FloatField{}", field.name, args_str),
-        DjangoFieldType::Boolean => format!("{} = models.BooleanField{}", field.name, args_str),
-        DjangoFieldType::Uuid => format!("{} = models.UUIDField{}", field.name, args_str),
-        DjangoFieldType::Date => format!("{} = models.DateField{}", field.name, args_str),
-        DjangoFieldType::DateTime => format!("{} = models.DateTimeField{}", field.name, args_str),
-        DjangoFieldType::Time => format!("{} = models.TimeField{}", field.name, args_str),
-        DjangoFieldType::Json => format!("{} = models.JSONField{}", field.name, args_str),
-        DjangoFieldType::Slug => format!("{} = models.SlugField{}", field.name, args_str),
-        DjangoFieldType::IpAddress => {
-            format!("{} = models.GenericIPAddressField{}", field.name, args_str)
         }
         DjangoFieldType::ForeignKey { target } => {
             let mut fk_args = vec![
