@@ -114,6 +114,6 @@ rules:
 
 ## determinism
 
-- the compiler sorts objects by type name and key.
+- the compiler sorts objects by type name and key (canonical JSON of the key map).
 - same raw yaml + same retort yields the same ir and plan order.
 - multi-emit rules produce objects in a deterministic order.

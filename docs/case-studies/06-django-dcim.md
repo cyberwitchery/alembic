@@ -61,4 +61,5 @@ python manage.py runserver
 ## notes
 
 - the generated app includes models, admin stubs, and serializers.
+- field types and relations come from the schema.
 - treat this as a scaffold, then customize.

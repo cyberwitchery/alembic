@@ -22,6 +22,7 @@ and supported feature set.
 - keys are used to bootstrap state when no mapping exists.
 - keys are structured maps; the adapter uses the schema key fields when observing objects.
 - key fields are used as query filters when resolving backend ids for updates/deletes.
+- key matching uses the canonical JSON form of the key map.
 
 ## projection data
 

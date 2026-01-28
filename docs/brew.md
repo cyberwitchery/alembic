@@ -58,6 +58,7 @@ json is supported when the file extension is `.json`.
 
 - use stable uuids for `uid`.
 - keep `key` human-readable and stable across renames where possible.
+- keys are canonicalized as JSON for matching and sorting.
 - never include backend ids in `attrs`.
 
 ## raw + retort

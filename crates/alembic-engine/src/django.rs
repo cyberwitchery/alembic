@@ -1,8 +1,7 @@
 //! django app generation from alembic ir.
 
-use alembic_core::{key_string, Inventory, TypeName};
+use alembic_core::{FieldFormat, FieldType, Inventory, Schema, TypeName, TypeSchema};
 use anyhow::Result;
-use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 
@@ -27,25 +26,38 @@ const ADMIN_SEARCH_FIELDS: &[&str] = &["key", "uid"];
 
 #[derive(Debug)]
 struct ModelSpec {
-    class_name: &'static str,
+    class_name: String,
     fields: Vec<FieldSpec>,
+    key_fields: Vec<String>,
+    has_validators: bool,
 }
 
-#[derive(Debug)]
-enum FieldSpec {
-    Text {
-        name: &'static str,
-        optional: bool,
-    },
-    Bool {
-        name: &'static str,
-        optional: bool,
-    },
-    ForeignKey {
-        name: &'static str,
-        target: &'static str,
-        optional: bool,
-    },
+#[derive(Debug, Clone)]
+struct FieldSpec {
+    name: String,
+    field_type: DjangoFieldType,
+    required: bool,
+    nullable: bool,
+    choices: Option<Vec<String>>,
+    validators: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+enum DjangoFieldType {
+    Char,
+    Text,
+    Integer,
+    Float,
+    Boolean,
+    Uuid,
+    Date,
+    DateTime,
+    Time,
+    Json,
+    Slug,
+    IpAddress,
+    ForeignKey { target: String },
+    ManyToMany { target: String },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -70,8 +82,11 @@ pub fn emit_django_app(
         .and_then(|name| name.to_str())
         .unwrap_or("alembic_app");
 
-    let types = inventory_types(inventory);
-    let models: Vec<ModelSpec> = types.iter().filter_map(model_spec).collect();
+    let types = schema_types(&inventory.schema);
+    let models: Vec<ModelSpec> = types
+        .into_iter()
+        .map(|(name, schema)| model_spec_from_schema(&name, &schema))
+        .collect();
 
     let rendered = render_files(&models, app_name, options.emit_admin);
     fs::write(app_dir.join(GENERATED_MODELS), rendered.models)?;
@@ -106,135 +121,50 @@ pub fn emit_django_app(
     Ok(())
 }
 
-fn inventory_types(inventory: &Inventory) -> Vec<TypeName> {
-    let mut objects = inventory.objects.clone();
-    objects.sort_by(|a, b| {
-        (a.type_name.as_str().to_string(), key_string(&a.key))
-            .cmp(&(b.type_name.as_str().to_string(), key_string(&b.key)))
-    });
-
-    let mut seen = BTreeSet::new();
-    let mut types = Vec::new();
-    for object in objects {
-        if seen.insert(object.type_name.as_str().to_string()) {
-            types.push(object.type_name);
-        }
-    }
+fn schema_types(schema: &Schema) -> Vec<(TypeName, TypeSchema)> {
+    let mut types: Vec<(String, TypeSchema)> = schema
+        .types
+        .iter()
+        .map(|(name, schema)| (name.clone(), schema.clone()))
+        .collect();
+    types.sort_by(|a, b| a.0.cmp(&b.0));
     types
+        .into_iter()
+        .map(|(name, schema)| (TypeName::new(name), schema))
+        .collect()
 }
 
-fn model_spec(type_name: &TypeName) -> Option<ModelSpec> {
-    match type_name.as_str() {
-        "dcim.site" => Some(ModelSpec {
-            class_name: "Site",
-            fields: vec![
-                FieldSpec::Text {
-                    name: "name",
-                    optional: false,
-                },
-                FieldSpec::Text {
-                    name: "slug",
-                    optional: false,
-                },
-                FieldSpec::Text {
-                    name: "status",
-                    optional: true,
-                },
-                FieldSpec::Text {
-                    name: "description",
-                    optional: true,
-                },
-            ],
-        }),
-        "dcim.device" => Some(ModelSpec {
-            class_name: "Device",
-            fields: vec![
-                FieldSpec::Text {
-                    name: "name",
-                    optional: false,
-                },
-                FieldSpec::ForeignKey {
-                    name: "site",
-                    target: "Site",
-                    optional: false,
-                },
-                FieldSpec::Text {
-                    name: "role",
-                    optional: false,
-                },
-                FieldSpec::Text {
-                    name: "device_type",
-                    optional: false,
-                },
-                FieldSpec::Text {
-                    name: "status",
-                    optional: true,
-                },
-            ],
-        }),
-        "dcim.interface" => Some(ModelSpec {
-            class_name: "Interface",
-            fields: vec![
-                FieldSpec::Text {
-                    name: "name",
-                    optional: false,
-                },
-                FieldSpec::ForeignKey {
-                    name: "device",
-                    target: "Device",
-                    optional: false,
-                },
-                FieldSpec::Text {
-                    name: "if_type",
-                    optional: true,
-                },
-                FieldSpec::Bool {
-                    name: "enabled",
-                    optional: true,
-                },
-                FieldSpec::Text {
-                    name: "description",
-                    optional: true,
-                },
-            ],
-        }),
-        "ipam.prefix" => Some(ModelSpec {
-            class_name: "Prefix",
-            fields: vec![
-                FieldSpec::Text {
-                    name: "prefix",
-                    optional: false,
-                },
-                FieldSpec::ForeignKey {
-                    name: "site",
-                    target: "Site",
-                    optional: true,
-                },
-                FieldSpec::Text {
-                    name: "description",
-                    optional: true,
-                },
-            ],
-        }),
-        "ipam.ip_address" => Some(ModelSpec {
-            class_name: "IpAddress",
-            fields: vec![
-                FieldSpec::Text {
-                    name: "address",
-                    optional: false,
-                },
-                FieldSpec::ForeignKey {
-                    name: "assigned_interface",
-                    target: "Interface",
-                    optional: true,
-                },
-                FieldSpec::Text {
-                    name: "description",
-                    optional: true,
-                },
-            ],
-        }),
-        _ => None,
+fn model_spec_from_schema(type_name: &TypeName, schema: &TypeSchema) -> ModelSpec {
+    let class_name = class_name_for_type(type_name.as_str());
+    let mut fields = Vec::new();
+    let mut key_fields = Vec::new();
+    let mut has_validators = false;
+
+    for (field, field_schema) in schema.key.iter() {
+        let spec = field_spec_from_schema(field, field_schema, true);
+        if !spec.validators.is_empty() {
+            has_validators = true;
+        }
+        key_fields.push(field.to_string());
+        fields.push(spec);
+    }
+
+    for (field, field_schema) in schema.fields.iter() {
+        if schema.key.contains_key(field) {
+            continue;
+        }
+        let spec = field_spec_from_schema(field, field_schema, false);
+        if !spec.validators.is_empty() {
+            has_validators = true;
+        }
+        fields.push(spec);
+    }
+
+    ModelSpec {
+        class_name,
+        fields,
+        key_fields,
+        has_validators,
     }
 }
 
@@ -247,7 +177,7 @@ struct DjangoFiles {
 }
 
 fn render_files(models: &[ModelSpec], app_name: &str, emit_admin: bool) -> DjangoFiles {
-    let model_names: Vec<&str> = models.iter().map(|m| m.class_name).collect();
+    let model_names: Vec<String> = models.iter().map(|m| m.class_name.clone()).collect();
     let model_import = import_line("from .generated_models import ", &model_names);
     let serializer_names: Vec<String> = model_names
         .iter()
@@ -261,6 +191,11 @@ fn render_files(models: &[ModelSpec], app_name: &str, emit_admin: bool) -> Djang
     let view_import = import_line("from .generated_views import ", &view_names);
 
     let models_block = render_models_block(models);
+    let validators_import = if models.iter().any(|m| m.has_validators) {
+        "from django.core.validators import RegexValidator"
+    } else {
+        ""
+    };
     let admins_block = if emit_admin {
         render_admins_block(models)
     } else {
@@ -270,7 +205,13 @@ fn render_files(models: &[ModelSpec], app_name: &str, emit_admin: bool) -> Djang
     let views_block = render_views_block(models);
     let routes_block = render_routes_block(models);
 
-    let models = render_template(MODELS_TEMPLATE, &[("models", models_block)]);
+    let models = render_template(
+        MODELS_TEMPLATE,
+        &[
+            ("validators_import", validators_import.to_string()),
+            ("models", models_block),
+        ],
+    );
     let admin = if emit_admin {
         Some(render_template(
             ADMIN_TEMPLATE,
@@ -316,27 +257,68 @@ fn render_files(models: &[ModelSpec], app_name: &str, emit_admin: bool) -> Djang
 }
 
 fn render_field(field: &FieldSpec) -> String {
-    match field {
-        FieldSpec::Text { name, optional } => {
-            format!("{} = models.TextField({})", name, nullable(*optional))
+    let mut args = Vec::new();
+    if let Some(choices) = &field.choices {
+        let choice_items = choices
+            .iter()
+            .map(|value| format!("(\"{value}\", \"{value}\")"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        args.push(format!("choices=[{choice_items}]"));
+    }
+    if !field.validators.is_empty() {
+        let validators = field.validators.join(", ");
+        args.push(format!("validators=[{validators}]"));
+    }
+    if !field.required {
+        args.push("blank=True".to_string());
+    }
+    if field.nullable {
+        args.push("null=True".to_string());
+    }
+
+    let args_str = if args.is_empty() {
+        String::new()
+    } else {
+        format!("({})", args.join(", "))
+    };
+
+    match &field.field_type {
+        DjangoFieldType::Char => {
+            format!(
+                "{} = models.CharField(max_length=255{})",
+                field.name, args_str
+            )
         }
-        FieldSpec::Bool { name, optional } => {
-            format!("{} = models.BooleanField({})", name, nullable(*optional))
+        DjangoFieldType::Text => format!("{} = models.TextField{}", field.name, args_str),
+        DjangoFieldType::Integer => format!("{} = models.IntegerField{}", field.name, args_str),
+        DjangoFieldType::Float => format!("{} = models.FloatField{}", field.name, args_str),
+        DjangoFieldType::Boolean => format!("{} = models.BooleanField{}", field.name, args_str),
+        DjangoFieldType::Uuid => format!("{} = models.UUIDField{}", field.name, args_str),
+        DjangoFieldType::Date => format!("{} = models.DateField{}", field.name, args_str),
+        DjangoFieldType::DateTime => format!("{} = models.DateTimeField{}", field.name, args_str),
+        DjangoFieldType::Time => format!("{} = models.TimeField{}", field.name, args_str),
+        DjangoFieldType::Json => format!("{} = models.JSONField{}", field.name, args_str),
+        DjangoFieldType::Slug => format!("{} = models.SlugField{}", field.name, args_str),
+        DjangoFieldType::IpAddress => {
+            format!("{} = models.GenericIPAddressField{}", field.name, args_str)
         }
-        FieldSpec::ForeignKey {
-            name,
-            target,
-            optional,
-        } => {
-            let mut args = vec![
+        DjangoFieldType::ForeignKey { target } => {
+            let mut fk_args = vec![
                 format!("\"{}\"", target),
                 "on_delete=models.PROTECT".to_string(),
             ];
-            if *optional {
-                args.push("null=True".to_string());
-                args.push("blank=True".to_string());
-            }
-            format!("{} = models.ForeignKey({})", name, args.join(", "))
+            fk_args.extend(args);
+            format!("{} = models.ForeignKey({})", field.name, fk_args.join(", "))
+        }
+        DjangoFieldType::ManyToMany { target } => {
+            let mut m2m_args = vec![format!("\"{}\"", target)];
+            m2m_args.extend(args.into_iter().filter(|arg| arg != "null=True"));
+            format!(
+                "{} = models.ManyToManyField({})",
+                field.name,
+                m2m_args.join(", ")
+            )
         }
     }
 }
@@ -358,11 +340,26 @@ fn render_model_block(model: &ModelSpec) -> String {
         fields.push(render_field(field));
     }
 
-    format!(
-        "class {}(models.Model):\n    {}\n",
-        model.class_name,
-        fields.join("\n    ")
-    )
+    let mut lines = Vec::new();
+    lines.push(format!("class {}(models.Model):", model.class_name));
+    lines.push(format!("    {}", fields.join("\n    ")));
+
+    if !model.key_fields.is_empty() {
+        let unique_fields = model
+            .key_fields
+            .iter()
+            .map(|field| format!("\"{field}\""))
+            .collect::<Vec<_>>()
+            .join(", ");
+        lines.push("".to_string());
+        lines.push("    class Meta:".to_string());
+        lines.push(format!(
+            "        constraints = [models.UniqueConstraint(fields=[{unique_fields}], name=\"{}_key\")]",
+            model.class_name.to_lowercase()
+        ));
+    }
+
+    lines.join("\n") + "\n"
 }
 
 fn render_admins_block(models: &[ModelSpec]) -> String {
@@ -434,20 +431,18 @@ fn render_routes_block(models: &[ModelSpec]) -> String {
     models
         .iter()
         .map(|model| {
-            let name = model.class_name;
-            let endpoint = format!("{}s", name.to_lowercase());
-            format!("router.register(\"{endpoint}\", {name}ViewSet)")
+            let endpoint = pluralize(model.class_name.to_lowercase().as_str());
+            format!(
+                "router.register(\"{endpoint}\", {}ViewSet)",
+                model.class_name
+            )
         })
         .collect::<Vec<String>>()
         .join("\n")
 }
 
-fn field_name(field: &FieldSpec) -> &'static str {
-    match field {
-        FieldSpec::Text { name, .. } => name,
-        FieldSpec::Bool { name, .. } => name,
-        FieldSpec::ForeignKey { name, .. } => name,
-    }
+fn field_name(field: &FieldSpec) -> &str {
+    field.name.as_str()
 }
 
 fn join_quoted(fields: &[&str]) -> String {
@@ -473,45 +468,166 @@ fn import_line<T: AsRef<str>>(prefix: &str, names: &[T]) -> String {
     }
 }
 
-fn admin_list_display(model: &ModelSpec) -> Vec<&'static str> {
+fn admin_list_display(model: &ModelSpec) -> Vec<&str> {
     let mut fields = vec!["key", "uid"];
-    fields.extend(model.fields.iter().map(field_name));
-    fields
-}
-
-fn admin_search_fields_for_model(model: &ModelSpec) -> Vec<&'static str> {
-    let mut fields = vec!["key"];
     for field in &model.fields {
-        if matches!(field, FieldSpec::Text { .. }) {
-            fields.push(field_name(field));
-        }
+        fields.push(field_name(field));
     }
     fields
 }
 
-fn admin_list_filter(model: &ModelSpec) -> Vec<&'static str> {
-    let mut fields = Vec::new();
+fn admin_search_fields_for_model(model: &ModelSpec) -> Vec<&str> {
+    let mut fields = vec!["key"];
     for field in &model.fields {
-        match field {
-            FieldSpec::Bool { name, .. } => fields.push(*name),
-            FieldSpec::Text { name, .. } if *name == "status" => fields.push(*name),
+        match field.field_type {
+            DjangoFieldType::Char
+            | DjangoFieldType::Text
+            | DjangoFieldType::Slug
+            | DjangoFieldType::Uuid
+            | DjangoFieldType::IpAddress => fields.push(field_name(field)),
             _ => {}
         }
     }
     fields
 }
 
-fn serializer_fields(model: &ModelSpec) -> Vec<&'static str> {
-    let mut fields = vec!["uid", "key", "attrs"];
-    fields.extend(model.fields.iter().map(field_name));
+fn admin_list_filter(model: &ModelSpec) -> Vec<&str> {
+    let mut fields = Vec::new();
+    for field in &model.fields {
+        match field.field_type {
+            DjangoFieldType::Boolean => fields.push(field_name(field)),
+            _ => {
+                if field.name == "status" {
+                    fields.push(field_name(field));
+                }
+            }
+        }
+    }
     fields
 }
 
-fn nullable(optional: bool) -> String {
-    if optional {
-        "null=True, blank=True".to_string()
+fn serializer_fields(model: &ModelSpec) -> Vec<&str> {
+    let mut fields = vec!["uid", "key", "attrs"];
+    for field in &model.fields {
+        fields.push(field_name(field));
+    }
+    fields
+}
+
+fn class_name_for_type(type_name: &str) -> String {
+    type_name
+        .split('.')
+        .map(|segment| {
+            segment
+                .split('_')
+                .filter(|s| !s.is_empty())
+                .map(|part| {
+                    let mut chars = part.chars();
+                    match chars.next() {
+                        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                        None => String::new(),
+                    }
+                })
+                .collect::<String>()
+        })
+        .collect::<String>()
+}
+
+fn pluralize(name: &str) -> String {
+    if name.ends_with('s') {
+        format!("{name}es")
+    } else if let Some(stripped) = name.strip_suffix('y') {
+        format!("{}ies", stripped)
     } else {
-        String::new()
+        format!("{name}s")
+    }
+}
+
+fn field_spec_from_schema(
+    name: &str,
+    schema: &alembic_core::FieldSchema,
+    is_key: bool,
+) -> FieldSpec {
+    let mut validators = Vec::new();
+    let mut choices = None;
+
+    if let Some(format) = &schema.format {
+        validators.push(format_validator(format));
+    }
+    if let Some(pattern) = &schema.pattern {
+        validators.push(format!("RegexValidator(r\"{pattern}\")"));
+    }
+
+    let field_type = match &schema.r#type {
+        FieldType::String => DjangoFieldType::Char,
+        FieldType::Text => DjangoFieldType::Text,
+        FieldType::Int => DjangoFieldType::Integer,
+        FieldType::Float => DjangoFieldType::Float,
+        FieldType::Bool => DjangoFieldType::Boolean,
+        FieldType::Uuid => DjangoFieldType::Uuid,
+        FieldType::Date => DjangoFieldType::Date,
+        FieldType::Datetime => DjangoFieldType::DateTime,
+        FieldType::Time => DjangoFieldType::Time,
+        FieldType::Json => DjangoFieldType::Json,
+        FieldType::IpAddress => DjangoFieldType::IpAddress,
+        FieldType::Cidr | FieldType::Prefix | FieldType::Mac => {
+            validators.push(format_validator(&format_for_field_type(&schema.r#type)));
+            DjangoFieldType::Char
+        }
+        FieldType::Slug => DjangoFieldType::Slug,
+        FieldType::Enum { values } => {
+            choices = Some(values.clone());
+            DjangoFieldType::Char
+        }
+        FieldType::List { .. } | FieldType::Map { .. } => DjangoFieldType::Json,
+        FieldType::Ref { target } => DjangoFieldType::ForeignKey {
+            target: class_name_for_type(target),
+        },
+        FieldType::ListRef { target } => DjangoFieldType::ManyToMany {
+            target: class_name_for_type(target),
+        },
+    };
+
+    let required = schema.required || is_key;
+    let nullable = schema.nullable && !is_key;
+
+    FieldSpec {
+        name: name.to_string(),
+        field_type,
+        required,
+        nullable,
+        choices,
+        validators,
+    }
+}
+
+fn format_for_field_type(field_type: &FieldType) -> FieldFormat {
+    match field_type {
+        FieldType::IpAddress => FieldFormat::IpAddress,
+        FieldType::Cidr => FieldFormat::Cidr,
+        FieldType::Prefix => FieldFormat::Prefix,
+        FieldType::Mac => FieldFormat::Mac,
+        FieldType::Uuid => FieldFormat::Uuid,
+        FieldType::Slug => FieldFormat::Slug,
+        _ => FieldFormat::Slug,
+    }
+}
+
+fn format_validator(format: &FieldFormat) -> String {
+    match format {
+        FieldFormat::Slug => "RegexValidator(r\"^[a-z0-9]+(?:[a-z0-9_-]*[a-z0-9])?$\")".to_string(),
+        FieldFormat::IpAddress => {
+            "RegexValidator(r\"^([0-9]{1,3}\\.){3}[0-9]{1,3}$|^[0-9a-fA-F:]+$\")".to_string()
+        }
+        FieldFormat::Cidr | FieldFormat::Prefix => {
+            "RegexValidator(r\"^[0-9a-fA-F:\\./]+$\")".to_string()
+        }
+        FieldFormat::Mac => {
+            "RegexValidator(r\"^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$\")".to_string()
+        }
+        FieldFormat::Uuid => {
+            "RegexValidator(r\"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$\")".to_string()
+        }
     }
 }
 
@@ -626,36 +742,154 @@ mod tests {
         .unwrap()
     }
 
-    fn schema_for(objects: &[Object]) -> Schema {
-        let mut types: BTreeMap<String, TypeSchema> = BTreeMap::new();
-        for object in objects {
-            let entry = types
-                .entry(object.type_name.as_str().to_string())
-                .or_insert_with(|| TypeSchema {
-                    key: BTreeMap::new(),
-                    fields: BTreeMap::new(),
-                });
-            for field in object.key.keys() {
-                entry.key.entry(field.clone()).or_insert(FieldSchema {
-                    r#type: FieldType::Json,
-                    required: true,
-                    nullable: false,
-                    description: None,
-                    format: None,
-                    pattern: None,
-                });
-            }
-            for field in object.attrs.keys() {
-                entry.fields.entry(field.clone()).or_insert(FieldSchema {
-                    r#type: FieldType::Json,
-                    required: false,
-                    nullable: true,
-                    description: None,
-                    format: None,
-                    pattern: None,
-                });
-            }
-        }
+    fn test_schema() -> Schema {
+        let mut types = BTreeMap::new();
+        types.insert(
+            "dcim.site".to_string(),
+            TypeSchema {
+                key: BTreeMap::from([(
+                    "slug".to_string(),
+                    FieldSchema {
+                        r#type: FieldType::Slug,
+                        required: true,
+                        nullable: false,
+                        description: None,
+                        format: None,
+                        pattern: None,
+                    },
+                )]),
+                fields: BTreeMap::from([
+                    (
+                        "name".to_string(),
+                        FieldSchema {
+                            r#type: FieldType::String,
+                            required: true,
+                            nullable: false,
+                            description: None,
+                            format: None,
+                            pattern: None,
+                        },
+                    ),
+                    (
+                        "slug".to_string(),
+                        FieldSchema {
+                            r#type: FieldType::Slug,
+                            required: true,
+                            nullable: false,
+                            description: None,
+                            format: None,
+                            pattern: None,
+                        },
+                    ),
+                ]),
+            },
+        );
+        types.insert(
+            "dcim.device".to_string(),
+            TypeSchema {
+                key: BTreeMap::from([(
+                    "name".to_string(),
+                    FieldSchema {
+                        r#type: FieldType::Slug,
+                        required: true,
+                        nullable: false,
+                        description: None,
+                        format: None,
+                        pattern: None,
+                    },
+                )]),
+                fields: BTreeMap::from([
+                    (
+                        "name".to_string(),
+                        FieldSchema {
+                            r#type: FieldType::String,
+                            required: true,
+                            nullable: false,
+                            description: None,
+                            format: None,
+                            pattern: None,
+                        },
+                    ),
+                    (
+                        "site".to_string(),
+                        FieldSchema {
+                            r#type: FieldType::Ref {
+                                target: "dcim.site".to_string(),
+                            },
+                            required: true,
+                            nullable: false,
+                            description: None,
+                            format: None,
+                            pattern: None,
+                        },
+                    ),
+                    (
+                        "role".to_string(),
+                        FieldSchema {
+                            r#type: FieldType::String,
+                            required: true,
+                            nullable: false,
+                            description: None,
+                            format: None,
+                            pattern: None,
+                        },
+                    ),
+                    (
+                        "device_type".to_string(),
+                        FieldSchema {
+                            r#type: FieldType::String,
+                            required: true,
+                            nullable: false,
+                            description: None,
+                            format: None,
+                            pattern: None,
+                        },
+                    ),
+                ]),
+            },
+        );
+        types.insert(
+            "dcim.interface".to_string(),
+            TypeSchema {
+                key: BTreeMap::from([(
+                    "name".to_string(),
+                    FieldSchema {
+                        r#type: FieldType::Slug,
+                        required: true,
+                        nullable: false,
+                        description: None,
+                        format: None,
+                        pattern: None,
+                    },
+                )]),
+                fields: BTreeMap::from([
+                    (
+                        "name".to_string(),
+                        FieldSchema {
+                            r#type: FieldType::String,
+                            required: true,
+                            nullable: false,
+                            description: None,
+                            format: None,
+                            pattern: None,
+                        },
+                    ),
+                    (
+                        "device".to_string(),
+                        FieldSchema {
+                            r#type: FieldType::Ref {
+                                target: "dcim.device".to_string(),
+                            },
+                            required: true,
+                            nullable: false,
+                            description: None,
+                            format: None,
+                            pattern: None,
+                        },
+                    ),
+                ]),
+            },
+        );
         Schema { types }
     }
 
@@ -664,7 +898,7 @@ mod tests {
             obj(
                 1,
                 "dcim.device",
-                "device=leaf01",
+                "name=leaf01",
                 attrs_map(vec![
                     ("name", json!("leaf01")),
                     ("site", json!(Uuid::from_u128(2).to_string())),
@@ -675,13 +909,13 @@ mod tests {
             obj(
                 2,
                 "dcim.site",
-                "site=fra1",
+                "slug=fra1",
                 attrs_map(vec![("name", json!("FRA1")), ("slug", json!("fra1"))]),
             ),
             obj(
                 3,
                 "dcim.interface",
-                "interface=eth0",
+                "name=eth0",
                 attrs_map(vec![
                     ("name", json!("eth0")),
                     ("device", json!(Uuid::from_u128(1).to_string())),
@@ -689,7 +923,7 @@ mod tests {
             ),
         ];
         Inventory {
-            schema: schema_for(&objects),
+            schema: test_schema(),
             objects,
         }
     }
@@ -717,7 +951,9 @@ mod tests {
         assert!(dir.path().join(USER_EXTENSIONS).exists());
 
         let models = fs::read_to_string(dir.path().join(GENERATED_MODELS)).unwrap();
-        assert!(models.contains("class Site"));
+        assert!(models.contains("class DcimSite"));
+        assert!(models.contains("site = models.ForeignKey(\"DcimSite\""));
+        assert!(models.contains("device = models.ForeignKey(\"DcimDevice\""));
         assert!(models.contains("uid = models.UUIDField"));
         assert!(models.contains("attrs = models.JSONField"));
     }
@@ -777,12 +1013,12 @@ mod tests {
         .unwrap();
         let admin = fs::read_to_string(dir.path().join(GENERATED_ADMIN)).unwrap();
 
-        assert!(admin.contains("class DeviceAdmin"));
-        assert!(admin.contains("list_display = [\"key\", \"uid\", \"name\", \"site\", \"role\", \"device_type\", \"status\"]"));
+        assert!(admin.contains("class DcimDeviceAdmin"));
+        assert!(admin.contains(
+            "list_display = [\"key\", \"uid\", \"name\", \"device_type\", \"role\", \"site\"]"
+        ));
         assert!(admin.contains("search_fields = [\"key\", \"uid\"]"));
-        assert!(admin.contains("list_filter = [\"status\"]"));
-        assert!(admin.contains("class InterfaceAdmin"));
-        assert!(admin.contains("list_filter = [\"enabled\"]"));
+        assert!(admin.contains("class DcimInterfaceAdmin"));
     }
 
     #[test]
@@ -798,9 +1034,9 @@ mod tests {
         let views = fs::read_to_string(dir.path().join(GENERATED_VIEWS)).unwrap();
         let urls = fs::read_to_string(dir.path().join(GENERATED_URLS)).unwrap();
 
-        assert!(serializers.contains("class DeviceSerializer"));
-        assert!(views.contains("class DeviceViewSet"));
-        assert!(urls.contains("router.register(\"devices\""));
+        assert!(serializers.contains("class DcimDeviceSerializer"));
+        assert!(views.contains("class DcimDeviceViewSet"));
+        assert!(urls.contains("router.register(\"dcimdevices\""));
         assert!(urls.contains("schema_view"));
     }
 
@@ -815,8 +1051,10 @@ mod tests {
         .unwrap();
 
         let models = fs::read_to_string(dir.path().join(GENERATED_MODELS)).unwrap();
-        let device_pos = models.find("class Device").unwrap();
-        let site_pos = models.find("class Site").unwrap();
-        assert!(device_pos < site_pos);
+        let device_pos = models.find("class DcimDevice").unwrap();
+        let interface_pos = models.find("class DcimInterface").unwrap();
+        let site_pos = models.find("class DcimSite").unwrap();
+        assert!(device_pos < interface_pos);
+        assert!(interface_pos < site_pos);
     }
 }

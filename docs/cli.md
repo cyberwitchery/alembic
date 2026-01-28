@@ -37,13 +37,18 @@ alembic plan -f examples/brew.yaml -o plan.json \
 alembic plan -f examples/brew.yaml -o plan.json \
   --netbox-url https://netbox.example.com \
   --netbox-token $NETBOX_TOKEN
+
+alembic plan -f examples/brew.yaml -o plan.json \
+  --backend generic \
+  --generic-config examples/generic.yaml
 ```
 
 - creates a deterministic plan
 - writes json plan to the output path
 - honors `--allow-delete` if you want delete ops
 - accepts any type string and arbitrary attrs (schema validation is required)
-- `--backend` selects the target adapter (default: `netbox`, supported: `netbox`, `nautobot`)
+- `--backend` selects the target adapter (default: `netbox`, supported: `netbox`, `nautobot`, `generic`, `peeringdb`)
+- `--generic-config` is required when using the generic backend
 - `--projection` applies attrs -> backend mapping before planning
 - `--projection-strict=false` disables custom field existence checks
 - `--projection-propose` prints missing custom fields and tags and offers to create them (NetBox only)
@@ -56,11 +61,17 @@ alembic apply -p plan.json \
   --nautobot-url https://nautobot.example.com \
   --nautobot-token $NAUTOBOT_TOKEN \
   --allow-delete
+
+alembic apply -p plan.json \
+  --backend generic \
+  --generic-config examples/generic.yaml \
+  --allow-delete
 ```
 
 - applies a plan file
 - deletes are blocked unless `--allow-delete` is provided
 - ensure the `--backend` matches the one used during planning
+- the `peeringdb` backend is read-only; apply will return an error
 
 ## distill
 
@@ -93,6 +104,7 @@ alembic extract -o inventory.yaml \
 - observes backend state and emits a canonical inventory
 - `--projection` inverts projection into `attrs` keys where possible
 - `--retort` provides required schema metadata (retort inversion is not implemented; warning emitted)
+- `peeringdb` uses `PEERINGDB_API_KEY` for authentication
 
 ## cast
 
@@ -116,3 +128,4 @@ alembic cast django -f examples/brew.yaml -o ./out \
 - `NETBOX_TOKEN`
 - `NAUTOBOT_URL`
 - `NAUTOBOT_TOKEN`
+- `PEERINGDB_API_KEY`

@@ -50,20 +50,14 @@ cargo run -p alembic-cli -- plan -f examples/raw.yaml --retort examples/retort.y
 
 ## adapter coverage
 
-types supported end-to-end by netbox and nautobot adapters:
+netbox and nautobot adapters are schema-driven and resolve types dynamically via their content type/object type APIs.
 
-- `dcim.site`
-- `dcim.device`
-- `dcim.interface`
-- `ipam.prefix`
-- `ipam.ip_address`
+- any `type` with a REST endpoint can be observed and applied
+- `attrs` are passed through using backend field names
+- `ref`/`list_ref` fields are resolved via state mappings during apply
+- projection supports custom fields, tags, and local context where the backend advertises support
 
-relationships (validated when declared in the schema):
-
-- `dcim.device.attrs.site` -> `dcim.site.uid`
-- `dcim.interface.attrs.device` -> `dcim.device.uid`
-- `ipam.ip_address.attrs.assigned_interface` -> `dcim.interface.uid`
-- `ipam.prefix.attrs.site` -> `dcim.site.uid` (optional)
+relationships are validated strictly by schema and `uid` references.
 
 ## workspace layout
 
@@ -71,6 +65,8 @@ relationships (validated when declared in the schema):
 - `crates/alembic-engine`: loader, graph validation, planning, state store
 - `crates/alembic-adapter-netbox`: netbox adapter
 - `crates/alembic-adapter-nautobot`: nautobot adapter
+- `crates/alembic-adapter-generic`: generic rest adapter
+- `crates/alembic-adapter-peeringdb`: peeringdb adapter
 - `crates/alembic-cli`: cli binary
 
 ## notes

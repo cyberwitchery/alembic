@@ -8,23 +8,26 @@ alembic/
     alembic-core
     alembic-engine
     alembic-adapter-netbox
+    alembic-adapter-nautobot
+    alembic-adapter-generic
+    alembic-adapter-peeringdb
     alembic-cli
 ```
 
-## Project Status
+## project status
 
-- **NetBox**: 100% (stable)
-- **Nautobot**: 100% (stable, concurrent observation, projection proposal)
-- **Generic REST**: Initial release (specification-driven)
-- **PeeringDB**: Read-only support
+- **netbox**: stable
+- **nautobot**: stable (projection proposal supported)
+- **generic rest**: initial release (spec-driven)
+- **peeringdb**: read-only
 
-### Core Features
+## core features
 
-- Concurrent observation for Nautobot adapter
-- Plan summary output
-- Interactive apply mode (`--interactive`)
-- Enhanced error reporting with source location hints
-- Pluggable state store backends (`StateBackend` trait)
+- deterministic plan/apply pipeline
+- schema-required ir with typed references
+- projection support (custom fields/tags/local context)
+- interactive apply mode (`--interactive`)
+- django cast generation
 
 ## build
 
@@ -52,6 +55,16 @@ cargo install cargo-llvm-cov --locked
 cargo llvm-cov --workspace --all-features --fail-under-lines 80 \
   --ignore-filename-regex "netbox\\.rs/"
 ```
+
+
+## ci
+
+```bash
+./scripts/ci.sh
+```
+
+- runs fmt, clippy, tests, and coverage
+- local mock servers require binding to loopback; some environments may need elevated privileges
 
 ## release
 

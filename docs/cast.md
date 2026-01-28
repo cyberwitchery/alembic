@@ -48,6 +48,20 @@ the default Django skeleton.
 By default, the generated app exposes DRF viewsets under `/api/` and an OpenAPI
 schema at `/api/schema/`.
 
+## schema-driven models
+
+The generator reads the inventory schema and emits Django fields for every schema type
+(even if there are no objects of that type in the inventory).
+
+Type mapping:
+
+- primitives map to native Django fields (e.g. string -> CharField, int -> IntegerField)
+- `ref` / `list_ref` become ForeignKey / ManyToManyField
+- `format` / `pattern` constraints become validators
+- key fields are enforced with a `UniqueConstraint`
+
+`attrs` and `key` are still preserved as JSON/text fields for debugging.
+
 ## flags
 
 - `--project <name>`: Django project name (default: `alembic_project`)
