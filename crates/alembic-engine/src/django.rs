@@ -276,6 +276,12 @@ fn render_field(field: &FieldSpec) -> String {
     if field.nullable {
         args.push("null=True".to_string());
     }
+    if matches!(field.field_type, DjangoFieldType::IpAddress)
+        && args.iter().any(|arg| arg == "blank=True")
+        && !args.iter().any(|arg| arg == "null=True")
+    {
+        args.push("null=True".to_string());
+    }
 
     let args_str = args.join(", ");
 
