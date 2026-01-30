@@ -43,6 +43,24 @@ jobs:
           if [ -f alembic/Cargo.toml ]; then cd alembic; fi
           cargo test --workspace --all-features
 
+      - name: install sbom tool
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-cyclonedx
+
+      - name: generate sbom
+        run: |
+          if [ -f alembic/Cargo.toml ]; then cd alembic; fi
+          for manifest in crates/*/Cargo.toml; do
+            cargo cyclonedx --manifest-path "$manifest" --format json --override-filename "sbom-${{ github.ref_name }}.cdx" --all-features
+          done
+
+      - name: upload sbom
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-${{ github.ref_name }}
+          path: "crates/**/sbom-${{ github.ref_name }}.cdx.json"
+
       - name: publish alembic-core
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
