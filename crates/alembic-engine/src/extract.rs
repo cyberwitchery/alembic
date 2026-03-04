@@ -1,8 +1,9 @@
 //! extraction of canonical inventory from backend state.
 
 use crate::projection::{CustomFieldStrategy, ProjectionSpec};
+use crate::state::StateStore;
 use crate::types::ObservedObject;
-use crate::Adapter;
+use crate::ObserveAdapter;
 use alembic_core::{key_string, uid_v5, Inventory, JsonMap, Object, Schema, TypeName};
 use anyhow::Result;
 use serde_json::Value;
@@ -15,9 +16,10 @@ pub struct ExtractReport {
 }
 
 pub async fn extract_inventory(
-    adapter: &dyn Adapter,
+    adapter: &(impl ObserveAdapter + ?Sized),
     schema: &Schema,
     projection: Option<&ProjectionSpec>,
+    state: &StateStore,
 ) -> Result<ExtractReport> {
     let types = projection
         .map(|spec| {
@@ -33,7 +35,7 @@ pub async fn extract_inventory(
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    let observed = adapter.observe(schema, &types).await?;
+    let observed = adapter.observe(schema, &types, state).await?;
 
     let mut objects: Vec<ObservedObject> = observed.by_key.values().cloned().collect();
     objects.sort_by(|a, b| {
@@ -397,6 +399,7 @@ fn merge_attrs(
 mod tests {
     use super::*;
     use crate::types::{BackendId, ObservedState};
+    use crate::Adapter;
     use crate::ProjectionData;
     use alembic_core::{
         key_string, FieldSchema, FieldType, JsonMap, Key, Schema, TypeName, TypeSchema, Uid,
@@ -416,6 +419,7 @@ mod tests {
             &self,
             _schema: &Schema,
             _types: &[TypeName],
+            _state: &crate::state::StateStore,
         ) -> anyhow::Result<ObservedState> {
             Ok(self.observed.clone())
         }
@@ -424,6 +428,7 @@ mod tests {
             &self,
             _schema: &Schema,
             _ops: &[crate::Op],
+            _state: &crate::state::StateStore,
         ) -> anyhow::Result<crate::ApplyReport> {
             unimplemented!("not used in extract tests")
         }
@@ -540,7 +545,8 @@ mod tests {
             observed: observed_state(),
         };
         let schema = schema_for_observed(&adapter.observed);
-        let report = block_on(extract_inventory(&adapter, &schema, None)).unwrap();
+        let state = crate::state::StateStore::new(None, crate::state::StateData::default());
+        let report = block_on(extract_inventory(&adapter, &schema, None, &state)).unwrap();
         assert_eq!(report.inventory.objects.len(), 1);
         let object = &report.inventory.objects[0];
         let key = key_str("site=fra1");
@@ -595,7 +601,14 @@ rules:
 "#,
         )
         .unwrap();
-        let report = block_on(extract_inventory(&adapter, &schema, Some(&projection))).unwrap();
+        let state = crate::state::StateStore::new(None, crate::state::StateData::default());
+        let report = block_on(extract_inventory(
+            &adapter,
+            &schema,
+            Some(&projection),
+            &state,
+        ))
+        .unwrap();
         let object = &report.inventory.objects[0];
         assert_eq!(
             object.attrs.get("model.serial"),
@@ -640,7 +653,14 @@ rules:
         )
         .unwrap();
         let schema = schema_for_observed(&adapter.observed);
-        let report = block_on(extract_inventory(&adapter, &schema, Some(&projection))).unwrap();
+        let state = crate::state::StateStore::new(None, crate::state::StateData::default());
+        let report = block_on(extract_inventory(
+            &adapter,
+            &schema,
+            Some(&projection),
+            &state,
+        ))
+        .unwrap();
         let object = &report.inventory.objects[0];
         assert_eq!(
             object.attrs.get("owner"),
@@ -690,7 +710,14 @@ rules:
         )
         .unwrap();
         let schema = schema_for_observed(&adapter.observed);
-        let report = block_on(extract_inventory(&adapter, &schema, Some(&projection))).unwrap();
+        let state = crate::state::StateStore::new(None, crate::state::StateData::default());
+        let report = block_on(extract_inventory(
+            &adapter,
+            &schema,
+            Some(&projection),
+            &state,
+        ))
+        .unwrap();
         assert!(report
             .warnings
             .iter()
@@ -740,7 +767,14 @@ rules:
         )
         .unwrap();
         let schema = schema_for_observed(&adapter.observed);
-        let report = block_on(extract_inventory(&adapter, &schema, Some(&projection))).unwrap();
+        let state = crate::state::StateStore::new(None, crate::state::StateData::default());
+        let report = block_on(extract_inventory(
+            &adapter,
+            &schema,
+            Some(&projection),
+            &state,
+        ))
+        .unwrap();
         let object = &report.inventory.objects[0];
         assert_eq!(
             object.attrs.get("context.role"),
@@ -791,7 +825,14 @@ rules:
         )
         .unwrap();
         let schema = schema_for_observed(&adapter.observed);
-        let report = block_on(extract_inventory(&adapter, &schema, Some(&projection))).unwrap();
+        let state = crate::state::StateStore::new(None, crate::state::StateData::default());
+        let report = block_on(extract_inventory(
+            &adapter,
+            &schema,
+            Some(&projection),
+            &state,
+        ))
+        .unwrap();
         assert!(report
             .warnings
             .iter()
@@ -840,7 +881,14 @@ rules:
         )
         .unwrap();
         let schema = schema_for_observed(&adapter.observed);
-        let report = block_on(extract_inventory(&adapter, &schema, Some(&projection))).unwrap();
+        let state = crate::state::StateStore::new(None, crate::state::StateData::default());
+        let report = block_on(extract_inventory(
+            &adapter,
+            &schema,
+            Some(&projection),
+            &state,
+        ))
+        .unwrap();
         assert!(report
             .warnings
             .iter()
@@ -884,7 +932,14 @@ rules:
         )
         .unwrap();
         let schema = schema_for_observed(&adapter.observed);
-        let report = block_on(extract_inventory(&adapter, &schema, Some(&projection))).unwrap();
+        let state = crate::state::StateStore::new(None, crate::state::StateData::default());
+        let report = block_on(extract_inventory(
+            &adapter,
+            &schema,
+            Some(&projection),
+            &state,
+        ))
+        .unwrap();
         let object = &report.inventory.objects[0];
         assert_eq!(
             object.attrs.get("model.tags"),
@@ -933,7 +988,14 @@ rules:
         )
         .unwrap();
         let schema = schema_for_observed(&adapter.observed);
-        let report = block_on(extract_inventory(&adapter, &schema, Some(&projection))).unwrap();
+        let state = crate::state::StateStore::new(None, crate::state::StateData::default());
+        let report = block_on(extract_inventory(
+            &adapter,
+            &schema,
+            Some(&projection),
+            &state,
+        ))
+        .unwrap();
         let object = &report.inventory.objects[0];
         assert_eq!(
             object.attrs.get("tags"),
@@ -978,7 +1040,14 @@ rules:
         )
         .unwrap();
         let schema = schema_for_observed(&adapter.observed);
-        let report = block_on(extract_inventory(&adapter, &schema, Some(&projection))).unwrap();
+        let state = crate::state::StateStore::new(None, crate::state::StateData::default());
+        let report = block_on(extract_inventory(
+            &adapter,
+            &schema,
+            Some(&projection),
+            &state,
+        ))
+        .unwrap();
         assert!(report
             .warnings
             .iter()
@@ -1029,7 +1098,14 @@ rules:
         )
         .unwrap();
         let schema = schema_for_observed(&adapter.observed);
-        let report = block_on(extract_inventory(&adapter, &schema, Some(&projection))).unwrap();
+        let state = crate::state::StateStore::new(None, crate::state::StateData::default());
+        let report = block_on(extract_inventory(
+            &adapter,
+            &schema,
+            Some(&projection),
+            &state,
+        ))
+        .unwrap();
         assert!(report
             .warnings
             .iter()
@@ -1083,7 +1159,14 @@ rules:
         )
         .unwrap();
         let schema = schema_for_observed(&adapter.observed);
-        let report = block_on(extract_inventory(&adapter, &schema, Some(&projection))).unwrap();
+        let state = crate::state::StateStore::new(None, crate::state::StateData::default());
+        let report = block_on(extract_inventory(
+            &adapter,
+            &schema,
+            Some(&projection),
+            &state,
+        ))
+        .unwrap();
         assert!(report
             .warnings
             .iter()

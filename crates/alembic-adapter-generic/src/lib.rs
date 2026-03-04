@@ -2,8 +2,8 @@
 
 use alembic_core::{JsonMap, Key, Schema, TypeName, Uid};
 use alembic_engine::{
-    Adapter, AppliedOp, ApplyReport, BackendId, ObservedObject, ObservedState, Op, ProjectionData,
-    StateStore,
+    apply_non_delete_with_retries, Adapter, AdapterApplyError, AppliedOp, ApplyReport, BackendId,
+    ObservedObject, ObservedState, Op, ProjectionData, RetryApplyDriver,
 };
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
@@ -62,11 +62,10 @@ pub enum DeleteStrategy {
 pub struct GenericAdapter {
     config: GenericConfig,
     client: reqwest::Client,
-    state: std::sync::Mutex<StateStore>,
 }
 
 impl GenericAdapter {
-    pub fn new(config: GenericConfig, state: StateStore) -> Result<Self> {
+    pub fn new(config: GenericConfig) -> Result<Self> {
         let mut headers = reqwest::header::HeaderMap::new();
         for (k, v) in &config.headers {
             let name = reqwest::header::HeaderName::from_bytes(k.as_bytes())?;
@@ -78,17 +77,20 @@ impl GenericAdapter {
             .default_headers(headers)
             .build()?;
 
-        Ok(Self {
-            config,
-            client,
-            state: std::sync::Mutex::new(state),
-        })
-    }
+        for (type_name, endpoint) in &config.types {
+            match endpoint.update_method.as_str() {
+                "PATCH" | "PUT" => {}
+                other => {
+                    return Err(anyhow!(
+                        "invalid update_method {:?} for type {} (expected PATCH or PUT)",
+                        other,
+                        type_name
+                    ));
+                }
+            }
+        }
 
-    fn state_guard(&self) -> Result<std::sync::MutexGuard<'_, StateStore>> {
-        self.state
-            .lock()
-            .map_err(|_| anyhow!("state lock poisoned"))
+        Ok(Self { config, client })
     }
 
     async fn apply_create(
@@ -133,6 +135,7 @@ impl GenericAdapter {
             serde_json::Value::String(s) => BackendId::String(s),
             _ => return Err(anyhow!("id must be number or string")),
         };
+        resolved.insert(uid, backend_id.clone());
 
         Ok(AppliedOp {
             uid,
@@ -185,9 +188,17 @@ impl GenericAdapter {
             .get(type_name.as_str())
             .ok_or_else(|| anyhow!("no config for {}", type_name))?;
 
-        if let DeleteStrategy::Standard = endpoint.delete_strategy {
-            let url = self.backend_id_to_url(endpoint, id);
-            self.client.delete(&url).send().await?.error_for_status()?;
+        match endpoint.delete_strategy {
+            DeleteStrategy::Standard => {
+                let url = self.backend_id_to_url(endpoint, id);
+                self.client.delete(&url).send().await?.error_for_status()?;
+            }
+            DeleteStrategy::None => {
+                return Err(anyhow!(
+                    "delete not supported for type {} (delete_strategy: none)",
+                    type_name
+                ));
+            }
         }
         Ok(())
     }
@@ -208,12 +219,14 @@ impl GenericAdapter {
 
 #[async_trait]
 impl Adapter for GenericAdapter {
-    async fn observe(&self, schema: &Schema, types: &[TypeName]) -> Result<ObservedState> {
+    async fn observe(
+        &self,
+        schema: &Schema,
+        types: &[TypeName],
+        state_store: &alembic_engine::StateStore,
+    ) -> Result<ObservedState> {
         let mut state = ObservedState::default();
-        let mappings = {
-            let guard = self.state_guard()?;
-            state_mappings(&guard)
-        };
+        let mappings = state_mappings(state_store);
         let requested: BTreeSet<TypeName> = if types.is_empty() {
             self.config
                 .types
@@ -308,12 +321,14 @@ impl Adapter for GenericAdapter {
         Ok(state)
     }
 
-    async fn apply(&self, schema: &Schema, ops: &[Op]) -> Result<ApplyReport> {
+    async fn apply(
+        &self,
+        schema: &Schema,
+        ops: &[Op],
+        state: &alembic_engine::StateStore,
+    ) -> Result<ApplyReport> {
         let mut applied = Vec::new();
-        let mut resolved = {
-            let state_guard = self.state_guard()?;
-            resolved_from_state(&state_guard)
-        };
+        let mut resolved = resolved_from_state(state);
 
         let mut creates_updates = Vec::new();
         let mut deletes = Vec::new();
@@ -324,22 +339,23 @@ impl Adapter for GenericAdapter {
             }
         }
 
-        let mut pending = creates_updates;
-        let mut progress = true;
-        while !pending.is_empty() && progress {
-            progress = false;
-            let current = std::mem::take(&mut pending);
-            let current_len = current.len();
-            let mut next = Vec::new();
+        struct ApplyDriver<'a> {
+            adapter: &'a GenericAdapter,
+            resolved: &'a mut BTreeMap<Uid, BackendId>,
+            schema: &'a Schema,
+        }
 
-            for op in current {
-                let result = match &op {
+        #[async_trait]
+        impl RetryApplyDriver for ApplyDriver<'_> {
+            async fn apply_non_delete(&mut self, op: &Op) -> Result<AppliedOp> {
+                match op {
                     Op::Create {
                         uid,
                         type_name,
                         desired,
                     } => {
-                        self.apply_create(*uid, type_name, desired, schema, &mut resolved)
+                        self.adapter
+                            .apply_create(*uid, type_name, desired, self.schema, self.resolved)
                             .await
                     }
                     Op::Update {
@@ -349,36 +365,42 @@ impl Adapter for GenericAdapter {
                         backend_id,
                         ..
                     } => {
-                        self.apply_update(
-                            *uid,
-                            type_name,
-                            desired,
-                            backend_id.as_ref(),
-                            schema,
-                            &resolved,
-                        )
-                        .await
+                        self.adapter
+                            .apply_update(
+                                *uid,
+                                type_name,
+                                desired,
+                                backend_id.as_ref(),
+                                self.schema,
+                                self.resolved,
+                            )
+                            .await
                     }
-                    Op::Delete { .. } => continue,
-                };
-
-                match result {
-                    Ok(applied_op) => {
-                        if let Some(backend_id) = &applied_op.backend_id {
-                            resolved.insert(applied_op.uid, backend_id.clone());
-                        }
-                        applied.push(applied_op);
-                        progress = true;
-                    }
-                    Err(err) if is_missing_ref_error(&err) => next.push(op),
-                    Err(err) => return Err(err),
+                    Op::Delete { .. } => unreachable!("delete ops filtered before retry"),
                 }
             }
 
-            if next.len() == current_len {
-                return Err(anyhow!("unresolved references in generic plan"));
+            fn is_retryable(&self, err: &anyhow::Error) -> bool {
+                is_missing_ref_error(err)
             }
-            pending = next;
+        }
+
+        let mut driver = ApplyDriver {
+            adapter: self,
+            resolved: &mut resolved,
+            schema,
+        };
+        let retry_result = apply_non_delete_with_retries(&creates_updates, &mut driver).await?;
+        if !retry_result.pending.is_empty() {
+            let missing = describe_missing_refs(&retry_result.pending, &resolved);
+            return Err(anyhow!("unresolved references: {missing}"));
+        }
+
+        for applied_op in retry_result.applied {
+            if let Some(backend_id) = &applied_op.backend_id {
+                resolved.insert(applied_op.uid, backend_id.clone());
+            }
+            applied.push(applied_op);
         }
 
         for op in deletes {
@@ -429,7 +451,7 @@ impl StateMappings {
     }
 }
 
-fn state_mappings(state: &StateStore) -> StateMappings {
+fn state_mappings(state: &alembic_engine::StateStore) -> StateMappings {
     let mut by_type = BTreeMap::new();
     for (type_name, mapping) in state.all_mappings() {
         let mut id_to_uid = BTreeMap::new();
@@ -452,7 +474,7 @@ fn build_key_from_schema(type_schema: &alembic_core::TypeSchema, attrs: &JsonMap
     Ok(Key::from(map))
 }
 
-fn resolved_from_state(state: &StateStore) -> BTreeMap<Uid, BackendId> {
+fn resolved_from_state(state: &alembic_engine::StateStore) -> BTreeMap<Uid, BackendId> {
     let mut resolved = BTreeMap::new();
     for mapping in state.all_mappings().values() {
         for (uid, backend_id) in mapping {
@@ -580,7 +602,7 @@ fn resolve_ref_value(
     let uid = Uid::parse_str(&raw).map_err(|_| anyhow!("invalid uuid: {}", raw))?;
     let id = resolved
         .get(&uid)
-        .ok_or_else(|| anyhow!("missing referenced uid {}", uid))?;
+        .ok_or(AdapterApplyError::MissingRef { uid })?;
     Ok(match id {
         BackendId::Int(n) => serde_json::Value::Number((*n).into()),
         BackendId::String(s) => serde_json::Value::String(s.clone()),
@@ -588,1066 +610,52 @@ fn resolve_ref_value(
 }
 
 fn is_missing_ref_error(err: &anyhow::Error) -> bool {
-    err.to_string().contains("missing referenced uid")
+    err.downcast_ref::<AdapterApplyError>()
+        .is_some_and(|e| matches!(e, AdapterApplyError::MissingRef { .. }))
+}
+
+fn describe_missing_refs(ops: &[Op], resolved: &BTreeMap<Uid, BackendId>) -> String {
+    let mut missing = BTreeSet::new();
+    for op in ops {
+        if let Op::Create { desired, .. } | Op::Update { desired, .. } = op {
+            for value in desired.base.attrs.values() {
+                collect_missing_refs(value, resolved, &mut missing);
+            }
+        }
+    }
+    missing
+        .into_iter()
+        .map(|uid| uid.to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn collect_missing_refs(
+    value: &serde_json::Value,
+    resolved: &BTreeMap<Uid, BackendId>,
+    missing: &mut BTreeSet<Uid>,
+) {
+    match value {
+        serde_json::Value::String(raw) => {
+            if let Ok(uid) = Uid::parse_str(raw) {
+                if !resolved.contains_key(&uid) {
+                    missing.insert(uid);
+                }
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                collect_missing_refs(item, resolved, missing);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for value in map.values() {
+                collect_missing_refs(value, resolved, missing);
+            }
+        }
+        _ => {}
+    }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use alembic_core::{FieldSchema, FieldType, TypeSchema};
-    use alembic_engine::StateData;
-    use httpmock::prelude::*;
-    use httpmock::Method::PATCH;
-
-    fn new_state_store() -> StateStore {
-        StateStore::new(None, StateData::default())
-    }
-
-    fn test_config(base_url: &str) -> GenericConfig {
-        let mut types = BTreeMap::new();
-        types.insert(
-            "device".to_string(),
-            EndpointConfig {
-                path: "/api/devices".to_string(),
-                results_path: Some("results".to_string()),
-                id_path: "id".to_string(),
-                delete_strategy: DeleteStrategy::Standard,
-                update_method: "PATCH".to_string(),
-            },
-        );
-        types.insert(
-            "site".to_string(),
-            EndpointConfig {
-                path: "/api/sites".to_string(),
-                results_path: None,
-                id_path: "id".to_string(),
-                delete_strategy: DeleteStrategy::None,
-                update_method: "PUT".to_string(),
-            },
-        );
-        GenericConfig {
-            base_url: base_url.to_string(),
-            headers: BTreeMap::new(),
-            types,
-        }
-    }
-
-    fn test_schema() -> Schema {
-        let mut types = BTreeMap::new();
-
-        let mut device_fields = BTreeMap::new();
-        device_fields.insert(
-            "name".to_string(),
-            FieldSchema {
-                r#type: FieldType::String,
-                required: true,
-                nullable: false,
-                description: None,
-                format: None,
-                pattern: None,
-            },
-        );
-        device_fields.insert(
-            "site".to_string(),
-            FieldSchema {
-                r#type: FieldType::Ref {
-                    target: "site".to_string(),
-                },
-                required: true,
-                nullable: false,
-                description: None,
-                format: None,
-                pattern: None,
-            },
-        );
-
-        let mut device_key = BTreeMap::new();
-        device_key.insert(
-            "name".to_string(),
-            FieldSchema {
-                r#type: FieldType::String,
-                required: true,
-                nullable: false,
-                description: None,
-                format: None,
-                pattern: None,
-            },
-        );
-        types.insert(
-            "device".to_string(),
-            TypeSchema {
-                key: device_key,
-                fields: device_fields,
-            },
-        );
-
-        let mut site_fields = BTreeMap::new();
-        site_fields.insert(
-            "name".to_string(),
-            FieldSchema {
-                r#type: FieldType::String,
-                required: true,
-                nullable: false,
-                description: None,
-                format: None,
-                pattern: None,
-            },
-        );
-
-        let mut site_key = BTreeMap::new();
-        site_key.insert(
-            "name".to_string(),
-            FieldSchema {
-                r#type: FieldType::String,
-                required: true,
-                nullable: false,
-                description: None,
-                format: None,
-                pattern: None,
-            },
-        );
-        types.insert(
-            "site".to_string(),
-            TypeSchema {
-                key: site_key,
-                fields: site_fields,
-            },
-        );
-
-        Schema { types }
-    }
-
-    fn empty_schema() -> Schema {
-        Schema {
-            types: BTreeMap::new(),
-        }
-    }
-
-    // Tests for resolve_path
-    #[test]
-    fn test_resolve_path_simple() {
-        let value = serde_json::json!({"id": 42, "name": "test"});
-        let result = resolve_path(&value, "id").unwrap();
-        assert_eq!(result, serde_json::json!(42));
-    }
-
-    #[test]
-    fn test_resolve_path_nested() {
-        let value = serde_json::json!({"data": {"results": [1, 2, 3]}});
-        let result = resolve_path(&value, "data.results").unwrap();
-        assert_eq!(result, serde_json::json!([1, 2, 3]));
-    }
-
-    #[test]
-    fn test_resolve_path_empty() {
-        let value = serde_json::json!({"id": 42});
-        let result = resolve_path(&value, "").unwrap();
-        assert_eq!(result, serde_json::json!({"id": 42}));
-    }
-
-    #[test]
-    fn test_resolve_path_not_found() {
-        let value = serde_json::json!({"id": 42});
-        let err = resolve_path(&value, "missing").unwrap_err();
-        assert!(err.to_string().contains("path segment not found"));
-    }
-
-    // Tests for build_key_from_schema
-    #[test]
-    fn test_build_key_from_schema_success() {
-        let schema = test_schema();
-        let type_schema = schema.types.get("device").unwrap();
-        let attrs: JsonMap = serde_json::json!({"name": "dev1", "site": "site1"})
-            .as_object()
-            .unwrap()
-            .clone()
-            .into_iter()
-            .collect::<BTreeMap<_, _>>()
-            .into();
-        let key = build_key_from_schema(type_schema, &attrs).unwrap();
-        assert_eq!(key.get("name"), Some(&serde_json::json!("dev1")));
-    }
-
-    #[test]
-    fn test_build_key_from_schema_missing_field() {
-        let schema = test_schema();
-        let type_schema = schema.types.get("device").unwrap();
-        let attrs: JsonMap = serde_json::json!({"other": "value"})
-            .as_object()
-            .unwrap()
-            .clone()
-            .into_iter()
-            .collect::<BTreeMap<_, _>>()
-            .into();
-        let err = build_key_from_schema(type_schema, &attrs).unwrap_err();
-        assert!(err.to_string().contains("missing key field"));
-    }
-
-    // Tests for resolved_from_state
-    #[test]
-    fn test_resolved_from_state_empty() {
-        let state = new_state_store();
-        let resolved = resolved_from_state(&state);
-        assert!(resolved.is_empty());
-    }
-
-    #[test]
-    fn test_resolved_from_state_with_mappings() {
-        let mut state = new_state_store();
-        let uid = Uid::new_v4();
-        state.set_backend_id(TypeName::new("device".to_string()), uid, BackendId::Int(42));
-        let resolved = resolved_from_state(&state);
-        assert_eq!(resolved.get(&uid), Some(&BackendId::Int(42)));
-    }
-
-    // Tests for resolve_value_for_type
-    #[test]
-    fn test_resolve_value_for_type_string() {
-        let resolved = BTreeMap::new();
-        let result =
-            resolve_value_for_type(&FieldType::String, serde_json::json!("test"), &resolved)
-                .unwrap();
-        assert_eq!(result, serde_json::json!("test"));
-    }
-
-    #[test]
-    fn test_resolve_value_for_type_int() {
-        let resolved = BTreeMap::new();
-        let result =
-            resolve_value_for_type(&FieldType::Int, serde_json::json!(42), &resolved).unwrap();
-        assert_eq!(result, serde_json::json!(42));
-    }
-
-    #[test]
-    fn test_resolve_value_for_type_ref() {
-        let mut resolved = BTreeMap::new();
-        let uid = Uid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
-        resolved.insert(uid, BackendId::Int(123));
-
-        let result = resolve_value_for_type(
-            &FieldType::Ref {
-                target: "site".to_string(),
-            },
-            serde_json::json!("550e8400-e29b-41d4-a716-446655440000"),
-            &resolved,
-        )
-        .unwrap();
-        assert_eq!(result, serde_json::json!(123));
-    }
-
-    #[test]
-    fn test_resolve_value_for_type_list_ref() {
-        let mut resolved = BTreeMap::new();
-        let uid1 = Uid::parse_str("550e8400-e29b-41d4-a716-446655440001").unwrap();
-        let uid2 = Uid::parse_str("550e8400-e29b-41d4-a716-446655440002").unwrap();
-        resolved.insert(uid1, BackendId::Int(1));
-        resolved.insert(uid2, BackendId::String("abc".to_string()));
-
-        let result = resolve_value_for_type(
-            &FieldType::ListRef {
-                target: "tag".to_string(),
-            },
-            serde_json::json!([
-                "550e8400-e29b-41d4-a716-446655440001",
-                "550e8400-e29b-41d4-a716-446655440002"
-            ]),
-            &resolved,
-        )
-        .unwrap();
-        assert_eq!(result, serde_json::json!([1, "abc"]));
-    }
-
-    #[test]
-    fn test_resolve_value_for_type_list_ref_not_array() {
-        let resolved = BTreeMap::new();
-        let err = resolve_value_for_type(
-            &FieldType::ListRef {
-                target: "tag".to_string(),
-            },
-            serde_json::json!("not_an_array"),
-            &resolved,
-        )
-        .unwrap_err();
-        assert!(err.to_string().contains("expected array for list_ref"));
-    }
-
-    // Tests for resolve_ref_value
-    #[test]
-    fn test_resolve_ref_value_int_backend_id() {
-        let mut resolved = BTreeMap::new();
-        let uid = Uid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
-        resolved.insert(uid, BackendId::Int(42));
-
-        let result = resolve_ref_value(
-            serde_json::json!("550e8400-e29b-41d4-a716-446655440000"),
-            &resolved,
-        )
-        .unwrap();
-        assert_eq!(result, serde_json::json!(42));
-    }
-
-    #[test]
-    fn test_resolve_ref_value_string_backend_id() {
-        let mut resolved = BTreeMap::new();
-        let uid = Uid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
-        resolved.insert(uid, BackendId::String("abc-123".to_string()));
-
-        let result = resolve_ref_value(
-            serde_json::json!("550e8400-e29b-41d4-a716-446655440000"),
-            &resolved,
-        )
-        .unwrap();
-        assert_eq!(result, serde_json::json!("abc-123"));
-    }
-
-    #[test]
-    fn test_resolve_ref_value_not_string() {
-        let resolved = BTreeMap::new();
-        let err = resolve_ref_value(serde_json::json!(42), &resolved).unwrap_err();
-        assert!(err.to_string().contains("ref must be uuid string"));
-    }
-
-    #[test]
-    fn test_resolve_ref_value_invalid_uuid() {
-        let resolved = BTreeMap::new();
-        let err = resolve_ref_value(serde_json::json!("not-a-uuid"), &resolved).unwrap_err();
-        assert!(err.to_string().contains("invalid uuid"));
-    }
-
-    #[test]
-    fn test_resolve_ref_value_missing_uid() {
-        let resolved = BTreeMap::new();
-        let err = resolve_ref_value(
-            serde_json::json!("550e8400-e29b-41d4-a716-446655440000"),
-            &resolved,
-        )
-        .unwrap_err();
-        assert!(err.to_string().contains("missing referenced uid"));
-    }
-
-    // Tests for is_missing_ref_error
-    #[test]
-    fn test_is_missing_ref_error_true() {
-        let err = anyhow!("missing referenced uid 550e8400-e29b-41d4-a716-446655440000");
-        assert!(is_missing_ref_error(&err));
-    }
-
-    #[test]
-    fn test_is_missing_ref_error_false() {
-        let err = anyhow!("some other error");
-        assert!(!is_missing_ref_error(&err));
-    }
-
-    // Tests for resolve_attrs
-    #[test]
-    fn test_resolve_attrs_success() {
-        let schema = test_schema();
-        let type_schema = schema.types.get("site").unwrap();
-        let attrs: JsonMap = serde_json::json!({"name": "site1"})
-            .as_object()
-            .unwrap()
-            .clone()
-            .into_iter()
-            .collect::<BTreeMap<_, _>>()
-            .into();
-        let resolved = BTreeMap::new();
-        let result = resolve_attrs(&attrs, type_schema, &resolved).unwrap();
-        assert_eq!(result, serde_json::json!({"name": "site1"}));
-    }
-
-    #[test]
-    fn test_resolve_attrs_missing_schema() {
-        let schema = test_schema();
-        let type_schema = schema.types.get("site").unwrap();
-        let attrs: JsonMap = serde_json::json!({"unknown_field": "value"})
-            .as_object()
-            .unwrap()
-            .clone()
-            .into_iter()
-            .collect::<BTreeMap<_, _>>()
-            .into();
-        let resolved = BTreeMap::new();
-        let err = resolve_attrs(&attrs, type_schema, &resolved).unwrap_err();
-        assert!(err.to_string().contains("missing schema for field"));
-    }
-
-    // Tests for default functions
-    #[test]
-    fn test_default_id_path() {
-        assert_eq!(default_id_path(), "id");
-    }
-
-    #[test]
-    fn test_default_update_method() {
-        assert_eq!(default_update_method(), "PATCH");
-    }
-
-    // Tests for DeleteStrategy
-    #[test]
-    fn test_delete_strategy_default() {
-        let strategy = DeleteStrategy::default();
-        assert!(matches!(strategy, DeleteStrategy::None));
-    }
-
-    #[test]
-    fn test_delete_strategy_serde() {
-        let standard: DeleteStrategy = serde_json::from_str("\"standard\"").unwrap();
-        assert!(matches!(standard, DeleteStrategy::Standard));
-
-        let none: DeleteStrategy = serde_json::from_str("\"none\"").unwrap();
-        assert!(matches!(none, DeleteStrategy::None));
-    }
-
-    // Tests for GenericConfig serialization
-    #[test]
-    fn test_generic_config_serde() {
-        let config = test_config("http://example.com");
-        let json = serde_json::to_string(&config).unwrap();
-        let parsed: GenericConfig = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.base_url, "http://example.com");
-        assert!(parsed.types.contains_key("device"));
-    }
-
-    // Tests for GenericAdapter::new
-    #[test]
-    fn test_generic_adapter_new_success() {
-        let config = test_config("http://example.com");
-        let state = new_state_store();
-        let adapter = GenericAdapter::new(config, state);
-        assert!(adapter.is_ok());
-    }
-
-    #[test]
-    fn test_generic_adapter_new_with_headers() {
-        let mut config = test_config("http://example.com");
-        config
-            .headers
-            .insert("Authorization".to_string(), "Bearer token".to_string());
-        config
-            .headers
-            .insert("Content-Type".to_string(), "application/json".to_string());
-        let state = new_state_store();
-        let adapter = GenericAdapter::new(config, state);
-        assert!(adapter.is_ok());
-    }
-
-    #[test]
-    fn test_generic_adapter_new_invalid_header_name() {
-        let mut config = test_config("http://example.com");
-        config
-            .headers
-            .insert("invalid\nheader".to_string(), "value".to_string());
-        let state = new_state_store();
-        let adapter = GenericAdapter::new(config, state);
-        assert!(adapter.is_err());
-    }
-
-    // Tests for backend_id_to_url
-    #[test]
-    fn test_backend_id_to_url_int() {
-        let config = test_config("http://example.com/");
-        let adapter = GenericAdapter::new(config, new_state_store()).unwrap();
-        let endpoint = adapter.config.types.get("device").unwrap();
-        let url = adapter.backend_id_to_url(endpoint, &BackendId::Int(42));
-        assert_eq!(url, "http://example.com/api/devices/42");
-    }
-
-    #[test]
-    fn test_backend_id_to_url_string() {
-        let config = test_config("http://example.com");
-        let adapter = GenericAdapter::new(config, new_state_store()).unwrap();
-        let endpoint = adapter.config.types.get("device").unwrap();
-        let url = adapter.backend_id_to_url(endpoint, &BackendId::String("abc-123".to_string()));
-        assert_eq!(url, "http://example.com/api/devices/abc-123");
-    }
-
-    // Tests for observe with mocked server
-    #[tokio::test]
-    async fn test_observe_with_results_path() {
-        let server = MockServer::start();
-        let mock = server.mock(|when, then| {
-            when.method(GET).path("/api/devices");
-            then.status(200)
-                .header("content-type", "application/json")
-                .json_body(serde_json::json!({
-                    "results": [
-                        {"id": 1, "name": "device1"},
-                        {"id": 2, "name": "device2"}
-                    ]
-                }));
-        });
-
-        let config = test_config(&server.base_url());
-        let adapter = GenericAdapter::new(config, new_state_store()).unwrap();
-        let schema = test_schema();
-
-        let state = adapter
-            .observe(&schema, &[TypeName::new("device".to_string())])
-            .await
-            .unwrap();
-
-        mock.assert();
-        assert_eq!(state.by_key.len(), 2);
-    }
-
-    #[tokio::test]
-    async fn test_observe_resolves_ref_ids_to_uids() {
-        let server = MockServer::start();
-        let mock = server.mock(|when, then| {
-            when.method(GET).path("/api/devices");
-            then.status(200)
-                .header("content-type", "application/json")
-                .json_body(serde_json::json!({
-                    "results": [
-                        {"id": 1, "name": "device1", "site": 7}
-                    ]
-                }));
-        });
-
-        let mut state = new_state_store();
-        let site_uid = Uid::new_v4();
-        state.set_backend_id(
-            TypeName::new("site".to_string()),
-            site_uid,
-            BackendId::Int(7),
-        );
-
-        let config = test_config(&server.base_url());
-        let adapter = GenericAdapter::new(config, state).unwrap();
-        let schema = test_schema();
-
-        let observed = adapter
-            .observe(&schema, &[TypeName::new("device".to_string())])
-            .await
-            .unwrap();
-
-        mock.assert();
-        let device = observed
-            .by_key
-            .values()
-            .next()
-            .expect("expected observed device");
-        assert_eq!(
-            device.attrs.get("site"),
-            Some(&serde_json::Value::String(site_uid.to_string()))
-        );
-    }
-
-    #[tokio::test]
-    async fn test_observe_without_results_path() {
-        let server = MockServer::start();
-        let mock = server.mock(|when, then| {
-            when.method(GET).path("/api/sites");
-            then.status(200)
-                .header("content-type", "application/json")
-                .json_body(serde_json::json!([
-                    {"id": 1, "name": "site1"},
-                    {"id": 2, "name": "site2"}
-                ]));
-        });
-
-        let config = test_config(&server.base_url());
-        let adapter = GenericAdapter::new(config, new_state_store()).unwrap();
-        let schema = test_schema();
-
-        let state = adapter
-            .observe(&schema, &[TypeName::new("site".to_string())])
-            .await
-            .unwrap();
-
-        mock.assert();
-        assert_eq!(state.by_key.len(), 2);
-    }
-
-    #[tokio::test]
-    async fn test_observe_all_types() {
-        let server = MockServer::start();
-        let device_mock = server.mock(|when, then| {
-            when.method(GET).path("/api/devices");
-            then.status(200)
-                .header("content-type", "application/json")
-                .json_body(serde_json::json!({"results": [{"id": 1, "name": "device1"}]}));
-        });
-        let site_mock = server.mock(|when, then| {
-            when.method(GET).path("/api/sites");
-            then.status(200)
-                .header("content-type", "application/json")
-                .json_body(serde_json::json!([{"id": 1, "name": "site1"}]));
-        });
-
-        let config = test_config(&server.base_url());
-        let adapter = GenericAdapter::new(config, new_state_store()).unwrap();
-        let schema = test_schema();
-
-        let state = adapter.observe(&schema, &[]).await.unwrap();
-
-        device_mock.assert();
-        site_mock.assert();
-        assert_eq!(state.by_key.len(), 2);
-    }
-
-    #[tokio::test]
-    async fn test_observe_string_id() {
-        let server = MockServer::start();
-        server.mock(|when, then| {
-            when.method(GET).path("/api/sites");
-            then.status(200)
-                .header("content-type", "application/json")
-                .json_body(serde_json::json!([{"id": "uuid-123", "name": "site1"}]));
-        });
-
-        let config = test_config(&server.base_url());
-        let adapter = GenericAdapter::new(config, new_state_store()).unwrap();
-        let schema = test_schema();
-
-        let state = adapter
-            .observe(&schema, &[TypeName::new("site".to_string())])
-            .await
-            .unwrap();
-
-        assert_eq!(state.by_key.len(), 1);
-        let obj = state.by_key.values().next().unwrap();
-        assert_eq!(
-            obj.backend_id,
-            Some(BackendId::String("uuid-123".to_string()))
-        );
-    }
-
-    #[tokio::test]
-    async fn test_observe_unknown_type() {
-        let config = test_config("http://example.com");
-        let adapter = GenericAdapter::new(config, new_state_store()).unwrap();
-        let schema = test_schema();
-
-        let err = adapter
-            .observe(&schema, &[TypeName::new("unknown".to_string())])
-            .await
-            .unwrap_err();
-
-        assert!(err.to_string().contains("no generic config for type"));
-    }
-
-    #[tokio::test]
-    async fn test_observe_missing_schema() {
-        let server = MockServer::start();
-        server.mock(|when, then| {
-            when.method(GET).path("/api/devices");
-            then.status(200)
-                .header("content-type", "application/json")
-                .json_body(serde_json::json!({"results": []}));
-        });
-
-        let config = test_config(&server.base_url());
-        let adapter = GenericAdapter::new(config, new_state_store()).unwrap();
-        let empty_schema = empty_schema();
-
-        let err = adapter
-            .observe(&empty_schema, &[TypeName::new("device".to_string())])
-            .await
-            .unwrap_err();
-
-        assert!(err.to_string().contains("missing schema for"));
-    }
-
-    // Tests for apply with mocked server
-    #[tokio::test]
-    async fn test_apply_create() {
-        let server = MockServer::start();
-        let mock = server.mock(|when, then| {
-            when.method(POST).path("/api/sites");
-            then.status(201)
-                .header("content-type", "application/json")
-                .json_body(serde_json::json!({"id": 42, "name": "new-site"}));
-        });
-
-        let config = test_config(&server.base_url());
-        let adapter = GenericAdapter::new(config, new_state_store()).unwrap();
-        let schema = test_schema();
-
-        let uid = Uid::new_v4();
-        let mut key = BTreeMap::new();
-        key.insert("name".to_string(), serde_json::json!("new-site"));
-        let mut attrs = BTreeMap::new();
-        attrs.insert("name".to_string(), serde_json::json!("new-site"));
-
-        let ops = vec![Op::Create {
-            uid,
-            type_name: TypeName::new("site".to_string()),
-            desired: alembic_engine::ProjectedObject {
-                base: alembic_core::Object {
-                    uid,
-                    type_name: TypeName::new("site".to_string()),
-                    key: Key::from(key),
-                    attrs: attrs.into(),
-                    source: None,
-                },
-                projection: ProjectionData::default(),
-                projection_inputs: BTreeSet::new(),
-            },
-        }];
-
-        let report = adapter.apply(&schema, &ops).await.unwrap();
-        mock.assert();
-        assert_eq!(report.applied.len(), 1);
-        assert_eq!(report.applied[0].backend_id, Some(BackendId::Int(42)));
-    }
-
-    #[tokio::test]
-    async fn test_apply_update_patch() {
-        let server = MockServer::start();
-        let mock = server.mock(|when, then| {
-            when.method(PATCH).path("/api/devices/42");
-            then.status(200)
-                .header("content-type", "application/json")
-                .json_body(serde_json::json!({"id": 42, "name": "updated"}));
-        });
-
-        let mut state = new_state_store();
-        let uid = Uid::new_v4();
-        state.set_backend_id(TypeName::new("device".to_string()), uid, BackendId::Int(42));
-
-        // Add a site reference that will be resolved
-        let site_uid = Uid::new_v4();
-        state.set_backend_id(
-            TypeName::new("site".to_string()),
-            site_uid,
-            BackendId::Int(1),
-        );
-
-        let config = test_config(&server.base_url());
-        let adapter = GenericAdapter::new(config, state).unwrap();
-        let schema = test_schema();
-
-        let mut key = BTreeMap::new();
-        key.insert("name".to_string(), serde_json::json!("updated"));
-        let mut attrs = BTreeMap::new();
-        attrs.insert("name".to_string(), serde_json::json!("updated"));
-        attrs.insert("site".to_string(), serde_json::json!(site_uid.to_string()));
-
-        let ops = vec![Op::Update {
-            uid,
-            type_name: TypeName::new("device".to_string()),
-            desired: alembic_engine::ProjectedObject {
-                base: alembic_core::Object {
-                    uid,
-                    type_name: TypeName::new("device".to_string()),
-                    key: Key::from(key),
-                    attrs: attrs.into(),
-                    source: None,
-                },
-                projection: ProjectionData::default(),
-                projection_inputs: BTreeSet::new(),
-            },
-            backend_id: Some(BackendId::Int(42)),
-            changes: vec![],
-        }];
-
-        let report = adapter.apply(&schema, &ops).await.unwrap();
-        mock.assert();
-        assert_eq!(report.applied.len(), 1);
-    }
-
-    #[tokio::test]
-    async fn test_apply_update_put() {
-        let server = MockServer::start();
-        let mock = server.mock(|when, then| {
-            when.method(PUT).path("/api/sites/42");
-            then.status(200)
-                .header("content-type", "application/json")
-                .json_body(serde_json::json!({"id": 42, "name": "updated"}));
-        });
-
-        let mut state = new_state_store();
-        let uid = Uid::new_v4();
-        state.set_backend_id(TypeName::new("site".to_string()), uid, BackendId::Int(42));
-
-        let config = test_config(&server.base_url());
-        let adapter = GenericAdapter::new(config, state).unwrap();
-        let schema = test_schema();
-
-        let mut key = BTreeMap::new();
-        key.insert("name".to_string(), serde_json::json!("updated"));
-        let mut attrs = BTreeMap::new();
-        attrs.insert("name".to_string(), serde_json::json!("updated"));
-
-        let ops = vec![Op::Update {
-            uid,
-            type_name: TypeName::new("site".to_string()),
-            desired: alembic_engine::ProjectedObject {
-                base: alembic_core::Object {
-                    uid,
-                    type_name: TypeName::new("site".to_string()),
-                    key: Key::from(key),
-                    attrs: attrs.into(),
-                    source: None,
-                },
-                projection: ProjectionData::default(),
-                projection_inputs: BTreeSet::new(),
-            },
-            backend_id: Some(BackendId::Int(42)),
-            changes: vec![],
-        }];
-
-        let report = adapter.apply(&schema, &ops).await.unwrap();
-        mock.assert();
-        assert_eq!(report.applied.len(), 1);
-    }
-
-    #[tokio::test]
-    async fn test_apply_delete_standard() {
-        let server = MockServer::start();
-        let mock = server.mock(|when, then| {
-            when.method(DELETE).path("/api/devices/42");
-            then.status(204);
-        });
-
-        let config = test_config(&server.base_url());
-        let adapter = GenericAdapter::new(config, new_state_store()).unwrap();
-        let schema = test_schema();
-
-        let uid = Uid::new_v4();
-        let mut key = BTreeMap::new();
-        key.insert("name".to_string(), serde_json::json!("to-delete"));
-
-        let ops = vec![Op::Delete {
-            uid,
-            type_name: TypeName::new("device".to_string()),
-            key: Key::from(key),
-            backend_id: Some(BackendId::Int(42)),
-        }];
-
-        let report = adapter.apply(&schema, &ops).await.unwrap();
-        mock.assert();
-        assert_eq!(report.applied.len(), 1);
-        assert_eq!(report.applied[0].backend_id, None);
-    }
-
-    #[tokio::test]
-    async fn test_apply_delete_none_strategy() {
-        // site has DeleteStrategy::None, so no DELETE call should be made
-        let server = MockServer::start();
-
-        let config = test_config(&server.base_url());
-        let adapter = GenericAdapter::new(config, new_state_store()).unwrap();
-        let schema = test_schema();
-
-        let uid = Uid::new_v4();
-        let mut key = BTreeMap::new();
-        key.insert("name".to_string(), serde_json::json!("to-delete"));
-
-        let ops = vec![Op::Delete {
-            uid,
-            type_name: TypeName::new("site".to_string()),
-            key: Key::from(key),
-            backend_id: Some(BackendId::Int(42)),
-        }];
-
-        let report = adapter.apply(&schema, &ops).await.unwrap();
-        // No HTTP calls should be made
-        assert_eq!(report.applied.len(), 1);
-    }
-
-    #[tokio::test]
-    async fn test_apply_delete_missing_backend_id() {
-        let config = test_config("http://example.com");
-        let adapter = GenericAdapter::new(config, new_state_store()).unwrap();
-        let schema = test_schema();
-
-        let uid = Uid::new_v4();
-        let mut key = BTreeMap::new();
-        key.insert("name".to_string(), serde_json::json!("to-delete"));
-
-        let ops = vec![Op::Delete {
-            uid,
-            type_name: TypeName::new("device".to_string()),
-            key: Key::from(key),
-            backend_id: None,
-        }];
-
-        let err = adapter.apply(&schema, &ops).await.unwrap_err();
-        assert!(err.to_string().contains("delete requires backend id"));
-    }
-
-    #[tokio::test]
-    async fn test_apply_update_missing_backend_id() {
-        let config = test_config("http://example.com");
-        let adapter = GenericAdapter::new(config, new_state_store()).unwrap();
-        let schema = test_schema();
-
-        let uid = Uid::new_v4();
-        let mut key = BTreeMap::new();
-        key.insert("name".to_string(), serde_json::json!("test"));
-        let mut attrs = BTreeMap::new();
-        attrs.insert("name".to_string(), serde_json::json!("test"));
-
-        let ops = vec![Op::Update {
-            uid,
-            type_name: TypeName::new("site".to_string()),
-            desired: alembic_engine::ProjectedObject {
-                base: alembic_core::Object {
-                    uid,
-                    type_name: TypeName::new("site".to_string()),
-                    key: Key::from(key),
-                    attrs: attrs.into(),
-                    source: None,
-                },
-                projection: ProjectionData::default(),
-                projection_inputs: BTreeSet::new(),
-            },
-            backend_id: None,
-            changes: vec![],
-        }];
-
-        let err = adapter.apply(&schema, &ops).await.unwrap_err();
-        assert!(err.to_string().contains("update requires backend id"));
-    }
-
-    #[tokio::test]
-    async fn test_apply_create_string_id() {
-        let server = MockServer::start();
-        let mock = server.mock(|when, then| {
-            when.method(POST).path("/api/sites");
-            then.status(201)
-                .header("content-type", "application/json")
-                .json_body(serde_json::json!({"id": "uuid-abc-123", "name": "new-site"}));
-        });
-
-        let config = test_config(&server.base_url());
-        let adapter = GenericAdapter::new(config, new_state_store()).unwrap();
-        let schema = test_schema();
-
-        let uid = Uid::new_v4();
-        let mut key = BTreeMap::new();
-        key.insert("name".to_string(), serde_json::json!("new-site"));
-        let mut attrs = BTreeMap::new();
-        attrs.insert("name".to_string(), serde_json::json!("new-site"));
-
-        let ops = vec![Op::Create {
-            uid,
-            type_name: TypeName::new("site".to_string()),
-            desired: alembic_engine::ProjectedObject {
-                base: alembic_core::Object {
-                    uid,
-                    type_name: TypeName::new("site".to_string()),
-                    key: Key::from(key),
-                    attrs: attrs.into(),
-                    source: None,
-                },
-                projection: ProjectionData::default(),
-                projection_inputs: BTreeSet::new(),
-            },
-        }];
-
-        let report = adapter.apply(&schema, &ops).await.unwrap();
-        mock.assert();
-        assert_eq!(
-            report.applied[0].backend_id,
-            Some(BackendId::String("uuid-abc-123".to_string()))
-        );
-    }
-
-    #[tokio::test]
-    async fn test_apply_unknown_type() {
-        let config = test_config("http://example.com");
-        let adapter = GenericAdapter::new(config, new_state_store()).unwrap();
-        let schema = test_schema();
-
-        let uid = Uid::new_v4();
-        let mut key = BTreeMap::new();
-        key.insert("name".to_string(), serde_json::json!("test"));
-        let mut attrs = BTreeMap::new();
-        attrs.insert("name".to_string(), serde_json::json!("test"));
-
-        let ops = vec![Op::Create {
-            uid,
-            type_name: TypeName::new("unknown".to_string()),
-            desired: alembic_engine::ProjectedObject {
-                base: alembic_core::Object {
-                    uid,
-                    type_name: TypeName::new("unknown".to_string()),
-                    key: Key::from(key),
-                    attrs: attrs.into(),
-                    source: None,
-                },
-                projection: ProjectionData::default(),
-                projection_inputs: BTreeSet::new(),
-            },
-        }];
-
-        let err = adapter.apply(&schema, &ops).await.unwrap_err();
-        assert!(err.to_string().contains("no config for unknown"));
-    }
-
-    #[tokio::test]
-    async fn test_observe_invalid_id_type() {
-        let server = MockServer::start();
-        server.mock(|when, then| {
-            when.method(GET).path("/api/sites");
-            then.status(200)
-                .header("content-type", "application/json")
-                .json_body(serde_json::json!([{"id": {"nested": "object"}, "name": "site1"}]));
-        });
-
-        let config = test_config(&server.base_url());
-        let adapter = GenericAdapter::new(config, new_state_store()).unwrap();
-        let schema = test_schema();
-
-        let err = adapter
-            .observe(&schema, &[TypeName::new("site".to_string())])
-            .await
-            .unwrap_err();
-
-        assert!(err.to_string().contains("id must be number or string"));
-    }
-
-    #[tokio::test]
-    async fn test_observe_non_object_in_results() {
-        let server = MockServer::start();
-        server.mock(|when, then| {
-            when.method(GET).path("/api/sites");
-            then.status(200)
-                .header("content-type", "application/json")
-                .json_body(serde_json::json!(["string_item", "another"]));
-        });
-
-        let config = test_config(&server.base_url());
-        let adapter = GenericAdapter::new(config, new_state_store()).unwrap();
-        let schema = test_schema();
-
-        let err = adapter
-            .observe(&schema, &[TypeName::new("site".to_string())])
-            .await
-            .unwrap_err();
-
-        // The error could be about missing id path since strings don't have "id"
-        let err_str = err.to_string();
-        assert!(
-            err_str.contains("expected object in results")
-                || err_str.contains("path segment not found"),
-            "unexpected error: {}",
-            err_str
-        );
-    }
-
-    #[tokio::test]
-    async fn test_observe_non_array_response() {
-        let server = MockServer::start();
-        server.mock(|when, then| {
-            when.method(GET).path("/api/sites");
-            then.status(200)
-                .header("content-type", "application/json")
-                .json_body(serde_json::json!({"not": "an_array"}));
-        });
-
-        let config = test_config(&server.base_url());
-        let adapter = GenericAdapter::new(config, new_state_store()).unwrap();
-        let schema = test_schema();
-
-        let err = adapter
-            .observe(&schema, &[TypeName::new("site".to_string())])
-            .await
-            .unwrap_err();
-
-        assert!(err.to_string().contains("expected array in list response"));
-    }
-}
+mod tests;

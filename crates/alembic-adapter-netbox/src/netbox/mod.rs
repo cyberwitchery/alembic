@@ -6,30 +6,27 @@ mod ops;
 mod registry;
 mod state;
 
-use alembic_engine::{MissingCustomField, StateStore};
-use anyhow::{anyhow, Result};
+use alembic_engine::MissingCustomField;
+use anyhow::Result;
 use std::collections::BTreeSet;
-use std::sync::MutexGuard;
 
 #[cfg(test)]
 use alembic_engine::Adapter;
+#[cfg(test)]
+use alembic_engine::StateStore;
 use client::NetBoxClient;
 use mapping::*;
 
 /// netbox adapter that maps ir objects to netbox api calls.
 pub struct NetBoxAdapter {
     client: NetBoxClient,
-    state: std::sync::Mutex<StateStore>,
 }
 
 impl NetBoxAdapter {
     /// create a new adapter with url, token, and state store.
-    pub fn new(url: &str, token: &str, state: StateStore) -> Result<Self> {
+    pub fn new(url: &str, token: &str) -> Result<Self> {
         let client = NetBoxClient::new(url, token)?;
-        Ok(Self {
-            client,
-            state: std::sync::Mutex::new(state),
-        })
+        Ok(Self { client })
     }
 
     pub async fn create_custom_fields(&self, missing: &[MissingCustomField]) -> Result<()> {
@@ -83,12 +80,6 @@ impl NetBoxAdapter {
             let _ = self.client.extras().tags().create(&request).await?;
         }
         Ok(())
-    }
-
-    fn state_guard(&self) -> Result<MutexGuard<'_, StateStore>> {
-        self.state
-            .lock()
-            .map_err(|_| anyhow!("state lock poisoned"))
     }
 }
 
@@ -173,7 +164,7 @@ mod tests {
         let server = MockServer::start();
         let dir = tempdir().unwrap();
         let state = state_with_mappings(&dir.path().join("state.json"));
-        let adapter = NetBoxAdapter::new(&server.base_url(), "token", state).unwrap();
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
 
         let _object_types = mock_list(
             &server,
@@ -261,7 +252,7 @@ mod tests {
             ]),
         };
         let observed = adapter
-            .observe(&schema, &[TypeName::new("dcim.device")])
+            .observe(&schema, &[TypeName::new("dcim.device")], &state)
             .await
             .unwrap();
 
@@ -289,7 +280,7 @@ mod tests {
         let server = MockServer::start();
         let dir = tempdir().unwrap();
         let state = StateStore::load(dir.path().join("state.json")).unwrap();
-        let adapter = NetBoxAdapter::new(&server.base_url(), "token", state).unwrap();
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
 
         let _object_types = mock_list(
             &server,
@@ -436,16 +427,14 @@ mod tests {
                 ),
             ]),
         };
-        let report = adapter.apply(&schema, &ops).await.unwrap();
+        let report = adapter.apply(&schema, &ops, &state).await.unwrap();
         assert_eq!(report.applied.len(), 2);
     }
 
     #[tokio::test]
     async fn create_tags_posts_unique_names() {
         let server = MockServer::start();
-        let dir = tempdir().unwrap();
-        let state = StateStore::load(dir.path().join("state.json")).unwrap();
-        let adapter = NetBoxAdapter::new(&server.base_url(), "token", state).unwrap();
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
 
         let _tags = server.mock(|when, then| {
             when.method(POST).path("/api/extras/tags/");
@@ -487,7 +476,7 @@ mod tests {
             uid(1),
             alembic_engine::BackendId::Int(1),
         );
-        let adapter = NetBoxAdapter::new(&server.base_url(), "token", state).unwrap();
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
 
         let _object_types = mock_list(
             &server,
@@ -561,7 +550,7 @@ mod tests {
                 },
             )]),
         };
-        let report = adapter.apply(&schema, &ops).await.unwrap();
+        let report = adapter.apply(&schema, &ops, &state).await.unwrap();
         assert_eq!(report.applied.len(), 1);
     }
 
@@ -577,7 +566,7 @@ mod tests {
             uid(1),
             alembic_engine::BackendId::Int(1),
         );
-        let adapter = NetBoxAdapter::new(&server.base_url(), "token", state).unwrap();
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
 
         let _object_types = mock_list(
             &server,
@@ -620,7 +609,7 @@ mod tests {
                 },
             )]),
         };
-        let report = adapter.apply(&schema, &ops).await.unwrap();
+        let report = adapter.apply(&schema, &ops, &state).await.unwrap();
         assert_eq!(report.applied.len(), 1);
     }
 
@@ -629,7 +618,7 @@ mod tests {
         let server = MockServer::start();
         let dir = tempdir().unwrap();
         let state = StateStore::load(dir.path().join("state.json")).unwrap();
-        let adapter = NetBoxAdapter::new(&server.base_url(), "token", state).unwrap();
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
 
         let _object_types = mock_list(
             &server,
@@ -674,16 +663,14 @@ mod tests {
             )]),
         };
         // Empty types list should observe all types from registry
-        let observed = adapter.observe(&schema, &[]).await.unwrap();
+        let observed = adapter.observe(&schema, &[], &state).await.unwrap();
         assert!(observed.by_key.is_empty());
     }
 
     #[tokio::test]
     async fn create_custom_fields_works() {
         let server = MockServer::start();
-        let dir = tempdir().unwrap();
-        let state = StateStore::load(dir.path().join("state.json")).unwrap();
-        let adapter = NetBoxAdapter::new(&server.base_url(), "token", state).unwrap();
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
 
         let _cf_create = server.mock(|when, then| {
             when.method(POST).path("/api/extras/custom-fields/");

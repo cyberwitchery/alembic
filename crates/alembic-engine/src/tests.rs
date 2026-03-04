@@ -768,7 +768,7 @@ fn state_store_roundtrip() {
     let path = dir.path().join("state.json");
     let mut store = StateStore::load(&path).unwrap();
     store.set_backend_id(t("dcim.site"), uid(99), BackendId::Int(123));
-    store.save().unwrap();
+    futures::executor::block_on(store.save_async()).unwrap();
 
     let reloaded = StateStore::load(&path).unwrap();
     assert_eq!(
@@ -787,7 +787,7 @@ fn state_store_creates_parent_dir() {
     let dir = tempdir().unwrap();
     let path = dir.path().join(".alembic/state.json");
     let store = StateStore::load(&path).unwrap();
-    store.save().unwrap();
+    futures::executor::block_on(store.save_async()).unwrap();
     assert!(path.exists());
 }
 
@@ -815,7 +815,7 @@ fn state_store_save_errors_on_bad_parent() {
     std::fs::write(&blocking_parent, "file").unwrap();
     let path = blocking_parent.join("child.json");
     let store = StateStore::load(&path).unwrap();
-    let err = store.save().unwrap_err();
+    let err = futures::executor::block_on(store.save_async()).unwrap_err();
     assert!(err.to_string().contains("create state dir"));
 }
 
@@ -832,6 +832,56 @@ async fn state_store_async_roundtrip() {
     assert_eq!(
         reloaded.backend_id(t("dcim.site"), uid(100)),
         Some(BackendId::Int(456))
+    );
+}
+
+#[tokio::test]
+async fn state_store_postgres_roundtrip_when_configured() {
+    let Ok(url) = std::env::var("ALEMBIC_TEST_POSTGRES_URL") else {
+        return;
+    };
+    let key = format!("alembic-test-{}", Uuid::new_v4());
+
+    let mut store = StateStore::load_postgres(url.clone(), key.clone(), PostgresTlsMode::Disable)
+        .await
+        .unwrap();
+    store.set_backend_id(t("dcim.site"), uid(777), BackendId::Int(12345));
+    store.save_async().await.unwrap();
+
+    let mut reloaded = StateStore::load_postgres(url, key, PostgresTlsMode::Disable)
+        .await
+        .unwrap();
+    reloaded.load_async().await.unwrap();
+    assert_eq!(
+        reloaded.backend_id(t("dcim.site"), uid(777)),
+        Some(BackendId::Int(12345))
+    );
+}
+
+#[tokio::test]
+async fn state_store_postgres_tls_roundtrip_when_configured() {
+    let Ok(url) = std::env::var("ALEMBIC_TEST_POSTGRES_TLS_URL") else {
+        return;
+    };
+    let key = format!("alembic-test-tls-{}", Uuid::new_v4());
+
+    let mut store = StateStore::load_postgres(url.clone(), key.clone(), PostgresTlsMode::Require)
+        .await
+        .unwrap();
+    store.set_backend_id(
+        t("dcim.device"),
+        uid(778),
+        BackendId::String("abc".to_string()),
+    );
+    store.save_async().await.unwrap();
+
+    let mut reloaded = StateStore::load_postgres(url, key, PostgresTlsMode::Require)
+        .await
+        .unwrap();
+    reloaded.load_async().await.unwrap();
+    assert_eq!(
+        reloaded.backend_id(t("dcim.device"), uid(778)),
+        Some(BackendId::String("abc".to_string()))
     );
 }
 
@@ -854,8 +904,8 @@ fn state_store_new_without_backend() {
     let data = StateData::default();
     let store = StateStore::new(None, data);
     assert!(store.all_mappings().is_empty());
-    // save should succeed with no backend
-    store.save().unwrap();
+    // save_async should succeed with no backend
+    futures::executor::block_on(store.save_async()).unwrap();
 }
 
 #[test]
@@ -918,6 +968,7 @@ impl Adapter for TestAdapter {
         &self,
         _schema: &alembic_core::Schema,
         _types: &[TypeName],
+        _state: &StateStore,
     ) -> anyhow::Result<ObservedState> {
         Ok(self.observed.clone())
     }
@@ -926,6 +977,7 @@ impl Adapter for TestAdapter {
         &self,
         _schema: &alembic_core::Schema,
         _ops: &[Op],
+        _state: &StateStore,
     ) -> anyhow::Result<ApplyReport> {
         Ok(self.report.clone())
     }
@@ -992,6 +1044,7 @@ fn build_plan_reobserves_after_bootstrap() {
             &self,
             _schema: &alembic_core::Schema,
             _types: &[TypeName],
+            _state: &StateStore,
         ) -> anyhow::Result<ObservedState> {
             let mut states = self.states.lock().unwrap();
             Ok(states.remove(0))
@@ -1001,6 +1054,7 @@ fn build_plan_reobserves_after_bootstrap() {
             &self,
             _schema: &alembic_core::Schema,
             _ops: &[Op],
+            _state: &StateStore,
         ) -> anyhow::Result<ApplyReport> {
             Ok(ApplyReport { applied: vec![] })
         }
@@ -1030,6 +1084,128 @@ fn build_plan_reobserves_after_bootstrap() {
     let plan =
         futures::executor::block_on(build_plan(&adapter, &inventory, &mut state, false)).unwrap();
     assert!(plan.ops.is_empty());
+}
+
+#[test]
+fn build_plan_observes_projected_types_only_by_default() {
+    #[derive(Clone)]
+    struct ScopeAdapter {
+        forbidden: TypeName,
+        seen: std::sync::Arc<std::sync::Mutex<Vec<TypeName>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Adapter for ScopeAdapter {
+        async fn observe(
+            &self,
+            _schema: &alembic_core::Schema,
+            types: &[TypeName],
+            _state: &StateStore,
+        ) -> anyhow::Result<ObservedState> {
+            *self.seen.lock().unwrap() = types.to_vec();
+            if types.contains(&self.forbidden) {
+                return Err(anyhow::anyhow!("unsupported type {}", self.forbidden));
+            }
+            Ok(ObservedState::default())
+        }
+
+        async fn apply(
+            &self,
+            _schema: &alembic_core::Schema,
+            _ops: &[Op],
+            _state: &StateStore,
+        ) -> anyhow::Result<ApplyReport> {
+            Ok(ApplyReport { applied: vec![] })
+        }
+    }
+
+    let mut inventory = inv(vec![obj(
+        uid(1),
+        "dcim.site",
+        "site=fra1",
+        json!({ "name": "FRA1", "slug": "fra1" }),
+    )]);
+    inventory.schema.types.insert(
+        "unsupported.type".to_string(),
+        TypeSchema {
+            key: BTreeMap::new(),
+            fields: BTreeMap::new(),
+        },
+    );
+
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let adapter = ScopeAdapter {
+        forbidden: t("unsupported.type"),
+        seen: std::sync::Arc::clone(&seen),
+    };
+    let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
+    let plan =
+        futures::executor::block_on(build_plan(&adapter, &inventory, &mut state, false)).unwrap();
+    assert_eq!(plan.ops.len(), 1);
+    assert!(!seen.lock().unwrap().contains(&t("unsupported.type")));
+}
+
+#[test]
+fn build_plan_observe_schema_mode_is_explicit() {
+    #[derive(Clone)]
+    struct ScopeAdapter {
+        forbidden: TypeName,
+        seen: std::sync::Arc<std::sync::Mutex<Vec<TypeName>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Adapter for ScopeAdapter {
+        async fn observe(
+            &self,
+            _schema: &alembic_core::Schema,
+            types: &[TypeName],
+            _state: &StateStore,
+        ) -> anyhow::Result<ObservedState> {
+            *self.seen.lock().unwrap() = types.to_vec();
+            if types.contains(&self.forbidden) {
+                return Err(anyhow::anyhow!("unsupported type {}", self.forbidden));
+            }
+            Ok(ObservedState::default())
+        }
+
+        async fn apply(
+            &self,
+            _schema: &alembic_core::Schema,
+            _ops: &[Op],
+            _state: &StateStore,
+        ) -> anyhow::Result<ApplyReport> {
+            Ok(ApplyReport { applied: vec![] })
+        }
+    }
+
+    let mut inventory = inv(vec![obj(
+        uid(1),
+        "dcim.site",
+        "site=fra1",
+        json!({ "name": "FRA1", "slug": "fra1" }),
+    )]);
+    inventory.schema.types.insert(
+        "unsupported.type".to_string(),
+        TypeSchema {
+            key: BTreeMap::new(),
+            fields: BTreeMap::new(),
+        },
+    );
+
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let adapter = ScopeAdapter {
+        forbidden: t("unsupported.type"),
+        seen: std::sync::Arc::clone(&seen),
+    };
+    let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
+    let err = futures::executor::block_on(build_plan_with_projection_observe_schema(
+        &adapter, &inventory, &mut state, false, None, true,
+    ))
+    .unwrap_err();
+    assert!(err
+        .to_string()
+        .contains("unsupported type unsupported.type"));
+    assert!(seen.lock().unwrap().contains(&t("unsupported.type")));
 }
 
 #[test]

@@ -6,8 +6,10 @@ use alembic_core::{
     key_string, uid_v5, FieldType, JsonMap, Key, Schema, TypeName, TypeSchema, Uid,
 };
 use alembic_engine::{
-    Adapter, AppliedOp, ApplyReport, BackendId, ObservedObject, ObservedState, Op, ProjectionData,
-    StateStore,
+    apply_non_delete_with_retries, build_key_from_schema as build_key_from_schema_common,
+    build_request_body as build_request_body_common, query_filters_from_key, Adapter,
+    AdapterApplyError, AppliedOp, ApplyReport, BackendId, ObservedObject, ObservedState, Op,
+    ProjectionData, RetryApplyDriver,
 };
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
@@ -17,13 +19,15 @@ use std::collections::{BTreeMap, BTreeSet};
 
 #[async_trait]
 impl Adapter for NetBoxAdapter {
-    async fn observe(&self, schema: &Schema, types: &[TypeName]) -> Result<ObservedState> {
+    async fn observe(
+        &self,
+        schema: &Schema,
+        types: &[TypeName],
+        state_store: &alembic_engine::StateStore,
+    ) -> Result<ObservedState> {
         let registry: ObjectTypeRegistry = self.client.fetch_object_types().await?;
         let mut state = ObservedState::default();
-        let mappings = {
-            let state_guard = self.state_guard()?;
-            state_mappings(&state_guard)
-        };
+        let mappings = state_mappings(state_store);
 
         let requested: BTreeSet<TypeName> = if types.is_empty() {
             registry.type_names().into_iter().collect()
@@ -61,13 +65,15 @@ impl Adapter for NetBoxAdapter {
         Ok(state)
     }
 
-    async fn apply(&self, schema: &Schema, ops: &[Op]) -> Result<ApplyReport> {
+    async fn apply(
+        &self,
+        schema: &Schema,
+        ops: &[Op],
+        state: &alembic_engine::StateStore,
+    ) -> Result<ApplyReport> {
         let registry: ObjectTypeRegistry = self.client.fetch_object_types().await?;
         let mut applied = Vec::new();
-        let mut resolved = {
-            let state_guard = self.state_guard()?;
-            resolved_from_state(&state_guard)
-        };
+        let mut resolved = resolved_from_state(state);
 
         for op in ops {
             if let Op::Create { uid, .. } = op {
@@ -84,18 +90,20 @@ impl Adapter for NetBoxAdapter {
             }
         }
 
-        let mut pending = creates_updates;
-        let mut progress = true;
-        while !pending.is_empty() && progress {
-            progress = false;
-            let current = std::mem::take(&mut pending);
-            let current_len = current.len();
-            let mut next = Vec::new();
+        struct ApplyDriver<'a> {
+            adapter: &'a NetBoxAdapter,
+            resolved: &'a mut BTreeMap<Uid, u64>,
+            registry: &'a ObjectTypeRegistry,
+            schema: &'a Schema,
+        }
 
-            for op in current {
-                let result = match &op {
+        #[async_trait]
+        impl RetryApplyDriver for ApplyDriver<'_> {
+            async fn apply_non_delete(&mut self, op: &Op) -> Result<AppliedOp> {
+                match op {
                     Op::Create { .. } => self
-                        .apply_create(&op, &mut resolved, &registry, schema)
+                        .adapter
+                        .apply_create(op, self.resolved, self.registry, self.schema)
                         .await
                         .map(|backend_id| AppliedOp {
                             uid: op.uid(),
@@ -103,35 +111,41 @@ impl Adapter for NetBoxAdapter {
                             backend_id: Some(BackendId::Int(backend_id)),
                         }),
                     Op::Update { .. } => self
-                        .apply_update(&op, &resolved, &registry, schema)
+                        .adapter
+                        .apply_update(op, self.resolved, self.registry, self.schema)
                         .await
                         .map(|backend_id| AppliedOp {
                             uid: op.uid(),
                             type_name: op.type_name().clone(),
                             backend_id: Some(BackendId::Int(backend_id)),
                         }),
-                    Op::Delete { .. } => continue,
-                };
-
-                match result {
-                    Ok(applied_op) => {
-                        if let Some(BackendId::Int(backend_id)) = applied_op.backend_id {
-                            resolved.insert(applied_op.uid, backend_id);
-                        }
-                        applied.push(applied_op);
-                        progress = true;
-                    }
-                    Err(err) if is_missing_ref_error(&err) => next.push(op),
-                    Err(err) => return Err(err),
+                    Op::Delete { .. } => unreachable!("delete ops filtered before retry"),
                 }
             }
 
-            if next.len() == current_len {
-                let missing = describe_missing_refs(&next, &resolved);
-                return Err(anyhow!("unresolved references: {missing}"));
+            fn is_retryable(&self, err: &anyhow::Error) -> bool {
+                is_missing_ref_error(err)
             }
+        }
 
-            pending = next;
+        let mut driver = ApplyDriver {
+            adapter: self,
+            resolved: &mut resolved,
+            registry: &registry,
+            schema,
+        };
+        let retry_result = apply_non_delete_with_retries(&creates_updates, &mut driver).await?;
+
+        if !retry_result.pending.is_empty() {
+            let missing = describe_missing_refs(&retry_result.pending, &resolved);
+            return Err(anyhow!("unresolved references: {missing}"));
+        }
+
+        for applied_op in retry_result.applied {
+            if let Some(BackendId::Int(backend_id)) = &applied_op.backend_id {
+                resolved.insert(applied_op.uid, *backend_id);
+            }
+            applied.push(applied_op);
         }
 
         for op in deletes {
@@ -168,7 +182,7 @@ impl Adapter for NetBoxAdapter {
                 match resource.bulk_delete(&batch).await {
                     Ok(_) => {}
                     Err(err) if is_404_error(&err) => {
-                        eprintln!("warning: {} already deleted", type_name);
+                        tracing::warn!(type_name = %type_name, "object already deleted");
                     }
                     Err(err) => return Err(err.into()),
                 }
@@ -192,17 +206,6 @@ impl Adapter for NetBoxAdapter {
 
     async fn create_tags(&self, tags: &[String]) -> Result<()> {
         self.create_tags(tags).await
-    }
-
-    fn update_state(&self, state: &StateStore) {
-        match self.state_guard() {
-            Ok(mut guard) => {
-                *guard = state.clone();
-            }
-            Err(err) => {
-                eprintln!("warning: {err}");
-            }
-        }
     }
 }
 
@@ -583,14 +586,7 @@ fn uid_from_key_fields(
 }
 
 fn build_key_from_schema(type_schema: &TypeSchema, attrs: &JsonMap) -> Result<Key> {
-    let mut map = BTreeMap::new();
-    for field in type_schema.key.keys() {
-        let Some(value) = attrs.get(field) else {
-            return Err(anyhow!("missing key field {field}"));
-        };
-        map.insert(field.clone(), value.clone());
-    }
-    Ok(Key::from(map))
+    build_key_from_schema_common(type_schema, attrs)
 }
 
 fn build_request_body(
@@ -598,89 +594,20 @@ fn build_request_body(
     attrs: &JsonMap,
     resolved: &BTreeMap<Uid, u64>,
 ) -> Result<Value> {
-    let mut map = Map::new();
-    for (key, value) in attrs.iter() {
-        let field_schema = type_schema
-            .fields
-            .get(key)
-            .ok_or_else(|| anyhow!("missing schema for field {key}"))?;
-        if value.is_null() {
-            map.insert(key.clone(), Value::Null);
-            continue;
-        }
-        map.insert(
-            key.clone(),
-            resolve_value_for_type(&field_schema.r#type, value.clone(), resolved)?,
-        );
-    }
-    Ok(Value::Object(map))
+    build_request_body_common(type_schema, attrs, resolved, |id| {
+        Value::Number((*id).into())
+    })
 }
 
+#[cfg(test)]
 fn resolve_value_for_type(
     field_type: &alembic_core::FieldType,
     value: Value,
     resolved: &BTreeMap<Uid, u64>,
 ) -> Result<Value> {
-    match field_type {
-        alembic_core::FieldType::Ref { .. } => resolve_ref_value(value, resolved),
-        alembic_core::FieldType::ListRef { .. } => resolve_list_ref_value(value, resolved),
-        alembic_core::FieldType::List { item } => resolve_list_value(item, value, resolved),
-        alembic_core::FieldType::Map { value: inner } => resolve_map_value(inner, value, resolved),
-        _ => Ok(value),
-    }
-}
-
-fn resolve_ref_value(value: Value, resolved: &BTreeMap<Uid, u64>) -> Result<Value> {
-    let Value::String(raw) = value else {
-        return Err(anyhow!("ref value must be a uuid string"));
-    };
-    let uid = Uid::parse_str(&raw).map_err(|_| anyhow!("ref value is not a uuid: {raw}"))?;
-    let id = resolved
-        .get(&uid)
-        .copied()
-        .ok_or_else(|| anyhow!("missing referenced uid {uid}"))?;
-    Ok(Value::Number(id.into()))
-}
-
-fn resolve_list_ref_value(value: Value, resolved: &BTreeMap<Uid, u64>) -> Result<Value> {
-    let Value::Array(items) = value else {
-        return Err(anyhow!("list_ref value must be an array"));
-    };
-    let mut out = Vec::with_capacity(items.len());
-    for item in items {
-        out.push(resolve_ref_value(item, resolved)?);
-    }
-    Ok(Value::Array(out))
-}
-
-fn resolve_list_value(
-    item_type: &alembic_core::FieldType,
-    value: Value,
-    resolved: &BTreeMap<Uid, u64>,
-) -> Result<Value> {
-    let Value::Array(items) = value else {
-        return Err(anyhow!("list value must be an array"));
-    };
-    let mut out = Vec::with_capacity(items.len());
-    for item in items {
-        out.push(resolve_value_for_type(item_type, item, resolved)?);
-    }
-    Ok(Value::Array(out))
-}
-
-fn resolve_map_value(
-    value_type: &alembic_core::FieldType,
-    value: Value,
-    resolved: &BTreeMap<Uid, u64>,
-) -> Result<Value> {
-    let Value::Object(map) = value else {
-        return Err(anyhow!("map value must be an object"));
-    };
-    let mut out = Map::new();
-    for (key, value) in map {
-        out.insert(key, resolve_value_for_type(value_type, value, resolved)?);
-    }
-    Ok(Value::Object(out))
+    alembic_engine::resolve_value_for_type(field_type, value, resolved, |id| {
+        Value::Number((*id).into())
+    })
 }
 
 fn query_from_key(
@@ -689,65 +616,10 @@ fn query_from_key(
     resolved: &BTreeMap<Uid, u64>,
 ) -> Result<QueryBuilder> {
     let mut query = QueryBuilder::new();
-    for (field, value) in key.iter() {
-        let field_schema = type_schema
-            .key
-            .get(field)
-            .ok_or_else(|| anyhow!("missing schema for key field {field}"))?;
-        query = add_query_filters(query, field, &field_schema.r#type, value, resolved)?;
+    for (field, value) in query_filters_from_key(type_schema, key, resolved)? {
+        query = query.filter(field, value);
     }
     Ok(query)
-}
-
-fn add_query_filters(
-    mut query: QueryBuilder,
-    field: &str,
-    field_type: &alembic_core::FieldType,
-    value: &Value,
-    resolved: &BTreeMap<Uid, u64>,
-) -> Result<QueryBuilder> {
-    match field_type {
-        alembic_core::FieldType::Ref { .. } => {
-            let id = resolve_query_ref(value, resolved)?;
-            Ok(query.filter(field, id))
-        }
-        alembic_core::FieldType::ListRef { .. } => {
-            let Value::Array(items) = value else {
-                return Err(anyhow!("key field {field} must be an array"));
-            };
-            for item in items {
-                let id = resolve_query_ref(item, resolved)?;
-                query = query.filter(field, id);
-            }
-            Ok(query)
-        }
-        _ => {
-            let scalar = value_to_query_value(value)?;
-            Ok(query.filter(field, scalar))
-        }
-    }
-}
-
-fn resolve_query_ref(value: &Value, resolved: &BTreeMap<Uid, u64>) -> Result<String> {
-    let Value::String(raw) = value else {
-        return Err(anyhow!("ref value must be a uuid string"));
-    };
-    let uid = Uid::parse_str(raw).map_err(|_| anyhow!("ref value is not a uuid: {raw}"))?;
-    let id = resolved
-        .get(&uid)
-        .copied()
-        .ok_or_else(|| anyhow!("missing referenced uid {uid}"))?;
-    Ok(id.to_string())
-}
-
-fn value_to_query_value(value: &Value) -> Result<String> {
-    match value {
-        Value::String(raw) => Ok(raw.clone()),
-        Value::Number(num) => Ok(num.to_string()),
-        Value::Bool(value) => Ok(value.to_string()),
-        Value::Null => Err(anyhow!("key value is null")),
-        Value::Array(_) | Value::Object(_) => Err(anyhow!("key value must be scalar")),
-    }
 }
 
 fn supports_feature(features: &BTreeSet<String>, candidates: &[&str]) -> bool {
@@ -755,7 +627,8 @@ fn supports_feature(features: &BTreeSet<String>, candidates: &[&str]) -> bool {
 }
 
 fn is_missing_ref_error(err: &anyhow::Error) -> bool {
-    err.to_string().contains("missing referenced uid")
+    err.downcast_ref::<AdapterApplyError>()
+        .is_some_and(|e| matches!(e, AdapterApplyError::MissingRef { .. }))
 }
 
 fn is_404_error(err: &netbox::Error) -> bool {

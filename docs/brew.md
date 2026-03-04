@@ -50,6 +50,14 @@ schema:
         peers: { type: list, item: { type: json } }
 ```
 
+string fields can optionally use `format` and/or `pattern`:
+
+```yaml
+fields:
+  slug: { type: string, format: slug }
+  name: { type: string, pattern: "^[A-Z0-9-]+$" }
+```
+
 ## json input
 
 json is supported when the file extension is `.json`.
@@ -65,16 +73,7 @@ json is supported when the file extension is `.json`.
 
 raw yaml uses any shape you want, and a retort mapping compiles it into the ir.
 
-```
-
-string fields can optionally use `format` and/or `pattern`:
-
-```yaml
-fields:
-  slug: { type: string, format: slug }
-  name: { type: string, pattern: "^[A-Z0-9-]+$" }
-```
-bash
+```bash
 alembic distill -f examples/raw.yaml --retort examples/retort.yaml -o ir.json
 ```
 

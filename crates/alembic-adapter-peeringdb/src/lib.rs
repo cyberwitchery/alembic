@@ -39,7 +39,12 @@ impl Default for PeeringDBAdapter {
 
 #[async_trait]
 impl Adapter for PeeringDBAdapter {
-    async fn observe(&self, schema: &Schema, types: &[TypeName]) -> Result<ObservedState> {
+    async fn observe(
+        &self,
+        schema: &Schema,
+        types: &[TypeName],
+        _state: &alembic_engine::StateStore,
+    ) -> Result<ObservedState> {
         let requested: BTreeSet<TypeName> = if types.is_empty() {
             SUPPORTED_TYPES.iter().map(|s| TypeName::new(*s)).collect()
         } else {
@@ -91,7 +96,12 @@ impl Adapter for PeeringDBAdapter {
         Ok(state)
     }
 
-    async fn apply(&self, _schema: &Schema, _ops: &[Op]) -> Result<ApplyReport> {
+    async fn apply(
+        &self,
+        _schema: &Schema,
+        _ops: &[Op],
+        _state: &alembic_engine::StateStore,
+    ) -> Result<ApplyReport> {
         Err(anyhow!("PeeringDB adapter is read-only"))
     }
 }
@@ -225,7 +235,8 @@ mod tests {
     async fn apply_returns_read_only_error() {
         let adapter = PeeringDBAdapter::new();
         let schema = test_schema();
-        let err = adapter.apply(&schema, &[]).await.unwrap_err();
+        let state = alembic_engine::StateStore::new(None, alembic_engine::StateData::default());
+        let err = adapter.apply(&schema, &[], &state).await.unwrap_err();
         assert!(err.to_string().contains("read-only"));
     }
 
@@ -235,8 +246,9 @@ mod tests {
         let schema = Schema {
             types: BTreeMap::new(),
         };
+        let state = alembic_engine::StateStore::new(None, alembic_engine::StateData::default());
         let err = adapter
-            .observe(&schema, &[TypeName::new("peeringdb.ix")])
+            .observe(&schema, &[TypeName::new("peeringdb.ix")], &state)
             .await
             .unwrap_err();
         assert!(err.to_string().contains("missing schema"));
@@ -248,8 +260,14 @@ mod tests {
         let schema = Schema {
             types: BTreeMap::from([("peeringdb.unsupported".to_string(), ix_schema())]),
         };
+        let state_store =
+            alembic_engine::StateStore::new(None, alembic_engine::StateData::default());
         let state = adapter
-            .observe(&schema, &[TypeName::new("peeringdb.unsupported")])
+            .observe(
+                &schema,
+                &[TypeName::new("peeringdb.unsupported")],
+                &state_store,
+            )
             .await
             .unwrap();
 

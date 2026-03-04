@@ -6,11 +6,11 @@ mod ops;
 mod registry;
 mod state;
 
-use alembic_engine::{MissingCustomField, StateStore};
-use anyhow::{anyhow, Result};
+use alembic_engine::MissingCustomField;
+use anyhow::Result;
 use nautobot::models::CustomFieldTypeChoices;
 use std::collections::BTreeSet;
-use std::sync::{Arc, MutexGuard};
+use std::sync::Arc;
 
 use client::NautobotClient;
 use mapping::*;
@@ -18,17 +18,13 @@ use mapping::*;
 /// nautobot adapter that maps ir objects to nautobot api calls.
 pub struct NautobotAdapter {
     client: Arc<NautobotClient>,
-    state: std::sync::Mutex<StateStore>,
 }
 
 impl NautobotAdapter {
     /// create a new adapter with url, token, and state store.
-    pub fn new(url: &str, token: &str, state: StateStore) -> Result<Self> {
+    pub fn new(url: &str, token: &str) -> Result<Self> {
         let client = Arc::new(NautobotClient::new(url, token)?);
-        Ok(Self {
-            client,
-            state: std::sync::Mutex::new(state),
-        })
+        Ok(Self { client })
     }
 
     pub async fn create_custom_fields(&self, missing: &[MissingCustomField]) -> Result<()> {
@@ -73,12 +69,6 @@ impl NautobotAdapter {
             let _ = self.client.extras().tags().create(&request).await?;
         }
         Ok(())
-    }
-
-    fn state_guard(&self) -> Result<MutexGuard<'_, StateStore>> {
-        self.state
-            .lock()
-            .map_err(|_| anyhow!("state lock poisoned"))
     }
 }
 

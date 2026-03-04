@@ -1,6 +1,9 @@
 //! engine orchestration: load, validate, plan, apply.
 
+mod adapter_ops;
+mod apply_retry;
 mod django;
+mod errors;
 mod extract;
 mod lint;
 mod loader;
@@ -17,7 +20,12 @@ use anyhow::{anyhow, Result};
 #[cfg(test)]
 mod tests;
 
+pub use adapter_ops::{
+    build_key_from_schema, build_request_body, query_filters_from_key, resolve_value_for_type,
+};
+pub use apply_retry::{apply_non_delete_with_retries, RetryApplyDriver, RetryApplyResult};
 pub use django::{emit_django_app, DjangoEmitOptions};
+pub use errors::AdapterApplyError;
 pub use extract::{extract_inventory, ExtractReport};
 pub use lint::{lint_specs, LintReport};
 pub use loader::load_brew;
@@ -29,10 +37,10 @@ pub use projection::{
     ProjectedInventory, ProjectedObject, ProjectionData, ProjectionSpec,
 };
 pub use retort::{compile_retort, is_brew_format, load_raw_yaml, load_retort, Retort};
-pub use state::{StateData, StateStore};
+pub use state::{PostgresTlsMode, StateData, StateStore};
 pub use types::{
-    Adapter, AppliedOp, ApplyReport, BackendId, FieldChange, ObservedObject, ObservedState, Op,
-    Plan,
+    Adapter, AppliedOp, ApplyAdapter, ApplyReport, BackendId, FieldChange, ObserveAdapter,
+    ObservedObject, ObservedState, Op, Plan, PlanningAdapter, ProjectionProvisioner,
 };
 
 /// validate an inventory and return the report.
@@ -61,7 +69,7 @@ pub fn report_to_result_with_sources(report: ValidationReport, objects: &[Object
 
 /// observe backend state and produce a deterministic plan.
 pub async fn build_plan(
-    adapter: &dyn Adapter,
+    adapter: &(impl ObserveAdapter + ?Sized),
     inventory: &Inventory,
     state: &mut StateStore,
     allow_delete: bool,
@@ -70,18 +78,46 @@ pub async fn build_plan(
 }
 
 pub async fn build_plan_with_projection(
-    adapter: &dyn Adapter,
+    adapter: &(impl ObserveAdapter + ?Sized),
     inventory: &Inventory,
     state: &mut StateStore,
     allow_delete: bool,
     projection: Option<&ProjectionSpec>,
     projection_strict: bool,
 ) -> Result<Plan> {
-    let projected = LoadContext::from_ref(inventory)?
+    let observed = LoadContext::from_ref(inventory)?
         .project(projection)?
-        .observe(adapter, state, projection_strict, allow_delete)
+        .observe(adapter, state, projection_strict, false)
         .await?;
-    Ok(projected.plan(state))
+    Ok(observed.plan(state, allow_delete))
+}
+
+pub async fn build_plan_with_projection_observe_schema(
+    adapter: &(impl ObserveAdapter + ?Sized),
+    inventory: &Inventory,
+    state: &mut StateStore,
+    allow_delete: bool,
+    projection: Option<&ProjectionSpec>,
+    projection_strict: bool,
+) -> Result<Plan> {
+    let observed = LoadContext::from_ref(inventory)?
+        .project(projection)?
+        .observe(adapter, state, projection_strict, true)
+        .await?;
+    Ok(observed.plan(state, allow_delete))
+}
+
+pub async fn project_and_observe(
+    adapter: &(impl ObserveAdapter + ?Sized),
+    inventory: &Inventory,
+    state: &mut StateStore,
+    projection: Option<&ProjectionSpec>,
+) -> Result<(ProjectedInventory, ObservedState)> {
+    let observed = LoadContext::from_ref(inventory)?
+        .project(projection)?
+        .observe(adapter, state, false, false)
+        .await?;
+    Ok((observed.projected, observed.observed))
 }
 
 pub(crate) fn bootstrap_state_from_observed(
@@ -119,7 +155,7 @@ pub(crate) fn bootstrap_state_from_observed(
 
 /// apply a plan and update the state store.
 pub async fn apply_plan(
-    adapter: &dyn Adapter,
+    adapter: &(impl ApplyAdapter + ?Sized),
     plan: &Plan,
     state: &mut StateStore,
     allow_delete: bool,

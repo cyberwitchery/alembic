@@ -61,11 +61,7 @@ rules:
 - in `attrs`, `{ uid: { type, stable } }` emits a uid string.
 - `uid?` is optional and omitted when a required var is missing.
 
-## multi-emit
-
-a single rule can emit multiple objects by using a list for `emit`:
-
-```
+## format constraints
 
 format constraints can be used inside the schema block:
 
@@ -74,7 +70,12 @@ fields:
   slug: { type: string, format: slug }
   name: { type: string, pattern: "^[A-Z0-9-]+$" }
 ```
-yaml
+
+## multi-emit
+
+a single rule can emit multiple objects by using a list for `emit`:
+
+```yaml
 rules:
   - name: fabric
     select: /fabrics/*

@@ -1,7 +1,6 @@
 //! core engine types and adapter contract.
 
 use crate::projection::{BackendCapabilities, MissingCustomField, ProjectedObject, ProjectionData};
-use crate::state::StateStore;
 use alembic_core::{key_string, JsonMap, Key, Schema, TypeName, Uid};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -195,16 +194,94 @@ pub struct ApplyReport {
 /// adapter contract for backend-specific io.
 #[async_trait]
 pub trait Adapter: Send + Sync {
-    async fn observe(&self, schema: &Schema, types: &[TypeName]) -> anyhow::Result<ObservedState>;
-    async fn apply(&self, schema: &Schema, ops: &[Op]) -> anyhow::Result<ApplyReport>;
+    async fn observe(
+        &self,
+        schema: &Schema,
+        types: &[TypeName],
+        state: &crate::state::StateStore,
+    ) -> anyhow::Result<ObservedState>;
+    async fn apply(
+        &self,
+        schema: &Schema,
+        ops: &[Op],
+        state: &crate::state::StateStore,
+    ) -> anyhow::Result<ApplyReport>;
     async fn create_custom_fields(&self, _missing: &[MissingCustomField]) -> anyhow::Result<()> {
         Ok(())
     }
     async fn create_tags(&self, _tags: &[String]) -> anyhow::Result<()> {
         Ok(())
     }
-    fn update_state(&self, _state: &StateStore) {}
 }
+
+/// narrow observation capability for planning/extract flows.
+#[async_trait]
+pub trait ObserveAdapter: Send + Sync {
+    async fn observe(
+        &self,
+        schema: &Schema,
+        types: &[TypeName],
+        state: &crate::state::StateStore,
+    ) -> anyhow::Result<ObservedState>;
+}
+
+/// narrow apply capability for execution flows.
+#[async_trait]
+pub trait ApplyAdapter: Send + Sync {
+    async fn apply(
+        &self,
+        schema: &Schema,
+        ops: &[Op],
+        state: &crate::state::StateStore,
+    ) -> anyhow::Result<ApplyReport>;
+}
+
+/// optional projection provisioning capability (custom fields/tags).
+#[async_trait]
+pub trait ProjectionProvisioner: Send + Sync {
+    async fn create_custom_fields(&self, missing: &[MissingCustomField]) -> anyhow::Result<()>;
+    async fn create_tags(&self, tags: &[String]) -> anyhow::Result<()>;
+}
+
+/// observation + provisioning capability used by projection proposal flows.
+pub trait PlanningAdapter: ObserveAdapter + ProjectionProvisioner {}
+
+#[async_trait]
+impl<T: Adapter + ?Sized> ObserveAdapter for T {
+    async fn observe(
+        &self,
+        schema: &Schema,
+        types: &[TypeName],
+        state: &crate::state::StateStore,
+    ) -> anyhow::Result<ObservedState> {
+        Adapter::observe(self, schema, types, state).await
+    }
+}
+
+#[async_trait]
+impl<T: Adapter + ?Sized> ApplyAdapter for T {
+    async fn apply(
+        &self,
+        schema: &Schema,
+        ops: &[Op],
+        state: &crate::state::StateStore,
+    ) -> anyhow::Result<ApplyReport> {
+        Adapter::apply(self, schema, ops, state).await
+    }
+}
+
+#[async_trait]
+impl<T: Adapter + ?Sized> ProjectionProvisioner for T {
+    async fn create_custom_fields(&self, missing: &[MissingCustomField]) -> anyhow::Result<()> {
+        Adapter::create_custom_fields(self, missing).await
+    }
+
+    async fn create_tags(&self, tags: &[String]) -> anyhow::Result<()> {
+        Adapter::create_tags(self, tags).await
+    }
+}
+
+impl<T: Adapter + ?Sized> PlanningAdapter for T {}
 
 #[cfg(test)]
 mod tests {

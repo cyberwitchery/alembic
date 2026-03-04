@@ -1,6 +1,6 @@
 [package]
 name = "alembic-cli"
-version = "0.0.1"
+version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 
@@ -16,6 +16,8 @@ clap.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true
 tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
 
 [dev-dependencies]
 httpmock = "0.7"

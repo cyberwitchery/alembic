@@ -51,7 +51,7 @@ alembic plan -f examples/brew.yaml -o plan.json \
 - `--generic-config` is required when using the generic backend
 - `--projection` applies attrs -> backend mapping before planning
 - `--projection-strict=false` disables custom field existence checks
-- `--projection-propose` prints missing custom fields and tags and offers to create them (NetBox only)
+- `--projection-propose` prints missing custom fields and tags and offers to create them (NetBox and Nautobot)
 
 ## apply
 
@@ -70,6 +70,7 @@ alembic apply -p plan.json \
 
 - applies a plan file
 - deletes are blocked unless `--allow-delete` is provided
+- `--interactive` prompts per operation and applies only approved ops through the same engine path used by non-interactive apply
 - ensure the `--backend` matches the one used during planning
 - the `peeringdb` backend is read-only; apply will return an error
 
@@ -129,3 +130,9 @@ alembic cast django -f examples/brew.yaml -o ./out \
 - `NAUTOBOT_URL`
 - `NAUTOBOT_TOKEN`
 - `PEERINGDB_API_KEY`
+- `ALEMBIC_STATE_BACKEND` (`local`/`file`/`postgres`, default: `local`)
+- `ALEMBIC_STATE_PATH` (optional local state file path override)
+- `ALEMBIC_STATE_POSTGRES_URL` (required when `ALEMBIC_STATE_BACKEND=postgres`)
+- `ALEMBIC_STATE_KEY` (optional logical key in postgres backend, default: `default`)
+- `ALEMBIC_STATE_POSTGRES_TLS` (`disable`/`require`, default: `disable`)
+- `RUST_LOG` (optional; defaults to `warn`, used by cli tracing output)

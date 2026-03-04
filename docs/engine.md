@@ -7,7 +7,7 @@ the engine is responsible for loading, validating, planning, and applying change
 1) load brew files (supports `include` / `imports`) or compile raw yaml with a retort
 2) validate object envelopes, keys, and schema references
 3) apply projection spec (optional) to build backend payloads from `attrs`
-4) observe backend state via adapter (includes capabilities like custom fields)
+4) observe backend state via adapter (default scope: projected/desired types; capabilities included)
 5) bootstrap state mappings by key when missing
 6) plan deterministic operations
 7) apply operations in dependency order
@@ -40,10 +40,17 @@ apply uses a dependency-aware ordering:
 
 - creates/updates in type order
 - deletes in reverse type order
+- unresolved create/update refs are retried until convergence or explicit unresolved-ref failure
 
 ## diff rules
 
 diffs are computed at the `attrs` field level plus projected fields (`custom_fields`, `tags`, optional `local_context`). projection source keys are ignored for diffing.
+
+diffing is **additive-only**: only fields declared in your desired inventory are compared. fields present on the backend but absent from your inventory are left untouched. this means:
+
+- alembic only manages what you declare — unmanaged fields are not cleared.
+- to stop managing a field, set it to `null` in your `attrs` (sends a null patch to the backend). simply removing it from your inventory has no effect on the backend.
+- this is intentional: you can layer alembic alongside manual backend edits on fields you do not declare.
 
 ## extract
 

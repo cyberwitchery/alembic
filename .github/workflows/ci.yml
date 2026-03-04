@@ -46,6 +46,20 @@ jobs:
     name: tests
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: alembic
+          POSTGRES_USER: alembic
+          POSTGRES_PASSWORD: alembic
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U alembic -d alembic"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
     steps:
       - uses: actions/checkout@v4
 
@@ -62,6 +76,19 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install django djangorestframework
 
+      - name: Provision postgres state table
+        env:
+          PGPASSWORD: alembic
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+          psql -h localhost -U alembic -d alembic -c "
+            CREATE TABLE IF NOT EXISTS alembic_state (
+              state_key TEXT PRIMARY KEY,
+              payload JSONB NOT NULL,
+              updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );"
+
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
@@ -73,9 +100,10 @@ jobs:
       - name: Test
         env:
           ALEMBIC_CAST_PYTHON: python
+          ALEMBIC_TEST_POSTGRES_URL: postgres://alembic:alembic@localhost:5432/alembic
         run: |
           if [ -f alembic/Cargo.toml ]; then cd alembic; fi
-          cargo test --workspace
+          cargo test --workspace --all-features
 
   coverage:
     name: coverage

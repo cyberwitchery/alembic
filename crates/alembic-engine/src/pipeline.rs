@@ -1,5 +1,5 @@
 use crate::projection::{apply_projection, validate_projection_strict};
-use crate::types::{Adapter, ApplyReport, Plan};
+use crate::types::{ApplyAdapter, ApplyReport, ObserveAdapter, Plan};
 use crate::{plan, sort_ops_for_apply, ProjectedInventory, ProjectedObject, ProjectionData};
 use crate::{ObservedState, ProjectionSpec, StateStore};
 use alembic_core::Inventory;
@@ -53,29 +53,40 @@ pub(crate) struct ProjectionContext<'a> {
     projected: ProjectedInventory,
 }
 
+pub(crate) struct ObservedContext {
+    pub(crate) projected: ProjectedInventory,
+    pub(crate) observed: ObservedState,
+    pub(crate) schema: alembic_core::Schema,
+}
+
 impl<'a> ProjectionContext<'a> {
     pub(crate) async fn observe(
         self,
-        adapter: &dyn Adapter,
+        adapter: &(impl ObserveAdapter + ?Sized),
         state: &mut StateStore,
         projection_strict: bool,
-        allow_delete: bool,
-    ) -> Result<PlanContext> {
+        include_schema_types: bool,
+    ) -> Result<ObservedContext> {
         let mut types: BTreeSet<_> = self
             .projected
             .objects
             .iter()
             .map(|o| o.base.type_name.clone())
             .collect();
-        for type_name in self.inventory.schema.types.keys() {
-            types.insert(alembic_core::TypeName::new(type_name));
+        if include_schema_types {
+            for type_name in self.inventory.schema.types.keys() {
+                types.insert(alembic_core::TypeName::new(type_name));
+            }
         }
         let types_vec: Vec<_> = types.into_iter().collect();
-        let mut observed = adapter.observe(&self.inventory.schema, &types_vec).await?;
+        let mut observed = adapter
+            .observe(&self.inventory.schema, &types_vec, state)
+            .await?;
         let bootstrapped = crate::bootstrap_state_from_observed(state, &self.projected, &observed);
         if bootstrapped {
-            adapter.update_state(state);
-            observed = adapter.observe(&self.inventory.schema, &types_vec).await?;
+            observed = adapter
+                .observe(&self.inventory.schema, &types_vec, state)
+                .await?;
         }
         if projection_strict {
             if let Some(spec) = self.projection {
@@ -83,30 +94,22 @@ impl<'a> ProjectionContext<'a> {
             }
         }
 
-        Ok(PlanContext {
+        Ok(ObservedContext {
             projected: self.projected,
             observed,
-            allow_delete,
             schema: self.inventory.schema,
         })
     }
 }
 
-pub(crate) struct PlanContext {
-    projected: ProjectedInventory,
-    observed: ObservedState,
-    allow_delete: bool,
-    schema: alembic_core::Schema,
-}
-
-impl PlanContext {
-    pub(crate) fn plan(self, state: &StateStore) -> Plan {
+impl ObservedContext {
+    pub(crate) fn plan(self, state: &StateStore, allow_delete: bool) -> Plan {
         plan(
             &self.projected,
             &self.observed,
             state,
             &self.schema,
-            self.allow_delete,
+            allow_delete,
         )
     }
 }
@@ -134,11 +137,11 @@ impl<'a> ApplyContext<'a> {
 
     pub(crate) async fn apply(
         self,
-        adapter: &dyn Adapter,
+        adapter: &(impl ApplyAdapter + ?Sized),
         state: &mut StateStore,
     ) -> Result<ApplyReport> {
         let ordered = sort_ops_for_apply(&self.plan.ops);
-        let report = adapter.apply(&self.plan.schema, &ordered).await?;
+        let report = adapter.apply(&self.plan.schema, &ordered, state).await?;
 
         for applied in &report.applied {
             if let Some(backend_id) = &applied.backend_id {
