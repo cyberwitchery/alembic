@@ -271,9 +271,12 @@ impl Adapter for NautobotAdapter {
                 if native_fields.contains(field_name) || existing.contains(field_name) {
                     continue;
                 }
-                self.create_custom_field(&type_name, field_name, field_schema)
-                    .await?;
-                created_fields.push(format!("{}.{}", type_name, field_name));
+                if self
+                    .create_custom_field(&type_name, field_name, field_schema)
+                    .await?
+                {
+                    created_fields.push(format!("{}.{}", type_name, field_name));
+                }
             }
         }
 
@@ -323,7 +326,25 @@ impl NautobotAdapter {
             &custom_fields,
             &info.features,
         )?;
-        let response: Value = resource.create(&body).await?;
+        let response: Value = match resource.create(&body).await {
+            Ok(response) => response,
+            Err(err) if is_conflict_error(&err) => {
+                if let Ok(existing) = self
+                    .lookup_backend_id(type_name, &info, type_schema, &desired.key, resolved)
+                    .await
+                {
+                    tracing::warn!(
+                        type_name = %type_name,
+                        key = %key_string(&desired.key),
+                        "create already exists; using existing object"
+                    );
+                    resolved.insert(uid, existing.clone());
+                    return Ok(existing);
+                }
+                return Err(err.into());
+            }
+            Err(err) => return Err(err.into()),
+        };
         let backend_id = response
             .get("id")
             .and_then(Value::as_str)
@@ -420,7 +441,14 @@ impl NautobotAdapter {
                 "name": tag,
                 "slug": slugify(tag),
             });
-            let _ = resource.create(&payload).await?;
+            if let Err(err) = resource.create(&payload).await {
+                let existing = self.client.fetch_tags().await?;
+                if existing.contains(tag) {
+                    tracing::warn!(tag = %tag, "tag already exists");
+                    continue;
+                }
+                return Err(err.into());
+            }
         }
         Ok(())
     }
@@ -430,7 +458,7 @@ impl NautobotAdapter {
         type_name: &TypeName,
         field_name: &str,
         field_schema: &FieldSchema,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let field_type = custom_field_type_for_schema(field_schema);
         let mut payload = Map::new();
         payload.insert("name".to_string(), Value::String(field_name.to_string()));
@@ -450,8 +478,25 @@ impl NautobotAdapter {
             );
         }
         let resource = self.client.extras().custom_fields();
-        let _ = resource.create(&Value::Object(payload)).await?;
-        Ok(())
+        match resource.create(&Value::Object(payload)).await {
+            Ok(_) => Ok(true),
+            Err(err) => {
+                let existing = self.client.fetch_custom_fields().await?;
+                if existing
+                    .get(type_name.as_str())
+                    .is_some_and(|fields| fields.contains(field_name))
+                {
+                    tracing::warn!(
+                        type_name = %type_name,
+                        field = %field_name,
+                        "custom field already exists"
+                    );
+                    Ok(false)
+                } else {
+                    Err(err.into())
+                }
+            }
+        }
     }
 }
 
@@ -824,6 +869,27 @@ fn is_404_error(err: &nautobot::Error) -> bool {
     err.to_string().contains("status 404")
 }
 
+fn is_conflict_error(err: &nautobot::Error) -> bool {
+    match err {
+        nautobot::Error::ApiError {
+            status,
+            message,
+            body,
+        } => {
+            if !matches!(status, 400 | 409) {
+                return false;
+            }
+            let message = message.to_lowercase();
+            let body = body.to_lowercase();
+            message.contains("already exists")
+                || message.contains("unique")
+                || body.contains("already exists")
+                || body.contains("unique")
+        }
+        _ => false,
+    }
+}
+
 fn describe_missing_refs(ops: &[Op], resolved: &BTreeMap<Uid, String>) -> String {
     let mut missing = BTreeSet::new();
     for op in ops {
@@ -1143,5 +1209,15 @@ mod tests {
         ]);
         let normalized = normalize_value(input, None, &schema, &registry, &mappings);
         assert_eq!(normalized, json!(["uuid-1", "uuid-2"]));
+    }
+
+    #[test]
+    fn test_conflict_error_detects_unique_message() {
+        let err = nautobot::Error::ApiError {
+            status: 400,
+            message: "name: This field must be unique.".to_string(),
+            body: String::new(),
+        };
+        assert!(is_conflict_error(&err));
     }
 }

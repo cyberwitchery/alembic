@@ -288,9 +288,12 @@ impl Adapter for NetBoxAdapter {
                     if native_fields.contains(field_name) || existing.contains(field_name) {
                         continue;
                     }
-                    self.create_custom_field(&type_name, field_name, field_schema)
-                        .await?;
-                    created_fields.push(format!("{}.{}", type_name, field_name));
+                    if self
+                        .create_custom_field(&type_name, field_name, field_schema)
+                        .await?
+                    {
+                        created_fields.push(format!("{}.{}", type_name, field_name));
+                    }
                 }
                 continue;
             }
@@ -345,23 +348,55 @@ impl Adapter for NetBoxAdapter {
                     let resource: Resource<Value> = self
                         .client
                         .resource("plugins/custom-objects/custom-object-types/");
-                    let created: Value = resource.create(&Value::Object(payload)).await?;
-                    let created_type = super::client::parse_custom_object_type(created)?;
-                    let id = created_type.id;
-                    let (app_label, model) = custom_object_type_parts(&created_type)
-                        .unwrap_or_else(|| {
-                            (CUSTOM_OBJECT_APP_LABEL.to_string(), custom_name.clone())
-                        });
-                    registry.insert_custom_object_type(
-                        type_name.clone(),
-                        custom_object_endpoint(&custom_name),
-                        custom_object_features(),
-                        app_label,
-                        model,
-                    );
-                    custom_types_by_name.insert(custom_name.clone(), created_type);
-                    created_object_types.push(type_name.to_string());
-                    id
+                    match resource.create(&Value::Object(payload)).await {
+                        Ok(created) => {
+                            let created_type = super::client::parse_custom_object_type(created)?;
+                            let id = created_type.id;
+                            let (app_label, model) = custom_object_type_parts(&created_type)
+                                .unwrap_or_else(|| {
+                                    (CUSTOM_OBJECT_APP_LABEL.to_string(), custom_name.clone())
+                                });
+                            registry.insert_custom_object_type(
+                                type_name.clone(),
+                                custom_object_endpoint(&custom_name),
+                                custom_object_features(),
+                                app_label,
+                                model,
+                            );
+                            custom_types_by_name.insert(custom_name.clone(), created_type);
+                            created_object_types.push(type_name.to_string());
+                            id
+                        }
+                        Err(err) => {
+                            if let Some(types) = self.client.fetch_custom_object_types().await? {
+                                if let Some(existing) =
+                                    types.into_iter().find(|item| item.name == custom_name)
+                                {
+                                    let (app_label, model) = custom_object_type_parts(&existing)
+                                        .unwrap_or_else(|| {
+                                            (
+                                                CUSTOM_OBJECT_APP_LABEL.to_string(),
+                                                custom_name.clone(),
+                                            )
+                                        });
+                                    registry.insert_custom_object_type(
+                                        type_name.clone(),
+                                        custom_object_endpoint(&custom_name),
+                                        custom_object_features(),
+                                        app_label,
+                                        model,
+                                    );
+                                    let id = existing.id;
+                                    custom_types_by_name.insert(custom_name.clone(), existing);
+                                    id
+                                } else {
+                                    return Err(err.into());
+                                }
+                            } else {
+                                return Err(err.into());
+                            }
+                        }
+                    }
                 };
                 custom_type_ids.insert(type_name.as_str().to_string(), type_id);
             }
@@ -439,7 +474,25 @@ impl NetBoxAdapter {
             &custom_fields,
             &info.features,
         )?;
-        let response: Value = resource.create(&body).await?;
+        let response: Value = match resource.create(&body).await {
+            Ok(response) => response,
+            Err(err) if is_conflict_error(&err) => {
+                if let Ok(existing) = self
+                    .lookup_backend_id(type_name, &info, type_schema, &desired.key, resolved)
+                    .await
+                {
+                    tracing::warn!(
+                        type_name = %type_name,
+                        key = %key_string(&desired.key),
+                        "create already exists; using existing object"
+                    );
+                    resolved.insert(uid, existing);
+                    return Ok(existing);
+                }
+                return Err(err.into());
+            }
+            Err(err) => return Err(err.into()),
+        };
         let backend_id = response
             .get("id")
             .and_then(Value::as_u64)
@@ -534,7 +587,14 @@ impl NetBoxAdapter {
                 "name": tag,
                 "slug": slugify(tag),
             });
-            let _ = resource.create(&payload).await?;
+            if let Err(err) = resource.create(&payload).await {
+                let existing = self.client.fetch_tags().await?;
+                if existing.contains(tag) {
+                    tracing::warn!(tag = %tag, "tag already exists");
+                    continue;
+                }
+                return Err(err.into());
+            }
         }
         Ok(())
     }
@@ -544,7 +604,7 @@ impl NetBoxAdapter {
         type_name: &TypeName,
         field_name: &str,
         field_schema: &FieldSchema,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let field_type = custom_field_type_for_schema(field_schema);
         let mut payload = Map::new();
         payload.insert("name".to_string(), Value::String(field_name.to_string()));
@@ -564,8 +624,25 @@ impl NetBoxAdapter {
             );
         }
         let resource = self.client.extras().custom_fields();
-        let _ = resource.create(&Value::Object(payload)).await?;
-        Ok(())
+        match resource.create(&Value::Object(payload)).await {
+            Ok(_) => Ok(true),
+            Err(err) => {
+                let existing = self.client.fetch_custom_fields().await?;
+                if existing
+                    .get(type_name.as_str())
+                    .is_some_and(|fields| fields.contains(field_name))
+                {
+                    tracing::warn!(
+                        type_name = %type_name,
+                        field = %field_name,
+                        "custom field already exists"
+                    );
+                    Ok(false)
+                } else {
+                    Err(err.into())
+                }
+            }
+        }
     }
 }
 
@@ -987,10 +1064,36 @@ impl<'a> CustomObjectFieldProvisioner<'a> {
             .adapter
             .client
             .resource("plugins/custom-objects/custom-object-type-fields/");
-        let _: Value = resource.create(&payload).await?;
-        self.existing_fields.insert(field_name.to_string());
-        self.created_object_fields
-            .push(format!("{}.{}", self.type_name, field_name));
+        match resource.create(&payload).await {
+            Ok(_) => {
+                self.existing_fields.insert(field_name.to_string());
+                self.created_object_fields
+                    .push(format!("{}.{}", self.type_name, field_name));
+            }
+            Err(err) => {
+                let Some(fields) = self
+                    .adapter
+                    .client
+                    .fetch_custom_object_type_fields()
+                    .await?
+                else {
+                    return Err(err.into());
+                };
+                if fields.iter().any(|field| {
+                    field.custom_object_type == self.custom_object_type_id
+                        && field.name == field_name
+                }) {
+                    tracing::warn!(
+                        type_name = %self.type_name,
+                        field = %field_name,
+                        "custom object field already exists"
+                    );
+                    self.existing_fields.insert(field_name.to_string());
+                } else {
+                    return Err(err.into());
+                }
+            }
+        }
         Ok(())
     }
 }
@@ -1213,6 +1316,27 @@ fn is_404_anyhow(err: &anyhow::Error) -> bool {
         .is_some_and(|e| matches!(e, netbox::Error::ApiError { status: 404, .. }))
 }
 
+fn is_conflict_error(err: &netbox::Error) -> bool {
+    match err {
+        netbox::Error::ApiError {
+            status,
+            message,
+            body,
+        } => {
+            if !matches!(status, 400 | 409) {
+                return false;
+            }
+            let message = message.to_lowercase();
+            let body = body.to_lowercase();
+            message.contains("already exists")
+                || message.contains("unique")
+                || body.contains("already exists")
+                || body.contains("unique")
+        }
+        _ => false,
+    }
+}
+
 fn describe_missing_refs(ops: &[Op], resolved: &BTreeMap<Uid, u64>) -> String {
     let mut missing = BTreeSet::new();
     for op in ops {
@@ -1249,6 +1373,31 @@ fn collect_missing_refs(value: &Value, resolved: &BTreeMap<Uid, u64>, missing: &
             }
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_conflict_error;
+
+    #[test]
+    fn conflict_error_detects_unique_message() {
+        let err = netbox::Error::ApiError {
+            status: 400,
+            message: "slug: This field must be unique.".to_string(),
+            body: String::new(),
+        };
+        assert!(is_conflict_error(&err));
+    }
+
+    #[test]
+    fn conflict_error_rejects_other_status() {
+        let err = netbox::Error::ApiError {
+            status: 404,
+            message: "Not found".to_string(),
+            body: String::new(),
+        };
+        assert!(!is_conflict_error(&err));
     }
 }
 

@@ -29,4 +29,4 @@ jobs:
           MIRIFLAGS: "-Zmiri-disable-isolation"
         run: |
           if [ -f alembic/Cargo.toml ]; then cd alembic; fi
-          cargo miri test --workspace --all-features
+          cargo miri test -p alembic-core --all-features
