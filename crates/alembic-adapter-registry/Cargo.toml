@@ -1,6 +1,6 @@
 [package]
 name = "alembic-adapter-registry"
-version = "0.1.0"
+version = "0.1.1"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -10,12 +10,19 @@ description = "Adapter registry and configuration for Alembic."
 readme = "../../README.md"
 
 [dependencies]
-alembic-engine = { path = "../alembic-engine" }
-alembic-adapter-netbox = { path = "../alembic-adapter-netbox" }
-alembic-adapter-nautobot = { path = "../alembic-adapter-nautobot" }
-alembic-adapter-infrahub = { path = "../alembic-adapter-infrahub" }
-alembic-adapter-generic = { path = "../alembic-adapter-generic" }
-alembic-adapter-peeringdb = { path = "../alembic-adapter-peeringdb" }
+alembic-core.workspace = true
+alembic-engine.workspace = true
+alembic-adapter-netbox.workspace = true
+alembic-adapter-nautobot.workspace = true
+alembic-adapter-infrahub.workspace = true
+alembic-adapter-generic.workspace = true
+alembic-adapter-peeringdb.workspace = true
 anyhow.workspace = true
+async-trait.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 serde_yaml.workspace = true
+tokio = { workspace = true, features = ["process"] }
+
+[dev-dependencies]
+tempfile = "3"

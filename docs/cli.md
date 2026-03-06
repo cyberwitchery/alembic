@@ -44,6 +44,18 @@ backend: generic
 config_path: examples/generic.yaml
 ```
 
+external process adapter:
+
+```yaml
+backend: external
+command: ./bin/alembic-adapter-mybackend
+args: ["--verbose"]
+env:
+  MY_BACKEND_URL: https://backend.example.com
+  MY_BACKEND_TOKEN: $TOKEN
+timeout_seconds: 60
+```
+
 if you don't want a config file, you can pass `--backend <name>` and supply credentials via environment variables.
 
 ## plan
@@ -131,6 +143,7 @@ alembic cast django -f examples/brew.yaml -o ./out \
 - `INFRAHUB_URL`
 - `INFRAHUB_TOKEN`
 - `GENERIC_CONFIG` (path to generic adapter config)
+- `EXTERNAL_COMMAND` (path to external adapter executable)
 - `PEERINGDB_API_KEY`
 - `ALEMBIC_STATE_BACKEND` (`local`/`file`/`postgres`, default: `local`)
 - `ALEMBIC_STATE_PATH` (optional local state file path override)

@@ -4,6 +4,7 @@ mod adapter_ops;
 mod apply_retry;
 mod django;
 mod errors;
+pub mod external;
 mod extract;
 mod loader;
 mod pipeline;
@@ -24,6 +25,10 @@ pub use adapter_ops::{
 pub use apply_retry::{apply_non_delete_with_retries, RetryApplyDriver, RetryApplyResult};
 pub use django::{emit_django_app, DjangoEmitOptions};
 pub use errors::AdapterApplyError;
+pub use external::{
+    run_external_adapter, ExternalAdapter, ExternalEnvelope, ExternalObject, ExternalRequest,
+    ExternalResponse, EXTERNAL_PROTOCOL_VERSION,
+};
 pub use extract::{import_inventory, ImportReport};
 pub use loader::load_brew;
 pub use planner::{plan, sort_ops_for_apply};

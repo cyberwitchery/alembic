@@ -1,6 +1,6 @@
 [package]
 name = "alembic-cli"
-version = "0.1.0"
+version = "0.1.1"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -10,9 +10,9 @@ description = "Command line interface for Alembic."
 readme = "../../README.md"
 
 [dependencies]
-alembic-core = { path = "../alembic-core" }
-alembic-engine = { path = "../alembic-engine" }
-alembic-adapter-registry = { path = "../alembic-adapter-registry" }
+alembic-core.workspace = true
+alembic-engine.workspace = true
+alembic-adapter-registry.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 serde_json.workspace = true

@@ -1,12 +1,29 @@
 //! adapter registry and config loading for alembic.
 
-use alembic_engine::Adapter;
+use alembic_engine::{
+    Adapter, ApplyReport, BackendId, ObservedObject, ObservedState, Op, ProvisionReport, StateData,
+    StateStore,
+};
 use anyhow::{anyhow, Context, Result};
-use serde::Deserialize;
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde_json::Value as JsonValue;
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
+use std::process::Stdio;
+use std::time::Duration;
+use tokio::io::AsyncWriteExt;
+use tokio::process::Command;
+use tokio::time::timeout;
 
-const SUPPORTED_BACKENDS: &[&str] = &["netbox", "nautobot", "infrahub", "generic", "peeringdb"];
+const SUPPORTED_BACKENDS: &[&str] = &[
+    "netbox",
+    "nautobot",
+    "infrahub",
+    "generic",
+    "peeringdb",
+    "external",
+];
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "backend", rename_all = "kebab-case")]
@@ -16,6 +33,7 @@ pub enum AdapterConfig {
     Infrahub(InfrahubConfig),
     Generic(GenericConfig),
     Peeringdb,
+    External(ExternalConfig),
 }
 
 #[derive(Debug, Deserialize)]
@@ -43,6 +61,17 @@ pub struct InfrahubConfig {
 pub struct GenericConfig {
     pub config: Option<alembic_adapter_generic::GenericConfig>,
     pub config_path: Option<PathBuf>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ExternalConfig {
+    pub command: Option<String>,
+    #[serde(default)]
+    pub args: Vec<String>,
+    pub working_dir: Option<PathBuf>,
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+    pub timeout_seconds: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
@@ -74,6 +103,7 @@ impl AdapterConfig {
             AdapterConfig::Infrahub(_) => "infrahub",
             AdapterConfig::Generic(_) => "generic",
             AdapterConfig::Peeringdb => "peeringdb",
+            AdapterConfig::External(_) => "external",
         }
     }
 
@@ -98,6 +128,13 @@ impl AdapterConfig {
                 config_path: None,
             })),
             "peeringdb" => Ok(AdapterConfig::Peeringdb),
+            "external" => Ok(AdapterConfig::External(ExternalConfig {
+                command: None,
+                args: Vec::new(),
+                working_dir: None,
+                env: BTreeMap::new(),
+                timeout_seconds: None,
+            })),
             other => Err(anyhow!(
                 "unsupported backend {other} (expected one of: {})",
                 SUPPORTED_BACKENDS.join(", ")
@@ -159,8 +196,184 @@ impl AdapterConfig {
             AdapterConfig::Peeringdb => {
                 Ok(Box::new(alembic_adapter_peeringdb::PeeringDBAdapter::new()))
             }
+            AdapterConfig::External(cfg) => Ok(Box::new(ProcessAdapter::new(cfg)?)),
         }
     }
+}
+
+#[derive(Debug, Clone)]
+struct ProcessAdapter {
+    command: String,
+    args: Vec<String>,
+    working_dir: Option<PathBuf>,
+    env: BTreeMap<String, String>,
+    timeout: Duration,
+}
+
+impl ProcessAdapter {
+    fn new(cfg: ExternalConfig) -> Result<Self> {
+        let command = cfg
+            .command
+            .or_else(|| std::env::var("EXTERNAL_COMMAND").ok())
+            .ok_or_else(|| anyhow!("external backend requires command"))?;
+        let timeout = Duration::from_secs(cfg.timeout_seconds.unwrap_or(120));
+        Ok(Self {
+            command,
+            args: cfg.args,
+            working_dir: cfg.working_dir,
+            env: cfg.env,
+            timeout,
+        })
+    }
+
+    async fn call<R: DeserializeOwned>(&self, request: ExternalRequest<'_>) -> Result<R> {
+        let envelope = ExternalEnvelope {
+            version: 1,
+            request,
+        };
+        let payload = serde_json::to_vec(&envelope).context("serialize external request")?;
+        let output = self.run(payload).await?;
+        let stdout =
+            String::from_utf8(output.stdout).context("external adapter response not utf-8")?;
+        let response: ExternalResponse<JsonValue> =
+            serde_json::from_str(&stdout).context("parse external adapter response")?;
+        if !response.ok {
+            let message = response
+                .error
+                .unwrap_or_else(|| "external adapter error".to_string());
+            return Err(anyhow!(message));
+        }
+        let result = response
+            .result
+            .ok_or_else(|| anyhow!("external adapter response missing result"))?;
+        serde_json::from_value(result).context("deserialize external adapter result")
+    }
+
+    async fn run(&self, payload: Vec<u8>) -> Result<std::process::Output> {
+        let mut cmd = Command::new(&self.command);
+        cmd.args(&self.args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if let Some(dir) = &self.working_dir {
+            cmd.current_dir(dir);
+        }
+        for (key, value) in &self.env {
+            cmd.env(key, value);
+        }
+
+        let mut child = cmd.spawn().context("spawn external adapter")?;
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin
+                .write_all(&payload)
+                .await
+                .context("write external adapter stdin")?;
+        }
+
+        let output = timeout(self.timeout, child.wait_with_output())
+            .await
+            .context("external adapter timed out")?
+            .context("wait for external adapter")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            return Err(anyhow!(
+                "external adapter exited with {}: {}",
+                output.status,
+                stderr
+            ));
+        }
+
+        Ok(output)
+    }
+}
+
+#[async_trait::async_trait]
+impl Adapter for ProcessAdapter {
+    async fn read(
+        &self,
+        schema: &alembic_core::Schema,
+        types: &[alembic_core::TypeName],
+        state: &StateStore,
+    ) -> Result<ObservedState> {
+        let state = StateData {
+            mappings: state.all_mappings().clone(),
+        };
+        let objects: Vec<ObservedObjectData> = self
+            .call(ExternalRequest::Read {
+                schema,
+                types,
+                state,
+            })
+            .await?;
+        let mut observed = ObservedState::default();
+        for object in objects {
+            observed.insert(ObservedObject {
+                type_name: object.type_name,
+                key: object.key,
+                attrs: object.attrs,
+                backend_id: object.backend_id,
+            });
+        }
+        Ok(observed)
+    }
+
+    async fn write(
+        &self,
+        schema: &alembic_core::Schema,
+        ops: &[Op],
+        state: &StateStore,
+    ) -> Result<ApplyReport> {
+        let state = StateData {
+            mappings: state.all_mappings().clone(),
+        };
+        self.call(ExternalRequest::Write { schema, ops, state })
+            .await
+    }
+
+    async fn ensure_schema(&self, schema: &alembic_core::Schema) -> Result<ProvisionReport> {
+        self.call(ExternalRequest::EnsureSchema { schema }).await
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct ExternalEnvelope<'a> {
+    version: u8,
+    #[serde(flatten)]
+    request: ExternalRequest<'a>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "method", rename_all = "snake_case")]
+enum ExternalRequest<'a> {
+    Read {
+        schema: &'a alembic_core::Schema,
+        types: &'a [alembic_core::TypeName],
+        state: StateData,
+    },
+    Write {
+        schema: &'a alembic_core::Schema,
+        ops: &'a [Op],
+        state: StateData,
+    },
+    EnsureSchema {
+        schema: &'a alembic_core::Schema,
+    },
+}
+
+#[derive(Debug, Deserialize)]
+struct ExternalResponse<T> {
+    ok: bool,
+    result: Option<T>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ObservedObjectData {
+    type_name: alembic_core::TypeName,
+    key: alembic_core::Key,
+    attrs: alembic_core::JsonMap,
+    backend_id: Option<BackendId>,
 }
 
 impl InfrahubSchemaConfig {
@@ -251,9 +464,18 @@ pub fn resolve_credentials(
 #[cfg(test)]
 mod tests {
     use super::resolve_credentials;
+    use super::AdapterConfig;
+    use super::ExternalConfig;
     use super::InfrahubSchemaConfig;
     use super::InfrahubSchemaMode;
+    use alembic_core::{JsonMap, Key, Object, Schema, TypeName, Uid};
+    use alembic_engine::{BackendId, Op, StateData, StateStore};
+    use serde_json::json;
+    use std::collections::BTreeMap;
+    use std::fs;
+    use std::path::Path;
     use std::sync::{Mutex, OnceLock};
+    use tempfile::tempdir;
 
     fn env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -332,5 +554,87 @@ mod tests {
             infrahubctl_path: None,
         };
         assert!(config.build().unwrap().is_none());
+    }
+
+    #[cfg(unix)]
+    fn make_executable(path: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(path).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(path, perms).unwrap();
+    }
+
+    fn write_script(path: &Path, contents: &str) {
+        fs::write(path, contents).unwrap();
+        #[cfg(unix)]
+        make_executable(path);
+    }
+
+    #[tokio::test]
+    async fn external_adapter_roundtrip() {
+        let dir = tempdir().unwrap();
+        let script_path = dir.path().join("adapter.sh");
+        let script = r#"#!/usr/bin/env bash
+set -euo pipefail
+input="$(cat)"
+if [[ "$input" == *"\"method\":\"read\""* ]]; then
+  cat <<'JSON'
+{"ok":true,"result":[{"type_name":"dcim.site","key":{"name":"site-a"},"attrs":{"name":"Site A"},"backend_id":"site-1"}]}
+JSON
+elif [[ "$input" == *"\"method\":\"write\""* ]]; then
+  cat <<'JSON'
+{"ok":true,"result":{"applied":[{"uid":"00000000-0000-0000-0000-000000000001","type_name":"dcim.site","backend_id":"site-1"}]}}
+JSON
+elif [[ "$input" == *"\"method\":\"ensure_schema\""* ]]; then
+  cat <<'JSON'
+{"ok":true,"result":{"created_fields":["field1"],"created_tags":[],"created_object_types":["dcim.site"],"created_object_fields":["dcim.site.name"]}}
+JSON
+else
+  echo '{"ok":false,"error":"unknown method"}'
+fi
+"#;
+        write_script(&script_path, script);
+
+        let config = AdapterConfig::External(ExternalConfig {
+            command: Some(script_path.to_string_lossy().to_string()),
+            args: Vec::new(),
+            working_dir: None,
+            env: BTreeMap::new(),
+            timeout_seconds: Some(5),
+        });
+        let adapter = config.build().unwrap();
+        let schema = Schema {
+            types: BTreeMap::new(),
+        };
+        let state = StateStore::new(None, StateData::default());
+
+        let observed = adapter.read(&schema, &[], &state).await.unwrap();
+        assert_eq!(observed.by_key.len(), 1);
+
+        let uid = Uid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
+        let key = Key::from(BTreeMap::from([("name".to_string(), json!("site-a"))]));
+        let obj = Object {
+            uid,
+            type_name: TypeName::new("dcim.site"),
+            key,
+            attrs: JsonMap::from(BTreeMap::from([("name".to_string(), json!("Site A"))])),
+            source: None,
+        };
+        let ops = vec![Op::Create {
+            uid,
+            type_name: TypeName::new("dcim.site"),
+            desired: obj,
+        }];
+        let report = adapter.write(&schema, &ops, &state).await.unwrap();
+        assert_eq!(report.applied.len(), 1);
+        assert_eq!(
+            report.applied[0].backend_id,
+            Some(BackendId::String("site-1".to_string()))
+        );
+
+        let provision = adapter.ensure_schema(&schema).await.unwrap();
+        assert!(provision
+            .created_object_types
+            .contains(&"dcim.site".to_string()));
     }
 }
