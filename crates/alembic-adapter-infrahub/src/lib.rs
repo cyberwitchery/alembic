@@ -80,6 +80,7 @@ pub struct InfrahubAdapter {
 impl InfrahubAdapter {
     pub fn new(url: &str, token: &str, branch: Option<&str>) -> Result<Self> {
         let mut config = ClientConfig::new(url, token);
+        config = config.with_http_client_builder(|builder| builder.no_proxy());
         if let Some(branch) = branch {
             config = config.with_default_branch(branch);
         }
@@ -923,7 +924,8 @@ fn build_provision_plan(
         let gql_type = gql_type_name_str(type_name);
         let Some(existing_fields) = schema_info.type_fields.get(&gql_type) else {
             let parts = type_name_parts(type_name)?;
-            let (attributes, relationships, key_attrs) = collect_field_defs(type_schema, None)?;
+            let (attributes, relationships, key_attrs) =
+                collect_field_defs(type_name, type_schema, None)?;
             let mut human_friendly_id = Vec::new();
             if !key_attrs.is_empty() {
                 human_friendly_id.extend(key_attrs.iter().map(|key| format!("{key}__value")));
@@ -959,7 +961,7 @@ fn build_provision_plan(
             continue;
         }
         let (attributes, relationships, _key_attrs) =
-            collect_field_defs(type_schema, Some(&missing_fields))?;
+            collect_field_defs(type_name, type_schema, Some(&missing_fields))?;
         if attributes.is_empty() && relationships.is_empty() {
             continue;
         }
@@ -1124,6 +1126,8 @@ struct RelationshipDef {
     kind: String,
     cardinality: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    identifier: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     optional: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     direction: Option<String>,
@@ -1170,6 +1174,7 @@ fn gql_type_name_str(type_name: &str) -> String {
 }
 
 fn collect_field_defs(
+    type_name: &str,
     type_schema: &alembic_core::TypeSchema,
     include_fields: Option<&BTreeSet<String>>,
 ) -> Result<(Vec<AttributeDef>, Vec<RelationshipDef>, Vec<String>)> {
@@ -1177,6 +1182,7 @@ fn collect_field_defs(
     let mut relationships = Vec::new();
     let mut key_attrs = Vec::new();
     let mut seen = BTreeSet::new();
+    let source_kind = identifier_part(&gql_type_name_str(type_name));
 
     let mut handle_field =
         |field: &str, schema: &alembic_core::FieldSchema, is_key: bool| -> Result<()> {
@@ -1190,10 +1196,22 @@ fn collect_field_defs(
             }
             match &schema.r#type {
                 FieldType::Ref { target } => {
-                    relationships.push(relationship_def(field, target, schema, "one")?);
+                    relationships.push(relationship_def(
+                        field,
+                        target,
+                        schema,
+                        "one",
+                        &source_kind,
+                    )?);
                 }
                 FieldType::ListRef { target } => {
-                    relationships.push(relationship_def(field, target, schema, "many")?);
+                    relationships.push(relationship_def(
+                        field,
+                        target,
+                        schema,
+                        "many",
+                        &source_kind,
+                    )?);
                 }
                 _ => {
                     attributes.push(attribute_def(field, schema, is_key)?);
@@ -1251,16 +1269,34 @@ fn relationship_def(
     target: &str,
     schema: &alembic_core::FieldSchema,
     cardinality: &str,
+    source_kind: &str,
 ) -> Result<RelationshipDef> {
     Ok(RelationshipDef {
         name: field.to_string(),
         peer: gql_type_name_str(target),
         kind: "Attribute".to_string(),
         cardinality: cardinality.to_string(),
+        identifier: Some(relationship_identifier(source_kind, field)),
         optional: Some(!schema.required),
         direction: Some("outbound".to_string()),
         description: schema.description.clone(),
     })
+}
+
+fn relationship_identifier(source_kind: &str, field: &str) -> String {
+    format!("{}__{}", identifier_part(source_kind), identifier_part(field))
+}
+
+fn identifier_part(raw: &str) -> String {
+    raw.chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 fn attribute_kind_for_field(field_type: &FieldType) -> String {
