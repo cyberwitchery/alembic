@@ -1,0 +1,137 @@
+services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_DB: netbox
+      POSTGRES_USER: netbox
+      POSTGRES_PASSWORD: netbox
+    volumes:
+      - netbox-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U netbox -d netbox"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: valkey/valkey:9.0-alpine
+    command:
+      - sh
+      - -c
+      - valkey-server --appendonly yes --requirepass "$${REDIS_PASSWORD}"
+    environment:
+      REDIS_PASSWORD: netbox
+    volumes:
+      - netbox-redis:/data
+    healthcheck:
+      test: ["CMD-SHELL", "valkey-cli -a $${REDIS_PASSWORD} ping | grep -q PONG"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis-cache:
+    image: valkey/valkey:9.0-alpine
+    command:
+      - sh
+      - -c
+      - valkey-server --appendonly yes --requirepass "$${REDIS_PASSWORD}"
+    environment:
+      REDIS_PASSWORD: netbox
+    volumes:
+      - netbox-redis-cache:/data
+    healthcheck:
+      test: ["CMD-SHELL", "valkey-cli -a $${REDIS_PASSWORD} ping | grep -q PONG"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  netbox:
+    build:
+      context: .
+      dockerfile: docker/netbox-custom-objects/Dockerfile
+      args:
+        NETBOX_IMAGE: ${NETBOX_IMAGE:-docker.io/netboxcommunity/netbox:latest}
+    image: alembic-netbox-custom-objects
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      redis-cache:
+        condition: service_healthy
+    ports:
+      - "8001:8080"
+    environment:
+      ALLOWED_HOSTS: "*"
+      DB_HOST: postgres
+      DB_NAME: netbox
+      DB_USER: netbox
+      DB_PASSWORD: netbox
+      DB_PORT: 5432
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: netbox
+      REDIS_CACHE_HOST: redis-cache
+      REDIS_CACHE_PORT: 6379
+      REDIS_CACHE_PASSWORD: netbox
+      SECRET_KEY: "alembic-netbox-e2e-secret-0123456789abcdef0123456789abcdef"
+      DB_WAIT_TIMEOUT: 3
+      MAX_DB_WAIT_TIME: 120
+      DB_WAIT_DEBUG: 1
+      SUPERUSER_NAME: admin
+      SUPERUSER_EMAIL: admin@example.com
+      SUPERUSER_PASSWORD: admin
+      SUPERUSER_API_TOKEN: "0123456789abcdef0123456789abcdef01234567"
+      SKIP_SUPERUSER: "false"
+      API_TOKEN_PEPPER_1: "alembic-netbox-pepper-0123456789abcdef0123456789abcdef0123456789"
+    volumes:
+      - ./docker/netbox-custom-objects/extra.py:/etc/netbox/config/extra.py:ro
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "code=$$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/api/); [ \"$$code\" = \"200\" ] || [ \"$$code\" = \"403\" ]",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  netbox-worker:
+    build:
+      context: .
+      dockerfile: docker/netbox-custom-objects/Dockerfile
+      args:
+        NETBOX_IMAGE: ${NETBOX_IMAGE:-docker.io/netboxcommunity/netbox:latest}
+    image: alembic-netbox-custom-objects
+    depends_on:
+      netbox:
+        condition: service_healthy
+    environment:
+      DB_HOST: postgres
+      DB_NAME: netbox
+      DB_USER: netbox
+      DB_PASSWORD: netbox
+      DB_PORT: 5432
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: netbox
+      REDIS_CACHE_HOST: redis-cache
+      REDIS_CACHE_PORT: 6379
+      REDIS_CACHE_PASSWORD: netbox
+      SECRET_KEY: "alembic-netbox-e2e-secret-0123456789abcdef0123456789abcdef"
+      DB_WAIT_TIMEOUT: 3
+      MAX_DB_WAIT_TIME: 120
+      DB_WAIT_DEBUG: 1
+      API_TOKEN_PEPPER_1: "alembic-netbox-pepper-0123456789abcdef0123456789abcdef0123456789"
+    volumes:
+      - ./docker/netbox-custom-objects/extra.py:/etc/netbox/config/extra.py:ro
+    command:
+      - /opt/netbox/venv/bin/python
+      - /opt/netbox/netbox/manage.py
+      - rqworker
+
+volumes:
+  netbox-postgres:
+  netbox-redis:
+  netbox-redis-cache:
