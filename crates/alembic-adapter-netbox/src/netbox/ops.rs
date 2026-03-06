@@ -19,6 +19,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 const CUSTOM_OBJECT_FEATURE: &str = "custom-object";
 const CUSTOM_OBJECT_APP_LABEL: &str = "netbox_custom_objects";
+const ALEMBIC_CUSTOM_OBJECT_PREFIX: &str = "alembic custom object for ";
 
 #[async_trait]
 impl Adapter for NetBoxAdapter {
@@ -243,6 +244,8 @@ impl Adapter for NetBoxAdapter {
         let created_tags = Vec::new();
         let mut created_object_types = Vec::new();
         let mut created_object_fields = Vec::new();
+        let mut deleted_object_types = Vec::new();
+        let mut deleted_object_fields = Vec::new();
 
         let mut custom_types_by_name: BTreeMap<String, CustomObjectType> = BTreeMap::new();
         if let Some(types) = custom_object_types {
@@ -251,17 +254,18 @@ impl Adapter for NetBoxAdapter {
             }
         }
 
-        let mut custom_fields_by_type_id: BTreeMap<u64, BTreeSet<String>> = BTreeMap::new();
+        let mut custom_fields_by_type_id: BTreeMap<u64, BTreeMap<String, u64>> = BTreeMap::new();
         if let Some(fields) = custom_object_fields {
             for field in fields {
                 custom_fields_by_type_id
                     .entry(field.custom_object_type)
                     .or_default()
-                    .insert(field.name);
+                    .insert(field.name, field.id);
             }
         }
 
         let mut custom_schema_types: Vec<(TypeName, &TypeSchema)> = Vec::new();
+        let mut custom_schema_type_names: BTreeSet<String> = BTreeSet::new();
         for (type_name, type_schema) in &schema.types {
             let type_name = TypeName::new(type_name);
             if registry.contains_type(&type_name) {
@@ -298,8 +302,11 @@ impl Adapter for NetBoxAdapter {
                 continue;
             }
 
+            custom_schema_type_names.insert(type_name.as_str().to_string());
             custom_schema_types.push((type_name, type_schema));
         }
+
+        let mut desired_fields_by_type_id: BTreeMap<u64, BTreeSet<String>> = BTreeMap::new();
 
         if !custom_schema_types.is_empty() {
             if !custom_objects_available {
@@ -414,16 +421,91 @@ impl Adapter for NetBoxAdapter {
                     created_object_fields: &mut created_object_fields,
                     type_name: &type_name,
                 };
-                let mut seen = BTreeSet::new();
+                let mut desired_fields = BTreeSet::new();
                 for (field_name, field_schema) in &type_schema.key {
-                    if seen.insert(field_name.clone()) {
+                    if desired_fields.insert(field_name.clone()) {
                         provisioner.ensure(field_name, field_schema, true).await?;
                     }
                 }
                 for (field_name, field_schema) in &type_schema.fields {
-                    if seen.insert(field_name.clone()) {
+                    if desired_fields.insert(field_name.clone()) {
                         provisioner.ensure(field_name, field_schema, false).await?;
                     }
+                }
+                desired_fields_by_type_id.insert(type_id, desired_fields);
+            }
+        }
+
+        if custom_objects_available {
+            let resource_fields: Resource<Value> = self
+                .client
+                .resource("plugins/custom-objects/custom-object-type-fields/");
+            let resource_types: Resource<Value> = self
+                .client
+                .resource("plugins/custom-objects/custom-object-types/");
+
+            for custom_type in custom_types_by_name.values() {
+                let Some(type_name) = alembic_custom_object_name(custom_type) else {
+                    continue;
+                };
+                let is_desired = custom_schema_type_names.contains(type_name.as_str());
+                if is_desired {
+                    let Some(existing_fields) = custom_fields_by_type_id.get(&custom_type.id)
+                    else {
+                        continue;
+                    };
+                    let desired_fields = desired_fields_by_type_id.get(&custom_type.id);
+                    for (field_name, field_id) in existing_fields {
+                        if is_reserved_custom_object_field(field_name) {
+                            continue;
+                        }
+                        if desired_fields.is_some_and(|fields| fields.contains(field_name)) {
+                            continue;
+                        }
+                        match resource_fields.delete(*field_id).await {
+                            Ok(_) => {}
+                            Err(err) if is_404_error(&err) => {
+                                tracing::warn!(
+                                    type_name = %type_name,
+                                    field = %field_name,
+                                    "custom object field already deleted"
+                                );
+                            }
+                            Err(err) => return Err(err.into()),
+                        }
+                        deleted_object_fields.push(format!("{}.{}", type_name, field_name));
+                    }
+                } else {
+                    if let Some(existing_fields) = custom_fields_by_type_id.get(&custom_type.id) {
+                        for (field_name, field_id) in existing_fields {
+                            if is_reserved_custom_object_field(field_name) {
+                                continue;
+                            }
+                            match resource_fields.delete(*field_id).await {
+                                Ok(_) => {}
+                                Err(err) if is_404_error(&err) => {
+                                    tracing::warn!(
+                                        type_name = %type_name,
+                                        field = %field_name,
+                                        "custom object field already deleted"
+                                    );
+                                }
+                                Err(err) => return Err(err.into()),
+                            }
+                            deleted_object_fields.push(format!("{}.{}", type_name, field_name));
+                        }
+                    }
+                    match resource_types.delete(custom_type.id).await {
+                        Ok(_) => {}
+                        Err(err) if is_404_error(&err) => {
+                            tracing::warn!(
+                                type_name = %type_name,
+                                "custom object type already deleted"
+                            );
+                        }
+                        Err(err) => return Err(err.into()),
+                    }
+                    deleted_object_types.push(type_name);
                 }
             }
         }
@@ -433,6 +515,10 @@ impl Adapter for NetBoxAdapter {
             created_tags,
             created_object_types,
             created_object_fields,
+            deprecated_object_types: Vec::new(),
+            deprecated_object_fields: Vec::new(),
+            deleted_object_types,
+            deleted_object_fields,
         })
     }
 }
@@ -1034,7 +1120,7 @@ struct CustomObjectFieldProvisioner<'a> {
     adapter: &'a NetBoxAdapter,
     registry: &'a ObjectTypeRegistry,
     custom_object_type_id: u64,
-    existing_fields: &'a mut BTreeSet<String>,
+    existing_fields: &'a mut BTreeMap<String, u64>,
     created_object_fields: &'a mut Vec<String>,
     type_name: &'a TypeName,
 }
@@ -1049,7 +1135,7 @@ impl<'a> CustomObjectFieldProvisioner<'a> {
         if is_reserved_custom_object_field(field_name) {
             return Ok(());
         }
-        if self.existing_fields.contains(field_name) {
+        if self.existing_fields.contains_key(field_name) {
             return Ok(());
         }
         validate_custom_object_field_name(field_name)?;
@@ -1065,8 +1151,11 @@ impl<'a> CustomObjectFieldProvisioner<'a> {
             .client
             .resource("plugins/custom-objects/custom-object-type-fields/");
         match resource.create(&payload).await {
-            Ok(_) => {
-                self.existing_fields.insert(field_name.to_string());
+            Ok(created) => {
+                if let Some(field_id) = custom_object_field_id(&created) {
+                    self.existing_fields
+                        .insert(field_name.to_string(), field_id);
+                }
                 self.created_object_fields
                     .push(format!("{}.{}", self.type_name, field_name));
             }
@@ -1088,7 +1177,13 @@ impl<'a> CustomObjectFieldProvisioner<'a> {
                         field = %field_name,
                         "custom object field already exists"
                     );
-                    self.existing_fields.insert(field_name.to_string());
+                    if let Some(existing) = fields.iter().find(|field| {
+                        field.custom_object_type == self.custom_object_type_id
+                            && field.name == field_name
+                    }) {
+                        self.existing_fields
+                            .insert(field_name.to_string(), existing.id);
+                    }
                 } else {
                     return Err(err.into());
                 }
@@ -1174,6 +1269,14 @@ fn custom_object_type_parts(custom_type: &CustomObjectType) -> Option<(String, S
         .map(|name| (CUSTOM_OBJECT_APP_LABEL.to_string(), name.to_lowercase()))
 }
 
+fn alembic_custom_object_name(custom_type: &CustomObjectType) -> Option<String> {
+    custom_type
+        .description
+        .as_deref()
+        .and_then(|desc| desc.strip_prefix(ALEMBIC_CUSTOM_OBJECT_PREFIX))
+        .map(|name| name.to_string())
+}
+
 fn custom_object_endpoint(custom_name: &str) -> String {
     format!("plugins/custom-objects/{custom_name}/")
 }
@@ -1189,6 +1292,13 @@ fn custom_object_verbose_name_plural(type_name: &TypeName) -> String {
         label
     } else {
         format!("{label}s")
+    }
+}
+
+fn custom_object_field_id(value: &Value) -> Option<u64> {
+    match value {
+        Value::Object(map) => map.get("id").and_then(as_u64),
+        _ => None,
     }
 }
 

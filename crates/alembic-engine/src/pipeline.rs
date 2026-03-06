@@ -49,9 +49,7 @@ pub(crate) async fn apply(
         }
     }
 
-    if !plan.ops.is_empty() {
-        let _ = adapter.ensure_schema(&plan.schema).await?;
-    }
+    let _ = adapter.ensure_schema(&plan.schema).await?;
 
     let ordered = sort_ops_for_apply(&plan.ops);
     let report = adapter.write(&plan.schema, &ordered, state).await?;

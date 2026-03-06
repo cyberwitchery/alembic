@@ -10,7 +10,8 @@ use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use graphql_parser::schema::{parse_schema, Definition, Type as GqlType, TypeDefinition};
 use infrahub::{Client, ClientConfig};
-use serde::Serialize;
+use reqwest::header::{HeaderMap, HeaderValue};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use serde_yaml::{Mapping as YamlMapping, Value as YamlValue};
 use std::collections::{BTreeMap, BTreeSet};
@@ -72,6 +73,7 @@ impl SchemaPushConfig {
 /// infrahub adapter.
 pub struct InfrahubAdapter {
     client: Client,
+    api: reqwest::Client,
     base_url: String,
     token: String,
     schema_push: Option<SchemaPushConfig>,
@@ -85,8 +87,21 @@ impl InfrahubAdapter {
             config = config.with_default_branch(branch);
         }
         let client = Client::new(config)?;
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "X-INFRAHUB-KEY",
+            HeaderValue::from_str(token)
+                .map_err(|err| anyhow!("invalid infrahub token header: {err}"))?,
+        );
+        let api = reqwest::Client::builder()
+            .default_headers(headers)
+            .timeout(Duration::from_secs(30))
+            .no_proxy()
+            .build()
+            .context("build infrahub http client")?;
         Ok(Self {
             client,
+            api,
             base_url: url.to_string(),
             token: token.to_string(),
             schema_push: None,
@@ -105,6 +120,26 @@ impl InfrahubAdapter {
             .await
             .context("fetch infrahub schema")?;
         SchemaInfo::parse(&raw)
+    }
+
+    async fn load_schema_snapshot(&self) -> Result<SchemaSnapshot> {
+        let base = self.base_url.trim_end_matches('/');
+        let url = format!("{base}/api/schema");
+        let response = self
+            .api
+            .get(url)
+            .send()
+            .await
+            .context("fetch infrahub schema snapshot")?;
+        let status = response.status();
+        let text = response
+            .text()
+            .await
+            .context("read infrahub schema snapshot")?;
+        if !status.is_success() {
+            return Err(anyhow!("infrahub schema snapshot http error: {}", status));
+        }
+        serde_json::from_str(&text).context("parse infrahub schema snapshot")
     }
 
     async fn read_type_objects(
@@ -560,7 +595,8 @@ impl Adapter for InfrahubAdapter {
 
     async fn ensure_schema(&self, schema: &Schema) -> Result<ProvisionReport> {
         let schema_info = self.load_schema_info().await?;
-        let Some(plan) = build_provision_plan(schema, &schema_info)? else {
+        let schema_snapshot = self.load_schema_snapshot().await?;
+        let Some(plan) = build_provision_plan(schema, &schema_info, &schema_snapshot)? else {
             return Ok(ProvisionReport::default());
         };
 
@@ -606,6 +642,32 @@ struct GraphField {
 struct SchemaInfo {
     attribute_types: BTreeSet<String>,
     type_fields: BTreeMap<String, BTreeMap<String, GraphField>>,
+}
+
+#[derive(Debug, Default, Clone, Deserialize)]
+struct SchemaSnapshot {
+    #[serde(default)]
+    nodes: Vec<SchemaNodeSnapshot>,
+}
+
+#[derive(Debug, Default, Clone, Deserialize)]
+struct SchemaNodeSnapshot {
+    name: String,
+    namespace: String,
+    #[serde(default)]
+    inherit_from: Vec<String>,
+    #[serde(default)]
+    include_in_menu: bool,
+}
+
+impl SchemaNodeSnapshot {
+    fn key(&self) -> NodeKey {
+        NodeKey::new(self.namespace.clone(), self.name.clone())
+    }
+
+    fn qualified_name(&self) -> String {
+        format!("{}.{}", self.namespace, self.name)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -909,6 +971,7 @@ struct ProvisionPlan {
 fn build_provision_plan(
     schema: &Schema,
     schema_info: &SchemaInfo,
+    schema_snapshot: &SchemaSnapshot,
 ) -> Result<Option<ProvisionPlan>> {
     let missing = schema_missing(schema, schema_info);
     let menu_anchors = menu_anchor_map(schema)?;
@@ -916,18 +979,27 @@ fn build_provision_plan(
     let mut extensions = Vec::new();
     let mut created_object_types = Vec::new();
     let mut created_object_fields = Vec::new();
+    let mut deprecated_object_types = Vec::new();
+
+    let mut desired_node_keys = BTreeSet::new();
+    for type_name in schema.types.keys() {
+        let parts = type_name_parts(type_name)?;
+        desired_node_keys.insert(NodeKey::new(parts.namespace, parts.name));
+    }
 
     for (type_name, type_schema) in &schema.types {
         let gql_type = gql_type_name_str(type_name);
+        let parts = type_name_parts(type_name)?;
         let menu_placement = menu_placement_for(&menu_anchors, &parts, &gql_type);
         let menu_node = NodeDef {
             name: parts.name.clone(),
             namespace: parts.namespace.clone(),
             label: None,
             description: None,
-            icon: icon_for_namespace(&parts.namespace),
-            include_in_menu: Some(true),
+            icon: None,
+            include_in_menu: Some(false),
             menu_placement,
+            inherit_from: Vec::new(),
             human_friendly_id: Vec::new(),
             display_label: None,
             default_filter: None,
@@ -936,7 +1008,6 @@ fn build_provision_plan(
         };
 
         let Some(existing_fields) = schema_info.type_fields.get(&gql_type) else {
-            let parts = type_name_parts(type_name)?;
             let (attributes, relationships, key_attrs) =
                 collect_field_defs(type_name, type_schema, None)?;
             let mut human_friendly_id = Vec::new();
@@ -952,9 +1023,10 @@ fn build_provision_plan(
                 namespace: namespace.clone(),
                 label: Some(label),
                 description: None,
-                icon: icon_for_namespace(&namespace),
-                include_in_menu: Some(true),
+                icon: None,
+                include_in_menu: Some(false),
                 menu_placement: menu_node.menu_placement.clone(),
+                inherit_from: Vec::new(),
                 human_friendly_id,
                 display_label,
                 default_filter,
@@ -968,9 +1040,7 @@ fn build_provision_plan(
             continue;
         };
 
-        if !missing.is_empty() {
-            nodes.push(menu_node);
-        }
+        nodes.push(menu_node);
 
         let mut missing_fields = BTreeSet::new();
         for field in field_names_for_schema(type_schema) {
@@ -994,23 +1064,68 @@ fn build_provision_plan(
         });
     }
 
+    for node in &schema_snapshot.nodes {
+        if !node.include_in_menu {
+            continue;
+        }
+        let key = node.key();
+        if desired_node_keys.contains(&key) {
+            continue;
+        }
+        deprecated_object_types.push(node.qualified_name());
+        nodes.push(NodeDef {
+            name: node.name.clone(),
+            namespace: node.namespace.clone(),
+            label: None,
+            description: None,
+            icon: None,
+            include_in_menu: Some(false),
+            menu_placement: None,
+            human_friendly_id: Vec::new(),
+            display_label: None,
+            default_filter: None,
+            attributes: Vec::new(),
+            relationships: Vec::new(),
+            inherit_from: node.inherit_from.clone(),
+        });
+    }
+
+    if nodes.is_empty() && extensions.is_empty() {
+        return Ok(None);
+    }
+
     let document = SchemaDocument {
         version: "1.0".to_string(),
         nodes,
         extensions: SchemaExtensions { nodes: extensions },
     };
 
+    let mut summary = missing.summary();
+    if !deprecated_object_types.is_empty() {
+        if !summary.is_empty() {
+            summary.push_str("; ");
+        }
+        summary.push_str(&format!(
+            "stale menu types: {}",
+            deprecated_object_types.join(", ")
+        ));
+    }
+
     let report = ProvisionReport {
         created_fields: Vec::new(),
         created_tags: Vec::new(),
         created_object_types,
         created_object_fields,
+        deprecated_object_types,
+        deprecated_object_fields: Vec::new(),
+        deleted_object_types: Vec::new(),
+        deleted_object_fields: Vec::new(),
     };
 
     Ok(Some(ProvisionPlan {
         document,
         report,
-        summary: missing.summary(),
+        summary,
     }))
 }
 
@@ -1102,6 +1217,8 @@ struct NodeDef {
     #[serde(skip_serializing_if = "Option::is_none")]
     menu_placement: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
+    inherit_from: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     human_friendly_id: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     display_label: Option<String>,
@@ -1169,6 +1286,21 @@ struct TypeNameParts {
     name: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct NodeKey {
+    namespace: String,
+    name: String,
+}
+
+impl NodeKey {
+    fn new(namespace: impl Into<String>, name: impl Into<String>) -> Self {
+        Self {
+            namespace: namespace.into(),
+            name: name.into(),
+        }
+    }
+}
+
 fn type_name_parts(type_name: &str) -> Result<TypeNameParts> {
     if let Some((namespace_raw, name_raw)) = type_name.split_once('.') {
         let namespace = to_pascal_case(namespace_raw);
@@ -1184,7 +1316,7 @@ fn type_name_parts(type_name: &str) -> Result<TypeNameParts> {
     }
 
     Err(anyhow!(
-        "infrahub schema provisioning requires namespaced types (e.g. dcim.site)"
+        "infrahub schema provisioning requires namespaced types (e.g. namespace.type)"
     ))
 }
 
@@ -1389,35 +1521,6 @@ fn menu_anchor_map(schema: &Schema) -> Result<BTreeMap<String, String>> {
 }
 
 fn pick_menu_anchor(entries: &[(String, String)]) -> String {
-    let mut by_name = BTreeMap::new();
-    for (name, type_name) in entries {
-        by_name.insert(name.to_ascii_lowercase(), type_name);
-    }
-    for preferred in [
-        "site",
-        "device",
-        "node",
-        "network",
-        "service",
-        "cluster",
-        "blueprint",
-        "resource",
-        "prefix",
-        "ipaddress",
-        "vlan",
-        "vrf",
-        "tenant",
-        "user",
-        "location",
-        "region",
-        "rack",
-        "ci",
-        "wirelesslan",
-    ] {
-        if let Some(type_name) = by_name.get(preferred) {
-            return (*type_name).clone();
-        }
-    }
     entries
         .iter()
         .map(|(_, type_name)| type_name)
@@ -1439,26 +1542,6 @@ fn menu_placement_for(
     } else {
         Some(anchor)
     }
-}
-
-fn icon_for_namespace(namespace: &str) -> Option<String> {
-    let icon = match namespace.to_ascii_lowercase().as_str() {
-        "dcim" => Some("mdi:server"),
-        "ipam" => Some("mdi:ip-network-outline"),
-        "tenancy" => Some("mdi:account-group"),
-        "virtualization" => Some("mdi:cloud-outline"),
-        "circuits" => Some("mdi:transit-connection"),
-        "wireless" => Some("mdi:wifi"),
-        "extras" => Some("mdi:tag"),
-        "servicenow" => Some("mdi:briefcase"),
-        "nso" => Some("mdi:router-network"),
-        "apstra" => Some("mdi:lan"),
-        "cloudvision" => Some("mdi:monitor-dashboard"),
-        "infoblox" => Some("mdi:ip-network-outline"),
-        "orion" => Some("mdi:radar"),
-        _ => None,
-    }?;
-    Some(icon.to_string())
 }
 
 fn to_pascal_case(raw: &str) -> String {
@@ -2095,7 +2178,8 @@ schema { query: Query }
             type_fields,
         };
 
-        let plan = build_provision_plan(&schema, &schema_info)
+        let snapshot = SchemaSnapshot::default();
+        let plan = build_provision_plan(&schema, &schema_info, &snapshot)
             .unwrap()
             .unwrap();
         assert!(plan
@@ -2106,13 +2190,17 @@ schema { query: Query }
             .report
             .created_object_fields
             .contains(&"dcim.site.region".to_string()));
-        assert_eq!(plan.document.nodes.len(), 1);
+        assert_eq!(plan.document.nodes.len(), 2);
         assert_eq!(plan.document.extensions.nodes.len(), 1);
-        let node = &plan.document.nodes[0];
-        assert!(node
-            .human_friendly_id
-            .contains(&"prefix__value".to_string()));
-        assert_eq!(node.display_label.as_deref(), Some("{{ prefix__value }}"));
+        let mut names = plan
+            .document
+            .nodes
+            .iter()
+            .map(|node| format!("{}.{}", node.namespace, node.name))
+            .collect::<Vec<_>>();
+        names.sort();
+        assert!(names.contains(&"Dcim.Site".to_string()));
+        assert!(names.contains(&"Ipam.Prefix".to_string()));
     }
 
     #[test]
@@ -2127,6 +2215,7 @@ schema { query: Query }
                 icon: None,
                 include_in_menu: None,
                 menu_placement: None,
+                inherit_from: Vec::new(),
                 human_friendly_id: vec!["name__value".to_string()],
                 display_label: Some("{{ name__value }}".to_string()),
                 default_filter: Some("name__value".to_string()),

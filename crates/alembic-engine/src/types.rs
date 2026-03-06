@@ -199,6 +199,18 @@ pub struct ProvisionReport {
     /// custom object fields created on the backend.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub created_object_fields: Vec<String>,
+    /// object types deprecated on the backend.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deprecated_object_types: Vec<String>,
+    /// object fields deprecated on the backend.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deprecated_object_fields: Vec<String>,
+    /// object types deleted on the backend.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deleted_object_types: Vec<String>,
+    /// object fields deleted on the backend.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deleted_object_fields: Vec<String>,
 }
 
 /// adapter contract for backend-specific io.

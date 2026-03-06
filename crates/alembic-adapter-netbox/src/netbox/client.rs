@@ -12,6 +12,7 @@ pub(super) struct CustomObjectType {
     pub(super) name: String,
     pub(super) object_type_name: Option<String>,
     pub(super) table_model_name: Option<String>,
+    pub(super) description: Option<String>,
 }
 
 impl CustomObjectType {
@@ -25,6 +26,7 @@ impl CustomObjectType {
 
 #[derive(Debug, Clone)]
 pub(super) struct CustomObjectField {
+    pub(super) id: u64,
     pub(super) custom_object_type: u64,
     pub(super) name: String,
 }
@@ -35,7 +37,10 @@ pub(super) struct NetBoxClient {
 
 impl NetBoxClient {
     pub(super) fn new(url: &str, token: &str) -> Result<Self> {
-        let config = ClientConfig::new(url, token);
+        let config = ClientConfig::new(url, token).with_http_client_builder(|builder| {
+            // Avoid macOS SystemConfiguration proxy panics in CLI runs.
+            builder.no_proxy()
+        });
         let client = Client::new(config)?;
         Ok(Self { client })
     }
@@ -181,11 +186,16 @@ pub(super) fn parse_custom_object_type(value: Value) -> Result<CustomObjectType>
         .get("table_model_name")
         .and_then(Value::as_str)
         .map(|value| value.to_string());
+    let description = map
+        .get("description")
+        .and_then(Value::as_str)
+        .map(|value| value.to_string());
     Ok(CustomObjectType {
         id,
         name,
         object_type_name,
         table_model_name,
+        description,
     })
 }
 
@@ -193,6 +203,10 @@ fn parse_custom_object_field(value: Value) -> Result<CustomObjectField> {
     let Value::Object(map) = value else {
         return Err(anyhow!("expected object for custom object field"));
     };
+    let id = map
+        .get("id")
+        .and_then(as_u64)
+        .ok_or_else(|| anyhow!("custom object field missing id"))?;
     let custom_object_type = map
         .get("custom_object_type")
         .and_then(parse_custom_object_type_id)
@@ -203,6 +217,7 @@ fn parse_custom_object_field(value: Value) -> Result<CustomObjectField> {
         .ok_or_else(|| anyhow!("custom object field missing name"))?
         .to_string();
     Ok(CustomObjectField {
+        id,
         custom_object_type,
         name,
     })

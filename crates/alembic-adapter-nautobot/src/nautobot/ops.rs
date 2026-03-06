@@ -285,6 +285,10 @@ impl Adapter for NautobotAdapter {
             created_tags,
             created_object_types: Vec::new(),
             created_object_fields: Vec::new(),
+            deprecated_object_types: Vec::new(),
+            deprecated_object_fields: Vec::new(),
+            deleted_object_types: Vec::new(),
+            deleted_object_fields: Vec::new(),
         })
     }
 }
