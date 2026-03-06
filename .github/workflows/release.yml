@@ -129,6 +129,13 @@ jobs:
           if [ -f alembic/Cargo.toml ]; then cd alembic; fi
           cargo publish -p alembic-adapter-nautobot --no-verify
 
+      - name: publish alembic-adapter-infrahub
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          if [ -f alembic/Cargo.toml ]; then cd alembic; fi
+          cargo publish -p alembic-adapter-infrahub --no-verify
+
       - name: publish alembic-adapter-generic
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
@@ -142,6 +149,13 @@ jobs:
         run: |
           if [ -f alembic/Cargo.toml ]; then cd alembic; fi
           cargo publish -p alembic-adapter-peeringdb --no-verify
+
+      - name: publish alembic-adapter-registry
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          if [ -f alembic/Cargo.toml ]; then cd alembic; fi
+          cargo publish -p alembic-adapter-registry --no-verify
 
       - name: publish alembic-cli
         env:
