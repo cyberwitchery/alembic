@@ -22,7 +22,7 @@ echo "--- Coverage ---"
 if command -v cargo-llvm-cov >/dev/null 2>&1; then
     # Aligned flags and regex with CI (ci.yml line 100)
     cargo llvm-cov --workspace --all-features --fail-under-lines 80 \
-      --ignore-filename-regex "netbox\.rs/"
+      --ignore-filename-regex "netbox\\.rs/"
 else
     echo "Error: cargo-llvm-cov is not installed."
     echo "Install it with: cargo install cargo-llvm-cov"

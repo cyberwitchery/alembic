@@ -42,10 +42,15 @@ jobs:
           cargo install cargo-audit --locked
           cargo audit
 
-  tests:
-    name: tests
+  coverage:
+    name: coverage
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 10
+    env:
+      RUSTFLAGS: "-C debuginfo=0"
+      CARGO_TARGET_DIR: target/ci
+      ALEMBIC_CAST_PYTHON: python
+      ALEMBIC_TEST_POSTGRES_URL: postgres://alembic:alembic@localhost:5432/alembic
     services:
       postgres:
         image: postgres:16
@@ -88,35 +93,6 @@ jobs:
               payload JSONB NOT NULL,
               updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             );"
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            .
-            alembic
-          shared-key: alembic-ci
-
-      - name: Test
-        env:
-          ALEMBIC_CAST_PYTHON: python
-          ALEMBIC_TEST_POSTGRES_URL: postgres://alembic:alembic@localhost:5432/alembic
-        run: |
-          if [ -f alembic/Cargo.toml ]; then cd alembic; fi
-          cargo test --workspace --all-features
-
-  coverage:
-    name: coverage
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    env:
-      RUSTFLAGS: "-C debuginfo=0"
-      CARGO_TARGET_DIR: target/ci
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2

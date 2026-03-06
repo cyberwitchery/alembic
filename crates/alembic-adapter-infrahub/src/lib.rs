@@ -1606,3 +1606,867 @@ fn extract_ref_uid(value: &Value) -> Option<Uid> {
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alembic_core::{
+        key_string, FieldSchema, FieldType, JsonMap, Key, Object, Schema, TypeName, TypeSchema,
+    };
+    use alembic_engine::{AdapterApplyError, BackendId, Op, StateData, StateStore};
+    use httpmock::prelude::*;
+    use serde_json::json;
+    use std::collections::{BTreeMap, BTreeSet};
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    const GRAPHQL_SCHEMA: &str = r#"
+interface AttributeInterface { value: String }
+type TextAttribute implements AttributeInterface { value: String }
+type RelatedNode { id: String kind: String }
+type Owner { id: String }
+type Peer { id: String }
+type NestedEdgedOwner { node: Owner }
+type NestedPaginatedPeerEdge { node: Peer }
+type NestedPaginatedPeerConnection { edges: [NestedPaginatedPeerEdge] }
+type DcimSite {
+  id: ID
+  hfid: String
+  name: TextAttribute
+  parent: RelatedNode
+  children: [RelatedNode]
+  owner: NestedEdgedOwner
+  peers: NestedPaginatedPeerConnection
+}
+type DcimSiteEdge { node: DcimSite }
+type DcimSiteConnection { count: Int edges: [DcimSiteEdge] }
+type Query { DcimSite(offset: Int, limit: Int): DcimSiteConnection }
+schema { query: Query }
+"#;
+
+    fn field_schema(field_type: FieldType, required: bool) -> FieldSchema {
+        FieldSchema {
+            r#type: field_type,
+            required,
+            nullable: false,
+            format: None,
+            pattern: None,
+            description: None,
+        }
+    }
+
+    fn type_schema(
+        key_fields: Vec<(&str, FieldSchema)>,
+        fields: Vec<(&str, FieldSchema)>,
+    ) -> TypeSchema {
+        let mut key = BTreeMap::new();
+        for (name, schema) in key_fields {
+            key.insert(name.to_string(), schema);
+        }
+        let mut field_map = BTreeMap::new();
+        for (name, schema) in fields {
+            field_map.insert(name.to_string(), schema);
+        }
+        TypeSchema {
+            key,
+            fields: field_map,
+        }
+    }
+
+    fn schema_with(types: Vec<(&str, TypeSchema)>) -> Schema {
+        let mut map = BTreeMap::new();
+        for (name, schema) in types {
+            map.insert(name.to_string(), schema);
+        }
+        Schema { types: map }
+    }
+
+    fn temp_dir(prefix: &str) -> PathBuf {
+        let mut dir = std::env::temp_dir();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        dir.push(format!("alembic-{prefix}-{now}-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[cfg(unix)]
+    fn make_executable(path: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(path).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(path, perms).unwrap();
+    }
+
+    fn write_executable(path: &Path, contents: &str) {
+        fs::write(path, contents).unwrap();
+        #[cfg(unix)]
+        make_executable(path);
+    }
+
+    #[test]
+    fn schema_info_parse_and_field_kinds() {
+        let schema_info = SchemaInfo::parse(GRAPHQL_SCHEMA).unwrap();
+        assert!(schema_info.attribute_types.contains("TextAttribute"));
+
+        let type_schema = type_schema(
+            vec![("name", field_schema(FieldType::String, true))],
+            vec![
+                (
+                    "parent",
+                    field_schema(
+                        FieldType::Ref {
+                            target: "dcim.site".to_string(),
+                        },
+                        false,
+                    ),
+                ),
+                (
+                    "children",
+                    field_schema(
+                        FieldType::ListRef {
+                            target: "dcim.site".to_string(),
+                        },
+                        false,
+                    ),
+                ),
+                (
+                    "owner",
+                    field_schema(
+                        FieldType::Ref {
+                            target: "dcim.owner".to_string(),
+                        },
+                        false,
+                    ),
+                ),
+                (
+                    "peers",
+                    field_schema(
+                        FieldType::ListRef {
+                            target: "dcim.peer".to_string(),
+                        },
+                        false,
+                    ),
+                ),
+            ],
+        );
+
+        let fields = field_names_for_schema(&type_schema);
+        let kinds = schema_info
+            .field_kinds("DcimSite", &type_schema, &fields)
+            .unwrap();
+
+        assert!(matches!(kinds.get("name"), Some(FieldKind::Attribute)));
+        assert!(matches!(
+            kinds.get("parent"),
+            Some(FieldKind::RelationSingle(RelationShape::RelatedNode))
+        ));
+        assert!(matches!(
+            kinds.get("children"),
+            Some(FieldKind::RelationList(RelationShape::RelatedNode))
+        ));
+        assert!(matches!(
+            kinds.get("owner"),
+            Some(FieldKind::RelationSingle(RelationShape::NestedEdged))
+        ));
+        assert!(matches!(
+            kinds.get("peers"),
+            Some(FieldKind::RelationList(RelationShape::NestedPaginated))
+        ));
+
+        let err = validate_kind(
+            "DcimSite",
+            "name",
+            &FieldType::Ref {
+                target: "dcim.site".to_string(),
+            },
+            &FieldKind::Attribute,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("expected DcimSite.name"));
+    }
+
+    #[test]
+    fn build_selection_and_extract_attrs() {
+        let mut kinds = BTreeMap::new();
+        kinds.insert("attr".to_string(), FieldKind::Attribute);
+        kinds.insert(
+            "rel_one".to_string(),
+            FieldKind::RelationSingle(RelationShape::RelatedNode),
+        );
+        kinds.insert(
+            "rel_edge".to_string(),
+            FieldKind::RelationSingle(RelationShape::NestedEdged),
+        );
+        kinds.insert(
+            "rel_page".to_string(),
+            FieldKind::RelationSingle(RelationShape::NestedPaginated),
+        );
+        kinds.insert(
+            "rel_many".to_string(),
+            FieldKind::RelationList(RelationShape::RelatedNode),
+        );
+        kinds.insert(
+            "rel_many_page".to_string(),
+            FieldKind::RelationList(RelationShape::NestedPaginated),
+        );
+        kinds.insert(
+            "rel_many_edge".to_string(),
+            FieldKind::RelationList(RelationShape::NestedEdged),
+        );
+
+        let selection = build_selection(&kinds);
+        assert!(selection.contains("attr { value }"));
+        assert!(selection.contains("rel_one { id kind }"));
+        assert!(selection.contains("rel_edge { node { id } }"));
+        assert!(selection.contains("rel_page { node { id } }"));
+        assert!(selection.contains("rel_many { id kind }"));
+        assert!(selection.contains("rel_many_page { edges { node { id } } }"));
+        assert!(selection.contains("rel_many_edge { node { id } }"));
+
+        let node = json!({
+            "attr": {"value": "alpha"},
+            "rel_one": {"id": "r1", "kind": "DcimSite"},
+            "rel_edge": {"node": {"id": "r2"}},
+            "rel_page": {"node": {"id": "r3"}},
+            "rel_many": [{"id": "m1", "kind": "DcimSite"}, {"id": "m2", "kind": "DcimSite"}],
+            "rel_many_page": {"edges": [{"node": {"id": "p1"}}, {"node": {"id": "p2"}}]},
+            "rel_many_edge": [{"node": {"id": "e1"}}, {"node": {"id": "e2"}}],
+            "missing": null
+        });
+
+        let attrs = extract_attrs(&node, &kinds).unwrap();
+        assert_eq!(attrs.get("attr"), Some(&json!("alpha")));
+        assert_eq!(attrs.get("rel_one"), Some(&json!("r1")));
+        assert_eq!(attrs.get("rel_edge"), Some(&json!("r2")));
+        assert_eq!(attrs.get("rel_page"), Some(&json!("r3")));
+        assert_eq!(attrs.get("rel_many"), Some(&json!(["m1", "m2"])));
+        assert_eq!(attrs.get("rel_many_page"), Some(&json!(["p1", "p2"])));
+        assert_eq!(attrs.get("rel_many_edge"), Some(&json!(["e1", "e2"])));
+        assert!(!attrs.contains_key("missing"));
+    }
+
+    #[test]
+    fn schema_missing_and_validate_schema() {
+        let type_schema = type_schema(
+            vec![("name", field_schema(FieldType::String, true))],
+            vec![(
+                "region",
+                field_schema(
+                    FieldType::Ref {
+                        target: "dcim.region".to_string(),
+                    },
+                    false,
+                ),
+            )],
+        );
+        let schema = schema_with(vec![("dcim.site", type_schema)]);
+
+        let mut fields = BTreeMap::new();
+        fields.insert(
+            "name".to_string(),
+            GraphField {
+                base_type: "TextAttribute".to_string(),
+                is_list: false,
+            },
+        );
+        let mut type_fields = BTreeMap::new();
+        type_fields.insert("DcimSite".to_string(), fields);
+        let schema_info = SchemaInfo {
+            attribute_types: BTreeSet::new(),
+            type_fields,
+        };
+
+        let missing = schema_missing(&schema, &schema_info);
+        assert!(missing
+            .fields
+            .iter()
+            .any(|field| field == "dcim.site.region"));
+
+        let err = validate_schema(&schema, &schema_info).unwrap_err();
+        assert!(err.to_string().contains("infrahub schema mismatch"));
+    }
+
+    #[test]
+    fn build_provision_plan_creates_nodes_and_extensions() {
+        let site_schema = type_schema(
+            vec![("name", field_schema(FieldType::String, true))],
+            vec![(
+                "region",
+                field_schema(
+                    FieldType::Ref {
+                        target: "dcim.region".to_string(),
+                    },
+                    false,
+                ),
+            )],
+        );
+        let prefix_schema = type_schema(
+            vec![("prefix", field_schema(FieldType::Cidr, true))],
+            vec![(
+                "site",
+                field_schema(
+                    FieldType::Ref {
+                        target: "dcim.site".to_string(),
+                    },
+                    false,
+                ),
+            )],
+        );
+        let schema = schema_with(vec![
+            ("dcim.site", site_schema),
+            ("ipam.prefix", prefix_schema),
+        ]);
+
+        let mut fields = BTreeMap::new();
+        fields.insert(
+            "name".to_string(),
+            GraphField {
+                base_type: "TextAttribute".to_string(),
+                is_list: false,
+            },
+        );
+        let mut type_fields = BTreeMap::new();
+        type_fields.insert("DcimSite".to_string(), fields);
+        let schema_info = SchemaInfo {
+            attribute_types: BTreeSet::new(),
+            type_fields,
+        };
+
+        let plan = build_provision_plan(&schema, &schema_info)
+            .unwrap()
+            .unwrap();
+        assert!(plan
+            .report
+            .created_object_types
+            .contains(&"ipam.prefix".to_string()));
+        assert!(plan
+            .report
+            .created_object_fields
+            .contains(&"dcim.site.region".to_string()));
+        assert_eq!(plan.document.nodes.len(), 1);
+        assert_eq!(plan.document.extensions.nodes.len(), 1);
+        let node = &plan.document.nodes[0];
+        assert!(node
+            .human_friendly_id
+            .contains(&"prefix__value".to_string()));
+        assert_eq!(node.display_label.as_deref(), Some("{{ prefix__value }}"));
+    }
+
+    #[test]
+    fn write_schema_document_and_repository_config() {
+        let doc = SchemaDocument {
+            version: "1.0".to_string(),
+            nodes: vec![NodeDef {
+                name: "Site".to_string(),
+                namespace: "Dcim".to_string(),
+                label: Some("Site".to_string()),
+                description: None,
+                human_friendly_id: vec!["name__value".to_string()],
+                display_label: Some("{{ name__value }}".to_string()),
+                default_filter: Some("name__value".to_string()),
+                attributes: Vec::new(),
+                relationships: Vec::new(),
+            }],
+            extensions: SchemaExtensions::default(),
+        };
+
+        let dir = temp_dir("schema-doc");
+        let schema_path = dir.join("schema/schema.yaml");
+        write_schema_document(&schema_path, &doc).unwrap();
+        let raw = fs::read_to_string(&schema_path).unwrap();
+        assert!(raw.contains("version"));
+
+        let repo_root = temp_dir("repo");
+        let nested = repo_root.join("schemas/site.yaml");
+        fs::create_dir_all(nested.parent().unwrap()).unwrap();
+        fs::write(&nested, "version: 1.0").unwrap();
+        ensure_repository_config(&repo_root, &nested).unwrap();
+        ensure_repository_config(&repo_root, &nested).unwrap();
+        let config_path = repo_root.join(".infrahub.yml");
+        let config = fs::read_to_string(&config_path).unwrap();
+        assert!(config.contains("schemas"));
+        assert!(config.contains("schemas/site.yaml"));
+        assert_eq!(config.matches("schemas/site.yaml").count(), 1);
+
+        let outside = temp_dir("outside").join("schema.yaml");
+        fs::write(&outside, "version: 1.0").unwrap();
+        let err = ensure_repository_config(&repo_root, &outside).unwrap_err();
+        assert!(err.to_string().contains("must be inside repository root"));
+    }
+
+    #[test]
+    fn build_input_and_validate_value() {
+        let type_schema = type_schema(
+            Vec::new(),
+            vec![
+                ("name", field_schema(FieldType::String, true)),
+                ("count", field_schema(FieldType::Int, false)),
+                (
+                    "parent",
+                    field_schema(
+                        FieldType::Ref {
+                            target: "dcim.site".to_string(),
+                        },
+                        false,
+                    ),
+                ),
+                (
+                    "tags",
+                    field_schema(
+                        FieldType::ListRef {
+                            target: "dcim.tag".to_string(),
+                        },
+                        false,
+                    ),
+                ),
+            ],
+        );
+
+        let uid_parent = Uid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
+        let uid_tag_a = Uid::parse_str("00000000-0000-0000-0000-000000000002").unwrap();
+        let uid_tag_b = Uid::parse_str("00000000-0000-0000-0000-000000000003").unwrap();
+
+        let attrs = JsonMap::from(BTreeMap::from([
+            ("name".to_string(), json!("Site-1")),
+            ("count".to_string(), json!(5)),
+            ("parent".to_string(), json!(uid_parent.to_string())),
+            (
+                "tags".to_string(),
+                json!([uid_tag_a.to_string(), uid_tag_b.to_string()]),
+            ),
+        ]));
+
+        let mut resolved = BTreeMap::new();
+        resolved.insert(uid_parent, BackendId::String("p1".to_string()));
+        resolved.insert(uid_tag_a, BackendId::String("t1".to_string()));
+        resolved.insert(uid_tag_b, BackendId::String("t2".to_string()));
+
+        let input = build_input(&attrs, &type_schema, &resolved).unwrap();
+        assert_eq!(
+            input,
+            json!({
+                "name": {"value": "Site-1"},
+                "count": {"value": 5},
+                "parent": {"id": "p1"},
+                "tags": [{"id": "t1"}, {"id": "t2"}],
+            })
+        );
+
+        let err = validate_value("count", &FieldType::Int, &json!("oops")).unwrap_err();
+        assert!(err.to_string().contains("expects an integer"));
+    }
+
+    #[test]
+    fn normalize_refs_and_backend_id() {
+        let uid = Uid::parse_str("00000000-0000-0000-0000-000000000010").unwrap();
+        let mut mappings = StateMappings::default();
+        mappings.by_type.insert(
+            "dcim.site".to_string(),
+            BTreeMap::from([(BackendId::String("site-1".to_string()), uid)]),
+        );
+
+        let type_schema = type_schema(
+            Vec::new(),
+            vec![
+                (
+                    "parent",
+                    field_schema(
+                        FieldType::Ref {
+                            target: "dcim.site".to_string(),
+                        },
+                        false,
+                    ),
+                ),
+                (
+                    "children",
+                    field_schema(
+                        FieldType::ListRef {
+                            target: "dcim.site".to_string(),
+                        },
+                        false,
+                    ),
+                ),
+            ],
+        );
+
+        let attrs = JsonMap::from(BTreeMap::from([
+            ("parent".to_string(), json!("site-1")),
+            ("children".to_string(), json!(["site-1", "site-2"])),
+        ]));
+
+        let normalized = normalize_attrs_refs(&attrs, &type_schema, &mappings);
+        assert_eq!(normalized.get("parent"), Some(&json!(uid.to_string())));
+        assert_eq!(
+            normalized.get("children"),
+            Some(&json!([uid.to_string(), "site-2"]))
+        );
+
+        assert_eq!(
+            backend_id_from_value(&json!({"id": "abc"})),
+            Some(BackendId::String("abc".to_string()))
+        );
+        assert_eq!(backend_id_from_value(&json!(42)), Some(BackendId::Int(42)));
+        assert_eq!(backend_id_from_value(&json!(-1)), None);
+    }
+
+    #[test]
+    fn describe_missing_refs_and_extract_ref_uid() {
+        let uid_present = Uid::parse_str("00000000-0000-0000-0000-000000000020").unwrap();
+        let uid_missing = Uid::parse_str("00000000-0000-0000-0000-000000000021").unwrap();
+
+        let attrs = JsonMap::from(BTreeMap::from([
+            ("ref".to_string(), json!(uid_missing.to_string())),
+            ("refs".to_string(), json!([uid_present.to_string()])),
+        ]));
+
+        let key = Key::from(BTreeMap::from([("name".to_string(), json!("site"))]));
+        let obj = Object {
+            uid: uid_present,
+            type_name: TypeName::new("dcim.site"),
+            key,
+            attrs,
+            source: None,
+        };
+
+        let op = Op::Create {
+            uid: uid_present,
+            type_name: TypeName::new("dcim.site"),
+            desired: obj,
+        };
+
+        let mut resolved = BTreeMap::new();
+        resolved.insert(uid_present, BackendId::String("ok".to_string()));
+
+        let missing = describe_missing_refs(&[op], &resolved);
+        assert!(missing.contains(&uid_missing.to_string()));
+
+        let err = anyhow::Error::new(AdapterApplyError::MissingRef { uid: uid_missing });
+        assert!(is_missing_ref_error(&err));
+
+        let extracted = extract_ref_uid(&json!([uid_present.to_string(), uid_missing.to_string()]));
+        assert_eq!(extracted, Some(uid_present));
+    }
+
+    #[test]
+    fn attribute_kind_for_field_variants() {
+        let cases = vec![
+            (FieldType::String, "Text"),
+            (FieldType::Text, "Text"),
+            (FieldType::Uuid, "Text"),
+            (FieldType::Slug, "Text"),
+            (
+                FieldType::Enum {
+                    values: vec!["a".to_string()],
+                },
+                "Dropdown",
+            ),
+            (FieldType::Int, "Number"),
+            (FieldType::Float, "Number"),
+            (FieldType::Bool, "Boolean"),
+            (FieldType::Date, "DateTime"),
+            (FieldType::Datetime, "DateTime"),
+            (FieldType::Time, "DateTime"),
+            (FieldType::Json, "JSON"),
+            (
+                FieldType::Map {
+                    value: Box::new(FieldType::String),
+                },
+                "JSON",
+            ),
+            (
+                FieldType::List {
+                    item: Box::new(FieldType::String),
+                },
+                "List",
+            ),
+            (FieldType::IpAddress, "IPHost"),
+            (FieldType::Cidr, "IPNetwork"),
+            (FieldType::Prefix, "IPNetwork"),
+            (FieldType::Mac, "MacAddress"),
+            (
+                FieldType::Ref {
+                    target: "dcim.site".to_string(),
+                },
+                "Text",
+            ),
+            (
+                FieldType::ListRef {
+                    target: "dcim.site".to_string(),
+                },
+                "Text",
+            ),
+        ];
+
+        for (field_type, expected) in cases {
+            assert_eq!(attribute_kind_for_field(&field_type), expected);
+        }
+    }
+
+    #[test]
+    fn string_helpers() {
+        assert_eq!(to_pascal_case("dcim_site"), "DcimSite");
+        assert_eq!(to_pascal_case("ipam-prefix"), "IpamPrefix");
+        assert_eq!(label_from_pascal("DeviceType"), "Device Type");
+        assert_eq!(
+            split_camel_case("DcimSite"),
+            vec!["Dcim".to_string(), "Site".to_string()]
+        );
+        assert_eq!(gql_type_name_str("dcim.site"), "DcimSite");
+        assert_eq!(gql_type_name_str("Device"), "Device");
+        assert_eq!(display_label_for_keys(&[]), (None, None));
+    }
+
+    #[tokio::test]
+    async fn apply_schema_infrahubctl_executes() {
+        let dir = temp_dir("infrahubctl");
+        let args_path = dir.join("args.txt");
+        let addr_path = dir.join("addr.txt");
+        let token_path = dir.join("token.txt");
+        let script_path = dir.join("infrahubctl");
+        let script = format!(
+            "#!/usr/bin/env bash\nset -euo pipefail\nprintf '%s' \"$*\" > \"{}\"\nprintf '%s' \"$INFRAHUB_ADDRESS\" > \"{}\"\nprintf '%s' \"$INFRAHUB_API_TOKEN\" > \"{}\"\n",
+            args_path.display(),
+            addr_path.display(),
+            token_path.display()
+        );
+        write_executable(&script_path, &script);
+
+        let schema_path = dir.join("schema.yaml");
+        fs::write(&schema_path, "version: 1.0").unwrap();
+
+        let adapter = InfrahubAdapter::new("http://example.test", "token-123", None).unwrap();
+        let mut config = SchemaPushConfig::infrahubctl(schema_path.clone());
+        config.infrahubctl_path = Some(script_path);
+        config.branch = Some("main".to_string());
+
+        adapter.apply_schema_infrahubctl(&config).await.unwrap();
+
+        let args = fs::read_to_string(&args_path).unwrap();
+        assert!(args.contains("schema load"));
+        assert!(args.contains(schema_path.to_str().unwrap()));
+        assert!(args.contains("--branch main"));
+        assert_eq!(
+            fs::read_to_string(&addr_path).unwrap(),
+            "http://example.test"
+        );
+        assert_eq!(fs::read_to_string(&token_path).unwrap(), "token-123");
+    }
+
+    #[tokio::test]
+    async fn apply_schema_repository_flow() {
+        let server = MockServer::start();
+        let repo_mock = server.mock(|when, then| {
+            when.method(POST)
+                .path("/graphql")
+                .body_contains("CoreRepository");
+            then.status(200).json_body(json!({
+                "data": {
+                    "CoreRepository": { "edges": [ { "node": { "id": "repo-1" } } ] }
+                },
+                "errors": []
+            }));
+        });
+        let process_mock = server.mock(|when, then| {
+            when.method(POST)
+                .path("/graphql")
+                .body_contains("InfrahubRepositoryProcess");
+            then.status(200).json_body(json!({
+                "data": {
+                    "InfrahubRepositoryProcess": { "ok": true, "task": { "id": "task-1" } }
+                },
+                "errors": []
+            }));
+        });
+
+        let repo_root = temp_dir("repo");
+        let schema_path = repo_root.join("schemas/site.yaml");
+        fs::create_dir_all(schema_path.parent().unwrap()).unwrap();
+        fs::write(&schema_path, "version: 1.0").unwrap();
+
+        let adapter = InfrahubAdapter::new(&server.base_url(), "token", None).unwrap();
+        let config = SchemaPushConfig {
+            schema_path: schema_path.clone(),
+            mode: SchemaApplyMode::Repository,
+            repository_id: None,
+            repository_name: Some("repo-name".to_string()),
+            repository_root: Some(repo_root.clone()),
+            branch: None,
+            infrahubctl_path: None,
+        };
+
+        adapter.apply_schema_repository(&config).await.unwrap();
+        repo_mock.assert();
+        process_mock.assert();
+        let config_path = repo_root.join(".infrahub.yml");
+        let config_raw = fs::read_to_string(&config_path).unwrap();
+        assert!(config_raw.contains("schemas/site.yaml"));
+    }
+
+    #[tokio::test]
+    async fn read_observes_objects() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/schema.graphql");
+            then.status(200).body(GRAPHQL_SCHEMA);
+        });
+        server.mock(|when, then| {
+            when.method(POST)
+                .path("/graphql")
+                .body_contains("DcimSite");
+            then.status(200).json_body(json!({
+                "data": {
+                    "DcimSite": {
+                        "count": 1,
+                        "edges": [
+                            { "node": { "id": "site-1", "hfid": "site-1", "name": { "value": "Site One" } } }
+                        ]
+                    }
+                },
+                "errors": []
+            }));
+        });
+
+        let adapter = InfrahubAdapter::new(&server.base_url(), "token", None).unwrap();
+        let schema = schema_with(vec![(
+            "dcim.site",
+            type_schema(
+                vec![("name", field_schema(FieldType::String, true))],
+                vec![],
+            ),
+        )]);
+        let state = StateStore::new(None, StateData::default());
+        let observed = adapter.read(&schema, &[], &state).await.unwrap();
+        assert_eq!(observed.by_key.len(), 1);
+        let key = Key::from(BTreeMap::from([("name".to_string(), json!("Site One"))]));
+        let object = observed
+            .by_key
+            .get(&(TypeName::new("dcim.site"), key_string(&key)))
+            .unwrap();
+        assert_eq!(object.attrs.get("name"), Some(&json!("Site One")));
+    }
+
+    #[tokio::test]
+    async fn write_applies_create_update_delete() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/schema.graphql");
+            then.status(200).body(GRAPHQL_SCHEMA);
+        });
+        server.mock(|when, then| {
+            when.method(POST).path("/graphql").body_contains("Create");
+            then.status(200).json_body(json!({
+                "data": { "DcimSiteCreate": { "ok": true, "object": { "id": "site-1" } } },
+                "errors": []
+            }));
+        });
+        server.mock(|when, then| {
+            when.method(POST).path("/graphql").body_contains("Update");
+            then.status(200).json_body(json!({
+                "data": { "DcimSiteUpdate": { "ok": true, "object": { "id": "site-2" } } },
+                "errors": []
+            }));
+        });
+        server.mock(|when, then| {
+            when.method(POST).path("/graphql").body_contains("Delete");
+            then.status(200).json_body(json!({
+                "data": { "DcimSiteDelete": { "ok": true } },
+                "errors": []
+            }));
+        });
+
+        let adapter = InfrahubAdapter::new(&server.base_url(), "token", None).unwrap();
+        let schema = schema_with(vec![(
+            "dcim.site",
+            type_schema(
+                vec![("name", field_schema(FieldType::String, true))],
+                vec![],
+            ),
+        )]);
+
+        let uid_create = Uid::parse_str("00000000-0000-0000-0000-000000000100").unwrap();
+        let uid_update = Uid::parse_str("00000000-0000-0000-0000-000000000101").unwrap();
+        let uid_delete = Uid::parse_str("00000000-0000-0000-0000-000000000102").unwrap();
+
+        let key = Key::from(BTreeMap::from([("name".to_string(), json!("Site A"))]));
+        let create_obj = Object {
+            uid: uid_create,
+            type_name: TypeName::new("dcim.site"),
+            key: key.clone(),
+            attrs: JsonMap::from(BTreeMap::from([("name".to_string(), json!("Site A"))])),
+            source: None,
+        };
+        let update_obj = Object {
+            uid: uid_update,
+            type_name: TypeName::new("dcim.site"),
+            key: key.clone(),
+            attrs: JsonMap::from(BTreeMap::from([("name".to_string(), json!("Site A"))])),
+            source: None,
+        };
+
+        let ops = vec![
+            Op::Create {
+                uid: uid_create,
+                type_name: TypeName::new("dcim.site"),
+                desired: create_obj,
+            },
+            Op::Update {
+                uid: uid_update,
+                type_name: TypeName::new("dcim.site"),
+                desired: update_obj,
+                changes: Vec::new(),
+                backend_id: Some(BackendId::String("site-2".to_string())),
+            },
+            Op::Delete {
+                uid: uid_delete,
+                type_name: TypeName::new("dcim.site"),
+                key,
+                backend_id: Some(BackendId::String("site-3".to_string())),
+            },
+        ];
+
+        let state = StateStore::new(None, StateData::default());
+        let report = adapter.write(&schema, &ops, &state).await.unwrap();
+        assert_eq!(report.applied.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn lookup_backend_id_resolves() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/schema.graphql");
+            then.status(200).body(GRAPHQL_SCHEMA);
+        });
+        server.mock(|when, then| {
+            when.method(POST)
+                .path("/graphql")
+                .body_contains("DcimSite");
+            then.status(200).json_body(json!({
+                "data": {
+                    "DcimSite": {
+                        "count": 1,
+                        "edges": [
+                            { "node": { "id": "site-42", "hfid": "site-42", "name": { "value": "Site Z" } } }
+                        ]
+                    }
+                },
+                "errors": []
+            }));
+        });
+
+        let adapter = InfrahubAdapter::new(&server.base_url(), "token", None).unwrap();
+        let type_schema = type_schema(
+            vec![("name", field_schema(FieldType::String, true))],
+            vec![],
+        );
+        let key = Key::from(BTreeMap::from([("name".to_string(), json!("Site Z"))]));
+        let id = adapter
+            .lookup_backend_id(&TypeName::new("dcim.site"), &type_schema, &key)
+            .await
+            .unwrap();
+        assert_eq!(id, "site-42");
+    }
+}
