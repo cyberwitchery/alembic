@@ -911,10 +911,7 @@ fn build_provision_plan(
     schema_info: &SchemaInfo,
 ) -> Result<Option<ProvisionPlan>> {
     let missing = schema_missing(schema, schema_info);
-    if missing.is_empty() {
-        return Ok(None);
-    }
-
+    let menu_anchors = menu_anchor_map(schema)?;
     let mut nodes = Vec::new();
     let mut extensions = Vec::new();
     let mut created_object_types = Vec::new();
@@ -922,6 +919,22 @@ fn build_provision_plan(
 
     for (type_name, type_schema) in &schema.types {
         let gql_type = gql_type_name_str(type_name);
+        let menu_placement = menu_placement_for(&menu_anchors, &parts, &gql_type);
+        let menu_node = NodeDef {
+            name: parts.name.clone(),
+            namespace: parts.namespace.clone(),
+            label: None,
+            description: None,
+            icon: icon_for_namespace(&parts.namespace),
+            include_in_menu: Some(true),
+            menu_placement,
+            human_friendly_id: Vec::new(),
+            display_label: None,
+            default_filter: None,
+            attributes: Vec::new(),
+            relationships: Vec::new(),
+        };
+
         let Some(existing_fields) = schema_info.type_fields.get(&gql_type) else {
             let parts = type_name_parts(type_name)?;
             let (attributes, relationships, key_attrs) =
@@ -931,12 +944,17 @@ fn build_provision_plan(
                 human_friendly_id.extend(key_attrs.iter().map(|key| format!("{key}__value")));
             }
             let (display_label, default_filter) = display_label_for_keys(&key_attrs);
-            let label = label_from_pascal(&parts.name);
+            let name = parts.name.clone();
+            let namespace = parts.namespace.clone();
+            let label = label_from_pascal(&name);
             nodes.push(NodeDef {
-                name: parts.name,
-                namespace: parts.namespace,
+                name,
+                namespace: namespace.clone(),
                 label: Some(label),
                 description: None,
+                icon: icon_for_namespace(&namespace),
+                include_in_menu: Some(true),
+                menu_placement: menu_node.menu_placement.clone(),
                 human_friendly_id,
                 display_label,
                 default_filter,
@@ -949,6 +967,10 @@ fn build_provision_plan(
             }
             continue;
         };
+
+        if !missing.is_empty() {
+            nodes.push(menu_node);
+        }
 
         let mut missing_fields = BTreeSet::new();
         for field in field_names_for_schema(type_schema) {
@@ -1073,6 +1095,12 @@ struct NodeDef {
     label: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    icon: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    include_in_menu: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    menu_placement: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     human_friendly_id: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1284,7 +1312,11 @@ fn relationship_def(
 }
 
 fn relationship_identifier(source_kind: &str, field: &str) -> String {
-    format!("{}__{}", identifier_part(source_kind), identifier_part(field))
+    format!(
+        "{}__{}",
+        identifier_part(source_kind),
+        identifier_part(field)
+    )
 }
 
 fn identifier_part(raw: &str) -> String {
@@ -1336,6 +1368,97 @@ fn label_from_pascal(name: &str) -> String {
         label.push(ch);
     }
     label
+}
+
+fn menu_anchor_map(schema: &Schema) -> Result<BTreeMap<String, String>> {
+    let mut by_namespace: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
+    for type_name in schema.types.keys() {
+        let parts = type_name_parts(type_name)?;
+        by_namespace
+            .entry(parts.namespace)
+            .or_default()
+            .push((parts.name, type_name.clone()));
+    }
+
+    let mut anchors = BTreeMap::new();
+    for (namespace, entries) in by_namespace {
+        let anchor = pick_menu_anchor(&entries);
+        anchors.insert(namespace, anchor);
+    }
+    Ok(anchors)
+}
+
+fn pick_menu_anchor(entries: &[(String, String)]) -> String {
+    let mut by_name = BTreeMap::new();
+    for (name, type_name) in entries {
+        by_name.insert(name.to_ascii_lowercase(), type_name);
+    }
+    for preferred in [
+        "site",
+        "device",
+        "node",
+        "network",
+        "service",
+        "cluster",
+        "blueprint",
+        "resource",
+        "prefix",
+        "ipaddress",
+        "vlan",
+        "vrf",
+        "tenant",
+        "user",
+        "location",
+        "region",
+        "rack",
+        "ci",
+        "wirelesslan",
+    ] {
+        if let Some(type_name) = by_name.get(preferred) {
+            return (*type_name).clone();
+        }
+    }
+    entries
+        .iter()
+        .map(|(_, type_name)| type_name)
+        .min()
+        .cloned()
+        .unwrap_or_default()
+}
+
+fn menu_placement_for(
+    anchors: &BTreeMap<String, String>,
+    parts: &TypeNameParts,
+    gql_type: &str,
+) -> Option<String> {
+    let anchor = anchors
+        .get(&parts.namespace)
+        .map(|type_name| gql_type_name_str(type_name))?;
+    if anchor == gql_type {
+        None
+    } else {
+        Some(anchor)
+    }
+}
+
+fn icon_for_namespace(namespace: &str) -> Option<String> {
+    let icon = match namespace.to_ascii_lowercase().as_str() {
+        "dcim" => Some("mdi:server"),
+        "ipam" => Some("mdi:ip-network-outline"),
+        "tenancy" => Some("mdi:account-group"),
+        "virtualization" => Some("mdi:cloud-outline"),
+        "circuits" => Some("mdi:transit-connection"),
+        "wireless" => Some("mdi:wifi"),
+        "extras" => Some("mdi:tag"),
+        "servicenow" => Some("mdi:briefcase"),
+        "nso" => Some("mdi:router-network"),
+        "apstra" => Some("mdi:lan"),
+        "cloudvision" => Some("mdi:monitor-dashboard"),
+        "infoblox" => Some("mdi:ip-network-outline"),
+        "orion" => Some("mdi:radar"),
+        _ => None,
+    }?;
+    Some(icon.to_string())
 }
 
 fn to_pascal_case(raw: &str) -> String {
@@ -2001,6 +2124,9 @@ schema { query: Query }
                 namespace: "Dcim".to_string(),
                 label: Some("Site".to_string()),
                 description: None,
+                icon: None,
+                include_in_menu: None,
+                menu_placement: None,
                 human_friendly_id: vec!["name__value".to_string()],
                 display_label: Some("{{ name__value }}".to_string()),
                 default_filter: Some("name__value".to_string()),
