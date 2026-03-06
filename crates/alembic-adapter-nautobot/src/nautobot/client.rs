@@ -1,4 +1,3 @@
-use alembic_engine::BackendCapabilities;
 use anyhow::Result;
 use nautobot::{Client, ClientConfig, QueryBuilder};
 use serde::de::DeserializeOwned;
@@ -51,7 +50,7 @@ impl NautobotClient {
         Ok(results)
     }
 
-    pub(super) async fn fetch_capabilities(&self) -> Result<BackendCapabilities> {
+    pub(super) async fn fetch_custom_fields(&self) -> Result<BTreeMap<String, BTreeSet<String>>> {
         let fields = self
             .list_all(&self.client.extras().custom_fields(), None)
             .await?;
@@ -62,14 +61,12 @@ impl NautobotClient {
                 by_type.entry(content_type).or_default().insert(key.clone());
             }
         }
+        Ok(by_type)
+    }
 
+    pub(super) async fn fetch_tags(&self) -> Result<BTreeSet<String>> {
         let tags = self.list_all(&self.client.extras().tags(), None).await?;
-        let tag_names: BTreeSet<String> = tags.into_iter().map(|t| t.name).collect();
-
-        Ok(BackendCapabilities {
-            custom_fields_by_type: by_type,
-            tags: tag_names,
-        })
+        Ok(tags.into_iter().map(|t| t.name).collect())
     }
 
     pub(super) async fn fetch_object_types(&self) -> Result<ObjectTypeRegistry> {

@@ -3,9 +3,13 @@ resolver = "2"
 members = [
   "crates/alembic-core",
   "crates/alembic-engine",
+  "crates/alembic-adapter-registry",
   "crates/alembic-adapter-netbox",
   "crates/alembic-adapter-nautobot",
-  "crates/alembic-cli", "crates/alembic-adapter-generic", "crates/alembic-adapter-peeringdb",
+  "crates/alembic-adapter-infrahub",
+  "crates/alembic-cli",
+  "crates/alembic-adapter-generic",
+  "crates/alembic-adapter-peeringdb",
 ]
 
 [workspace.package]
@@ -24,6 +28,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 uuid = { version = "1", features = ["serde", "v4", "v5"] }
 netbox = "0.3.3"
 nautobot = "0.3.1"
+infrahub = "0.1.0"
 reqwest = { version = "0.12", features = ["json"] }
 regex = "1"
 ipnet = "2"

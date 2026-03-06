@@ -48,25 +48,20 @@ pub async fn apply_non_delete_with_retries(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{BackendId, ProjectedObject, ProjectionData};
+    use crate::BackendId;
     use alembic_core::{JsonMap, Key, Object, TypeName, Uid};
     use anyhow::anyhow;
-    use std::collections::BTreeSet;
 
     fn create_op(uid: Uid) -> Op {
         Op::Create {
             uid,
             type_name: TypeName::new("test.item"),
-            desired: ProjectedObject {
-                base: Object {
-                    uid,
-                    type_name: TypeName::new("test.item"),
-                    key: Key::default(),
-                    attrs: JsonMap::default(),
-                    source: None,
-                },
-                projection: ProjectionData::default(),
-                projection_inputs: BTreeSet::new(),
+            desired: Object {
+                uid,
+                type_name: TypeName::new("test.item"),
+                key: Key::default(),
+                attrs: JsonMap::default(),
+                source: None,
             },
         }
     }

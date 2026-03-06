@@ -7,6 +7,8 @@ pub(super) struct ObjectTypeInfo {
     pub(super) type_name: TypeName,
     pub(super) endpoint: String,
     pub(super) features: BTreeSet<String>,
+    pub(super) app_label: String,
+    pub(super) model: String,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -38,6 +40,8 @@ impl ObjectTypeRegistry {
                 type_name: TypeName::new(endpoint_type.clone()),
                 endpoint: endpoint.clone(),
                 features,
+                app_label: object_type.app_label.clone(),
+                model: object_type.model.clone(),
             };
             registry.by_endpoint.insert(endpoint, endpoint_type.clone());
             registry.by_type.insert(endpoint_type, info.clone());
@@ -57,12 +61,39 @@ impl ObjectTypeRegistry {
         if let Some(info) = self.by_type.get(type_name.as_str()) {
             return Some(info.clone());
         }
+        let (app_label, model) = split_type_name(type_name.as_str())?;
         let endpoint = endpoint_from_type_name(type_name.as_str())?;
         Some(ObjectTypeInfo {
             type_name: type_name.clone(),
             endpoint,
             features: BTreeSet::new(),
+            app_label,
+            model,
         })
+    }
+
+    pub(super) fn contains_type(&self, type_name: &TypeName) -> bool {
+        self.by_type.contains_key(type_name.as_str())
+    }
+
+    pub(super) fn insert_custom_object_type(
+        &mut self,
+        type_name: TypeName,
+        endpoint: String,
+        features: BTreeSet<String>,
+        app_label: String,
+        model: String,
+    ) {
+        let info = ObjectTypeInfo {
+            type_name: type_name.clone(),
+            endpoint: endpoint.clone(),
+            features,
+            app_label,
+            model,
+        };
+        self.by_endpoint
+            .insert(endpoint, type_name.as_str().to_string());
+        self.by_type.insert(type_name.as_str().to_string(), info);
     }
 
     pub(super) fn type_names(&self) -> Vec<TypeName> {
@@ -113,6 +144,11 @@ fn type_name_from_endpoint(endpoint: &str) -> Option<String> {
     let singular = singularize(resource);
     let normalized = singular.replace('-', "_");
     Some(format!("{app}.{normalized}"))
+}
+
+fn split_type_name(value: &str) -> Option<(String, String)> {
+    let (app, model) = value.split_once('.')?;
+    Some((app.to_string(), model.to_string()))
 }
 
 fn singularize(value: &str) -> String {

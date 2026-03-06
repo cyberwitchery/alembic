@@ -866,9 +866,20 @@ rules:
         let inventory = compile_retort(&raw, &retort).unwrap();
         let state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
         let observed = ObservedState::default();
-        let projected = crate::project_default(&inventory.objects);
-        let first = plan(&projected, &observed, &state, &inventory.schema, false);
-        let second = plan(&projected, &observed, &state, &inventory.schema, false);
+        let first = plan(
+            &inventory.objects,
+            &observed,
+            &state,
+            &inventory.schema,
+            false,
+        );
+        let second = plan(
+            &inventory.objects,
+            &observed,
+            &state,
+            &inventory.schema,
+            false,
+        );
         assert_eq!(first.ops, second.ops);
     }
 

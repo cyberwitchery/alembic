@@ -2,7 +2,7 @@
 
 small end-to-end scenarios for alembic.
 
-each case study includes a minimal inventory, optional projection, and commands.
+each case study includes a minimal inventory and commands.
 keys are structured maps; alembic canonicalizes them as JSON for matching and sorting.
 
 - `01-basic-dcim-ipam.md`: single site + device + interfaces + prefix + ip

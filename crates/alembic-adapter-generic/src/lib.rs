@@ -3,7 +3,7 @@
 use alembic_core::{JsonMap, Key, Schema, TypeName, Uid};
 use alembic_engine::{
     apply_non_delete_with_retries, Adapter, AdapterApplyError, AppliedOp, ApplyReport, BackendId,
-    ObservedObject, ObservedState, Op, ProjectionData, RetryApplyDriver,
+    ObservedObject, ObservedState, Op, RetryApplyDriver,
 };
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
@@ -97,7 +97,7 @@ impl GenericAdapter {
         &self,
         uid: Uid,
         type_name: &TypeName,
-        desired: &alembic_engine::ProjectedObject,
+        desired: &alembic_core::Object,
         schema: &Schema,
         resolved: &mut BTreeMap<Uid, BackendId>,
     ) -> Result<AppliedOp> {
@@ -116,7 +116,7 @@ impl GenericAdapter {
             self.config.base_url.trim_end_matches('/'),
             endpoint.path.trim_start_matches('/')
         );
-        let body = resolve_attrs(&desired.base.attrs, type_schema, resolved)?;
+        let body = resolve_attrs(&desired.attrs, type_schema, resolved)?;
 
         let resp = self
             .client
@@ -148,7 +148,7 @@ impl GenericAdapter {
         &self,
         uid: Uid,
         type_name: &TypeName,
-        desired: &alembic_engine::ProjectedObject,
+        desired: &alembic_core::Object,
         backend_id: Option<&BackendId>,
         schema: &Schema,
         resolved: &BTreeMap<Uid, BackendId>,
@@ -165,7 +165,7 @@ impl GenericAdapter {
 
         let id = backend_id.ok_or_else(|| anyhow!("update requires backend id"))?;
         let url = self.backend_id_to_url(endpoint, id);
-        let body = resolve_attrs(&desired.base.attrs, type_schema, resolved)?;
+        let body = resolve_attrs(&desired.attrs, type_schema, resolved)?;
 
         let req = match endpoint.update_method.as_str() {
             "PUT" => self.client.put(&url),
@@ -219,7 +219,7 @@ impl GenericAdapter {
 
 #[async_trait]
 impl Adapter for GenericAdapter {
-    async fn observe(
+    async fn read(
         &self,
         schema: &Schema,
         types: &[TypeName],
@@ -302,7 +302,6 @@ impl Adapter for GenericAdapter {
                         type_name: type_name.clone(),
                         key,
                         attrs,
-                        projection: ProjectionData::default(),
                         backend_id: Some(backend_id),
                     });
                 }
@@ -321,7 +320,7 @@ impl Adapter for GenericAdapter {
         Ok(state)
     }
 
-    async fn apply(
+    async fn write(
         &self,
         schema: &Schema,
         ops: &[Op],
@@ -618,7 +617,7 @@ fn describe_missing_refs(ops: &[Op], resolved: &BTreeMap<Uid, BackendId>) -> Str
     let mut missing = BTreeSet::new();
     for op in ops {
         if let Op::Create { desired, .. } | Op::Update { desired, .. } = op {
-            for value in desired.base.attrs.values() {
+            for value in desired.attrs.values() {
                 collect_missing_refs(value, resolved, &mut missing);
             }
         }

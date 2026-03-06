@@ -2,7 +2,7 @@
 
 distills data between dcim/ipam systems, co-evolved with ai
 
-alembic is a data-model-first converger + loader for dcim/ipam systems. it defines a canonical, vendor-neutral ir (intermediate representation) and an engine that validates, plans, and applies changes to a backend. it supports multiple backend adapters, including NetBox, Nautobot, generic REST APIs, and PeeringDB (read-only).
+alembic is a data-model-first converger + loader for dcim/ipam systems. it defines a canonical, vendor-neutral ir (intermediate representation) and an engine that validates, plans, and applies changes to a backend. it supports multiple backend adapters, including NetBox, Nautobot, Infrahub, generic REST APIs, and PeeringDB (read-only).
 
 ## concepts
 
@@ -24,38 +24,51 @@ cargo run -p alembic-cli -- validate -f examples/brew.yaml
 3) plan (writes a json plan file):
 
 ```bash
-# netbox (default)
+# netbox
 NETBOX_URL=https://netbox.example.com NETBOX_TOKEN=... \
-  cargo run -p alembic-cli -- plan -f examples/brew.yaml -o plan.json
+  cargo run -p alembic-cli -- plan --backend netbox -f examples/brew.yaml -o plan.json
 
 # nautobot
 NAUTOBOT_URL=https://nautobot.example.com NAUTOBOT_TOKEN=... \
   cargo run -p alembic-cli -- plan --backend nautobot -f examples/brew.yaml -o plan.json
+
+# infrahub
+INFRAHUB_URL=https://infrahub.example.com INFRAHUB_TOKEN=... \
+  cargo run -p alembic-cli -- plan --backend infrahub -f examples/brew.yaml -o plan.json
 ```
 
 4) apply:
 
 ```bash
 NETBOX_URL=https://netbox.example.com NETBOX_TOKEN=... \
-  cargo run -p alembic-cli -- apply -p plan.json --allow-delete
+  cargo run -p alembic-cli -- apply --backend netbox -p plan.json --allow-delete
 ```
 
-5) raw + retort + projection:
+5) raw + retort:
 
 ```bash
 cargo run -p alembic-cli -- distill -f examples/raw.yaml --retort examples/retort.yaml -o ir.json
-cargo run -p alembic-cli -- plan -f examples/raw.yaml --retort examples/retort.yaml \
-  --projection examples/projection-netbox.yaml -o plan.json
+cargo run -p alembic-cli -- plan -f examples/raw.yaml --retort examples/retort.yaml -o plan.json
+```
+
+6) optional: generate a django app from a brew inventory:
+
+```bash
+cargo run -p alembic-cli -- cast django -f examples/brew.yaml -o ./out \
+  --project alembic_project --app alembic_app
 ```
 
 ## adapter coverage
 
 netbox and nautobot adapters are schema-driven and resolve types dynamically via their content type/object type APIs.
+the infrahub adapter uses graphql and can optionally provision missing types/fields by generating
+an infrahub schema file and applying it during `apply`.
 
 - any `type` with a REST endpoint can be observed and applied
 - `attrs` are passed through using backend field names
 - `ref`/`list_ref` fields are resolved via state mappings during apply
-- projection supports custom fields, tags, and local context where the backend advertises support
+- custom fields and tags are mapped by adapters when supported by the backend
+- netbox custom object types can be provisioned on apply when the netbox custom objects plugin is installed
 
 relationships are validated strictly by schema and `uid` references.
 
@@ -63,8 +76,10 @@ relationships are validated strictly by schema and `uid` references.
 
 - `crates/alembic-core`: ir types, serde, validation primitives
 - `crates/alembic-engine`: loader, graph validation, planning, state store
+- `crates/alembic-adapter-registry`: adapter config + registry for the cli
 - `crates/alembic-adapter-netbox`: netbox adapter
 - `crates/alembic-adapter-nautobot`: nautobot adapter
+- `crates/alembic-adapter-infrahub`: infrahub graphql adapter
 - `crates/alembic-adapter-generic`: generic rest adapter
 - `crates/alembic-adapter-peeringdb`: peeringdb adapter
 - `crates/alembic-cli`: cli binary
@@ -84,9 +99,9 @@ relationships are validated strictly by schema and `uid` references.
 - `docs/engine.md`
 - `docs/plan.md`
 - `docs/state.md`
-- `docs/projection.md`
 - `docs/cli.md`
 - `docs/cast.md`
 - `docs/netbox.md`
 - `docs/nautobot.md`
+- `docs/infrahub.md`
 - `docs/development.md`

@@ -1,7 +1,6 @@
 //! core engine types and adapter contract.
 
-use crate::projection::{BackendCapabilities, MissingCustomField, ProjectedObject, ProjectionData};
-use alembic_core::{key_string, JsonMap, Key, Schema, TypeName, Uid};
+use alembic_core::{key_string, JsonMap, Key, Object, Schema, TypeName, Uid};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -55,13 +54,13 @@ pub enum Op {
     Create {
         uid: Uid,
         type_name: TypeName,
-        desired: ProjectedObject,
+        desired: Object,
     },
     /// update an existing backend object.
     Update {
         uid: Uid,
         type_name: TypeName,
-        desired: ProjectedObject,
+        desired: Object,
         changes: Vec<FieldChange>,
         #[serde(skip_serializing_if = "Option::is_none")]
         backend_id: Option<BackendId>,
@@ -143,8 +142,6 @@ pub struct ObservedObject {
     pub key: Key,
     /// observed attrs mapped to ir types.
     pub attrs: JsonMap,
-    /// observed projection data.
-    pub projection: ProjectionData,
     /// backend id when known.
     pub backend_id: Option<BackendId>,
 }
@@ -156,8 +153,6 @@ pub struct ObservedState {
     pub by_backend_id: BTreeMap<(TypeName, BackendId), ObservedObject>,
     /// observed objects keyed by natural key.
     pub by_key: BTreeMap<(TypeName, String), ObservedObject>,
-    /// backend capabilities (custom fields, tags).
-    pub capabilities: BackendCapabilities,
 }
 
 impl ObservedState {
@@ -191,97 +186,40 @@ pub struct ApplyReport {
     pub applied: Vec<AppliedOp>,
 }
 
+/// report from ensure_schema provisioning.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ProvisionReport {
+    /// custom fields created on the backend.
+    pub created_fields: Vec<String>,
+    /// tags created on the backend.
+    pub created_tags: Vec<String>,
+    /// custom object types created on the backend.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub created_object_types: Vec<String>,
+    /// custom object fields created on the backend.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub created_object_fields: Vec<String>,
+}
+
 /// adapter contract for backend-specific io.
 #[async_trait]
 pub trait Adapter: Send + Sync {
-    async fn observe(
+    async fn read(
         &self,
         schema: &Schema,
         types: &[TypeName],
         state: &crate::state::StateStore,
     ) -> anyhow::Result<ObservedState>;
-    async fn apply(
+    async fn write(
         &self,
         schema: &Schema,
         ops: &[Op],
         state: &crate::state::StateStore,
     ) -> anyhow::Result<ApplyReport>;
-    async fn create_custom_fields(&self, _missing: &[MissingCustomField]) -> anyhow::Result<()> {
-        Ok(())
-    }
-    async fn create_tags(&self, _tags: &[String]) -> anyhow::Result<()> {
-        Ok(())
+    async fn ensure_schema(&self, _schema: &Schema) -> anyhow::Result<ProvisionReport> {
+        Ok(ProvisionReport::default())
     }
 }
-
-/// narrow observation capability for planning/extract flows.
-#[async_trait]
-pub trait ObserveAdapter: Send + Sync {
-    async fn observe(
-        &self,
-        schema: &Schema,
-        types: &[TypeName],
-        state: &crate::state::StateStore,
-    ) -> anyhow::Result<ObservedState>;
-}
-
-/// narrow apply capability for execution flows.
-#[async_trait]
-pub trait ApplyAdapter: Send + Sync {
-    async fn apply(
-        &self,
-        schema: &Schema,
-        ops: &[Op],
-        state: &crate::state::StateStore,
-    ) -> anyhow::Result<ApplyReport>;
-}
-
-/// optional projection provisioning capability (custom fields/tags).
-#[async_trait]
-pub trait ProjectionProvisioner: Send + Sync {
-    async fn create_custom_fields(&self, missing: &[MissingCustomField]) -> anyhow::Result<()>;
-    async fn create_tags(&self, tags: &[String]) -> anyhow::Result<()>;
-}
-
-/// observation + provisioning capability used by projection proposal flows.
-pub trait PlanningAdapter: ObserveAdapter + ProjectionProvisioner {}
-
-#[async_trait]
-impl<T: Adapter + ?Sized> ObserveAdapter for T {
-    async fn observe(
-        &self,
-        schema: &Schema,
-        types: &[TypeName],
-        state: &crate::state::StateStore,
-    ) -> anyhow::Result<ObservedState> {
-        Adapter::observe(self, schema, types, state).await
-    }
-}
-
-#[async_trait]
-impl<T: Adapter + ?Sized> ApplyAdapter for T {
-    async fn apply(
-        &self,
-        schema: &Schema,
-        ops: &[Op],
-        state: &crate::state::StateStore,
-    ) -> anyhow::Result<ApplyReport> {
-        Adapter::apply(self, schema, ops, state).await
-    }
-}
-
-#[async_trait]
-impl<T: Adapter + ?Sized> ProjectionProvisioner for T {
-    async fn create_custom_fields(&self, missing: &[MissingCustomField]) -> anyhow::Result<()> {
-        Adapter::create_custom_fields(self, missing).await
-    }
-
-    async fn create_tags(&self, tags: &[String]) -> anyhow::Result<()> {
-        Adapter::create_tags(self, tags).await
-    }
-}
-
-impl<T: Adapter + ?Sized> PlanningAdapter for T {}
 
 #[cfg(test)]
 mod tests {

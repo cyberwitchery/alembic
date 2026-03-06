@@ -1,15 +1,14 @@
 //! diff and plan generation.
 
-use crate::projection::ProjectedInventory;
 use crate::state::StateStore;
 use crate::types::{FieldChange, ObservedState, Op, Plan};
-use alembic_core::{key_string, uid_v5, JsonMap, Key, TypeName};
+use alembic_core::{key_string, uid_v5, JsonMap, Key, Object, TypeName};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// build a deterministic plan from desired and observed state.
 pub fn plan(
-    desired: &ProjectedInventory,
+    desired: &[Object],
     observed: &ObservedState,
     state: &StateStore,
     schema: &alembic_core::Schema,
@@ -25,32 +24,26 @@ pub fn plan(
         }
     }
 
-    let mut desired_sorted = desired.objects.clone();
-    desired_sorted.sort_by(|a, b| {
-        op_sort_key(&a.base.type_name, &a.base.key)
-            .cmp(&op_sort_key(&b.base.type_name, &b.base.key))
-    });
+    let mut desired_sorted = desired.to_vec();
+    desired_sorted
+        .sort_by(|a, b| op_sort_key(&a.type_name, &a.key).cmp(&op_sort_key(&b.type_name, &b.key)));
 
     for object in desired_sorted.iter() {
         let observed_object = state
-            .backend_id(object.base.type_name.clone(), object.base.uid)
-            .and_then(|id| {
-                observed
-                    .by_backend_id
-                    .get(&(object.base.type_name.clone(), id))
-            })
+            .backend_id(object.type_name.clone(), object.uid)
+            .and_then(|id| observed.by_backend_id.get(&(object.type_name.clone(), id)))
             .or_else(|| {
                 observed
                     .by_key
-                    .get(&(object.base.type_name.clone(), key_string(&object.base.key)))
+                    .get(&(object.type_name.clone(), key_string(&object.key)))
             });
 
         if let Some(obs) = observed_object {
             let changes = diff_object(obs, object);
             if !changes.is_empty() {
                 ops.push(Op::Update {
-                    uid: object.base.uid,
-                    type_name: object.base.type_name.clone(),
+                    uid: object.uid,
+                    type_name: object.type_name.clone(),
                     desired: object.clone(),
                     changes,
                     backend_id: obs.backend_id.clone(),
@@ -61,8 +54,8 @@ pub fn plan(
             }
         } else {
             ops.push(Op::Create {
-                uid: object.base.uid,
-                type_name: object.base.type_name.clone(),
+                uid: object.uid,
+                type_name: object.type_name.clone(),
                 desired: object.clone(),
             });
         }
@@ -98,18 +91,11 @@ pub fn plan(
 }
 
 /// compute field-level diffs for attrs.
-fn diff_attrs(
-    existing: &JsonMap,
-    desired: &JsonMap,
-    ignore: &BTreeSet<String>,
-) -> Vec<FieldChange> {
+fn diff_attrs(existing: &JsonMap, desired: &JsonMap) -> Vec<FieldChange> {
     let mut changes = Vec::new();
     let keys: BTreeSet<String> = existing.keys().chain(desired.keys()).cloned().collect();
 
     for key in keys.iter() {
-        if ignore.contains(key) {
-            continue;
-        }
         let from = existing.get(key).cloned().unwrap_or(Value::Null);
         let desired_has = desired.contains_key(key);
         if !desired_has {
@@ -128,60 +114,8 @@ fn diff_attrs(
     changes
 }
 
-fn diff_object(
-    existing: &crate::types::ObservedObject,
-    desired: &crate::projection::ProjectedObject,
-) -> Vec<FieldChange> {
-    let mut changes = diff_attrs(
-        &existing.attrs,
-        &desired.base.attrs,
-        &desired.projection_inputs,
-    );
-
-    if let Some(desired_fields) = &desired.projection.custom_fields {
-        let existing_subset = existing
-            .projection
-            .custom_fields
-            .as_ref()
-            .map(|fields| {
-                fields
-                    .iter()
-                    .filter_map(|(key, value)| {
-                        if desired_fields.contains_key(key) {
-                            Some((key.clone(), value.clone()))
-                        } else {
-                            None
-                        }
-                    })
-                    .collect::<BTreeMap<_, _>>()
-            })
-            .unwrap_or_default();
-        if existing_subset != *desired_fields {
-            changes.push(FieldChange {
-                field: "custom_fields".to_string(),
-                from: serde_json::to_value(existing_subset).unwrap_or(Value::Null),
-                to: serde_json::to_value(desired_fields).unwrap_or(Value::Null),
-            });
-        }
-    }
-    if desired.projection.tags.is_some() && existing.projection.tags != desired.projection.tags {
-        changes.push(FieldChange {
-            field: "tags".to_string(),
-            from: serde_json::to_value(&existing.projection.tags).unwrap_or(Value::Null),
-            to: serde_json::to_value(&desired.projection.tags).unwrap_or(Value::Null),
-        });
-    }
-    if desired.projection.local_context.is_some()
-        && existing.projection.local_context != desired.projection.local_context
-    {
-        changes.push(FieldChange {
-            field: "local_context".to_string(),
-            from: serde_json::to_value(&existing.projection.local_context).unwrap_or(Value::Null),
-            to: serde_json::to_value(&desired.projection.local_context).unwrap_or(Value::Null),
-        });
-    }
-
-    changes
+fn diff_object(existing: &crate::types::ObservedObject, desired: &Object) -> Vec<FieldChange> {
+    diff_attrs(&existing.attrs, &desired.attrs)
 }
 
 /// stable sort key for desired objects.
@@ -194,10 +128,10 @@ fn op_order_key(op: &Op) -> (String, u8, String) {
     let (type_name, key, weight) = match op {
         Op::Create {
             type_name, desired, ..
-        } => (type_name.clone(), key_string(&desired.base.key), 0u8),
+        } => (type_name.clone(), key_string(&desired.key), 0u8),
         Op::Update {
             type_name, desired, ..
-        } => (type_name.clone(), key_string(&desired.base.key), 1u8),
+        } => (type_name.clone(), key_string(&desired.key), 1u8),
         Op::Delete { type_name, key, .. } => (type_name.clone(), key_string(key), 2u8),
     };
     (type_name.as_str().to_string(), weight, key)

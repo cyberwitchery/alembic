@@ -12,8 +12,10 @@ plans are json files that can be re-applied. the plan is deterministic for a giv
       "uid": "...",
       "type_name": "dcim.site",
       "desired": {
-        "base": { "uid": "...", "type": "dcim.site", "key": { "slug": "fra1" }, "attrs": { "...": "..." } },
-        "projection": { "custom_fields": { "...": "..." }, "tags": ["..."] }
+        "uid": "...",
+        "type": "dcim.site",
+        "key": { "slug": "fra1" },
+        "attrs": { "...": "..." }
       }
     },
     {
@@ -42,5 +44,4 @@ plans are json files that can be re-applied. the plan is deterministic for a giv
 - `type_name` may be any custom string.
 - `backend_id` is optional and may be absent for creates or if not known.
 - deletes are only applied when `--allow-delete` is set.
-- `projection` is present only when projection rules apply to an object, and diffs include projected fields.
 - the plan embeds the schema used during planning to drive apply-time reference resolution.

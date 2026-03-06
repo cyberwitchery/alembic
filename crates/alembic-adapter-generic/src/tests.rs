@@ -1,7 +1,6 @@
 use super::*;
 use alembic_core::{FieldSchema, FieldType, TypeSchema};
 use alembic_engine::{StateData, StateStore};
-use anyhow::anyhow;
 use httpmock::prelude::*;
 use httpmock::Method::PATCH;
 
@@ -486,7 +485,7 @@ async fn test_observe_with_results_path() {
     let state_store = new_state_store();
 
     let state = adapter
-        .observe(
+        .read(
             &schema,
             &[TypeName::new("device".to_string())],
             &state_store,
@@ -525,7 +524,7 @@ async fn test_observe_resolves_ref_ids_to_uids() {
     let schema = test_schema();
 
     let observed = adapter
-        .observe(&schema, &[TypeName::new("device".to_string())], &state)
+        .read(&schema, &[TypeName::new("device".to_string())], &state)
         .await
         .unwrap();
 
@@ -560,7 +559,7 @@ async fn test_observe_without_results_path() {
     let state_store = new_state_store();
 
     let state = adapter
-        .observe(&schema, &[TypeName::new("site".to_string())], &state_store)
+        .read(&schema, &[TypeName::new("site".to_string())], &state_store)
         .await
         .unwrap();
 
@@ -589,7 +588,7 @@ async fn test_observe_all_types() {
     let schema = test_schema();
     let state_store = new_state_store();
 
-    let state = adapter.observe(&schema, &[], &state_store).await.unwrap();
+    let state = adapter.read(&schema, &[], &state_store).await.unwrap();
 
     device_mock.assert();
     site_mock.assert();
@@ -612,7 +611,7 @@ async fn test_observe_string_id() {
     let state_store = new_state_store();
 
     let state = adapter
-        .observe(&schema, &[TypeName::new("site".to_string())], &state_store)
+        .read(&schema, &[TypeName::new("site".to_string())], &state_store)
         .await
         .unwrap();
 
@@ -632,7 +631,7 @@ async fn test_observe_unknown_type() {
     let state_store = new_state_store();
 
     let err = adapter
-        .observe(
+        .read(
             &schema,
             &[TypeName::new("unknown".to_string())],
             &state_store,
@@ -659,7 +658,7 @@ async fn test_observe_missing_schema() {
     let state_store = new_state_store();
 
     let err = adapter
-        .observe(
+        .read(
             &empty_schema,
             &[TypeName::new("device".to_string())],
             &state_store,
@@ -694,21 +693,17 @@ async fn test_apply_create() {
     let ops = vec![Op::Create {
         uid,
         type_name: TypeName::new("site".to_string()),
-        desired: alembic_engine::ProjectedObject {
-            base: alembic_core::Object {
-                uid,
-                type_name: TypeName::new("site".to_string()),
-                key: Key::from(key),
-                attrs: attrs.into(),
-                source: None,
-            },
-            projection: ProjectionData::default(),
-            projection_inputs: BTreeSet::new(),
+        desired: alembic_core::Object {
+            uid,
+            type_name: TypeName::new("site".to_string()),
+            key: Key::from(key),
+            attrs: attrs.into(),
+            source: None,
         },
     }];
 
     let state = new_state_store();
-    let report = adapter.apply(&schema, &ops, &state).await.unwrap();
+    let report = adapter.write(&schema, &ops, &state).await.unwrap();
     mock.assert();
     assert_eq!(report.applied.len(), 1);
     assert_eq!(report.applied[0].backend_id, Some(BackendId::Int(42)));
@@ -755,37 +750,29 @@ async fn test_apply_create_retries_out_of_order_dependencies() {
         Op::Create {
             uid: device_uid,
             type_name: TypeName::new("device".to_string()),
-            desired: alembic_engine::ProjectedObject {
-                base: alembic_core::Object {
-                    uid: device_uid,
-                    type_name: TypeName::new("device".to_string()),
-                    key: Key::from(device_key),
-                    attrs: device_attrs.into(),
-                    source: None,
-                },
-                projection: ProjectionData::default(),
-                projection_inputs: BTreeSet::new(),
+            desired: alembic_core::Object {
+                uid: device_uid,
+                type_name: TypeName::new("device".to_string()),
+                key: Key::from(device_key),
+                attrs: device_attrs.into(),
+                source: None,
             },
         },
         Op::Create {
             uid: site_uid,
             type_name: TypeName::new("site".to_string()),
-            desired: alembic_engine::ProjectedObject {
-                base: alembic_core::Object {
-                    uid: site_uid,
-                    type_name: TypeName::new("site".to_string()),
-                    key: Key::from(site_key),
-                    attrs: site_attrs.into(),
-                    source: None,
-                },
-                projection: ProjectionData::default(),
-                projection_inputs: BTreeSet::new(),
+            desired: alembic_core::Object {
+                uid: site_uid,
+                type_name: TypeName::new("site".to_string()),
+                key: Key::from(site_key),
+                attrs: site_attrs.into(),
+                source: None,
             },
         },
     ];
 
     let state = new_state_store();
-    let report = adapter.apply(&schema, &ops, &state).await.unwrap();
+    let report = adapter.write(&schema, &ops, &state).await.unwrap();
     create_site.assert();
     create_device.assert();
     assert_eq!(report.applied.len(), 2);
@@ -826,22 +813,18 @@ async fn test_apply_update_patch() {
     let ops = vec![Op::Update {
         uid,
         type_name: TypeName::new("device".to_string()),
-        desired: alembic_engine::ProjectedObject {
-            base: alembic_core::Object {
-                uid,
-                type_name: TypeName::new("device".to_string()),
-                key: Key::from(key),
-                attrs: attrs.into(),
-                source: None,
-            },
-            projection: ProjectionData::default(),
-            projection_inputs: BTreeSet::new(),
+        desired: alembic_core::Object {
+            uid,
+            type_name: TypeName::new("device".to_string()),
+            key: Key::from(key),
+            attrs: attrs.into(),
+            source: None,
         },
         backend_id: Some(BackendId::Int(42)),
         changes: vec![],
     }];
 
-    let report = adapter.apply(&schema, &ops, &state).await.unwrap();
+    let report = adapter.write(&schema, &ops, &state).await.unwrap();
     mock.assert();
     assert_eq!(report.applied.len(), 1);
 }
@@ -872,22 +855,18 @@ async fn test_apply_update_put() {
     let ops = vec![Op::Update {
         uid,
         type_name: TypeName::new("site".to_string()),
-        desired: alembic_engine::ProjectedObject {
-            base: alembic_core::Object {
-                uid,
-                type_name: TypeName::new("site".to_string()),
-                key: Key::from(key),
-                attrs: attrs.into(),
-                source: None,
-            },
-            projection: ProjectionData::default(),
-            projection_inputs: BTreeSet::new(),
+        desired: alembic_core::Object {
+            uid,
+            type_name: TypeName::new("site".to_string()),
+            key: Key::from(key),
+            attrs: attrs.into(),
+            source: None,
         },
         backend_id: Some(BackendId::Int(42)),
         changes: vec![],
     }];
 
-    let report = adapter.apply(&schema, &ops, &state).await.unwrap();
+    let report = adapter.write(&schema, &ops, &state).await.unwrap();
     mock.assert();
     assert_eq!(report.applied.len(), 1);
 }
@@ -916,7 +895,7 @@ async fn test_apply_delete_standard() {
     }];
 
     let state = new_state_store();
-    let report = adapter.apply(&schema, &ops, &state).await.unwrap();
+    let report = adapter.write(&schema, &ops, &state).await.unwrap();
     mock.assert();
     assert_eq!(report.applied.len(), 1);
     assert_eq!(report.applied[0].backend_id, None);
@@ -941,7 +920,7 @@ async fn test_apply_delete_none_strategy() {
     }];
 
     let state = new_state_store();
-    let err = adapter.apply(&schema, &ops, &state).await.unwrap_err();
+    let err = adapter.write(&schema, &ops, &state).await.unwrap_err();
     assert!(
         err.to_string().contains("delete not supported"),
         "unexpected error: {err}"
@@ -966,7 +945,7 @@ async fn test_apply_delete_missing_backend_id() {
     }];
 
     let state = new_state_store();
-    let err = adapter.apply(&schema, &ops, &state).await.unwrap_err();
+    let err = adapter.write(&schema, &ops, &state).await.unwrap_err();
     assert!(err.to_string().contains("delete requires backend id"));
 }
 
@@ -985,23 +964,19 @@ async fn test_apply_update_missing_backend_id() {
     let ops = vec![Op::Update {
         uid,
         type_name: TypeName::new("site".to_string()),
-        desired: alembic_engine::ProjectedObject {
-            base: alembic_core::Object {
-                uid,
-                type_name: TypeName::new("site".to_string()),
-                key: Key::from(key),
-                attrs: attrs.into(),
-                source: None,
-            },
-            projection: ProjectionData::default(),
-            projection_inputs: BTreeSet::new(),
+        desired: alembic_core::Object {
+            uid,
+            type_name: TypeName::new("site".to_string()),
+            key: Key::from(key),
+            attrs: attrs.into(),
+            source: None,
         },
         backend_id: None,
         changes: vec![],
     }];
 
     let state = new_state_store();
-    let err = adapter.apply(&schema, &ops, &state).await.unwrap_err();
+    let err = adapter.write(&schema, &ops, &state).await.unwrap_err();
     assert!(err.to_string().contains("update requires backend id"));
 }
 
@@ -1028,21 +1003,17 @@ async fn test_apply_create_string_id() {
     let ops = vec![Op::Create {
         uid,
         type_name: TypeName::new("site".to_string()),
-        desired: alembic_engine::ProjectedObject {
-            base: alembic_core::Object {
-                uid,
-                type_name: TypeName::new("site".to_string()),
-                key: Key::from(key),
-                attrs: attrs.into(),
-                source: None,
-            },
-            projection: ProjectionData::default(),
-            projection_inputs: BTreeSet::new(),
+        desired: alembic_core::Object {
+            uid,
+            type_name: TypeName::new("site".to_string()),
+            key: Key::from(key),
+            attrs: attrs.into(),
+            source: None,
         },
     }];
 
     let state = new_state_store();
-    let report = adapter.apply(&schema, &ops, &state).await.unwrap();
+    let report = adapter.write(&schema, &ops, &state).await.unwrap();
     mock.assert();
     assert_eq!(
         report.applied[0].backend_id,
@@ -1065,21 +1036,17 @@ async fn test_apply_unknown_type() {
     let ops = vec![Op::Create {
         uid,
         type_name: TypeName::new("unknown".to_string()),
-        desired: alembic_engine::ProjectedObject {
-            base: alembic_core::Object {
-                uid,
-                type_name: TypeName::new("unknown".to_string()),
-                key: Key::from(key),
-                attrs: attrs.into(),
-                source: None,
-            },
-            projection: ProjectionData::default(),
-            projection_inputs: BTreeSet::new(),
+        desired: alembic_core::Object {
+            uid,
+            type_name: TypeName::new("unknown".to_string()),
+            key: Key::from(key),
+            attrs: attrs.into(),
+            source: None,
         },
     }];
 
     let state = new_state_store();
-    let err = adapter.apply(&schema, &ops, &state).await.unwrap_err();
+    let err = adapter.write(&schema, &ops, &state).await.unwrap_err();
     assert!(err.to_string().contains("no config for unknown"));
 }
 
@@ -1099,7 +1066,7 @@ async fn test_observe_invalid_id_type() {
     let state_store = new_state_store();
 
     let err = adapter
-        .observe(&schema, &[TypeName::new("site".to_string())], &state_store)
+        .read(&schema, &[TypeName::new("site".to_string())], &state_store)
         .await
         .unwrap_err();
 
@@ -1122,7 +1089,7 @@ async fn test_observe_non_object_in_results() {
     let state_store = new_state_store();
 
     let err = adapter
-        .observe(&schema, &[TypeName::new("site".to_string())], &state_store)
+        .read(&schema, &[TypeName::new("site".to_string())], &state_store)
         .await
         .unwrap_err();
 
@@ -1152,7 +1119,7 @@ async fn test_observe_non_array_response() {
     let state_store = new_state_store();
 
     let err = adapter
-        .observe(&schema, &[TypeName::new("site".to_string())], &state_store)
+        .read(&schema, &[TypeName::new("site".to_string())], &state_store)
         .await
         .unwrap_err();
 

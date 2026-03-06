@@ -1,15 +1,15 @@
-use super::mapping::build_tag_inputs;
+use super::client::CustomObjectType;
+use super::mapping::{build_tag_inputs, custom_field_type_for_schema, slugify};
 use super::registry::ObjectTypeRegistry;
 use super::state::{resolved_from_state, state_mappings};
 use super::NetBoxAdapter;
 use alembic_core::{
-    key_string, uid_v5, FieldType, JsonMap, Key, Schema, TypeName, TypeSchema, Uid,
+    key_string, uid_v5, FieldSchema, FieldType, JsonMap, Key, Schema, TypeName, TypeSchema, Uid,
 };
 use alembic_engine::{
     apply_non_delete_with_retries, build_key_from_schema as build_key_from_schema_common,
-    build_request_body as build_request_body_common, query_filters_from_key, Adapter,
-    AdapterApplyError, AppliedOp, ApplyReport, BackendId, ObservedObject, ObservedState, Op,
-    ProjectionData, RetryApplyDriver,
+    query_filters_from_key, Adapter, AdapterApplyError, AppliedOp, ApplyReport, BackendId,
+    ObservedObject, ObservedState, Op, ProvisionReport, RetryApplyDriver,
 };
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
@@ -17,15 +17,18 @@ use netbox::{BulkDelete, QueryBuilder, Resource};
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
+const CUSTOM_OBJECT_FEATURE: &str = "custom-object";
+const CUSTOM_OBJECT_APP_LABEL: &str = "netbox_custom_objects";
+
 #[async_trait]
 impl Adapter for NetBoxAdapter {
-    async fn observe(
+    async fn read(
         &self,
         schema: &Schema,
         types: &[TypeName],
         state_store: &alembic_engine::StateStore,
     ) -> Result<ObservedState> {
-        let registry: ObjectTypeRegistry = self.client.fetch_object_types().await?;
+        let registry: ObjectTypeRegistry = build_registry_for_schema(self, schema).await?;
         let mut state = ObservedState::default();
         let mappings = state_mappings(state_store);
 
@@ -44,10 +47,17 @@ impl Adapter for NetBoxAdapter {
                 .get(type_name.as_str())
                 .ok_or_else(|| anyhow!("missing schema for {}", type_name))?;
             let resource: Resource<Value> = self.client.resource(info.endpoint.clone());
-            let objects = self.client.list_all(&resource, None).await?;
+            let objects = match self.client.list_all(&resource, None).await {
+                Ok(objects) => objects,
+                Err(err)
+                    if is_404_anyhow(&err) && info.features.contains(CUSTOM_OBJECT_FEATURE) =>
+                {
+                    continue;
+                }
+                Err(err) => return Err(err),
+            };
             for object in objects {
                 let (backend_id, mut attrs) = extract_attrs(object)?;
-                let projection = extract_projection(&mut attrs);
                 normalize_attrs(&mut attrs, type_schema, schema, &registry, &mappings);
                 let key = build_key_from_schema(type_schema, &attrs)
                     .with_context(|| format!("build key for {}", type_name))?;
@@ -55,29 +65,40 @@ impl Adapter for NetBoxAdapter {
                     type_name: type_name.clone(),
                     key,
                     attrs,
-                    projection,
                     backend_id: Some(BackendId::Int(backend_id)),
                 });
             }
         }
 
-        state.capabilities = self.client.fetch_capabilities().await?;
         Ok(state)
     }
 
-    async fn apply(
+    async fn write(
         &self,
         schema: &Schema,
         ops: &[Op],
         state: &alembic_engine::StateStore,
     ) -> Result<ApplyReport> {
-        let registry: ObjectTypeRegistry = self.client.fetch_object_types().await?;
+        let registry: ObjectTypeRegistry = build_registry_for_schema(self, schema).await?;
+        let custom_fields_by_type = self.client.fetch_custom_fields().await?;
         let mut applied = Vec::new();
         let mut resolved = resolved_from_state(state);
 
         for op in ops {
             if let Op::Create { uid, .. } = op {
                 resolved.remove(uid);
+            }
+        }
+
+        let tag_names = collect_tag_names(ops, &registry)?;
+        if !tag_names.is_empty() {
+            let mut existing = self.client.fetch_tags().await?;
+            let missing: Vec<String> = tag_names.difference(&existing).cloned().collect();
+            if !missing.is_empty() {
+                self.create_tags(&missing).await?;
+                for tag in missing {
+                    existing.insert(tag);
+                }
             }
         }
 
@@ -95,6 +116,7 @@ impl Adapter for NetBoxAdapter {
             resolved: &'a mut BTreeMap<Uid, u64>,
             registry: &'a ObjectTypeRegistry,
             schema: &'a Schema,
+            custom_fields_by_type: &'a BTreeMap<String, BTreeSet<String>>,
         }
 
         #[async_trait]
@@ -103,7 +125,13 @@ impl Adapter for NetBoxAdapter {
                 match op {
                     Op::Create { .. } => self
                         .adapter
-                        .apply_create(op, self.resolved, self.registry, self.schema)
+                        .apply_create(
+                            op,
+                            self.resolved,
+                            self.registry,
+                            self.schema,
+                            self.custom_fields_by_type,
+                        )
                         .await
                         .map(|backend_id| AppliedOp {
                             uid: op.uid(),
@@ -112,7 +140,13 @@ impl Adapter for NetBoxAdapter {
                         }),
                     Op::Update { .. } => self
                         .adapter
-                        .apply_update(op, self.resolved, self.registry, self.schema)
+                        .apply_update(
+                            op,
+                            self.resolved,
+                            self.registry,
+                            self.schema,
+                            self.custom_fields_by_type,
+                        )
                         .await
                         .map(|backend_id| AppliedOp {
                             uid: op.uid(),
@@ -133,6 +167,7 @@ impl Adapter for NetBoxAdapter {
             resolved: &mut resolved,
             registry: &registry,
             schema,
+            custom_fields_by_type: &custom_fields_by_type,
         };
         let retry_result = apply_non_delete_with_retries(&creates_updates, &mut driver).await?;
 
@@ -197,15 +232,173 @@ impl Adapter for NetBoxAdapter {
         Ok(ApplyReport { applied })
     }
 
-    async fn create_custom_fields(
-        &self,
-        missing: &[alembic_engine::MissingCustomField],
-    ) -> Result<()> {
-        self.create_custom_fields(missing).await
-    }
+    async fn ensure_schema(&self, schema: &Schema) -> Result<ProvisionReport> {
+        let mut registry: ObjectTypeRegistry = self.client.fetch_object_types().await?;
+        let custom_fields_by_type = self.client.fetch_custom_fields().await?;
+        let custom_object_types = self.client.fetch_custom_object_types().await?;
+        let custom_object_fields = self.client.fetch_custom_object_type_fields().await?;
+        let custom_objects_available = custom_object_types.is_some();
 
-    async fn create_tags(&self, tags: &[String]) -> Result<()> {
-        self.create_tags(tags).await
+        let mut created_fields = Vec::new();
+        let created_tags = Vec::new();
+        let mut created_object_types = Vec::new();
+        let mut created_object_fields = Vec::new();
+
+        let mut custom_types_by_name: BTreeMap<String, CustomObjectType> = BTreeMap::new();
+        if let Some(types) = custom_object_types {
+            for item in types {
+                custom_types_by_name.insert(item.name.clone(), item);
+            }
+        }
+
+        let mut custom_fields_by_type_id: BTreeMap<u64, BTreeSet<String>> = BTreeMap::new();
+        if let Some(fields) = custom_object_fields {
+            for field in fields {
+                custom_fields_by_type_id
+                    .entry(field.custom_object_type)
+                    .or_default()
+                    .insert(field.name);
+            }
+        }
+
+        let mut custom_schema_types: Vec<(TypeName, &TypeSchema)> = Vec::new();
+        for (type_name, type_schema) in &schema.types {
+            let type_name = TypeName::new(type_name);
+            if registry.contains_type(&type_name) {
+                let info = registry
+                    .info_for(&type_name)
+                    .ok_or_else(|| anyhow!("unsupported type {}", type_name))?;
+                if !supports_feature(&info.features, &["custom-fields"]) {
+                    continue;
+                }
+
+                let native_fields = native_fields_for_type(self, &info, type_schema).await?;
+                let existing = custom_fields_by_type
+                    .get(type_name.as_str())
+                    .cloned()
+                    .unwrap_or_default();
+
+                for (field_name, field_schema) in &type_schema.fields {
+                    if matches!(
+                        field_schema.r#type,
+                        FieldType::Ref { .. } | FieldType::ListRef { .. }
+                    ) {
+                        continue;
+                    }
+                    if native_fields.contains(field_name) || existing.contains(field_name) {
+                        continue;
+                    }
+                    self.create_custom_field(&type_name, field_name, field_schema)
+                        .await?;
+                    created_fields.push(format!("{}.{}", type_name, field_name));
+                }
+                continue;
+            }
+
+            custom_schema_types.push((type_name, type_schema));
+        }
+
+        if !custom_schema_types.is_empty() {
+            if !custom_objects_available {
+                let list = custom_schema_types
+                    .iter()
+                    .map(|(name, _)| name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                return Err(anyhow!(
+                    "schema includes custom type(s) but netbox custom objects are not available: {list}"
+                ));
+            }
+
+            let mut custom_type_ids: BTreeMap<String, u64> = BTreeMap::new();
+            for (type_name, _) in &custom_schema_types {
+                let custom_name = custom_object_type_name(type_name);
+                let type_id = if let Some(existing) = custom_types_by_name.get(&custom_name) {
+                    let (app_label, model) =
+                        custom_object_type_parts(existing).unwrap_or_else(|| {
+                            (CUSTOM_OBJECT_APP_LABEL.to_string(), custom_name.clone())
+                        });
+                    registry.insert_custom_object_type(
+                        type_name.clone(),
+                        custom_object_endpoint(&custom_name),
+                        custom_object_features(),
+                        app_label,
+                        model,
+                    );
+                    existing.id
+                } else {
+                    let payload = Map::from_iter([
+                        ("name".to_string(), Value::String(custom_name.clone())),
+                        ("slug".to_string(), Value::String(custom_name.clone())),
+                        (
+                            "description".to_string(),
+                            Value::String(format!(
+                                "alembic custom object for {}",
+                                type_name.as_str()
+                            )),
+                        ),
+                        (
+                            "verbose_name_plural".to_string(),
+                            Value::String(custom_object_verbose_name_plural(type_name)),
+                        ),
+                    ]);
+                    let resource: Resource<Value> = self
+                        .client
+                        .resource("plugins/custom-objects/custom-object-types/");
+                    let created: Value = resource.create(&Value::Object(payload)).await?;
+                    let created_type = super::client::parse_custom_object_type(created)?;
+                    let id = created_type.id;
+                    let (app_label, model) = custom_object_type_parts(&created_type)
+                        .unwrap_or_else(|| {
+                            (CUSTOM_OBJECT_APP_LABEL.to_string(), custom_name.clone())
+                        });
+                    registry.insert_custom_object_type(
+                        type_name.clone(),
+                        custom_object_endpoint(&custom_name),
+                        custom_object_features(),
+                        app_label,
+                        model,
+                    );
+                    custom_types_by_name.insert(custom_name.clone(), created_type);
+                    created_object_types.push(type_name.to_string());
+                    id
+                };
+                custom_type_ids.insert(type_name.as_str().to_string(), type_id);
+            }
+
+            for (type_name, type_schema) in custom_schema_types {
+                let Some(type_id) = custom_type_ids.get(type_name.as_str()).copied() else {
+                    return Err(anyhow!("custom object type id missing for {}", type_name));
+                };
+                let existing_fields = custom_fields_by_type_id.entry(type_id).or_default();
+                let mut provisioner = CustomObjectFieldProvisioner {
+                    adapter: self,
+                    registry: &registry,
+                    custom_object_type_id: type_id,
+                    existing_fields,
+                    created_object_fields: &mut created_object_fields,
+                    type_name: &type_name,
+                };
+                let mut seen = BTreeSet::new();
+                for (field_name, field_schema) in &type_schema.key {
+                    if seen.insert(field_name.clone()) {
+                        provisioner.ensure(field_name, field_schema, true).await?;
+                    }
+                }
+                for (field_name, field_schema) in &type_schema.fields {
+                    if seen.insert(field_name.clone()) {
+                        provisioner.ensure(field_name, field_schema, false).await?;
+                    }
+                }
+            }
+        }
+
+        Ok(ProvisionReport {
+            created_fields,
+            created_tags,
+            created_object_types,
+            created_object_fields,
+        })
     }
 }
 
@@ -216,6 +409,7 @@ impl NetBoxAdapter {
         resolved: &mut BTreeMap<Uid, u64>,
         registry: &ObjectTypeRegistry,
         schema: &Schema,
+        custom_fields_by_type: &BTreeMap<String, BTreeSet<String>>,
     ) -> Result<u64> {
         let (uid, type_name, desired) = match op {
             Op::Create {
@@ -233,15 +427,24 @@ impl NetBoxAdapter {
             .get(type_name.as_str())
             .ok_or_else(|| anyhow!("missing schema for {}", type_name))?;
         let resource: Resource<Value> = self.client.resource(info.endpoint.clone());
-        let body = build_request_body(type_schema, &desired.base.attrs, resolved)?;
+        let custom_fields = custom_fields_by_type
+            .get(info.type_name.as_str())
+            .cloned()
+            .unwrap_or_default();
+        let body = build_request_body(
+            type_name,
+            type_schema,
+            &desired.attrs,
+            resolved,
+            &custom_fields,
+            &info.features,
+        )?;
         let response: Value = resource.create(&body).await?;
         let backend_id = response
             .get("id")
             .and_then(Value::as_u64)
             .ok_or_else(|| anyhow!("create {} returned no id", type_name))?;
         resolved.insert(uid, backend_id);
-        self.apply_projection_patch(type_name, &info, backend_id, &desired.projection)
-            .await?;
         Ok(backend_id)
     }
 
@@ -251,6 +454,7 @@ impl NetBoxAdapter {
         resolved: &BTreeMap<Uid, u64>,
         registry: &ObjectTypeRegistry,
         schema: &Schema,
+        custom_fields_by_type: &BTreeMap<String, BTreeSet<String>>,
     ) -> Result<u64> {
         let (uid, type_name, desired, backend_id) = match op {
             Op::Update {
@@ -281,15 +485,24 @@ impl NetBoxAdapter {
         } else if let Some(id) = resolved.get(&uid).copied() {
             id
         } else {
-            self.lookup_backend_id(type_name, &info, type_schema, &desired.base.key, resolved)
+            self.lookup_backend_id(type_name, &info, type_schema, &desired.key, resolved)
                 .await
                 .with_context(|| format!("resolve backend id for {}", type_name))?
         };
         let resource: Resource<Value> = self.client.resource(info.endpoint.clone());
-        let body = build_request_body(type_schema, &desired.base.attrs, resolved)?;
+        let custom_fields = custom_fields_by_type
+            .get(info.type_name.as_str())
+            .cloned()
+            .unwrap_or_default();
+        let body = build_request_body(
+            type_name,
+            type_schema,
+            &desired.attrs,
+            resolved,
+            &custom_fields,
+            &info.features,
+        )?;
         let _response = resource.patch(id, &body).await?;
-        self.apply_projection_patch(type_name, &info, id, &desired.projection)
-            .await?;
         Ok(id)
     }
 
@@ -314,53 +527,44 @@ impl NetBoxAdapter {
             .ok_or_else(|| anyhow!("{} lookup missing id", type_name))
     }
 
-    async fn apply_projection_patch(
+    async fn create_tags(&self, tags: &[String]) -> Result<()> {
+        let resource = self.client.extras().tags();
+        for tag in tags {
+            let payload = serde_json::json!({
+                "name": tag,
+                "slug": slugify(tag),
+            });
+            let _ = resource.create(&payload).await?;
+        }
+        Ok(())
+    }
+
+    async fn create_custom_field(
         &self,
         type_name: &TypeName,
-        info: &super::registry::ObjectTypeInfo,
-        backend_id: u64,
-        projection: &ProjectionData,
+        field_name: &str,
+        field_schema: &FieldSchema,
     ) -> Result<()> {
-        if projection.custom_fields.is_none()
-            && projection.tags.is_none()
-            && projection.local_context.is_none()
-        {
-            return Ok(());
+        let field_type = custom_field_type_for_schema(field_schema);
+        let mut payload = Map::new();
+        payload.insert("name".to_string(), Value::String(field_name.to_string()));
+        payload.insert("label".to_string(), Value::String(field_name.to_string()));
+        payload.insert("type".to_string(), Value::String(field_type));
+        payload.insert(
+            "object_types".to_string(),
+            Value::Array(vec![Value::String(type_name.as_str().to_string())]),
+        );
+        if field_schema.required {
+            payload.insert("required".to_string(), Value::Bool(true));
         }
-
-        let mut body = Map::new();
-
-        if let Some(custom_fields) = &projection.custom_fields {
-            if !supports_feature(&info.features, &["custom-fields", "custom_fields"]) {
-                return Err(anyhow!("{} does not support custom_fields", type_name));
-            }
-            body.insert(
-                "custom_fields".to_string(),
-                Value::Object(custom_fields.clone().into_iter().collect()),
+        if let Some(description) = &field_schema.description {
+            payload.insert(
+                "description".to_string(),
+                Value::String(description.clone()),
             );
         }
-
-        if let Some(tags) = &projection.tags {
-            if !supports_feature(&info.features, &["tags"]) {
-                return Err(anyhow!("{} does not support tags", type_name));
-            }
-            let inputs = build_tag_inputs(tags);
-            body.insert("tags".to_string(), serde_json::to_value(inputs)?);
-        }
-
-        if let Some(local_context) = &projection.local_context {
-            if !supports_feature(&info.features, &["config-context", "local-context"]) {
-                return Err(anyhow!("{} does not support local_context", type_name));
-            }
-            body.insert("local_context_data".to_string(), local_context.clone());
-        }
-
-        if body.is_empty() {
-            return Ok(());
-        }
-
-        let resource: Resource<Value> = self.client.resource(info.endpoint.clone());
-        let _ = resource.patch(backend_id, &Value::Object(body)).await?;
+        let resource = self.client.extras().custom_fields();
+        let _ = resource.create(&Value::Object(payload)).await?;
         Ok(())
     }
 }
@@ -373,48 +577,26 @@ fn extract_attrs(value: Value) -> Result<(u64, JsonMap)> {
         .get("id")
         .and_then(Value::as_u64)
         .ok_or_else(|| anyhow!("missing id in payload"))?;
+    let custom_fields = map.remove("custom_fields");
+    let tags = map.remove("tags");
     map.remove("id");
     map.remove("url");
     map.remove("display");
-    let attrs = map.into_iter().collect::<BTreeMap<_, _>>().into();
-    Ok((backend_id, attrs))
-}
-
-fn extract_projection(attrs: &mut JsonMap) -> ProjectionData {
-    let custom_fields = attrs.remove("custom_fields").and_then(|value| match value {
-        Value::Object(map) => Some(map.into_iter().collect()),
-        _ => None,
-    });
-    let tags = attrs.remove("tags").and_then(parse_tags);
-    let local_context = attrs.remove("local_context_data");
-
-    ProjectionData {
-        custom_fields,
-        tags,
-        local_context,
-    }
-}
-
-fn parse_tags(value: Value) -> Option<Vec<String>> {
-    match value {
-        Value::Array(items) => {
-            let mut tags = Vec::new();
-            for item in items {
-                match item {
-                    Value::String(name) => tags.push(name),
-                    Value::Object(map) => {
-                        if let Some(Value::String(name)) = map.get("name") {
-                            tags.push(name.clone());
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            tags.sort();
-            Some(tags)
+    map.remove("custom_object_type");
+    let mut attrs: JsonMap = map.into_iter().collect::<BTreeMap<_, _>>().into();
+    if let Some(Value::Object(fields)) = custom_fields {
+        for (key, value) in fields {
+            attrs.entry(key).or_insert(value);
         }
-        _ => None,
     }
+    if let Some(tags_value) = tags {
+        let tags = tags_from_value(&tags_value)?;
+        attrs.insert(
+            "tags".to_string(),
+            Value::Array(tags.into_iter().map(Value::String).collect()),
+        );
+    }
+    Ok((backend_id, attrs))
 }
 
 fn normalize_attrs(
@@ -590,16 +772,78 @@ fn build_key_from_schema(type_schema: &TypeSchema, attrs: &JsonMap) -> Result<Ke
 }
 
 fn build_request_body(
+    type_name: &TypeName,
     type_schema: &TypeSchema,
     attrs: &JsonMap,
     resolved: &BTreeMap<Uid, u64>,
+    custom_fields: &BTreeSet<String>,
+    features: &BTreeSet<String>,
 ) -> Result<Value> {
-    build_request_body_common(type_schema, attrs, resolved, |id| {
-        Value::Number((*id).into())
-    })
+    let mut body = Map::new();
+    let mut custom = Map::new();
+
+    for (key, value) in attrs.iter() {
+        let api_key = if type_name.as_str() == "dcim.interface" && key == "if_type" {
+            "type"
+        } else {
+            key.as_str()
+        };
+        if key == "tags" {
+            if !supports_feature(features, &["tags"]) {
+                return Err(anyhow!("{} does not support tags", type_name));
+            }
+            let tags = tags_from_value(value)?;
+            let tag_inputs = build_tag_inputs(&tags);
+            body.insert(api_key.to_string(), serde_json::to_value(tag_inputs)?);
+            continue;
+        }
+
+        let field_schema = type_schema
+            .fields
+            .get(key)
+            .ok_or_else(|| anyhow!("missing schema for field {key}"))?;
+        let encoded = resolve_value_for_type(&field_schema.r#type, value.clone(), resolved)?;
+
+        if custom_fields.contains(key) {
+            if !supports_feature(features, &["custom-fields"]) {
+                return Err(anyhow!("{} does not support custom fields", type_name));
+            }
+            custom.insert(key.clone(), encoded);
+        } else {
+            body.insert(api_key.to_string(), encoded);
+        }
+    }
+
+    if !custom.is_empty() {
+        body.insert("custom_fields".to_string(), Value::Object(custom));
+    }
+
+    Ok(Value::Object(body))
 }
 
-#[cfg(test)]
+fn tags_from_value(value: &Value) -> Result<Vec<String>> {
+    let items = match value {
+        Value::Array(items) => items,
+        Value::Null => return Ok(Vec::new()),
+        _ => return Err(anyhow!("tags must be an array")),
+    };
+    let mut tags = Vec::new();
+    for item in items {
+        match item {
+            Value::String(name) => tags.push(name.clone()),
+            Value::Object(map) => {
+                if let Some(Value::String(name)) = map.get("name") {
+                    tags.push(name.clone());
+                } else if let Some(Value::String(slug)) = map.get("slug") {
+                    tags.push(slug.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(tags)
+}
+
 fn resolve_value_for_type(
     field_type: &alembic_core::FieldType,
     value: Value,
@@ -622,6 +866,335 @@ fn query_from_key(
     Ok(query)
 }
 
+fn collect_tag_names(ops: &[Op], registry: &ObjectTypeRegistry) -> Result<BTreeSet<String>> {
+    let mut tags = BTreeSet::new();
+    for op in ops {
+        let (type_name, desired) = match op {
+            Op::Create {
+                type_name, desired, ..
+            } => (type_name, desired),
+            Op::Update {
+                type_name, desired, ..
+            } => (type_name, desired),
+            Op::Delete { .. } => continue,
+        };
+        if let Some(tag_value) = desired.attrs.get("tags") {
+            let info = registry
+                .info_for(type_name)
+                .ok_or_else(|| anyhow!("unsupported type {}", type_name))?;
+            if !supports_feature(&info.features, &["tags"]) {
+                return Err(anyhow!("{} does not support tags", type_name));
+            }
+            for tag in tags_from_value(tag_value)? {
+                tags.insert(tag);
+            }
+        }
+    }
+    Ok(tags)
+}
+
+async fn build_registry_for_schema(
+    adapter: &NetBoxAdapter,
+    schema: &Schema,
+) -> Result<ObjectTypeRegistry> {
+    let mut registry = adapter.client.fetch_object_types().await?;
+    let mut missing = Vec::new();
+    for type_name in schema.types.keys() {
+        let type_name = TypeName::new(type_name);
+        if !registry.contains_type(&type_name) {
+            missing.push(type_name);
+        }
+    }
+    if missing.is_empty() {
+        return Ok(registry);
+    }
+
+    let custom_object_types = adapter.client.fetch_custom_object_types().await?;
+    if custom_object_types.is_none() {
+        let list = missing
+            .iter()
+            .map(|t| t.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(anyhow!(
+            "schema includes custom types but netbox custom objects are not available: {list}"
+        ));
+    }
+    let custom_object_types = custom_object_types.unwrap_or_default();
+    let mut custom_by_name: BTreeMap<String, CustomObjectType> = BTreeMap::new();
+    for custom_type in custom_object_types {
+        custom_by_name.insert(custom_type.name.clone(), custom_type);
+    }
+
+    for type_name in missing {
+        let custom_name = custom_object_type_name(&type_name);
+        let endpoint = custom_object_endpoint(&custom_name);
+        if let Some(custom_type) = custom_by_name.get(&custom_name) {
+            if let Some((app_label, model)) = custom_object_type_parts(custom_type) {
+                registry.insert_custom_object_type(
+                    type_name,
+                    endpoint,
+                    custom_object_features(),
+                    app_label,
+                    model,
+                );
+                continue;
+            }
+        }
+        registry.insert_custom_object_type(
+            type_name,
+            endpoint,
+            custom_object_features(),
+            CUSTOM_OBJECT_APP_LABEL.to_string(),
+            custom_name,
+        );
+    }
+
+    Ok(registry)
+}
+
+struct CustomObjectFieldProvisioner<'a> {
+    adapter: &'a NetBoxAdapter,
+    registry: &'a ObjectTypeRegistry,
+    custom_object_type_id: u64,
+    existing_fields: &'a mut BTreeSet<String>,
+    created_object_fields: &'a mut Vec<String>,
+    type_name: &'a TypeName,
+}
+
+impl<'a> CustomObjectFieldProvisioner<'a> {
+    async fn ensure(
+        &mut self,
+        field_name: &str,
+        field_schema: &FieldSchema,
+        is_key: bool,
+    ) -> Result<()> {
+        if is_reserved_custom_object_field(field_name) {
+            return Ok(());
+        }
+        if self.existing_fields.contains(field_name) {
+            return Ok(());
+        }
+        validate_custom_object_field_name(field_name)?;
+        let payload = custom_object_field_payload(
+            self.registry,
+            self.custom_object_type_id,
+            field_name,
+            field_schema,
+            is_key,
+        )?;
+        let resource: Resource<Value> = self
+            .adapter
+            .client
+            .resource("plugins/custom-objects/custom-object-type-fields/");
+        let _: Value = resource.create(&payload).await?;
+        self.existing_fields.insert(field_name.to_string());
+        self.created_object_fields
+            .push(format!("{}.{}", self.type_name, field_name));
+        Ok(())
+    }
+}
+
+async fn native_fields_for_type(
+    adapter: &NetBoxAdapter,
+    info: &super::registry::ObjectTypeInfo,
+    type_schema: &TypeSchema,
+) -> Result<BTreeSet<String>> {
+    let mut native: BTreeSet<String> = type_schema.key.keys().cloned().collect();
+    for field in [
+        "name",
+        "slug",
+        "description",
+        "status",
+        "role",
+        "type",
+        "site",
+        "tenant",
+        "device",
+        "tags",
+        "custom_fields",
+        "local_context_data",
+        "created",
+        "last_updated",
+    ] {
+        native.insert(field.to_string());
+    }
+
+    let resource: Resource<Value> = adapter.client.resource(info.endpoint.clone());
+    let page = resource
+        .list(Some(QueryBuilder::default().limit(1)))
+        .await?;
+    if let Some(Value::Object(map)) = page.results.into_iter().next() {
+        for key in map.keys() {
+            native.insert(key.clone());
+        }
+    }
+    if info.type_name.as_str() == "dcim.interface" {
+        native.insert("if_type".to_string());
+    }
+
+    Ok(native)
+}
+
+fn custom_object_type_name(type_name: &TypeName) -> String {
+    let mut out = String::new();
+    let mut last_underscore = false;
+    for ch in type_name.as_str().chars() {
+        let lower = ch.to_ascii_lowercase();
+        if lower.is_ascii_alphanumeric() {
+            out.push(lower);
+            last_underscore = false;
+        } else if !last_underscore {
+            out.push('_');
+            last_underscore = true;
+        }
+    }
+    while out.ends_with('_') {
+        out.pop();
+    }
+    out
+}
+
+fn custom_object_features() -> BTreeSet<String> {
+    [CUSTOM_OBJECT_FEATURE.to_string(), "tags".to_string()]
+        .into_iter()
+        .collect()
+}
+
+fn custom_object_type_parts(custom_type: &CustomObjectType) -> Option<(String, String)> {
+    if let Some(parts) = custom_type.object_type_parts() {
+        return Some(parts);
+    }
+    custom_type
+        .table_model_name
+        .as_deref()
+        .map(|name| (CUSTOM_OBJECT_APP_LABEL.to_string(), name.to_lowercase()))
+}
+
+fn custom_object_endpoint(custom_name: &str) -> String {
+    format!("plugins/custom-objects/{custom_name}/")
+}
+
+fn custom_object_verbose_name_plural(type_name: &TypeName) -> String {
+    let base = type_name
+        .as_str()
+        .split('.')
+        .next_back()
+        .unwrap_or_else(|| type_name.as_str());
+    let label = title_case(base);
+    if label.ends_with('s') {
+        label
+    } else {
+        format!("{label}s")
+    }
+}
+
+fn title_case(value: &str) -> String {
+    value
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .filter(|segment| !segment.is_empty())
+        .map(|segment| {
+            let mut chars = segment.chars();
+            let Some(first) = chars.next() else {
+                return String::new();
+            };
+            let mut out = String::new();
+            out.push(first.to_ascii_uppercase());
+            out.push_str(&chars.as_str().to_ascii_lowercase());
+            out
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn is_reserved_custom_object_field(name: &str) -> bool {
+    matches!(
+        name,
+        "id" | "url" | "display" | "custom_object_type" | "created" | "last_updated" | "tags"
+    )
+}
+
+fn validate_custom_object_field_name(name: &str) -> Result<()> {
+    if name.is_empty()
+        || !name
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+    {
+        return Err(anyhow!(
+            "invalid custom object field name '{}': only letters, digits, and underscores are allowed",
+            name
+        ));
+    }
+    Ok(())
+}
+
+fn custom_object_field_payload(
+    registry: &ObjectTypeRegistry,
+    custom_object_type_id: u64,
+    field_name: &str,
+    field_schema: &FieldSchema,
+    is_key: bool,
+) -> Result<Value> {
+    let mut payload = Map::new();
+    payload.insert(
+        "custom_object_type".to_string(),
+        Value::Number(custom_object_type_id.into()),
+    );
+    payload.insert("name".to_string(), Value::String(field_name.to_string()));
+    payload.insert("label".to_string(), Value::String(title_case(field_name)));
+    payload.insert(
+        "type".to_string(),
+        Value::String(custom_object_field_type(&field_schema.r#type).to_string()),
+    );
+    if is_key || field_schema.required {
+        payload.insert("required".to_string(), Value::Bool(true));
+    }
+    if let Some(pattern) = &field_schema.pattern {
+        payload.insert(
+            "validation_regex".to_string(),
+            Value::String(pattern.clone()),
+        );
+    }
+
+    match &field_schema.r#type {
+        FieldType::Ref { target } | FieldType::ListRef { target } => {
+            let target_type = TypeName::new(target);
+            if registry.contains_type(&target_type) {
+                let info = registry
+                    .info_for(&target_type)
+                    .ok_or_else(|| anyhow!("invalid target type {}", target))?;
+                payload.insert("app_label".to_string(), Value::String(info.app_label));
+                payload.insert("model".to_string(), Value::String(info.model));
+            } else {
+                let custom_name = custom_object_type_name(&target_type);
+                payload.insert(
+                    "app_label".to_string(),
+                    Value::String(CUSTOM_OBJECT_APP_LABEL.to_string()),
+                );
+                payload.insert("model".to_string(), Value::String(custom_name));
+            }
+        }
+        _ => {}
+    }
+
+    Ok(Value::Object(payload))
+}
+
+fn custom_object_field_type(field_type: &FieldType) -> &'static str {
+    match field_type {
+        FieldType::Text => "longtext",
+        FieldType::Int => "integer",
+        FieldType::Float => "decimal",
+        FieldType::Bool => "boolean",
+        FieldType::Date => "date",
+        FieldType::Datetime => "datetime",
+        FieldType::Json | FieldType::List { .. } | FieldType::Map { .. } => "json",
+        FieldType::Ref { .. } => "object",
+        FieldType::ListRef { .. } => "multiobject",
+        _ => "text",
+    }
+}
+
 fn supports_feature(features: &BTreeSet<String>, candidates: &[&str]) -> bool {
     candidates.iter().any(|name| features.contains(*name))
 }
@@ -635,11 +1208,16 @@ fn is_404_error(err: &netbox::Error) -> bool {
     err.to_string().contains("status 404")
 }
 
+fn is_404_anyhow(err: &anyhow::Error) -> bool {
+    err.downcast_ref::<netbox::Error>()
+        .is_some_and(|e| matches!(e, netbox::Error::ApiError { status: 404, .. }))
+}
+
 fn describe_missing_refs(ops: &[Op], resolved: &BTreeMap<Uid, u64>) -> String {
     let mut missing = BTreeSet::new();
     for op in ops {
         if let Op::Create { desired, .. } | Op::Update { desired, .. } = op {
-            for value in desired.base.attrs.values() {
+            for value in desired.attrs.values() {
                 collect_missing_refs(value, resolved, &mut missing);
             }
         }
@@ -774,20 +1352,6 @@ mod test_normalization {
     }
 
     #[test]
-    fn test_extract_projection_netbox() {
-        let mut attrs = JsonMap::default();
-        attrs.insert("custom_fields".to_string(), json!({"fabric": "fra1"}));
-        attrs.insert("tags".to_string(), json!(["tag1"]));
-
-        let projection = extract_projection(&mut attrs);
-        assert_eq!(
-            projection.custom_fields.unwrap().get("fabric").unwrap(),
-            &json!("fra1")
-        );
-        assert_eq!(projection.tags.unwrap(), vec!["tag1"]);
-    }
-
-    #[test]
     fn test_build_key_from_schema() {
         let mut types = BTreeMap::new();
         types.insert(
@@ -839,7 +1403,15 @@ mod test_normalization {
         let mut resolved = BTreeMap::new();
         resolved.insert(site_uid, 5);
 
-        let body = build_request_body(&type_schema, &attrs, &resolved).unwrap();
+        let body = build_request_body(
+            &TypeName::new("dcim.device"),
+            &type_schema,
+            &attrs,
+            &resolved,
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+        )
+        .unwrap();
         assert_eq!(body.get("site").unwrap(), &json!(5));
     }
 

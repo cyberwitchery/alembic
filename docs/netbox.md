@@ -7,11 +7,14 @@ and supported feature set.
 ## object types and endpoints
 
 - the adapter uses `object_types.rest_api_endpoint` for each type.
-- if a type has no REST endpoint in netbox, apply/observe will fail.
+- if a type has no REST endpoint in netbox, apply/observe will fail unless the
+  netbox custom objects plugin is installed (see below).
 
 ## attrs mapping
 
-- `attrs` are sent as-is in create/update requests, so they must match the netbox API field names.
+- field routing is schema-driven: native fields are sent directly, and known custom fields are
+  bundled under `custom_fields`.
+- `tags` in `attrs` should be a list of strings; the adapter expands them to netbox tag inputs.
 - nested references should be provided as alembic uids (string UUIDs). the adapter resolves those
   to backend integer ids before sending requests.
 - if a referenced uid cannot be resolved (not in state or created earlier in the same apply),
@@ -24,14 +27,24 @@ and supported feature set.
 - key fields are used as query filters when resolving backend ids for updates/deletes.
 - key matching uses the canonical JSON form of the key map.
 
-## projection data
+## custom fields and tags
 
-- `custom_fields`, `tags`, and `local_context_data` are removed from `attrs` during observe and
-  stored in the projection payload.
-- on apply, projection patches are sent only if the type advertises support via the
-  object type `features` field.
+- observe flattens `custom_fields` and `tags` into `attrs` for diffing and import.
+- on apply, custom fields and tags are only sent when the object type advertises support
+  via the `features` set.
+
+## custom objects (netbox custom objects plugin)
+
+if the schema includes types that are not present in netbox core object types, the adapter
+will provision them as custom objects on `apply` using the netbox custom objects plugin:
+
+- creates custom object types for missing schema types
+- creates custom object type fields for schema keys + fields
+- applies objects via `/api/plugins/custom-objects/<custom-object-type>/`
+
+this requires the `netbox-custom-objects` plugin and its REST API endpoints to be available.
 
 ## known limitations
 
 - only fields typed as `ref`/`list_ref` are resolved to backend ids during apply.
-- netbox endpoints that do not accept patch or projection fields will return errors on apply.
+- netbox endpoints that do not accept patch or custom field payloads will return errors on apply.

@@ -1,8 +1,5 @@
 use super::diag::warn;
-use alembic_engine::{
-    compile_retort, is_brew_format, load_brew, load_projection, load_raw_yaml, load_retort, Plan,
-    ProjectedInventory, ProjectionSpec, Retort,
-};
+use alembic_engine::{compile_retort, is_brew_format, load_brew, load_raw_yaml, load_retort, Plan};
 use anyhow::{anyhow, Context, Result};
 use std::fs;
 use std::path::Path;
@@ -26,11 +23,6 @@ pub(super) fn write_plan(path: &Path, plan: &Plan) -> Result<()> {
 pub(super) fn write_inventory(path: &Path, inventory: &alembic_core::Inventory) -> Result<()> {
     let raw = serde_json::to_string_pretty(inventory)?;
     fs::write(path, raw).with_context(|| format!("write ir: {}", path.display()))
-}
-
-pub(super) fn write_projected(path: &Path, projected: &ProjectedInventory) -> Result<()> {
-    let raw = serde_json::to_string_pretty(projected)?;
-    fs::write(path, raw).with_context(|| format!("write projected ir: {}", path.display()))
 }
 
 pub(super) fn read_plan(path: &Path) -> Result<Plan> {
@@ -77,18 +69,4 @@ pub(super) fn load_brew_only(path: &Path) -> Result<alembic_core::Inventory> {
         ));
     }
     load_brew(path)
-}
-
-pub(super) fn load_projection_optional(path: Option<&Path>) -> Result<Option<ProjectionSpec>> {
-    match path {
-        Some(path) => Ok(Some(load_projection(path)?)),
-        None => Ok(None),
-    }
-}
-
-pub(super) fn load_retort_optional(path: Option<&Path>) -> Result<Option<Retort>> {
-    match path {
-        Some(path) => Ok(Some(load_retort(path)?)),
-        None => Ok(None),
-    }
 }

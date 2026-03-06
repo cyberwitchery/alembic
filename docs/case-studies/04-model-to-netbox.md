@@ -33,11 +33,13 @@ objects:
 2) plan + apply
 
 ```bash
+BACKEND_CONFIG=/path/to/backend-netbox.yaml
+
 alembic plan -f /path/to/inventory.yaml -o /tmp/plan.json \
-  --netbox-url http://localhost:8000 --netbox-token $NETBOX_TOKEN
+  --backend-config "$BACKEND_CONFIG"
 
 alembic apply -p /tmp/plan.json \
-  --netbox-url http://localhost:8000 --netbox-token $NETBOX_TOKEN --allow-delete
+  --backend-config "$BACKEND_CONFIG" --allow-delete
 ```
 
 ## notes

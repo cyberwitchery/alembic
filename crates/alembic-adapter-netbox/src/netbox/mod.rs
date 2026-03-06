@@ -6,16 +6,13 @@ mod ops;
 mod registry;
 mod state;
 
-use alembic_engine::MissingCustomField;
 use anyhow::Result;
-use std::collections::BTreeSet;
 
 #[cfg(test)]
 use alembic_engine::Adapter;
 #[cfg(test)]
 use alembic_engine::StateStore;
 use client::NetBoxClient;
-use mapping::*;
 
 /// netbox adapter that maps ir objects to netbox api calls.
 pub struct NetBoxAdapter {
@@ -28,70 +25,17 @@ impl NetBoxAdapter {
         let client = NetBoxClient::new(url, token)?;
         Ok(Self { client })
     }
-
-    pub async fn create_custom_fields(&self, missing: &[MissingCustomField]) -> Result<()> {
-        let grouped = group_custom_fields(missing);
-        for (field, entry) in grouped {
-            let request = netbox::extras::CreateCustomFieldRequest {
-                object_types: entry.object_types.into_iter().collect(),
-                r#type: entry.field_type,
-                name: field.clone(),
-                related_object_type: None,
-                label: Some(field),
-                group_name: None,
-                description: None,
-                required: None,
-                unique: None,
-                search_weight: None,
-                filter_logic: None,
-                ui_visible: None,
-                ui_editable: None,
-                is_cloneable: None,
-                default: None,
-                related_object_filter: None,
-                weight: None,
-                validation_minimum: None,
-                validation_maximum: None,
-                validation_regex: None,
-                choice_set: None,
-                comments: None,
-            };
-            let _ = self
-                .client
-                .extras()
-                .custom_fields()
-                .create(&request)
-                .await?;
-        }
-        Ok(())
-    }
-
-    pub async fn create_tags(&self, tags: &[String]) -> Result<()> {
-        let unique: BTreeSet<String> = tags.iter().cloned().collect();
-        for tag in unique {
-            let request = netbox::extras::CreateTagRequest {
-                name: tag.clone(),
-                slug: slugify(&tag),
-                color: None,
-                description: None,
-                weight: None,
-                object_types: None,
-            };
-            let _ = self.client.extras().tags().create(&request).await?;
-        }
-        Ok(())
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::netbox::mapping::{build_tag_inputs, slugify};
     use alembic_core::{key_string, JsonMap, Key, TypeName, Uid};
-    use alembic_engine::{Op, ProjectedObject, ProjectionData};
+    use alembic_engine::Op;
     use httpmock::Method::{GET, POST};
     use httpmock::{Mock, MockServer};
     use serde_json::json;
-    use std::collections::BTreeSet;
     use tempfile::tempdir;
     use uuid::Uuid;
 
@@ -116,14 +60,6 @@ mod tests {
 
     fn obj(uid: Uid, type_name: &str, key: Key, attrs: serde_json::Value) -> alembic_core::Object {
         alembic_core::Object::new(uid, TypeName::new(type_name), key, attrs_map(attrs)).unwrap()
-    }
-
-    fn projected(base: alembic_core::Object) -> ProjectedObject {
-        ProjectedObject {
-            base,
-            projection: ProjectionData::default(),
-            projection_inputs: BTreeSet::new(),
-        }
     }
 
     fn page(results: serde_json::Value) -> serde_json::Value {
@@ -252,7 +188,7 @@ mod tests {
             ]),
         };
         let observed = adapter
-            .observe(&schema, &[TypeName::new("dcim.device")], &state)
+            .read(&schema, &[TypeName::new("dcim.device")], &state)
             .await
             .unwrap();
 
@@ -272,7 +208,6 @@ mod tests {
             device.attrs.get("site").and_then(|v| v.as_str()),
             Some(site_uid.as_str())
         );
-        assert!(observed.capabilities.tags.contains("fabric"));
     }
 
     #[tokio::test]
@@ -300,6 +235,10 @@ mod tests {
                 }
             ]),
         );
+        let _custom_fields = server.mock(|when, then| {
+            when.method(GET).path("/api/extras/custom-fields/");
+            then.status(200).json_body(page(json!([])));
+        });
         let _site_create = server.mock(|when, then| {
             when.method(POST)
                 .path("/api/dcim/sites/")
@@ -319,7 +258,7 @@ mod tests {
             Op::Create {
                 uid: uid(2),
                 type_name: TypeName::new("dcim.device"),
-                desired: projected(obj(
+                desired: obj(
                     uid(2),
                     "dcim.device",
                     key("name", json!("leaf01")),
@@ -327,17 +266,17 @@ mod tests {
                         "name": "leaf01",
                         "site": uid(1).to_string()
                     }),
-                )),
+                ),
             },
             Op::Create {
                 uid: uid(1),
                 type_name: TypeName::new("dcim.site"),
-                desired: projected(obj(
+                desired: obj(
                     uid(1),
                     "dcim.site",
                     key("name", json!("fra1")),
                     json!({ "name": "FRA1", "slug": "fra1" }),
-                )),
+                ),
             },
         ];
 
@@ -427,25 +366,114 @@ mod tests {
                 ),
             ]),
         };
-        let report = adapter.apply(&schema, &ops, &state).await.unwrap();
+        let report = adapter.write(&schema, &ops, &state).await.unwrap();
         assert_eq!(report.applied.len(), 2);
     }
 
     #[tokio::test]
-    async fn create_tags_posts_unique_names() {
+    async fn apply_creates_missing_tags() {
         let server = MockServer::start();
+        let dir = tempdir().unwrap();
+        let state = StateStore::load(dir.path().join("state.json")).unwrap();
         let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
 
+        let _object_types = mock_list(
+            &server,
+            "/api/core/object-types/",
+            json!([{
+                "app_label": "dcim",
+                "model": "site",
+                "rest_api_endpoint": "/api/dcim/sites/",
+                "features": ["custom-fields", "tags"]
+            }]),
+        );
+        let _custom_fields = server.mock(|when, then| {
+            when.method(GET).path("/api/extras/custom-fields/");
+            then.status(200).json_body(page(json!([])));
+        });
         let _tags = server.mock(|when, then| {
+            when.method(GET)
+                .path("/api/extras/tags/")
+                .query_param("limit", "200")
+                .query_param("offset", "0");
+            then.status(200).json_body(page(json!([])));
+        });
+        let _tag_create = server.mock(|when, then| {
             when.method(POST).path("/api/extras/tags/");
             then.status(201)
                 .json_body(json!({"id": 1, "name": "fabric", "slug": "fabric"}));
         });
+        let _site_create = server.mock(|when, then| {
+            when.method(POST).path("/api/dcim/sites/");
+            then.status(201)
+                .json_body(json!({ "id": 1, "name": "FRA1", "slug": "fra1" }));
+        });
 
-        adapter
-            .create_tags(&["fabric".to_string(), "fabric".to_string()])
-            .await
-            .unwrap();
+        let mut attrs = std::collections::BTreeMap::new();
+        attrs.insert("name".to_string(), json!("FRA1"));
+        attrs.insert("slug".to_string(), json!("fra1"));
+        attrs.insert("tags".to_string(), json!(["fabric"]));
+
+        let ops = vec![Op::Create {
+            uid: uid(1),
+            type_name: TypeName::new("dcim.site"),
+            desired: alembic_core::Object {
+                uid: uid(1),
+                type_name: TypeName::new("dcim.site"),
+                key: Key::default(),
+                attrs: alembic_core::JsonMap::from(attrs),
+                source: None,
+            },
+        }];
+
+        let schema = alembic_core::Schema {
+            types: std::collections::BTreeMap::from([(
+                "dcim.site".to_string(),
+                alembic_core::TypeSchema {
+                    key: std::collections::BTreeMap::new(),
+                    fields: std::collections::BTreeMap::from([
+                        (
+                            "name".to_string(),
+                            alembic_core::FieldSchema {
+                                r#type: alembic_core::FieldType::String,
+                                required: true,
+                                nullable: false,
+                                description: None,
+                                format: None,
+                                pattern: None,
+                            },
+                        ),
+                        (
+                            "slug".to_string(),
+                            alembic_core::FieldSchema {
+                                r#type: alembic_core::FieldType::String,
+                                required: true,
+                                nullable: false,
+                                description: None,
+                                format: None,
+                                pattern: None,
+                            },
+                        ),
+                        (
+                            "tags".to_string(),
+                            alembic_core::FieldSchema {
+                                r#type: alembic_core::FieldType::List {
+                                    item: Box::new(alembic_core::FieldType::String),
+                                },
+                                required: false,
+                                nullable: true,
+                                description: None,
+                                format: None,
+                                pattern: None,
+                            },
+                        ),
+                    ]),
+                },
+            )]),
+        };
+
+        let report = adapter.write(&schema, &ops, &state).await.unwrap();
+        assert_eq!(report.applied.len(), 1);
     }
 
     #[test]
@@ -488,6 +516,10 @@ mod tests {
                 "features": ["custom-fields", "tags"]
             }]),
         );
+        let _custom_fields = server.mock(|when, then| {
+            when.method(GET).path("/api/extras/custom-fields/");
+            then.status(200).json_body(page(json!([])));
+        });
         let _site_update = server.mock(|when, then| {
             when.method(PATCH).path("/api/dcim/sites/1/");
             then.status(200)
@@ -503,16 +535,12 @@ mod tests {
             uid: uid(1),
             type_name: TypeName::new("dcim.site"),
             backend_id: Some(alembic_engine::BackendId::Int(1)),
-            desired: alembic_engine::ProjectedObject {
-                base: alembic_core::Object {
-                    uid: uid(1),
-                    type_name: TypeName::new("dcim.site"),
-                    key: alembic_core::Key::from(key),
-                    attrs: alembic_core::JsonMap::from(attrs),
-                    source: None,
-                },
-                projection: alembic_engine::ProjectionData::default(),
-                projection_inputs: std::collections::BTreeSet::new(),
+            desired: alembic_core::Object {
+                uid: uid(1),
+                type_name: TypeName::new("dcim.site"),
+                key: alembic_core::Key::from(key),
+                attrs: alembic_core::JsonMap::from(attrs),
+                source: None,
             },
             changes: vec![FieldChange {
                 field: "name".to_string(),
@@ -550,7 +578,7 @@ mod tests {
                 },
             )]),
         };
-        let report = adapter.apply(&schema, &ops, &state).await.unwrap();
+        let report = adapter.write(&schema, &ops, &state).await.unwrap();
         assert_eq!(report.applied.len(), 1);
     }
 
@@ -578,6 +606,10 @@ mod tests {
                 "features": ["custom-fields", "tags"]
             }]),
         );
+        let _custom_fields = server.mock(|when, then| {
+            when.method(GET).path("/api/extras/custom-fields/");
+            then.status(200).json_body(page(json!([])));
+        });
         let _site_delete = server.mock(|when, then| {
             when.method(DELETE).path("/api/dcim/sites/");
             then.status(204);
@@ -609,7 +641,7 @@ mod tests {
                 },
             )]),
         };
-        let report = adapter.apply(&schema, &ops, &state).await.unwrap();
+        let report = adapter.write(&schema, &ops, &state).await.unwrap();
         assert_eq!(report.applied.len(), 1);
     }
 
@@ -663,57 +695,168 @@ mod tests {
             )]),
         };
         // Empty types list should observe all types from registry
-        let observed = adapter.observe(&schema, &[], &state).await.unwrap();
+        let observed = adapter.read(&schema, &[], &state).await.unwrap();
         assert!(observed.by_key.is_empty());
     }
 
     #[tokio::test]
-    async fn create_custom_fields_works() {
+    async fn ensure_schema_creates_custom_fields() {
         let server = MockServer::start();
         let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
 
+        let _object_types = mock_list(
+            &server,
+            "/api/core/object-types/",
+            json!([{
+                "app_label": "dcim",
+                "model": "site",
+                "rest_api_endpoint": "/api/dcim/sites/",
+                "features": ["custom-fields", "tags"]
+            }]),
+        );
+        let _custom_fields = server.mock(|when, then| {
+            when.method(GET).path("/api/extras/custom-fields/");
+            then.status(200).json_body(page(json!([])));
+        });
+        let _sites = server.mock(|when, then| {
+            when.method(GET)
+                .path("/api/dcim/sites/")
+                .query_param("limit", "1");
+            then.status(200).json_body(page(json!([])));
+        });
         let _cf_create = server.mock(|when, then| {
             when.method(POST).path("/api/extras/custom-fields/");
             then.status(201).json_body(json!({
                 "id": 1,
-                "url": "http://localhost/api/extras/custom-fields/1/",
-                "display_url": "http://localhost/extras/custom-fields/1/",
-                "display": "alembic_test",
-                "name": "alembic_test",
-                "label": "alembic_test",
+                "name": "cf_test",
                 "object_types": ["dcim.site"],
-                "type": {"value": "text", "label": "Text"},
-                "related_object_type": null,
-                "group_name": "",
-                "description": "",
-                "required": false,
-                "unique": false,
-                "search_weight": 1000,
-                "filter_logic": {"value": "loose", "label": "Loose"},
-                "ui_visible": {"value": "always", "label": "Always"},
-                "ui_editable": {"value": "yes", "label": "Yes"},
-                "is_cloneable": true,
-                "default": null,
-                "related_object_filter": null,
-                "weight": 100,
-                "validation_minimum": null,
-                "validation_maximum": null,
-                "validation_regex": "",
-                "choice_set": null,
-                "comments": "",
-                "created": "2024-01-01T00:00:00Z",
-                "last_updated": "2024-01-01T00:00:00Z"
+                "type": {"value": "text", "label": "Text"}
             }));
         });
 
-        let missing = vec![alembic_engine::MissingCustomField {
-            rule: "test".to_string(),
-            type_name: "dcim.site".to_string(),
-            attr_key: "cf_test".to_string(),
-            field: "alembic_test".to_string(),
-            sample: json!("example"),
-        }];
+        let schema = alembic_core::Schema {
+            types: std::collections::BTreeMap::from([(
+                "dcim.site".to_string(),
+                alembic_core::TypeSchema {
+                    key: std::collections::BTreeMap::from([(
+                        "slug".to_string(),
+                        alembic_core::FieldSchema {
+                            r#type: alembic_core::FieldType::String,
+                            required: true,
+                            nullable: false,
+                            description: None,
+                            format: None,
+                            pattern: None,
+                        },
+                    )]),
+                    fields: std::collections::BTreeMap::from([(
+                        "cf_test".to_string(),
+                        alembic_core::FieldSchema {
+                            r#type: alembic_core::FieldType::String,
+                            required: false,
+                            nullable: true,
+                            description: None,
+                            format: None,
+                            pattern: None,
+                        },
+                    )]),
+                },
+            )]),
+        };
 
-        adapter.create_custom_fields(&missing).await.unwrap();
+        let report = adapter.ensure_schema(&schema).await.unwrap();
+        assert_eq!(report.created_fields, vec!["dcim.site.cf_test".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn ensure_schema_creates_custom_object_types() {
+        let server = MockServer::start();
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
+
+        let _object_types = mock_list(
+            &server,
+            "/api/core/object-types/",
+            json!([{
+                "app_label": "dcim",
+                "model": "site",
+                "rest_api_endpoint": "/api/dcim/sites/",
+                "features": ["custom-fields", "tags"]
+            }]),
+        );
+        let _custom_fields = server.mock(|when, then| {
+            when.method(GET).path("/api/extras/custom-fields/");
+            then.status(200).json_body(page(json!([])));
+        });
+        let _custom_object_types = server.mock(|when, then| {
+            when.method(GET)
+                .path("/api/plugins/custom-objects/custom-object-types/")
+                .query_param("limit", "200")
+                .query_param("offset", "0");
+            then.status(200).json_body(page(json!([])));
+        });
+        let _custom_object_fields = server.mock(|when, then| {
+            when.method(GET)
+                .path("/api/plugins/custom-objects/custom-object-type-fields/")
+                .query_param("limit", "200")
+                .query_param("offset", "0");
+            then.status(200).json_body(page(json!([])));
+        });
+        let _custom_object_type_create = server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/plugins/custom-objects/custom-object-types/");
+            then.status(201).json_body(json!({
+                "id": 42,
+                "name": "custom-asset"
+            }));
+        });
+        let _custom_object_field_create = server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/plugins/custom-objects/custom-object-type-fields/");
+            then.status(201).json_body(json!({
+                "id": 100
+            }));
+        });
+
+        let schema = alembic_core::Schema {
+            types: std::collections::BTreeMap::from([(
+                "custom.asset".to_string(),
+                alembic_core::TypeSchema {
+                    key: std::collections::BTreeMap::from([(
+                        "name".to_string(),
+                        alembic_core::FieldSchema {
+                            r#type: alembic_core::FieldType::String,
+                            required: true,
+                            nullable: false,
+                            description: None,
+                            format: None,
+                            pattern: None,
+                        },
+                    )]),
+                    fields: std::collections::BTreeMap::from([(
+                        "owner".to_string(),
+                        alembic_core::FieldSchema {
+                            r#type: alembic_core::FieldType::String,
+                            required: false,
+                            nullable: true,
+                            description: None,
+                            format: None,
+                            pattern: None,
+                        },
+                    )]),
+                },
+            )]),
+        };
+
+        let report = adapter.ensure_schema(&schema).await.unwrap();
+        assert_eq!(
+            report.created_object_types,
+            vec!["custom.asset".to_string()]
+        );
+        assert!(report
+            .created_object_fields
+            .contains(&"custom.asset.name".to_string()));
+        assert!(report
+            .created_object_fields
+            .contains(&"custom.asset.owner".to_string()));
     }
 }

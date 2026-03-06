@@ -1,0 +1,3 @@
+backend: netbox
+url: http://localhost:8000
+token: nbt_xxx_replace_me

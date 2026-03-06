@@ -1,6 +1,5 @@
-use alembic_engine::MissingCustomField;
+use alembic_core::{FieldSchema, FieldType};
 use serde_json::Value;
-use std::collections::{BTreeMap, BTreeSet};
 
 pub(super) fn slugify(input: &str) -> String {
     let mut out = String::new();
@@ -35,58 +34,16 @@ pub(super) fn build_tag_inputs(tags: &[String]) -> Vec<Value> {
         .collect()
 }
 
-#[derive(Default)]
-pub(super) struct CustomFieldProposal {
-    pub(super) object_types: BTreeSet<String>,
-    pub(super) field_type: String,
-}
-
-pub(super) fn group_custom_fields(
-    missing: &[MissingCustomField],
-) -> BTreeMap<String, CustomFieldProposal> {
-    let mut grouped: BTreeMap<String, CustomFieldProposal> = BTreeMap::new();
-    for entry in missing {
-        let proposal = grouped.entry(entry.field.clone()).or_default();
-        proposal.object_types.insert(entry.type_name.clone());
-        let entry_type = custom_field_type(&entry.sample);
-        proposal.field_type = merge_field_type(&proposal.field_type, entry_type);
+pub(super) fn custom_field_type_for_schema(field: &FieldSchema) -> String {
+    match field.r#type {
+        FieldType::Int => "integer".to_string(),
+        FieldType::Float => "decimal".to_string(),
+        FieldType::Bool => "boolean".to_string(),
+        FieldType::Date => "date".to_string(),
+        FieldType::Datetime => "datetime".to_string(),
+        FieldType::Json | FieldType::List { .. } | FieldType::Map { .. } => "json".to_string(),
+        _ => "text".to_string(),
     }
-    grouped
-}
-
-pub(super) fn custom_field_type(value: &Value) -> String {
-    match value {
-        Value::String(_) => "text".to_string(),
-        Value::Bool(_) => "boolean".to_string(),
-        Value::Number(number) => {
-            if number.is_i64() || number.is_u64() {
-                "integer".to_string()
-            } else {
-                "decimal".to_string()
-            }
-        }
-        Value::Array(_) | Value::Object(_) => "json".to_string(),
-        Value::Null => "text".to_string(),
-    }
-}
-
-pub(super) fn merge_field_type(current: &str, incoming: String) -> String {
-    if current.is_empty() {
-        return incoming;
-    }
-    if current == "json" || incoming == "json" {
-        return "json".to_string();
-    }
-    if current == "text" || incoming == "text" {
-        return "text".to_string();
-    }
-    if current == "decimal" || incoming == "decimal" {
-        return "decimal".to_string();
-    }
-    if current == "boolean" || incoming == "boolean" {
-        return "boolean".to_string();
-    }
-    "integer".to_string()
 }
 
 #[cfg(test)]
@@ -113,22 +70,34 @@ mod tests {
     }
 
     #[test]
-    fn test_custom_field_type() {
-        assert_eq!(custom_field_type(&json!("string")), "text");
-        assert_eq!(custom_field_type(&json!(123)), "integer");
-        assert_eq!(custom_field_type(&json!(1.23)), "decimal");
-        assert_eq!(custom_field_type(&json!(true)), "boolean");
-        assert_eq!(custom_field_type(&json!([1, 2])), "json");
-    }
-
-    #[test]
-    fn test_merge_field_type() {
-        assert_eq!(merge_field_type("", "text".to_string()), "text");
-        assert_eq!(merge_field_type("integer", "json".to_string()), "json");
-        assert_eq!(merge_field_type("integer", "text".to_string()), "text");
+    fn test_custom_field_type_for_schema() {
+        let schema = |r#type| FieldSchema {
+            r#type,
+            required: false,
+            nullable: true,
+            description: None,
+            format: None,
+            pattern: None,
+        };
         assert_eq!(
-            merge_field_type("integer", "decimal".to_string()),
+            custom_field_type_for_schema(&schema(FieldType::String)),
+            "text"
+        );
+        assert_eq!(
+            custom_field_type_for_schema(&schema(FieldType::Int)),
+            "integer"
+        );
+        assert_eq!(
+            custom_field_type_for_schema(&schema(FieldType::Float)),
             "decimal"
+        );
+        assert_eq!(
+            custom_field_type_for_schema(&schema(FieldType::Bool)),
+            "boolean"
+        );
+        assert_eq!(
+            custom_field_type_for_schema(&schema(FieldType::Json)),
+            "json"
         );
     }
 }

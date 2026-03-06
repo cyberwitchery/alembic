@@ -5,11 +5,9 @@ mod apply_retry;
 mod django;
 mod errors;
 mod extract;
-mod lint;
 mod loader;
 mod pipeline;
 mod planner;
-mod projection;
 mod retort;
 mod state;
 mod types;
@@ -26,21 +24,14 @@ pub use adapter_ops::{
 pub use apply_retry::{apply_non_delete_with_retries, RetryApplyDriver, RetryApplyResult};
 pub use django::{emit_django_app, DjangoEmitOptions};
 pub use errors::AdapterApplyError;
-pub use extract::{extract_inventory, ExtractReport};
-pub use lint::{lint_specs, LintReport};
+pub use extract::{import_inventory, ImportReport};
 pub use loader::load_brew;
-use pipeline::{ApplyContext, LoadContext};
 pub use planner::{plan, sort_ops_for_apply};
-pub use projection::{
-    apply_projection, load_projection, missing_custom_fields, missing_tags, project_default,
-    validate_projection_strict, BackendCapabilities, MissingCustomField, MissingTag,
-    ProjectedInventory, ProjectedObject, ProjectionData, ProjectionSpec,
-};
 pub use retort::{compile_retort, is_brew_format, load_raw_yaml, load_retort, Retort};
 pub use state::{PostgresTlsMode, StateData, StateStore};
 pub use types::{
-    Adapter, AppliedOp, ApplyAdapter, ApplyReport, BackendId, FieldChange, ObserveAdapter,
-    ObservedObject, ObservedState, Op, Plan, PlanningAdapter, ProjectionProvisioner,
+    Adapter, AppliedOp, ApplyReport, BackendId, FieldChange, ObservedObject, ObservedState, Op,
+    Plan, PlanSummary, ProvisionReport,
 };
 
 /// validate an inventory and return the report.
@@ -69,83 +60,43 @@ pub fn report_to_result_with_sources(report: ValidationReport, objects: &[Object
 
 /// observe backend state and produce a deterministic plan.
 pub async fn build_plan(
-    adapter: &(impl ObserveAdapter + ?Sized),
+    adapter: &(dyn Adapter + '_),
     inventory: &Inventory,
     state: &mut StateStore,
     allow_delete: bool,
 ) -> Result<Plan> {
-    build_plan_with_projection(adapter, inventory, state, allow_delete, None, true).await
-}
-
-pub async fn build_plan_with_projection(
-    adapter: &(impl ObserveAdapter + ?Sized),
-    inventory: &Inventory,
-    state: &mut StateStore,
-    allow_delete: bool,
-    projection: Option<&ProjectionSpec>,
-    projection_strict: bool,
-) -> Result<Plan> {
-    let observed = LoadContext::from_ref(inventory)?
-        .project(projection)?
-        .observe(adapter, state, projection_strict, false)
-        .await?;
-    Ok(observed.plan(state, allow_delete))
-}
-
-pub async fn build_plan_with_projection_observe_schema(
-    adapter: &(impl ObserveAdapter + ?Sized),
-    inventory: &Inventory,
-    state: &mut StateStore,
-    allow_delete: bool,
-    projection: Option<&ProjectionSpec>,
-    projection_strict: bool,
-) -> Result<Plan> {
-    let observed = LoadContext::from_ref(inventory)?
-        .project(projection)?
-        .observe(adapter, state, projection_strict, true)
-        .await?;
-    Ok(observed.plan(state, allow_delete))
-}
-
-pub async fn project_and_observe(
-    adapter: &(impl ObserveAdapter + ?Sized),
-    inventory: &Inventory,
-    state: &mut StateStore,
-    projection: Option<&ProjectionSpec>,
-) -> Result<(ProjectedInventory, ObservedState)> {
-    let observed = LoadContext::from_ref(inventory)?
-        .project(projection)?
-        .observe(adapter, state, false, false)
-        .await?;
-    Ok((observed.projected, observed.observed))
+    let observed = pipeline::observe(adapter, inventory, state).await?;
+    Ok(plan(
+        &inventory.objects,
+        &observed,
+        state,
+        &inventory.schema,
+        allow_delete,
+    ))
 }
 
 pub(crate) fn bootstrap_state_from_observed(
     state: &mut StateStore,
-    desired: &ProjectedInventory,
+    desired: &[Object],
     observed: &ObservedState,
 ) -> bool {
     let mut updated = false;
-    for object in &desired.objects {
+    for object in desired {
         if state
-            .backend_id(object.base.type_name.clone(), object.base.uid)
+            .backend_id(object.type_name.clone(), object.uid)
             .is_some()
         {
             continue;
         }
         if let Some(obs) = observed
             .by_key
-            .get(&(object.base.type_name.clone(), key_string(&object.base.key)))
+            .get(&(object.type_name.clone(), key_string(&object.key)))
         {
-            if obs.type_name != object.base.type_name {
+            if obs.type_name != object.type_name {
                 continue;
             }
             if let Some(backend_id) = &obs.backend_id {
-                state.set_backend_id(
-                    object.base.type_name.clone(),
-                    object.base.uid,
-                    backend_id.clone(),
-                );
+                state.set_backend_id(object.type_name.clone(), object.uid, backend_id.clone());
                 updated = true;
             }
         }
@@ -155,12 +106,10 @@ pub(crate) fn bootstrap_state_from_observed(
 
 /// apply a plan and update the state store.
 pub async fn apply_plan(
-    adapter: &(impl ApplyAdapter + ?Sized),
+    adapter: &(dyn Adapter + '_),
     plan: &Plan,
     state: &mut StateStore,
     allow_delete: bool,
 ) -> Result<ApplyReport> {
-    ApplyContext::new(plan, allow_delete)?
-        .apply(adapter, state)
-        .await
+    pipeline::apply(adapter, plan, state, allow_delete).await
 }

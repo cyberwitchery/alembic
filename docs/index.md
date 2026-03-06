@@ -11,9 +11,9 @@ this directory contains the canonical documentation for alembic.
 - `docs/plan.md` - plan json schema and semantics
 - `docs/state.md` - state store format and behavior
 - `docs/cli.md` - cli usage and examples
-- `docs/cast.md` - django code generation with the cast subcommand
+- `docs/cast.md` - django app generation from a brew inventory
 - `docs/netbox.md` - netbox adapter mapping and constraints
 - `docs/nautobot.md` - nautobot adapter mapping and constraints
-- `docs/projection.md` - backend projection spec for attrs data
+- `docs/infrahub.md` - infrahub adapter mapping and constraints
 - `docs/development.md` - building, testing, and release flow
 - `docs/case-studies/README.md` - end-to-end examples and walkthroughs

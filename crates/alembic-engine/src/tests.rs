@@ -1,10 +1,9 @@
 use super::*;
-use crate::project_default;
 use alembic_core::{
     FieldSchema, FieldType, Inventory, JsonMap, Key, Object, Schema, TypeName, TypeSchema, Uid,
 };
 use serde_json::json;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use tempfile::tempdir;
 use uuid::Uuid;
 
@@ -461,8 +460,13 @@ fn plans_in_stable_order() {
     let inventory = inv(objects);
     let observed = ObservedState::default();
     let state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
-    let projected = project_default(&inventory.objects);
-    let plan = plan(&projected, &observed, &state, &inventory.schema, false);
+    let plan = plan(
+        &inventory.objects,
+        &observed,
+        &state,
+        &inventory.schema,
+        false,
+    );
 
     assert_eq!(plan.ops.len(), 2);
     let kinds: Vec<TypeName> = plan
@@ -492,13 +496,11 @@ fn detects_attribute_diff() {
         type_name: t("dcim.site"),
         key: key_str("site=fra1"),
         attrs: attrs_map(json!({ "name": "OLD", "slug": "fra1" })),
-        projection: crate::ProjectionData::default(),
         backend_id: Some(BackendId::Int(100)),
     });
 
     let state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
-    let projected = project_default(&desired.objects);
-    let plan = plan(&projected, &observed, &state, &desired.schema, false);
+    let plan = plan(&desired.objects, &observed, &state, &desired.schema, false);
 
     assert_eq!(plan.ops.len(), 1);
     match &plan.ops[0] {
@@ -531,13 +533,11 @@ fn detects_generic_payload_diff() {
         type_name: t("services.vpn"),
         key: key_str("vpn=corp"),
         attrs: from.into(),
-        projection: crate::ProjectionData::default(),
         backend_id: Some(BackendId::Int(10)),
     });
 
     let state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
-    let projected = project_default(&desired.objects);
-    let plan = plan(&projected, &observed, &state, &desired.schema, false);
+    let plan = plan(&desired.objects, &observed, &state, &desired.schema, false);
 
     assert_eq!(plan.ops.len(), 1);
     match &plan.ops[0] {
@@ -553,67 +553,6 @@ fn detects_generic_payload_diff() {
 }
 
 #[test]
-fn planner_includes_projected_custom_fields() {
-    let mut object = obj(
-        uid(70),
-        "dcim.site",
-        "site=fra1",
-        json!({ "name": "FRA1", "slug": "fra1" }),
-    );
-    object
-        .attrs
-        .insert("model.fabric".to_string(), json!("fra1"));
-
-    let spec: crate::ProjectionSpec = serde_yaml::from_str(
-        r#"
-version: 1
-backend: netbox
-rules:
-  - name: cf
-    on_type: dcim.site
-    from_attrs:
-      prefix: "model."
-    to:
-      custom_fields:
-        strategy: strip_prefix
-        prefix: "model."
-"#,
-    )
-    .unwrap();
-
-    let projected = crate::apply_projection(&spec, &[object]).unwrap();
-    let projected_objects: Vec<Object> = projected
-        .objects
-        .iter()
-        .map(|entry| entry.base.clone())
-        .collect();
-    let schema = schema_for(&projected_objects);
-
-    let mut observed = ObservedState::default();
-    let mut fields = BTreeMap::new();
-    fields.insert("fabric".to_string(), json!("old"));
-    observed.insert(ObservedObject {
-        type_name: t("dcim.site"),
-        key: key_str("site=fra1"),
-        attrs: attrs_map(json!({ "name": "FRA1", "slug": "fra1" })),
-        projection: crate::ProjectionData {
-            custom_fields: Some(fields),
-            tags: None,
-            local_context: None,
-        },
-        backend_id: None,
-    });
-
-    let state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
-    let plan = plan(&projected, &observed, &state, &schema, false);
-    let changes = match &plan.ops[0] {
-        Op::Update { changes, .. } => changes,
-        _ => panic!("expected update"),
-    };
-    assert!(changes.iter().any(|change| change.field == "custom_fields"));
-}
-
-#[test]
 fn planner_ignores_optional_nulls() {
     let desired = obj(
         uid(80),
@@ -621,7 +560,6 @@ fn planner_ignores_optional_nulls() {
         "site=fra1",
         json!({ "name": "FRA1", "slug": "fra1" }),
     );
-    let projected = project_default(std::slice::from_ref(&desired));
     let schema = schema_for(std::slice::from_ref(&desired));
 
     let mut observed = ObservedState::default();
@@ -634,56 +572,17 @@ fn planner_ignores_optional_nulls() {
             "status": "active",
             "description": ""
         })),
-        projection: crate::ProjectionData::default(),
         backend_id: Some(BackendId::Int(1)),
     });
 
     let state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
-    let plan = plan(&projected, &observed, &state, &schema, false);
-    assert!(plan.ops.is_empty());
-}
-
-#[test]
-fn planner_ignores_unprojected_custom_fields() {
-    let desired = obj(
-        uid(81),
-        "dcim.site",
-        "site=fra1",
-        json!({ "name": "FRA1", "slug": "fra1" }),
+    let plan = plan(
+        std::slice::from_ref(&desired),
+        &observed,
+        &state,
+        &schema,
+        false,
     );
-    let schema = schema_for(std::slice::from_ref(&desired));
-    let mut desired_fields = BTreeMap::new();
-    desired_fields.insert("fabric".to_string(), json!("fra1"));
-    let projected = ProjectedInventory {
-        objects: vec![ProjectedObject {
-            base: desired.clone(),
-            projection: crate::ProjectionData {
-                custom_fields: Some(desired_fields),
-                tags: None,
-                local_context: None,
-            },
-            projection_inputs: BTreeSet::new(),
-        }],
-    };
-
-    let mut observed_fields = BTreeMap::new();
-    observed_fields.insert("fabric".to_string(), json!("fra1"));
-    observed_fields.insert("extra".to_string(), json!("ignored"));
-    let mut observed = ObservedState::default();
-    observed.insert(ObservedObject {
-        type_name: t("dcim.site"),
-        key: key_str("site=fra1"),
-        attrs: desired.attrs.clone(),
-        projection: crate::ProjectionData {
-            custom_fields: Some(observed_fields),
-            tags: None,
-            local_context: None,
-        },
-        backend_id: Some(BackendId::Int(1)),
-    });
-
-    let state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
-    let plan = plan(&projected, &observed, &state, &schema, false);
     assert!(plan.ops.is_empty());
 }
 
@@ -700,7 +599,6 @@ fn planner_matches_backend_id_by_kind() {
             "device_type": "leaf"
         }),
     );
-    let projected = project_default(std::slice::from_ref(&desired));
     let schema = schema_for(std::slice::from_ref(&desired));
 
     let mut observed = ObservedState::default();
@@ -708,7 +606,6 @@ fn planner_matches_backend_id_by_kind() {
         type_name: t("dcim.device"),
         key: key_str("site=fra1/device=leaf01"),
         attrs: desired.attrs.clone(),
-        projection: crate::ProjectionData::default(),
         backend_id: Some(BackendId::Int(1)),
     });
     observed.insert(ObservedObject {
@@ -718,13 +615,18 @@ fn planner_matches_backend_id_by_kind() {
             "name": "eth0",
             "device": uid(82).to_string()
         })),
-        projection: crate::ProjectionData::default(),
         backend_id: Some(BackendId::Int(1)),
     });
 
     let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
     state.set_backend_id(t("dcim.device"), desired.uid, BackendId::Int(1));
-    let plan = plan(&projected, &observed, &state, &schema, false);
+    let plan = plan(
+        std::slice::from_ref(&desired),
+        &observed,
+        &state,
+        &schema,
+        false,
+    );
     assert!(plan.ops.is_empty());
 }
 
@@ -739,7 +641,6 @@ fn planner_includes_prefix_site_diff() {
             "site": uid(1).to_string()
         }),
     );
-    let projected = project_default(std::slice::from_ref(&desired));
     let schema = schema_for(std::slice::from_ref(&desired));
 
     let mut observed = ObservedState::default();
@@ -747,12 +648,17 @@ fn planner_includes_prefix_site_diff() {
         type_name: t("ipam.prefix"),
         key: key_str("prefix=10.0.0.0/24"),
         attrs: attrs_map(json!({ "prefix": "10.0.0.0/24" })),
-        projection: crate::ProjectionData::default(),
         backend_id: Some(BackendId::Int(1)),
     });
 
     let state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
-    let plan = plan(&projected, &observed, &state, &schema, false);
+    let plan = plan(
+        std::slice::from_ref(&desired),
+        &observed,
+        &state,
+        &schema,
+        false,
+    );
     assert_eq!(plan.ops.len(), 1);
     match &plan.ops[0] {
         Op::Update { changes, .. } => {
@@ -916,13 +822,11 @@ fn plan_generates_deletes_when_enabled() {
         type_name: t("dcim.site"),
         key: key_str("site=orphan"),
         attrs: attrs_map(json!({ "name": "orphan", "slug": "orphan" })),
-        projection: crate::ProjectionData::default(),
         backend_id: Some(BackendId::Int(10)),
     });
 
     let state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
-    let projected = project_default(&desired.objects);
-    let plan = plan(&projected, &observed, &state, &desired.schema, true);
+    let plan = plan(&desired.objects, &observed, &state, &desired.schema, true);
     assert!(plan.ops.iter().any(|op| matches!(op, Op::Delete { .. })));
 }
 
@@ -938,16 +842,12 @@ fn apply_order_puts_deletes_last() {
         Op::Create {
             uid: uid(2),
             type_name: t("dcim.site"),
-            desired: crate::ProjectedObject {
-                base: obj(
-                    uid(2),
-                    "dcim.site",
-                    "site=fra1",
-                    json!({ "name": "FRA1", "slug": "fra1" }),
-                ),
-                projection: crate::ProjectionData::default(),
-                projection_inputs: BTreeSet::new(),
-            },
+            desired: obj(
+                uid(2),
+                "dcim.site",
+                "site=fra1",
+                json!({ "name": "FRA1", "slug": "fra1" }),
+            ),
         },
     ];
 
@@ -964,7 +864,7 @@ struct TestAdapter {
 
 #[async_trait::async_trait]
 impl Adapter for TestAdapter {
-    async fn observe(
+    async fn read(
         &self,
         _schema: &alembic_core::Schema,
         _types: &[TypeName],
@@ -973,7 +873,7 @@ impl Adapter for TestAdapter {
         Ok(self.observed.clone())
     }
 
-    async fn apply(
+    async fn write(
         &self,
         _schema: &alembic_core::Schema,
         _ops: &[Op],
@@ -1014,7 +914,6 @@ fn build_plan_bootstraps_state_by_key() {
         type_name: t("dcim.site"),
         key: key_str("site=fra1"),
         attrs: attrs_map(json!({ "name": "FRA1", "slug": "fra1" })),
-        projection: crate::ProjectionData::default(),
         backend_id: Some(BackendId::Int(10)),
     });
     let adapter = TestAdapter {
@@ -1040,7 +939,7 @@ fn build_plan_reobserves_after_bootstrap() {
 
     #[async_trait::async_trait]
     impl Adapter for ReobserveAdapter {
-        async fn observe(
+        async fn read(
             &self,
             _schema: &alembic_core::Schema,
             _types: &[TypeName],
@@ -1050,7 +949,7 @@ fn build_plan_reobserves_after_bootstrap() {
             Ok(states.remove(0))
         }
 
-        async fn apply(
+        async fn write(
             &self,
             _schema: &alembic_core::Schema,
             _ops: &[Op],
@@ -1071,11 +970,9 @@ fn build_plan_reobserves_after_bootstrap() {
         type_name: t("dcim.site"),
         key: key_str("site=fra1"),
         attrs: attrs_map(json!({ "name": "FRA1", "slug": "fra1" })),
-        projection: crate::ProjectionData::default(),
         backend_id: Some(BackendId::Int(1)),
     });
-    let mut second = first.clone();
-    second.capabilities = crate::BackendCapabilities::default();
+    let second = first.clone();
 
     let adapter = ReobserveAdapter {
         states: std::sync::Arc::new(std::sync::Mutex::new(vec![first, second])),
@@ -1087,29 +984,25 @@ fn build_plan_reobserves_after_bootstrap() {
 }
 
 #[test]
-fn build_plan_observes_projected_types_only_by_default() {
+fn build_plan_observes_all_schema_types() {
     #[derive(Clone)]
     struct ScopeAdapter {
-        forbidden: TypeName,
         seen: std::sync::Arc<std::sync::Mutex<Vec<TypeName>>>,
     }
 
     #[async_trait::async_trait]
     impl Adapter for ScopeAdapter {
-        async fn observe(
+        async fn read(
             &self,
             _schema: &alembic_core::Schema,
             types: &[TypeName],
             _state: &StateStore,
         ) -> anyhow::Result<ObservedState> {
             *self.seen.lock().unwrap() = types.to_vec();
-            if types.contains(&self.forbidden) {
-                return Err(anyhow::anyhow!("unsupported type {}", self.forbidden));
-            }
             Ok(ObservedState::default())
         }
 
-        async fn apply(
+        async fn write(
             &self,
             _schema: &alembic_core::Schema,
             _ops: &[Op],
@@ -1126,7 +1019,7 @@ fn build_plan_observes_projected_types_only_by_default() {
         json!({ "name": "FRA1", "slug": "fra1" }),
     )]);
     inventory.schema.types.insert(
-        "unsupported.type".to_string(),
+        "extra.type".to_string(),
         TypeSchema {
             key: BTreeMap::new(),
             fields: BTreeMap::new(),
@@ -1135,77 +1028,13 @@ fn build_plan_observes_projected_types_only_by_default() {
 
     let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let adapter = ScopeAdapter {
-        forbidden: t("unsupported.type"),
         seen: std::sync::Arc::clone(&seen),
     };
     let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
     let plan =
         futures::executor::block_on(build_plan(&adapter, &inventory, &mut state, false)).unwrap();
     assert_eq!(plan.ops.len(), 1);
-    assert!(!seen.lock().unwrap().contains(&t("unsupported.type")));
-}
-
-#[test]
-fn build_plan_observe_schema_mode_is_explicit() {
-    #[derive(Clone)]
-    struct ScopeAdapter {
-        forbidden: TypeName,
-        seen: std::sync::Arc<std::sync::Mutex<Vec<TypeName>>>,
-    }
-
-    #[async_trait::async_trait]
-    impl Adapter for ScopeAdapter {
-        async fn observe(
-            &self,
-            _schema: &alembic_core::Schema,
-            types: &[TypeName],
-            _state: &StateStore,
-        ) -> anyhow::Result<ObservedState> {
-            *self.seen.lock().unwrap() = types.to_vec();
-            if types.contains(&self.forbidden) {
-                return Err(anyhow::anyhow!("unsupported type {}", self.forbidden));
-            }
-            Ok(ObservedState::default())
-        }
-
-        async fn apply(
-            &self,
-            _schema: &alembic_core::Schema,
-            _ops: &[Op],
-            _state: &StateStore,
-        ) -> anyhow::Result<ApplyReport> {
-            Ok(ApplyReport { applied: vec![] })
-        }
-    }
-
-    let mut inventory = inv(vec![obj(
-        uid(1),
-        "dcim.site",
-        "site=fra1",
-        json!({ "name": "FRA1", "slug": "fra1" }),
-    )]);
-    inventory.schema.types.insert(
-        "unsupported.type".to_string(),
-        TypeSchema {
-            key: BTreeMap::new(),
-            fields: BTreeMap::new(),
-        },
-    );
-
-    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-    let adapter = ScopeAdapter {
-        forbidden: t("unsupported.type"),
-        seen: std::sync::Arc::clone(&seen),
-    };
-    let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
-    let err = futures::executor::block_on(build_plan_with_projection_observe_schema(
-        &adapter, &inventory, &mut state, false, None, true,
-    ))
-    .unwrap_err();
-    assert!(err
-        .to_string()
-        .contains("unsupported type unsupported.type"));
-    assert!(seen.lock().unwrap().contains(&t("unsupported.type")));
+    assert!(seen.lock().unwrap().contains(&t("extra.type")));
 }
 
 #[test]

@@ -1,0 +1,7 @@
+backend: infrahub
+url: http://localhost:8000
+token: infrahub_xxx_replace_me
+schema:
+  mode: infrahubctl
+  schema_path: /tmp/alembic-infrahub-schema.yaml
+  infrahubctl_path: ./scripts/infrahubctl_docker.sh

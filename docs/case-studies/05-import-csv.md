@@ -62,13 +62,15 @@ rules:
 ## commands
 
 ```bash
+BACKEND_CONFIG=/path/to/backend-netbox.yaml
+
 alembic distill -f /path/to/devices.csv --retort /path/to/retort.yaml -o /tmp/inventory.yaml
 
 alembic plan -f /tmp/inventory.yaml -o /tmp/plan.json \
-  --netbox-url http://localhost:8000 --netbox-token $NETBOX_TOKEN
+  --backend-config "$BACKEND_CONFIG"
 
 alembic apply -p /tmp/plan.json \
-  --netbox-url http://localhost:8000 --netbox-token $NETBOX_TOKEN --allow-delete
+  --backend-config "$BACKEND_CONFIG" --allow-delete
 ```
 
 ## notes

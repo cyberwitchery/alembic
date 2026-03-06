@@ -239,46 +239,6 @@ fn resolve_state_backend_postgres_with_invalid_tls_mode_errors() {
 }
 
 #[test]
-fn resolve_credentials_prefers_args() {
-    let creds = resolve_credentials(
-        "NETBOX",
-        Some("http://example".to_string()),
-        Some("token".to_string()),
-    )
-    .unwrap();
-    assert_eq!(creds.0, "http://example");
-    assert_eq!(creds.1, "token");
-}
-
-#[test]
-fn resolve_credentials_from_env() {
-    let _guard = env_lock().lock().unwrap();
-    let old_url = std::env::var("NETBOX_URL").ok();
-    let old_token = std::env::var("NETBOX_TOKEN").ok();
-    std::env::set_var("NETBOX_URL", "http://env");
-    std::env::set_var("NETBOX_TOKEN", "envtoken");
-
-    let result = std::panic::catch_unwind(|| {
-        let creds = resolve_credentials("NETBOX", None, None).unwrap();
-        assert_eq!(creds.0, "http://env");
-        assert_eq!(creds.1, "envtoken");
-    });
-
-    if let Some(value) = old_url {
-        std::env::set_var("NETBOX_URL", value);
-    } else {
-        std::env::remove_var("NETBOX_URL");
-    }
-    if let Some(value) = old_token {
-        std::env::set_var("NETBOX_TOKEN", value);
-    } else {
-        std::env::remove_var("NETBOX_TOKEN");
-    }
-
-    assert!(result.is_ok());
-}
-
-#[test]
 fn plan_roundtrip_io() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("plan.json");
@@ -298,25 +258,6 @@ fn plan_roundtrip_io() {
     write_plan(&path, &plan).unwrap();
     let loaded = read_plan(&path).unwrap();
     assert_eq!(loaded.ops.len(), 1);
-}
-
-#[test]
-fn resolve_credentials_missing_is_error() {
-    let _guard = env_lock().lock().unwrap();
-    let old_url = std::env::var("NETBOX_URL").ok();
-    let old_token = std::env::var("NETBOX_TOKEN").ok();
-    std::env::remove_var("NETBOX_URL");
-    std::env::remove_var("NETBOX_TOKEN");
-
-    let result = resolve_credentials("NETBOX", None, None);
-    assert!(result.is_err());
-
-    if let Some(value) = old_url {
-        std::env::set_var("NETBOX_URL", value);
-    }
-    if let Some(value) = old_token {
-        std::env::set_var("NETBOX_TOKEN", value);
-    }
 }
 
 #[test]
@@ -613,28 +554,6 @@ fn format_validation_errors_prefers_source_locations() {
     assert!(errors[0].contains("duplicate uid"));
 }
 
-#[test]
-fn write_inventory_and_projected() {
-    let dir = tempdir().unwrap();
-    let inv_path = dir.path().join("ir.json");
-    let proj_path = dir.path().join("projected.json");
-    let inventory = alembic_core::Inventory {
-        schema: alembic_core::Schema {
-            types: BTreeMap::new(),
-        },
-        objects: Vec::new(),
-    };
-    let projected = ProjectedInventory {
-        objects: Vec::new(),
-    };
-    write_inventory(&inv_path, &inventory).unwrap();
-    write_projected(&proj_path, &projected).unwrap();
-    let inv = std::fs::read_to_string(inv_path).unwrap();
-    let proj = std::fs::read_to_string(proj_path).unwrap();
-    assert!(inv.contains("\"objects\""));
-    assert!(proj.contains("\"objects\""));
-}
-
 #[tokio::test]
 async fn run_validate_brew() {
     let dir = tempdir().unwrap();
@@ -668,7 +587,6 @@ objects:
         command: Command::Validate {
             file: brew,
             retort: None,
-            projection: None,
         },
     };
     run(cli).await.unwrap();
@@ -736,77 +654,6 @@ rules:
 }
 
 #[tokio::test]
-async fn run_project_raw() {
-    let _guard = cwd_lock().lock().await;
-    let dir = tempdir().unwrap();
-    let raw = dir.path().join("raw.yaml");
-    let retort = dir.path().join("retort.yaml");
-    let projection = dir.path().join("projection.yaml");
-    let out = dir.path().join("projected.json");
-    std::fs::write(
-        &raw,
-        r#"sites:
-  - slug: fra1
-    name: FRA1
-"#,
-    )
-    .unwrap();
-    std::fs::write(
-        &retort,
-        r#"version: 1
-schema:
-  types:
-    dcim.site:
-      key:
-        site:
-          type: slug
-      fields:
-        name:
-          type: string
-        slug:
-          type: slug
-rules:
-  - name: sites
-    select: /sites/*
-    emit:
-      type: dcim.site
-      key:
-        site: "${slug}"
-      vars:
-        slug: { from: .slug, required: true }
-        name: { from: .name, required: true }
-      attrs:
-        name: ${name}
-        slug: ${slug}
-"#,
-    )
-    .unwrap();
-    std::fs::write(
-        &projection,
-        r#"version: 1
-backend: netbox
-rules: []
-"#,
-    )
-    .unwrap();
-    let cwd = std::env::current_dir().unwrap();
-    std::env::set_current_dir(dir.path()).unwrap();
-
-    let cli = Cli {
-        command: Command::Project {
-            file: raw,
-            retort: Some(retort),
-            projection,
-            output: out.clone(),
-        },
-    };
-    run(cli).await.unwrap();
-    let raw = std::fs::read_to_string(out).unwrap();
-    assert!(raw.contains("\"objects\""));
-    std::env::set_current_dir(cwd).unwrap();
-}
-
-#[tokio::test]
 async fn run_plan_missing_credentials_errors() {
     let _guard = cwd_lock().lock().await;
     let dir = tempdir().unwrap();
@@ -843,82 +690,16 @@ objects:
         command: Command::Plan {
             file: brew,
             retort: None,
-            projection: None,
-            projection_strict: true,
-            projection_propose: false,
             output: out,
-            backend: Backend::Netbox,
-            netbox_url: None,
-            netbox_token: None,
-            nautobot_url: None,
-            nautobot_token: None,
-            generic_config: None,
+            backend: Some("netbox".to_string()),
+            backend_config: None,
+            provision: false,
             dry_run: false,
             allow_delete: false,
         },
     };
     let err = run(cli).await.unwrap_err();
-    assert!(err
-        .to_string()
-        .contains("missing --netbox-url or NETBOX_URL"));
-    std::env::set_current_dir(cwd).unwrap();
-}
-
-#[tokio::test]
-async fn run_plan_dry_run_projection_propose_errors() {
-    let _guard = cwd_lock().lock().await;
-    let dir = tempdir().unwrap();
-    let brew = dir.path().join("brew.yaml");
-    let out = dir.path().join("plan.json");
-    std::fs::write(
-        &brew,
-        r#"schema:
-  types:
-    dcim.site:
-      key:
-        site:
-          type: slug
-      fields:
-        name:
-          type: string
-        slug:
-          type: slug
-objects:
-  - uid: "00000000-0000-0000-0000-000000000001"
-    type: dcim.site
-    key:
-      site: "fra1"
-    attrs:
-      name: "FRA1"
-      slug: "fra1"
-"#,
-    )
-    .unwrap();
-    let cwd = std::env::current_dir().unwrap();
-    std::env::set_current_dir(dir.path()).unwrap();
-
-    let cli = Cli {
-        command: Command::Plan {
-            file: brew,
-            retort: None,
-            projection: None,
-            projection_strict: true,
-            projection_propose: true,
-            output: out,
-            backend: Backend::Netbox,
-            netbox_url: None,
-            netbox_token: None,
-            nautobot_url: None,
-            nautobot_token: None,
-            generic_config: None,
-            dry_run: true,
-            allow_delete: false,
-        },
-    };
-    let err = run(cli).await.unwrap_err();
-    assert!(err
-        .to_string()
-        .contains("--dry-run cannot be used with --projection-propose"));
+    assert!(err.to_string().contains("missing NETBOX_URL"));
     std::env::set_current_dir(cwd).unwrap();
 }
 
@@ -934,20 +715,14 @@ async fn run_apply_missing_credentials_errors() {
     let cli = Cli {
         command: Command::Apply {
             plan: plan_path,
-            backend: Backend::Netbox,
-            netbox_url: None,
-            netbox_token: None,
-            nautobot_url: None,
-            nautobot_token: None,
-            generic_config: None,
+            backend: Some("netbox".to_string()),
+            backend_config: None,
             allow_delete: false,
             interactive: false,
         },
     };
     let err = run(cli).await.unwrap_err();
-    assert!(err
-        .to_string()
-        .contains("missing --netbox-url or NETBOX_URL"));
+    assert!(err.to_string().contains("missing NETBOX_URL"));
     std::env::set_current_dir(cwd).unwrap();
 }
 
@@ -975,12 +750,8 @@ async fn run_apply_interactive_delete_requires_allow_delete() {
     let cli = Cli {
         command: Command::Apply {
             plan: plan_path,
-            backend: Backend::Peeringdb,
-            netbox_url: None,
-            netbox_token: None,
-            nautobot_url: None,
-            nautobot_token: None,
-            generic_config: None,
+            backend: Some("peeringdb".to_string()),
+            backend_config: None,
             allow_delete: false,
             interactive: true,
         },
@@ -1003,6 +774,7 @@ async fn run_plan_nautobot_backend() {
     let dir = tempdir().unwrap();
     let brew = dir.path().join("brew.yaml");
     let out = dir.path().join("plan.json");
+    let config = dir.path().join("adapter.yaml");
     std::fs::write(
         &brew,
         r#"
@@ -1023,6 +795,14 @@ objects:
     attrs:
       name: "leaf01"
 "#,
+    )
+    .unwrap();
+    std::fs::write(
+        &config,
+        format!(
+            "backend: nautobot\nurl: {}\ntoken: token\n",
+            server.base_url()
+        ),
     )
     .unwrap();
 
@@ -1083,16 +863,10 @@ objects:
         command: Command::Plan {
             file: brew,
             retort: None,
-            projection: None,
-            projection_strict: true,
-            projection_propose: false,
             output: out.clone(),
-            backend: Backend::Nautobot,
-            netbox_url: None,
-            netbox_token: None,
-            nautobot_url: Some(server.base_url()),
-            nautobot_token: Some("token".to_string()),
-            generic_config: None,
+            backend: None,
+            backend_config: Some(config),
+            provision: false,
             dry_run: false,
             allow_delete: false,
         },

@@ -1,78 +1,85 @@
 # cli
 
-alembic ships a single cli binary with validate, plan, apply, distill, project, and cast subcommands.
+alembic ships a single cli binary with validate, plan, apply, distill, import, and cast subcommands.
 
 ## validate
 
 ```bash
 alembic validate -f examples/brew.yaml
 alembic validate -f examples/raw.yaml --retort examples/retort.yaml
-alembic validate -f examples/raw.yaml --retort examples/retort.yaml --projection examples/projection-netbox.yaml
 ```
 
 - loads and validates a brew file (plus includes)
 - or compiles raw yaml with a retort before validation
 - exits non-zero on validation errors
 
-## lint
+## backend config
 
-```bash
-alembic lint --retort examples/retort.yaml --projection examples/projection-netbox.yaml
-alembic lint --retort examples/retort.yaml
-alembic lint --projection examples/projection-netbox.yaml
+backend adapters are configured via a yaml file passed with `--backend-config`.
+
+netbox:
+
+```yaml
+backend: netbox
+url: https://netbox.example.com
+token: $NETBOX_TOKEN
 ```
 
-- checks retort template references and projection spec consistency
-- warns on projection-only attrs keys emitted by retort but not consumed
-- exits non-zero if errors are found
+infrahub with schema provisioning:
+
+```yaml
+backend: infrahub
+url: https://infrahub.example.com
+token: $INFRAHUB_TOKEN
+schema:
+  mode: infrahubctl
+  schema_path: ./schema/alembic.generated.yaml
+  infrahubctl_path: ./scripts/infrahubctl
+```
+
+generic:
+
+```yaml
+backend: generic
+config_path: examples/generic.yaml
+```
+
+if you don't want a config file, you can pass `--backend <name>` and supply credentials via environment variables.
 
 ## plan
 
 ```bash
 alembic plan -f examples/brew.yaml -o plan.json \
-  --backend nautobot \
-  --nautobot-url https://nautobot.example.com \
-  --nautobot-token $NAUTOBOT_TOKEN
+  --backend-config examples/backend-netbox.yaml
 
-alembic plan -f examples/brew.yaml -o plan.json \
-  --netbox-url https://netbox.example.com \
-  --netbox-token $NETBOX_TOKEN
-
-alembic plan -f examples/brew.yaml -o plan.json \
-  --backend generic \
-  --generic-config examples/generic.yaml
+NETBOX_URL=https://netbox.example.com NETBOX_TOKEN=$NETBOX_TOKEN \
+  alembic plan --backend netbox -f examples/brew.yaml -o plan.json
 ```
 
 - creates a deterministic plan
 - writes json plan to the output path
 - honors `--allow-delete` if you want delete ops
+- `--provision` runs adapter provisioning (`ensure_schema`) before observing backend state
 - accepts any type string and arbitrary attrs (schema validation is required)
-- `--backend` selects the target adapter (default: `netbox`, supported: `netbox`, `nautobot`, `generic`, `peeringdb`)
-- `--generic-config` is required when using the generic backend
-- `--projection` applies attrs -> backend mapping before planning
-- `--projection-strict=false` disables custom field existence checks
-- `--projection-propose` prints missing custom fields and tags and offers to create them (NetBox and Nautobot)
 
 ## apply
 
 ```bash
 alembic apply -p plan.json \
-  --backend nautobot \
-  --nautobot-url https://nautobot.example.com \
-  --nautobot-token $NAUTOBOT_TOKEN \
+  --backend-config examples/backend-netbox.yaml \
   --allow-delete
 
 alembic apply -p plan.json \
-  --backend generic \
-  --generic-config examples/generic.yaml \
+  --backend-config examples/backend-infrahub.yaml \
   --allow-delete
 ```
 
 - applies a plan file
 - deletes are blocked unless `--allow-delete` is provided
 - `--interactive` prompts per operation and applies only approved ops through the same engine path used by non-interactive apply
-- ensure the `--backend` matches the one used during planning
 - the `peeringdb` backend is read-only; apply will return an error
+- apply runs adapter provisioning (`ensure_schema`) before writes; for netbox this can create custom fields/tags and custom object types when supported
+- infrahub provisioning can generate and load a schema file when configured in the backend config
 
 ## distill
 
@@ -83,27 +90,19 @@ alembic distill -f examples/raw.yaml --retort examples/retort.yaml -o ir.json
 - compiles raw yaml into the canonical ir
 - outputs deterministic json for debugging
 
-## project
+## import
 
 ```bash
-alembic project -f examples/raw.yaml --retort examples/retort.yaml \
-  --projection examples/projection-netbox.yaml -o projected.json
-```
+alembic import -o inventory.yaml \
+  --backend-config examples/backend-nautobot.yaml \
+  --retort examples/retort.yaml
 
-- outputs ir + projected backend fields for debugging
-
-## extract
-
-```bash
-alembic extract -o inventory.yaml \
-  --backend nautobot \
-  --nautobot-url https://nautobot.example.com \
-  --nautobot-token $NAUTOBOT_TOKEN \
+alembic import -o inventory.yaml \
+  --backend-config examples/backend-infrahub.yaml \
   --retort examples/retort.yaml
 ```
 
 - observes backend state and emits a canonical inventory
-- `--projection` inverts projection into `attrs` keys where possible
 - `--retort` provides required schema metadata (retort inversion is not implemented; warning emitted)
 - `peeringdb` uses `PEERINGDB_API_KEY` for authentication
 
@@ -129,6 +128,9 @@ alembic cast django -f examples/brew.yaml -o ./out \
 - `NETBOX_TOKEN`
 - `NAUTOBOT_URL`
 - `NAUTOBOT_TOKEN`
+- `INFRAHUB_URL`
+- `INFRAHUB_TOKEN`
+- `GENERIC_CONFIG` (path to generic adapter config)
 - `PEERINGDB_API_KEY`
 - `ALEMBIC_STATE_BACKEND` (`local`/`file`/`postgres`, default: `local`)
 - `ALEMBIC_STATE_PATH` (optional local state file path override)

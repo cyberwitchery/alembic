@@ -16,24 +16,30 @@ the adapter requires:
 - `NAUTOBOT_URL`: the base URL of the nautobot instance.
 - `NAUTOBOT_TOKEN`: a valid API token.
 
-these can be provided via environment variables or CLI flags (`--nautobot-url`, `--nautobot-token`).
+these can be provided via environment variables or a backend config file, for example:
+
+```yaml
+backend: nautobot
+url: https://nautobot.example.com
+token: $NAUTOBOT_TOKEN
+```
 
 ## attrs mapping
 
-- `attrs` are sent as-is in create/update requests.
+- field routing is schema-driven: native fields are sent directly, and known custom fields are
+  bundled under `_custom_field_data`.
+- `tags` in `attrs` should be a list of strings; the adapter expands them to nautobot tag inputs.
 - nested references should be provided as alembic uids (string UUIDs). the adapter resolves those
   to nautobot UUIDs before sending requests.
 
-## projection data
+## custom fields and tags
 
-- `custom_fields` and `tags` are supported.
-- `local_context_data` is supported in both observation and apply phases.
-- custom fields are handled via the `_custom_field_data` attribute on nautobot objects.
-- tags are handled as a list of names or slug-like identifiers.
+- observe flattens `_custom_field_data` and `tags` into `attrs` for diffing and import.
+- on apply, custom fields and tags are only sent when the object type advertises support
+  via the `features` set.
 
-## features
+## custom objects
 
-- projection proposal (`--projection-propose`) is implemented.
-- local context data support is implemented.
-- schema-aware relation inversion in extraction: nested references are resolved to alembic UIDs
-  using schema information to determine target types and key fields.
+nautobot does not expose a core api for dynamic custom object types. schema types must
+exist as nautobot content types (core or app-provided). unknown types will error on
+observe/apply.

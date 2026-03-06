@@ -17,7 +17,7 @@ alembic/
 ## project status
 
 - **netbox**: stable
-- **nautobot**: stable (projection proposal supported)
+- **nautobot**: stable
 - **generic rest**: initial release (spec-driven)
 - **peeringdb**: read-only
 
@@ -25,9 +25,9 @@ alembic/
 
 - deterministic plan/apply pipeline
 - schema-required ir with typed references
-- projection support (custom fields/tags/local context)
+- adapter-managed custom fields and tags
 - interactive apply mode (`--interactive`)
-- django cast generation
+- django scaffold generation via `alembic cast django`
 
 ## build
 
