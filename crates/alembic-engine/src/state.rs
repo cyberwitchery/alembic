@@ -225,7 +225,7 @@ impl StateBackend for PostgresBackend {
         client
             .execute(
                 "INSERT INTO alembic_state (state_key, payload, updated_at)
-                 VALUES ($1, $2::jsonb, NOW())
+                 VALUES ($1, CAST($2 AS TEXT)::jsonb, NOW())
                  ON CONFLICT (state_key)
                  DO UPDATE SET payload = EXCLUDED.payload, updated_at = NOW()",
                 &[&self.key, &payload],
