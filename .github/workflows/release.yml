@@ -68,6 +68,26 @@ jobs:
           find "$GITHUB_WORKSPACE" -type f -name "sbom-${{ github.ref_name }}-*.cdx.json" \
             -exec mv {} /tmp/alembic-sbom/ \;
 
+      - name: prepare release notes from changelog
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          out="${RUNNER_TEMP}/release-notes.md"
+          if [ -f alembic/CHANGELOG.md ]; then base="$GITHUB_WORKSPACE/alembic"; else base="$GITHUB_WORKSPACE"; fi
+          changelog="${base}/CHANGELOG.md"
+          awk -v version="$version" '
+            BEGIN { in_section = 0 }
+            $0 ~ "^## \\[" version "\\]" { in_section = 1; print; next }
+            $0 ~ "^## " version "([[:space:]]|$|-)" { in_section = 1; print; next }
+            $0 ~ "^## " && in_section { exit }
+            in_section { print }
+          ' "$changelog" > "$out"
+          if [ ! -s "$out" ]; then
+            echo "release notes for version $version not found in $changelog" >&2
+            exit 1
+          fi
+
       - name: upload sbom
         uses: actions/upload-artifact@v4
         with:
@@ -78,6 +98,7 @@ jobs:
       - name: attach sbom to release
         uses: softprops/action-gh-release@v2
         with:
+          body_path: ${{ runner.temp }}/release-notes.md
           files: /tmp/alembic-sbom/sbom-${{ github.ref_name }}-*.cdx.json
 
       - name: publish alembic-core

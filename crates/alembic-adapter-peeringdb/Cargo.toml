@@ -1,7 +1,13 @@
 [package]
 name = "alembic-adapter-peeringdb"
 version = "0.1.0"
-edition = "2021"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/alembic-adapter-peeringdb"
+description = "PeeringDB adapter for Alembic."
+readme = "../../README.md"
 
 [dependencies]
 alembic-core = { path = "../alembic-core" }
