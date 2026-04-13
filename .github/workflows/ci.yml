@@ -36,11 +36,12 @@ jobs:
           if [ -f alembic/Cargo.toml ]; then cd alembic; fi
           cargo clippy --workspace --all-targets --all-features -- -D warnings
 
-      - name: Security audit
+      - uses: taiki-e/install-action@cargo-deny
+
+      - name: cargo-deny
         run: |
           if [ -f alembic/Cargo.toml ]; then cd alembic; fi
-          cargo install cargo-audit --locked
-          cargo audit
+          cargo deny check
 
   coverage:
     name: coverage
