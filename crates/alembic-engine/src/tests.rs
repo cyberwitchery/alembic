@@ -893,7 +893,7 @@ fn build_plan_creates_ops() {
     )]);
     let adapter = TestAdapter {
         observed: ObservedState::default(),
-        report: ApplyReport { applied: vec![] },
+        report: ApplyReport::default(),
     };
     let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
     let plan =
@@ -918,7 +918,7 @@ fn build_plan_bootstraps_state_by_key() {
     });
     let adapter = TestAdapter {
         observed,
-        report: ApplyReport { applied: vec![] },
+        report: ApplyReport::default(),
     };
     let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
     let plan =
@@ -955,7 +955,7 @@ fn build_plan_reobserves_after_bootstrap() {
             _ops: &[Op],
             _state: &StateStore,
         ) -> anyhow::Result<ApplyReport> {
-            Ok(ApplyReport { applied: vec![] })
+            Ok(ApplyReport::default())
         }
     }
 
@@ -1008,7 +1008,7 @@ fn build_plan_observes_all_schema_types() {
             _ops: &[Op],
             _state: &StateStore,
         ) -> anyhow::Result<ApplyReport> {
-            Ok(ApplyReport { applied: vec![] })
+            Ok(ApplyReport::default())
         }
     }
 
@@ -1041,7 +1041,7 @@ fn build_plan_observes_all_schema_types() {
 fn apply_plan_blocks_deletes_without_flag() {
     let adapter = TestAdapter {
         observed: ObservedState::default(),
-        report: ApplyReport { applied: vec![] },
+        report: ApplyReport::default(),
     };
     let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
     let plan = Plan {
@@ -1070,6 +1070,7 @@ fn apply_plan_updates_state() {
                 type_name: t("dcim.site"),
                 backend_id: Some(BackendId::Int(55)),
             }],
+            ..Default::default()
         },
     };
     let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
