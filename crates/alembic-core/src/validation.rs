@@ -9,6 +9,7 @@ use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::net::IpAddr;
+use std::sync::OnceLock;
 use thiserror::Error;
 
 /// validation errors emitted during graph validation.
@@ -518,16 +519,22 @@ fn validate_string_constraints(
     }
 }
 
+fn slug_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"^[a-z0-9]+(?:[a-z0-9_-]*[a-z0-9])?$").unwrap())
+}
+
+fn mac_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$").unwrap())
+}
+
 fn matches_format(format: &FieldFormat, raw: &str) -> bool {
     match format {
-        FieldFormat::Slug => Regex::new(r"^[a-z0-9]+(?:[a-z0-9_-]*[a-z0-9])?$")
-            .map(|re| re.is_match(raw))
-            .unwrap_or(false),
+        FieldFormat::Slug => slug_regex().is_match(raw),
         FieldFormat::IpAddress => raw.parse::<IpAddr>().is_ok(),
         FieldFormat::Cidr | FieldFormat::Prefix => raw.parse::<IpNet>().is_ok(),
-        FieldFormat::Mac => Regex::new(r"^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$")
-            .map(|re| re.is_match(raw))
-            .unwrap_or(false),
+        FieldFormat::Mac => mac_regex().is_match(raw),
         FieldFormat::Uuid => Uid::parse_str(raw).is_ok(),
     }
 }
