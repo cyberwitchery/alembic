@@ -237,7 +237,10 @@ impl Adapter for NautobotAdapter {
             }
         }
 
-        Ok(ApplyReport { applied })
+        Ok(ApplyReport {
+            applied,
+            ..Default::default()
+        })
     }
 
     async fn ensure_schema(&self, schema: &Schema) -> Result<ProvisionReport> {

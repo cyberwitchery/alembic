@@ -420,7 +420,10 @@ impl Adapter for GenericAdapter {
             }
         }
 
-        Ok(ApplyReport { applied })
+        Ok(ApplyReport {
+            applied,
+            ..Default::default()
+        })
     }
 }
 

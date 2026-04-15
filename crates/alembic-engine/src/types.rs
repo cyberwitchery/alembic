@@ -180,10 +180,13 @@ pub struct AppliedOp {
 }
 
 /// aggregated apply report.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ApplyReport {
     /// list of operations applied by the adapter.
     pub applied: Vec<AppliedOp>,
+    /// schema provisioning report (populated when ensure_schema runs).
+    #[serde(default)]
+    pub provision: ProvisionReport,
 }
 
 /// report from ensure_schema provisioning.
@@ -211,6 +214,52 @@ pub struct ProvisionReport {
     /// object fields deleted on the backend.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub deleted_object_fields: Vec<String>,
+}
+
+impl ProvisionReport {
+    pub fn is_empty(&self) -> bool {
+        self.created_fields.is_empty()
+            && self.created_tags.is_empty()
+            && self.created_object_types.is_empty()
+            && self.created_object_fields.is_empty()
+            && self.deprecated_object_types.is_empty()
+            && self.deprecated_object_fields.is_empty()
+            && self.deleted_object_types.is_empty()
+            && self.deleted_object_fields.is_empty()
+    }
+}
+
+impl fmt::Display for ProvisionReport {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.is_empty() {
+            return write!(f, "no schema changes");
+        }
+
+        let mut first = true;
+        let sections: &[(&str, &[String])] = &[
+            ("fields created", &self.created_fields),
+            ("tags created", &self.created_tags),
+            ("object types created", &self.created_object_types),
+            ("object fields created", &self.created_object_fields),
+            ("object types deprecated", &self.deprecated_object_types),
+            ("object fields deprecated", &self.deprecated_object_fields),
+            ("object types deleted", &self.deleted_object_types),
+            ("object fields deleted", &self.deleted_object_fields),
+        ];
+
+        for (label, items) in sections {
+            if items.is_empty() {
+                continue;
+            }
+            if !first {
+                write!(f, ", ")?;
+            }
+            write!(f, "{} {label}", items.len())?;
+            first = false;
+        }
+
+        Ok(())
+    }
 }
 
 /// adapter contract for backend-specific io.

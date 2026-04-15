@@ -590,7 +590,10 @@ impl Adapter for InfrahubAdapter {
             applied.push(self.apply_delete(&op, schema, &resolved).await?);
         }
 
-        Ok(ApplyReport { applied })
+        Ok(ApplyReport {
+            applied,
+            ..Default::default()
+        })
     }
 
     async fn ensure_schema(&self, schema: &Schema) -> Result<ProvisionReport> {

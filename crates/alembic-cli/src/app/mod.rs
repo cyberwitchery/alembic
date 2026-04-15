@@ -159,7 +159,10 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
             let mut state = load_state().await?;
             let adapter = create_adapter(backend.as_deref(), backend_config)?;
             if provision {
-                adapter.ensure_schema(&inventory.schema).await?;
+                let provision_report = adapter.ensure_schema(&inventory.schema).await?;
+                if !provision_report.is_empty() {
+                    println!("provision: {provision_report}");
+                }
             }
 
             let plan = build_plan(adapter.as_ref(), &inventory, &mut state, allow_delete).await?;
@@ -241,10 +244,16 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
                 )
                 .await?;
                 state.save_async().await?;
+                if !report.provision.is_empty() {
+                    println!("provision: {}", report.provision);
+                }
                 println!("applied {} operations", report.applied.len());
             } else {
                 let report = apply_plan(adapter.as_ref(), &plan, &mut state, allow_delete).await?;
                 state.save_async().await?;
+                if !report.provision.is_empty() {
+                    println!("provision: {}", report.provision);
+                }
                 println!("applied {} operations", report.applied.len());
             }
         }

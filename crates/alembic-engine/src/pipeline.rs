@@ -49,10 +49,11 @@ pub(crate) async fn apply(
         }
     }
 
-    let _ = adapter.ensure_schema(&plan.schema).await?;
+    let provision = adapter.ensure_schema(&plan.schema).await?;
 
     let ordered = sort_ops_for_apply(&plan.ops);
-    let report = adapter.write(&plan.schema, &ordered, state).await?;
+    let mut report = adapter.write(&plan.schema, &ordered, state).await?;
+    report.provision = provision;
 
     for applied in &report.applied {
         if let Some(backend_id) = &applied.backend_id {
