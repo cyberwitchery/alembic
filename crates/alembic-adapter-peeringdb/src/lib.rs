@@ -3,8 +3,10 @@
 //! Uses the peeringdb-rs crate to fetch data from PeeringDB.
 //! Set the `PEERINGDB_API_KEY` environment variable to authenticate.
 
-use alembic_core::{JsonMap, Key, Schema, TypeName};
-use alembic_engine::{Adapter, ApplyReport, BackendId, ObservedObject, ObservedState, Op};
+use alembic_core::{JsonMap, Schema, TypeName};
+use alembic_engine::{
+    build_key_from_schema, Adapter, ApplyReport, BackendId, ObservedObject, ObservedState, Op,
+};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use serde::Serialize;
@@ -159,17 +161,6 @@ fn to_observed_objects<T: Serialize + HasId>(
     }
 
     Ok(objects)
-}
-
-fn build_key_from_schema(type_schema: &alembic_core::TypeSchema, attrs: &JsonMap) -> Result<Key> {
-    let mut map = BTreeMap::new();
-    for field in type_schema.key.keys() {
-        let Some(value) = attrs.get(field) else {
-            return Err(anyhow!("missing key field {field}"));
-        };
-        map.insert(field.clone(), value.clone());
-    }
-    Ok(Key::from(map))
 }
 
 #[cfg(test)]

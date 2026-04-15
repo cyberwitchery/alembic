@@ -2,8 +2,9 @@
 
 use alembic_core::{JsonMap, Key, Schema, TypeName, Uid};
 use alembic_engine::{
-    apply_non_delete_with_retries, Adapter, AdapterApplyError, AppliedOp, ApplyReport, BackendId,
-    ObservedObject, ObservedState, Op, RetryApplyDriver,
+    apply_non_delete_with_retries, build_key_from_schema, resolved_from_state, state_mappings,
+    Adapter, AdapterApplyError, AppliedOp, ApplyReport, BackendId, ObservedObject, ObservedState,
+    Op, RetryApplyDriver, StateMappings,
 };
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
@@ -438,52 +439,6 @@ fn resolve_path(value: &serde_json::Value, path: &str) -> Result<serde_json::Val
             .ok_or_else(|| anyhow!("path segment not found: {}", segment))?;
     }
     Ok(current.clone())
-}
-
-#[derive(Debug, Default, Clone)]
-struct StateMappings {
-    by_type: BTreeMap<String, BTreeMap<BackendId, Uid>>,
-}
-
-impl StateMappings {
-    fn uid_for(&self, type_name: &str, backend_id: &BackendId) -> Option<Uid> {
-        self.by_type
-            .get(type_name)
-            .and_then(|mapping| mapping.get(backend_id).copied())
-    }
-}
-
-fn state_mappings(state: &alembic_engine::StateStore) -> StateMappings {
-    let mut by_type = BTreeMap::new();
-    for (type_name, mapping) in state.all_mappings() {
-        let mut id_to_uid = BTreeMap::new();
-        for (uid, backend_id) in mapping {
-            id_to_uid.insert(backend_id.clone(), *uid);
-        }
-        by_type.insert(type_name.as_str().to_string(), id_to_uid);
-    }
-    StateMappings { by_type }
-}
-
-fn build_key_from_schema(type_schema: &alembic_core::TypeSchema, attrs: &JsonMap) -> Result<Key> {
-    let mut map = BTreeMap::new();
-    for field in type_schema.key.keys() {
-        let Some(value) = attrs.get(field) else {
-            return Err(anyhow!("missing key field {field}"));
-        };
-        map.insert(field.clone(), value.clone());
-    }
-    Ok(Key::from(map))
-}
-
-fn resolved_from_state(state: &alembic_engine::StateStore) -> BTreeMap<Uid, BackendId> {
-    let mut resolved = BTreeMap::new();
-    for mapping in state.all_mappings().values() {
-        for (uid, backend_id) in mapping {
-            resolved.insert(*uid, backend_id.clone());
-        }
-    }
-    resolved
 }
 
 fn normalize_attrs_refs(

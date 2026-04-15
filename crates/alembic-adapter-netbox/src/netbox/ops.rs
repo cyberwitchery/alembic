@@ -7,9 +7,9 @@ use alembic_core::{
     key_string, uid_v5, FieldSchema, FieldType, JsonMap, Key, Schema, TypeName, TypeSchema, Uid,
 };
 use alembic_engine::{
-    apply_non_delete_with_retries, build_key_from_schema as build_key_from_schema_common,
-    query_filters_from_key, Adapter, AdapterApplyError, AppliedOp, ApplyReport, BackendId,
-    ObservedObject, ObservedState, Op, ProvisionReport, RetryApplyDriver,
+    apply_non_delete_with_retries, build_key_from_schema, query_filters_from_key, Adapter,
+    AdapterApplyError, AppliedOp, ApplyReport, BackendId, ObservedObject, ObservedState, Op,
+    ProvisionReport, RetryApplyDriver,
 };
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
@@ -931,10 +931,6 @@ fn uid_from_key_fields(
     // Generate deterministic UID from type name and key
     let key = Key::from(key_map);
     Some(uid_v5(target, &key_string(&key)))
-}
-
-fn build_key_from_schema(type_schema: &TypeSchema, attrs: &JsonMap) -> Result<Key> {
-    build_key_from_schema_common(type_schema, attrs)
 }
 
 fn build_request_body(

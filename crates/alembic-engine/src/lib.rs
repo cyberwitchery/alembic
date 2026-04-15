@@ -11,6 +11,7 @@ mod pipeline;
 mod planner;
 mod retort;
 mod state;
+mod state_helpers;
 mod types;
 
 use alembic_core::{key_string, validate_inventory, Inventory, Object, ValidationReport};
@@ -34,6 +35,7 @@ pub use loader::load_brew;
 pub use planner::{plan, sort_ops_for_apply};
 pub use retort::{compile_retort, is_brew_format, load_raw_yaml, load_retort, Retort};
 pub use state::{PostgresTlsMode, StateData, StateStore};
+pub use state_helpers::{resolved_from_state, state_mappings, StateMappings};
 pub use types::{
     Adapter, AppliedOp, ApplyReport, BackendId, FieldChange, ObservedObject, ObservedState, Op,
     Plan, PlanSummary, ProvisionReport,
