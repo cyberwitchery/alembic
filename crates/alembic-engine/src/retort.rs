@@ -643,10 +643,7 @@ fn ancestor_path(raw: &YamlValue, path: &[PathToken], up: usize) -> Result<Vec<P
             return Err(anyhow!("relative path escapes above root"));
         }
         current.pop();
-        loop {
-            let Some(value) = value_at_path(raw, &current) else {
-                break;
-            };
+        while let Some(value) = value_at_path(raw, &current) {
             if matches!(value, YamlValue::Sequence(_)) {
                 if current.is_empty() {
                     break;

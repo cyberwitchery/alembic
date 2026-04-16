@@ -7,6 +7,7 @@ mod errors;
 pub mod external;
 mod extract;
 mod loader;
+pub mod mapping;
 mod pipeline;
 mod planner;
 mod retort;

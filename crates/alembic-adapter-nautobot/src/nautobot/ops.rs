@@ -1,4 +1,4 @@
-use super::mapping::{build_tag_inputs, custom_field_type_for_schema, slugify};
+use super::mapping::{build_tag_inputs, custom_field_type_for_schema, slugify, tags_from_value};
 use super::registry::ObjectTypeRegistry;
 use super::state::{resolved_from_state, state_mappings};
 use super::NautobotAdapter;
@@ -762,29 +762,6 @@ fn resolve_value_for_type(
     alembic_engine::resolve_value_for_type(field_type, value, resolved, |id| {
         Value::String(id.clone())
     })
-}
-
-fn tags_from_value(value: &Value) -> Result<Vec<String>> {
-    let items = match value {
-        Value::Array(items) => items,
-        Value::Null => return Ok(Vec::new()),
-        _ => return Err(anyhow!("tags must be an array")),
-    };
-    let mut tags = Vec::new();
-    for item in items {
-        match item {
-            Value::String(name) => tags.push(name.clone()),
-            Value::Object(map) => {
-                if let Some(Value::String(name)) = map.get("name") {
-                    tags.push(name.clone());
-                } else if let Some(Value::String(slug)) = map.get("slug") {
-                    tags.push(slug.clone());
-                }
-            }
-            _ => {}
-        }
-    }
-    Ok(tags)
 }
 
 fn query_from_key(
