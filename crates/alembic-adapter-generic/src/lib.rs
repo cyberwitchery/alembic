@@ -1,6 +1,6 @@
 //! generic rest adapter for alembic.
 
-use alembic_core::{JsonMap, Key, Schema, TypeName, Uid};
+use alembic_core::{JsonMap, Schema, TypeName, Uid};
 use alembic_engine::{
     apply_non_delete_with_retries, build_key_from_schema, resolved_from_state, state_mappings,
     Adapter, AdapterApplyError, AppliedOp, ApplyReport, BackendId, ObservedObject, ObservedState,
