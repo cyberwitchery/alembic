@@ -1,5 +1,5 @@
 use super::*;
-use alembic_core::{FieldSchema, FieldType, TypeSchema};
+use alembic_core::{FieldSchema, FieldType, Key, TypeSchema};
 use alembic_engine::{StateData, StateStore};
 use httpmock::prelude::*;
 use httpmock::Method::PATCH;
