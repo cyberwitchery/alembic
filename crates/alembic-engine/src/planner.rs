@@ -25,8 +25,7 @@ pub fn plan(
     }
 
     let mut desired_sorted = desired.to_vec();
-    desired_sorted
-        .sort_by(|a, b| op_sort_key(&a.type_name, &a.key).cmp(&op_sort_key(&b.type_name, &b.key)));
+    desired_sorted.sort_by_key(|a| op_sort_key(&a.type_name, &a.key));
 
     for object in desired_sorted.iter() {
         let observed_object = state
