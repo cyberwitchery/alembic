@@ -22,7 +22,11 @@ impl NautobotClient {
         nautobot::Resource::new(self.client.clone(), path)
     }
 
-    pub(super) async fn list_all<T>(&self, resource: &nautobot::Resource<T>, query: Option<QueryBuilder>) -> Result<Vec<T>>
+    pub(super) async fn list_all<T>(
+        &self,
+        resource: &nautobot::Resource<T>,
+        query: Option<QueryBuilder>,
+    ) -> Result<Vec<T>>
     where
         T: DeserializeOwned,
     {
