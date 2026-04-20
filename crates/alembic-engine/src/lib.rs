@@ -2,7 +2,6 @@
 
 mod adapter_ops;
 mod apply_retry;
-mod django;
 mod errors;
 pub mod external;
 mod extract;
@@ -24,7 +23,6 @@ pub use adapter_ops::{
     build_key_from_schema, build_request_body, query_filters_from_key, resolve_value_for_type,
 };
 pub use apply_retry::{apply_non_delete_with_retries, RetryApplyDriver, RetryApplyResult};
-pub use django::{emit_django_app, DjangoEmitOptions};
 pub use errors::AdapterApplyError;
 pub use external::{
     run_external_adapter, ExternalAdapter, ExternalEnvelope, ExternalObject, ExternalRequest,

@@ -15,7 +15,6 @@ fra1,leaf02
 ## retort
 
 ```yaml
-version: 1
 schema:
   types:
     dcim.site:

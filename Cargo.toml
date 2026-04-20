@@ -10,6 +10,7 @@ members = [
   "crates/alembic-cli",
   "crates/alembic-adapter-generic",
   "crates/alembic-adapter-peeringdb",
+  "crates/alembic-django",
 ]
 
 [workspace.package]
@@ -27,6 +28,7 @@ alembic-adapter-nautobot = { version = "0.1.2", path = "crates/alembic-adapter-n
 alembic-adapter-infrahub = { version = "0.1.2", path = "crates/alembic-adapter-infrahub" }
 alembic-adapter-generic = { version = "0.1.2", path = "crates/alembic-adapter-generic" }
 alembic-adapter-peeringdb = { version = "0.1.2", path = "crates/alembic-adapter-peeringdb" }
+alembic-django = { version = "0.1.2", path = "crates/alembic-django" }
 anyhow = "1"
 async-trait = "0.1"
 clap = { version = "4", features = ["derive"] }

@@ -1,4 +1,3 @@
-version: 1
 backend: netbox
 rules:
   - name: model_to_custom_fields_devices

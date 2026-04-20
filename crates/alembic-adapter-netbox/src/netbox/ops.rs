@@ -7,9 +7,9 @@ use alembic_core::{
     key_string, uid_v5, FieldSchema, FieldType, JsonMap, Key, Schema, TypeName, TypeSchema, Uid,
 };
 use alembic_engine::{
-    apply_non_delete_with_retries, build_key_from_schema as build_key_from_schema_common,
-    query_filters_from_key, Adapter, AdapterApplyError, AppliedOp, ApplyReport, BackendId,
-    ObservedObject, ObservedState, Op, ProvisionReport, RetryApplyDriver,
+    apply_non_delete_with_retries, build_key_from_schema, query_filters_from_key, Adapter,
+    AdapterApplyError, AppliedOp, ApplyReport, BackendId, ObservedObject, ObservedState, Op,
+    ProvisionReport, RetryApplyDriver,
 };
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
@@ -933,10 +933,6 @@ fn uid_from_key_fields(
     Some(uid_v5(target, &key_string(&key)))
 }
 
-fn build_key_from_schema(type_schema: &TypeSchema, attrs: &JsonMap) -> Result<Key> {
-    build_key_from_schema_common(type_schema, attrs)
-}
-
 fn build_request_body(
     type_name: &TypeName,
     type_schema: &TypeSchema,
@@ -1588,31 +1584,6 @@ mod test_normalization {
         let uid3 = uid_from_key_fields(&nested2, "dcim.device", &schema, &registry, &mappings);
         assert!(uid3.is_some());
         assert_ne!(uid, uid3);
-    }
-
-    #[test]
-    fn test_build_key_from_schema() {
-        let mut types = BTreeMap::new();
-        types.insert(
-            "name".to_string(),
-            FieldSchema {
-                r#type: alembic_core::FieldType::String,
-                required: true,
-                nullable: false,
-                description: None,
-                format: None,
-                pattern: None,
-            },
-        );
-        let type_schema = TypeSchema {
-            key: types,
-            fields: BTreeMap::new(),
-        };
-        let mut attrs = JsonMap::default();
-        attrs.insert("name".to_string(), json!("leaf01"));
-
-        let key = build_key_from_schema(&type_schema, &attrs).unwrap();
-        assert_eq!(key.get("name").unwrap(), &json!("leaf01"));
     }
 
     #[test]

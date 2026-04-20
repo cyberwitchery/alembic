@@ -3,7 +3,6 @@
 # This demonstrates emitting multiple objects from a single yaml element,
 # such as creating a site, vrf, and route targets from one fabric definition.
 
-version: 1
 schema:
   types:
     dcim.site:

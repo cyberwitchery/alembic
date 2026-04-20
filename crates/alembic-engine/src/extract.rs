@@ -78,7 +78,7 @@ mod tests {
             _ops: &[crate::Op],
             _state: &crate::state::StateStore,
         ) -> anyhow::Result<crate::ApplyReport> {
-            unimplemented!("not used in import tests")
+            panic!("write not used in import tests")
         }
     }
 

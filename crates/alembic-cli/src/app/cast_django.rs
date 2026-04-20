@@ -1,5 +1,5 @@
 use super::io::load_brew_only;
-use alembic_engine::DjangoEmitOptions;
+use alembic_django::DjangoEmitOptions;
 use anyhow::{anyhow, Context, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -78,7 +78,7 @@ pub(super) fn run_cast_django(runner: &dyn Runner, config: CastDjangoConfig) -> 
     let options = DjangoEmitOptions {
         emit_admin: !config.no_admin,
     };
-    alembic_engine::emit_django_app(&app_dir, &inventory, options)?;
+    alembic_django::emit_django_app(&app_dir, &inventory, options)?;
     ensure_installed_apps_entries(output_dir, project_name, &["rest_framework", app_name])?;
     ensure_project_urls(output_dir, project_name, app_name)?;
     run_manage_check(runner, output_dir, &config.python)?;
