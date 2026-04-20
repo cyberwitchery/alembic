@@ -505,7 +505,7 @@ mod tests {
     }
 
     #[test]
-    fn sort_ops_deletes_reversed() {
+    fn sort_ops_deletes_last() {
         let ops = vec![
             Op::Delete {
                 uid: Uid::from_u128(1),
@@ -521,11 +521,12 @@ mod tests {
             },
         ];
         let sorted = sort_ops_for_apply(&ops);
+        // Both deletes come last, sorted alphabetically by type
         assert!(
-            matches!(&sorted[0], Op::Delete { type_name, .. } if type_name.as_str() == "z.type")
+            matches!(&sorted[0], Op::Delete { type_name, .. } if type_name.as_str() == "a.type")
         );
         assert!(
-            matches!(&sorted[1], Op::Delete { type_name, .. } if type_name.as_str() == "a.type")
+            matches!(&sorted[1], Op::Delete { type_name, .. } if type_name.as_str() == "z.type")
         );
     }
 
