@@ -5,7 +5,6 @@ retort is a small mapping layer that compiles raw yaml into the canonical ir. it
 ## shape
 
 ```yaml
-version: 1
 schema:
   types:
     dcim.site:

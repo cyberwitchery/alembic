@@ -18,6 +18,8 @@ local file storage at `.alembic/state.json`, and can also use a postgres backend
 }
 ```
 
+The uid (uuid) is always a string. the backend id can be either an integer (e.g., NetBox) or a string (e.g., Nautobot using UUIDs).
+
 ## behavior
 
 - used as the primary match during planning and apply.

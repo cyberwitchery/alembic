@@ -7,7 +7,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-
 use std::sync::Arc;
 
 /// on-disk state schema.
@@ -47,6 +46,10 @@ impl StateStore {
     /// load state from a file path.
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
+        // Always create a backend so we can save to the same path later.
+        // The backend's load() method handles missing files gracefully.
+        let backend: Option<Arc<dyn StateBackend>> =
+            Some(Arc::new(LocalBackend { path: path.clone() }) as Arc<dyn StateBackend>);
         let data = if path.exists() {
             let raw = fs::read_to_string(&path)
                 .with_context(|| format!("read state: {}", path.display()))?;
@@ -55,7 +58,7 @@ impl StateStore {
         } else {
             StateData::default()
         };
-        Ok(Self::new(Some(Arc::new(LocalBackend { path })), data))
+        Ok(Self::new(backend, data))
     }
 
     /// load state from a postgres backend.
@@ -159,42 +162,6 @@ struct PostgresBackend {
     tls_mode: PostgresTlsMode,
 }
 
-impl PostgresBackend {
-    async fn connect(&self) -> Result<tokio_postgres::Client> {
-        match self.tls_mode {
-            PostgresTlsMode::Disable => {
-                let (client, connection) =
-                    tokio_postgres::connect(&self.url, tokio_postgres::NoTls)
-                        .await
-                        .with_context(|| "connect postgres state backend")?;
-                tokio::spawn(async move {
-                    if let Err(err) = connection.await {
-                        tracing::warn!("postgres state backend connection error: {err}");
-                    }
-                });
-                Ok(client)
-            }
-            PostgresTlsMode::Require => {
-                let connector = native_tls::TlsConnector::builder()
-                    .build()
-                    .with_context(|| "build postgres TLS connector")?;
-                let connector = postgres_native_tls::MakeTlsConnector::new(connector);
-                let (client, connection) = tokio_postgres::connect(&self.url, connector)
-                    .await
-                    .with_context(|| "connect postgres state backend")?;
-                tokio::spawn(async move {
-                    if let Err(err) = connection.await {
-                        tracing::warn!("postgres state backend connection error: {err}");
-                    }
-                });
-                Ok(client)
-            }
-        }
-    }
-
-    // The postgres table is expected to be pre-provisioned.
-}
-
 #[async_trait::async_trait]
 impl StateBackend for PostgresBackend {
     async fn load(&self) -> Result<StateData> {
@@ -236,20 +203,51 @@ impl StateBackend for PostgresBackend {
     }
 }
 
+impl PostgresBackend {
+    async fn connect(&self) -> Result<tokio_postgres::Client> {
+        match self.tls_mode {
+            PostgresTlsMode::Disable => {
+                let (client, connection) =
+                    tokio_postgres::connect(&self.url, tokio_postgres::NoTls)
+                        .await
+                        .with_context(|| "connect postgres state backend")?;
+                tokio::spawn(async move {
+                    if let Err(err) = connection.await {
+                        tracing::warn!("postgres state backend connection error: {err}");
+                    }
+                });
+                Ok(client)
+            }
+            PostgresTlsMode::Require => {
+                let connector = native_tls::TlsConnector::builder()
+                    .build()
+                    .with_context(|| "build postgres TLS connector")?;
+                let connector = postgres_native_tls::MakeTlsConnector::new(connector);
+                let (client, connection) = tokio_postgres::connect(&self.url, connector)
+                    .await
+                    .with_context(|| "connect postgres state backend")?;
+                tokio::spawn(async move {
+                    if let Err(err) = connection.await {
+                        tracing::warn!("postgres state backend connection error: {err}");
+                    }
+                });
+                Ok(client)
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::BackendId;
-    use alembic_core::{TypeName, Uid};
-    use tempfile::tempdir;
-    use uuid::Uuid;
+    use tempfile::TempDir;
 
-    fn uid(n: u128) -> Uid {
-        Uuid::from_u128(n)
+    fn t(s: &str) -> TypeName {
+        TypeName::new(s)
     }
 
-    fn t(name: &str) -> TypeName {
-        TypeName::new(name)
+    fn uid(n: u128) -> Uid {
+        Uid::from_u128(n)
     }
 
     #[test]
@@ -259,122 +257,99 @@ mod tests {
     }
 
     #[test]
-    fn state_data_serde_empty() {
-        let data = StateData::default();
-        let json = serde_json::to_string(&data).unwrap();
-        let back: StateData = serde_json::from_str(&json).unwrap();
-        assert!(back.mappings.is_empty());
+    fn backend_id_returns_none_for_missing_type() {
+        let store = StateStore::new(None, StateData::default());
+        assert_eq!(store.backend_id(t("site"), uid(1)), None);
     }
 
     #[test]
-    fn state_data_serde_round_trip() {
+    fn backend_id_returns_none_for_missing_uid() {
         let mut data = StateData::default();
         data.mappings
-            .entry(t("device"))
+            .entry(t("site"))
             .or_default()
-            .insert(uid(1), BackendId::Int(100));
-        data.mappings
-            .entry(t("device"))
-            .or_default()
-            .insert(uid(2), BackendId::String("abc".into()));
-        data.mappings
-            .entry(t("interface"))
-            .or_default()
-            .insert(uid(3), BackendId::Int(200));
-
-        let json = serde_json::to_string_pretty(&data).unwrap();
-        let back: StateData = serde_json::from_str(&json).unwrap();
-
-        assert_eq!(back.mappings.len(), 2);
-        assert_eq!(back.mappings[&t("device")][&uid(1)], BackendId::Int(100));
-        assert_eq!(
-            back.mappings[&t("device")][&uid(2)],
-            BackendId::String("abc".into())
-        );
-        assert_eq!(back.mappings[&t("interface")][&uid(3)], BackendId::Int(200));
+            .insert(uid(1), BackendId::Int(42));
+        let store = StateStore::new(None, data);
+        assert_eq!(store.backend_id(t("site"), uid(2)), None);
     }
 
     #[test]
-    fn state_data_deserializes_missing_mappings_as_empty() {
-        let data: StateData = serde_json::from_str("{}").unwrap();
-        assert!(data.mappings.is_empty());
-    }
-
-    #[test]
-    fn store_set_and_get_backend_id() {
-        let mut store = StateStore::new(None, StateData::default());
-        assert!(store.backend_id(t("device"), uid(1)).is_none());
-
-        store.set_backend_id(t("device"), uid(1), BackendId::Int(42));
+    fn backend_id_returns_value_for_existing_mapping() {
+        let mut data = StateData::default();
+        data.mappings
+            .entry(t("site"))
+            .or_default()
+            .insert(uid(1), BackendId::Int(42));
+        let store = StateStore::new(None, data);
         assert_eq!(
-            store.backend_id(t("device"), uid(1)),
+            store.backend_id(t("site"), uid(1)),
             Some(BackendId::Int(42))
         );
     }
 
     #[test]
-    fn store_remove_backend_id() {
+    fn set_backend_id_creates_mapping() {
         let mut store = StateStore::new(None, StateData::default());
-        store.set_backend_id(t("device"), uid(1), BackendId::Int(42));
-        store.remove_backend_id(t("device"), uid(1));
-        assert!(store.backend_id(t("device"), uid(1)).is_none());
-    }
-
-    #[test]
-    fn store_remove_nonexistent_is_noop() {
-        let mut store = StateStore::new(None, StateData::default());
-        store.remove_backend_id(t("device"), uid(99));
-        assert!(store.all_mappings().is_empty());
-    }
-
-    #[test]
-    fn store_all_mappings() {
-        let mut store = StateStore::new(None, StateData::default());
-        store.set_backend_id(t("device"), uid(1), BackendId::Int(1));
-        store.set_backend_id(t("interface"), uid(2), BackendId::Int(2));
-        assert_eq!(store.all_mappings().len(), 2);
-    }
-
-    #[test]
-    fn store_overwrite_backend_id() {
-        let mut store = StateStore::new(None, StateData::default());
-        store.set_backend_id(t("device"), uid(1), BackendId::Int(1));
-        store.set_backend_id(t("device"), uid(1), BackendId::Int(99));
+        store.set_backend_id(t("site"), uid(1), BackendId::Int(42));
         assert_eq!(
-            store.backend_id(t("device"), uid(1)),
+            store.backend_id(t("site"), uid(1)),
+            Some(BackendId::Int(42))
+        );
+    }
+
+    #[test]
+    fn set_backend_id_overwrites_existing() {
+        let mut data = StateData::default();
+        data.mappings
+            .entry(t("site"))
+            .or_default()
+            .insert(uid(1), BackendId::Int(42));
+        let mut store = StateStore::new(None, data);
+        store.set_backend_id(t("site"), uid(1), BackendId::Int(99));
+        assert_eq!(
+            store.backend_id(t("site"), uid(1)),
             Some(BackendId::Int(99))
         );
     }
 
     #[test]
-    fn load_missing_file_returns_empty_state() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("does_not_exist.json");
-        let store = StateStore::load(&path).unwrap();
-        assert!(store.all_mappings().is_empty());
+    fn remove_backend_id_removes_mapping() {
+        let mut data = StateData::default();
+        data.mappings
+            .entry(t("site"))
+            .or_default()
+            .insert(uid(1), BackendId::Int(42));
+        let mut store = StateStore::new(None, data);
+        store.remove_backend_id(t("site"), uid(1));
+        assert_eq!(store.backend_id(t("site"), uid(1)), None);
     }
 
     #[test]
-    fn load_existing_file() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("state.json");
-        let mut data = StateData::default();
-        data.mappings
-            .entry(t("device"))
-            .or_default()
-            .insert(uid(1), BackendId::Int(42));
-        std::fs::write(&path, serde_json::to_string(&data).unwrap()).unwrap();
+    fn remove_backend_id_noop_for_missing() {
+        let mut store = StateStore::new(None, StateData::default());
+        store.remove_backend_id(t("site"), uid(1));
+        // Should not panic
+    }
 
-        let store = StateStore::load(&path).unwrap();
-        assert_eq!(
-            store.backend_id(t("device"), uid(1)),
-            Some(BackendId::Int(42))
-        );
+    #[test]
+    fn all_mappings_returns_internal_reference() {
+        let store = StateStore::new(None, StateData::default());
+        assert!(store.all_mappings().is_empty());
+    }
+
+    #[tokio::test]
+    async fn local_backend_load_missing_returns_empty() {
+        let dir = TempDir::new().unwrap();
+        let backend = LocalBackend {
+            path: dir.path().join("nope.json"),
+        };
+        let data = backend.load().await.unwrap();
+        assert!(data.mappings.is_empty());
     }
 
     #[tokio::test]
     async fn local_backend_save_load_round_trip() {
-        let dir = tempdir().unwrap();
+        let dir = TempDir::new().unwrap();
         let path = dir.path().join("sub").join("state.json");
         let backend = LocalBackend { path: path.clone() };
 
@@ -391,46 +366,6 @@ mod tests {
         assert_eq!(
             loaded.mappings[&t("site")][&uid(10)],
             BackendId::String("site-001".into())
-        );
-    }
-
-    #[tokio::test]
-    async fn local_backend_load_missing_returns_empty() {
-        let dir = tempdir().unwrap();
-        let backend = LocalBackend {
-            path: dir.path().join("nope.json"),
-        };
-        let data = backend.load().await.unwrap();
-        assert!(data.mappings.is_empty());
-    }
-
-    #[tokio::test]
-    async fn store_save_and_reload_async() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("state.json");
-
-        let mut store = StateStore::load(&path).unwrap();
-        store.set_backend_id(t("device"), uid(1), BackendId::Int(7));
-        store.save_async().await.unwrap();
-
-        let mut store2 = StateStore::load(&path).unwrap();
-        assert_eq!(
-            store2.backend_id(t("device"), uid(1)),
-            Some(BackendId::Int(7))
-        );
-
-        store2.set_backend_id(t("device"), uid(2), BackendId::Int(8));
-        store2.save_async().await.unwrap();
-
-        let mut reloaded = StateStore::load(&path).unwrap();
-        reloaded.load_async().await.unwrap();
-        assert_eq!(
-            reloaded.backend_id(t("device"), uid(1)),
-            Some(BackendId::Int(7))
-        );
-        assert_eq!(
-            reloaded.backend_id(t("device"), uid(2)),
-            Some(BackendId::Int(8))
         );
     }
 

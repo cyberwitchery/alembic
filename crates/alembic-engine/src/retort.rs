@@ -828,7 +828,6 @@ sites:
         );
         let retort = parse_yaml(
             r#"
-version: 1
 schema:
   types:
     dcim.site:
@@ -940,7 +939,6 @@ fabrics:
         );
         let retort = parse_yaml(
             r#"
-version: 1
 schema:
   types:
     dcim.site:
@@ -998,7 +996,6 @@ fabrics:
         );
         let retort = parse_yaml(
             r#"
-version: 1
 schema:
   types:
     dcim.site:
@@ -1086,7 +1083,6 @@ fabrics:
         );
         let retort = parse_yaml(
             r#"
-version: 1
 schema:
   types:
     dcim.site:
@@ -1146,7 +1142,6 @@ items:
         );
         let retort = parse_yaml(
             r#"
-version: 1
 schema:
   types:
     custom.first:
