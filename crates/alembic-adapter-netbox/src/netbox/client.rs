@@ -45,11 +45,7 @@ impl NetBoxClient {
         Ok(Self { client })
     }
 
-    pub(super) async fn list_all<T>(
-        &self,
-        resource: &netbox::Resource<T>,
-        query: Option<QueryBuilder>,
-    ) -> Result<Vec<T>>
+    pub(super) async fn list_all<T>(&self, resource: &netbox::Resource<T>, query: Option<QueryBuilder>) -> Result<Vec<T>>
     where
         T: DeserializeOwned,
     {

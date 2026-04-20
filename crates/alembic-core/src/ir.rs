@@ -528,7 +528,7 @@ pub struct TypeSchema {
 }
 
 /// collection of schema definitions.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Schema {
     #[serde(default)]
     pub types: BTreeMap<String, TypeSchema>,

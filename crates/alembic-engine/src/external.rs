@@ -118,9 +118,6 @@ pub trait ExternalAdapter {
 pub fn run_external_adapter<A: ExternalAdapter>(mut adapter: A) -> io::Result<()> {
     let mut input = String::new();
     io::stdin().read_to_string(&mut input)?;
-    if input.trim().is_empty() {
-        return Ok(());
-    }
 
     let envelope: ExternalEnvelope = match serde_json::from_str(&input) {
         Ok(envelope) => envelope,

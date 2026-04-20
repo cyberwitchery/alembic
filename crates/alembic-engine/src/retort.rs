@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 #[derive(Debug, Deserialize)]
 pub struct Retort {
-    pub version: u32,
+    #[serde(default)]
     pub schema: Schema,
     #[serde(default)]
     pub rules: Vec<Rule>,
@@ -118,10 +118,6 @@ pub fn is_brew_format(raw: &YamlValue) -> bool {
 }
 
 pub fn compile_retort(raw: &YamlValue, retort: &Retort) -> Result<Inventory> {
-    if retort.version != 1 {
-        return Err(anyhow!("retort version {} is unsupported", retort.version));
-    }
-
     let mut objects = Vec::new();
 
     for rule in &retort.rules {

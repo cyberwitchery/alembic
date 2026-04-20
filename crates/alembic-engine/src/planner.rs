@@ -138,21 +138,14 @@ fn op_order_key(op: &Op) -> (String, u8, String) {
 
 /// order operations for apply (creates/updates first, deletes last).
 pub fn sort_ops_for_apply(ops: &[Op]) -> Vec<Op> {
-    let mut creates_updates = Vec::new();
-    let mut deletes = Vec::new();
-
-    for op in ops {
+    let mut result: Vec<Op> = ops.to_vec();
+    result.sort_by_key(|op| {
         match op {
-            Op::Delete { .. } => deletes.push(op.clone()),
-            _ => creates_updates.push(op.clone()),
+            Op::Delete { .. } => (1u8, op_order_key(op)), // deletes last
+            _ => (0u8, op_order_key(op)),                 // creates/updates first
         }
-    }
-
-    creates_updates.sort_by_key(op_order_key);
-    deletes.sort_by_key(op_order_key);
-    deletes.reverse();
-
-    creates_updates.into_iter().chain(deletes).collect()
+    });
+    result
 }
 
 #[cfg(test)]

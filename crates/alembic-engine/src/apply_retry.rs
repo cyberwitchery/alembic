@@ -27,7 +27,7 @@ pub async fn apply_non_delete_with_retries(
 
     while !pending.is_empty() {
         let current = std::mem::take(&mut pending);
-        let current_len = current.len();
+        let applied_before = applied.len();
 
         for op in current {
             match driver.apply_non_delete(&op).await {
@@ -37,7 +37,8 @@ pub async fn apply_non_delete_with_retries(
             }
         }
 
-        if pending.len() == current_len {
+        // Only break if no progress was made (no items applied in this iteration)
+        if applied.len() == applied_before {
             break;
         }
     }

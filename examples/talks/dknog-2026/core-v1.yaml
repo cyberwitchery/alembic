@@ -1,0 +1,106 @@
+schema:
+  types:
+    dcim.site:
+      key:
+        slug:
+          type: slug
+      fields:
+        name:
+          type: string
+        slug:
+          type: slug
+        status:
+          type: string
+    dcim.device_role:
+      key:
+        slug:
+          type: slug
+      fields:
+        name:
+          type: string
+        slug:
+          type: slug
+    dcim.manufacturer:
+      key:
+        slug:
+          type: slug
+      fields:
+        name:
+          type: string
+        slug:
+          type: slug
+    dcim.device_type:
+      key:
+        slug:
+          type: slug
+      fields:
+        manufacturer:
+          type: ref
+          target: dcim.manufacturer
+        model:
+          type: string
+        slug:
+          type: slug
+    dcim.device:
+      key:
+        name:
+          type: slug
+      fields:
+        name:
+          type: string
+        site:
+          type: ref
+          target: dcim.site
+        role:
+          type: ref
+          target: dcim.device_role
+        device_type:
+          type: ref
+          target: dcim.device_type
+        status:
+          type: string
+objects:
+  - uid: "10000000-0000-0000-0000-000000000001"
+    type: dcim.site
+    key:
+      slug: "fra1"
+    attrs:
+      name: "FRA1"
+      slug: "fra1"
+      status: "active"
+
+  - uid: "10000000-0000-0000-0000-000000000002"
+    type: dcim.device_role
+    key:
+      slug: "leaf"
+    attrs:
+      name: "Leaf"
+      slug: "leaf"
+
+  - uid: "10000000-0000-0000-0000-000000000003"
+    type: dcim.manufacturer
+    key:
+      slug: "acme"
+    attrs:
+      name: "Acme Networks"
+      slug: "acme"
+
+  - uid: "10000000-0000-0000-0000-000000000004"
+    type: dcim.device_type
+    key:
+      slug: "leaf-48p"
+    attrs:
+      manufacturer: "10000000-0000-0000-0000-000000000003"
+      model: "Leaf 48p"
+      slug: "leaf-48p"
+
+  - uid: "10000000-0000-0000-0000-000000000005"
+    type: dcim.device
+    key:
+      name: "leaf01"
+    attrs:
+      name: "leaf01"
+      site: "10000000-0000-0000-0000-000000000001"
+      role: "10000000-0000-0000-0000-000000000002"
+      device_type: "10000000-0000-0000-0000-000000000004"
+      status: "active"

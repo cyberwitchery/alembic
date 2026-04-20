@@ -1,0 +1,22 @@
+version: 1
+backend: netbox
+rules:
+  - name: vm_hypervisor_to_custom_fields
+    on_type: virtualization.virtualmachine
+    from_attrs:
+      map:
+        "model.hypervisor_name": "hypervisor_name"
+        "model.hypervisor_cluster": "hypervisor_cluster"
+        "model.hypervisor_host": "hypervisor_host"
+        "model.workload_domain": "workload_domain"
+    to:
+      custom_fields:
+        strategy: explicit
+
+  - name: vm_model_tags
+    on_type: virtualization.virtualmachine
+    from_attrs:
+      key: "model.tags"
+    to:
+      tags:
+        source: value

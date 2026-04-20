@@ -22,12 +22,8 @@ pub(crate) async fn observe(
     }
     let types_vec: Vec<_> = types.into_iter().collect();
 
-    let mut observed = adapter.read(&inventory.schema, &types_vec, state).await?;
-    let bootstrapped = crate::bootstrap_state_from_observed(state, &inventory.objects, &observed);
-    if bootstrapped {
-        observed = adapter.read(&inventory.schema, &types_vec, state).await?;
-    }
-
+    let observed = adapter.read(&inventory.schema, &types_vec, state).await?;
+    crate::bootstrap_state_from_observed(state, &inventory.objects, &observed);
     Ok(observed)
 }
 
