@@ -7,12 +7,10 @@ mod state;
 
 use alembic_adapter_registry::create_adapter;
 use alembic_engine::{
-    apply_plan, build_plan, compile_retort, is_brew_format, load_raw_yaml, load_retort, Adapter,
-    Plan,
+    apply_plan, build_plan, compile_retort, is_brew_format, load_raw_yaml, load_retort, Plan,
 };
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand};
-use io::write_topology;
 use std::path::PathBuf;
 
 use self::cast_django::{run_cast_django, CastDjangoConfig, CommandRunner};
@@ -206,7 +204,7 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
             let inventory = load_inventory(&file, retort.as_deref())?;
             let _state = load_state().await?;
             let topology = ContainerlabAdapter::to_topology(&inventory);
-            write_topology(&output, &topology)?;
+            ContainerlabAdapter::write_topology(&output, &topology)?;
         }
         Command::Apply {
             plan,

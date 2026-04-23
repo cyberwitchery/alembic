@@ -1,5 +1,4 @@
 use super::diag::warn;
-use alembic_adapter_containerlab::Topology;
 use alembic_engine::{compile_retort, is_brew_format, load_brew, load_raw_yaml, load_retort, Plan};
 use anyhow::{anyhow, Context, Result};
 use std::fs;
@@ -24,11 +23,6 @@ pub(super) fn write_plan(path: &Path, plan: &Plan) -> Result<()> {
 pub(super) fn write_inventory(path: &Path, inventory: &alembic_core::Inventory) -> Result<()> {
     let raw = serde_json::to_string_pretty(inventory)?;
     fs::write(path, raw).with_context(|| format!("write ir: {}", path.display()))
-}
-
-pub(super) fn write_topology(path: &Path, topology: &Topology) -> Result<()> {
-    let raw = serde_yaml::to_string(topology)?;
-    fs::write(path, raw).with_context(|| format!("write topology: {}", path.display()))
 }
 
 pub(super) fn read_plan(path: &Path) -> Result<Plan> {

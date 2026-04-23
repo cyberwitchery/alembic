@@ -8,12 +8,15 @@ use alembic_engine::{
     apply_non_delete_with_retries, Adapter, AdapterApplyError, AppliedOp, ApplyReport, BackendId,
     ObservedObject, ObservedState, Op, RetryApplyDriver, StateStore,
 };
+use anyhow::Context;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::default;
+use std::fs;
+use std::path::Path;
 use std::sync::Arc;
 use url::Url;
 
@@ -33,6 +36,11 @@ impl ContainerlabAdapter {
         }
 
         topology
+    }
+
+    pub fn write_topology(path: &Path, topology: &Topology) -> Result<()> {
+        let raw = serde_yaml::to_string(topology)?;
+        fs::write(path, raw).with_context(|| format!("write topology: {}", path.display()))
     }
 }
 
@@ -76,7 +84,7 @@ impl Topology {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-struct Node {
+pub struct Node {
     kind: NodeKind,
     ty: NodeType,
     image: Option<url::Url>,
