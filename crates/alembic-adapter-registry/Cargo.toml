@@ -17,6 +17,7 @@ alembic-adapter-nautobot.workspace = true
 alembic-adapter-infrahub.workspace = true
 alembic-adapter-generic.workspace = true
 alembic-adapter-peeringdb.workspace = true
+alembic-adapter-containerlab.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 serde.workspace = true
