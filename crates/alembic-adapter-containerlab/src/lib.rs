@@ -96,6 +96,7 @@ impl Topology {
     }
 
     pub fn add_link(&mut self, link: Link) {
+        // TODO: disallow duplicate links (even when they go backwards?)
         self.links.insert(link);
     }
 }
@@ -104,15 +105,28 @@ impl Topology {
 pub struct Node {
     kind: NodeKind,
     ty: NodeType,
+    #[serde(skip_serializing_if = "Option::is_none")]
     image: Option<url::Url>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     image_pull_policy: Option<ImagePullPolicy>,
+    #[serde(skip_serializing_if = "is_default")]
     startup_config: std::path::PathBuf,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     binds: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     ports: Vec<String>,
+    #[serde(skip_serializing_if = "String::is_empty")]
     user: String,
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
     env: HashMap<String, String>,
+    #[serde(skip_serializing_if = "String::is_empty")]
     cmd: String,
+    #[serde(skip_serializing_if = "is_default")]
     restart_policy: RestartPolicy,
+}
+
+fn is_default<T: Default + PartialEq>(v: &T) -> bool {
+    *v == T::default()
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
