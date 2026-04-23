@@ -33,6 +33,7 @@ pub enum AdapterConfig {
     Infrahub(InfrahubConfig),
     Generic(GenericConfig),
     Peeringdb,
+    Containerlab,
     External(ExternalConfig),
 }
 
@@ -103,6 +104,7 @@ impl AdapterConfig {
             AdapterConfig::Infrahub(_) => "infrahub",
             AdapterConfig::Generic(_) => "generic",
             AdapterConfig::Peeringdb => "peeringdb",
+            AdapterConfig::Containerlab => "containerlab",
             AdapterConfig::External(_) => "external",
         }
     }
@@ -128,6 +130,7 @@ impl AdapterConfig {
                 config_path: None,
             })),
             "peeringdb" => Ok(AdapterConfig::Peeringdb),
+            "containerlab" => Ok(AdapterConfig::Containerlab),
             "external" => Ok(AdapterConfig::External(ExternalConfig {
                 command: None,
                 args: Vec::new(),
@@ -195,6 +198,9 @@ impl AdapterConfig {
             }
             AdapterConfig::Peeringdb => {
                 Ok(Box::new(alembic_adapter_peeringdb::PeeringDBAdapter::new()))
+            }
+            AdapterConfig::Containerlab => {
+                Ok(Box::new(alembic_adapter_containerlab::ContainerlabAdapter::new()))
             }
             AdapterConfig::External(cfg) => Ok(Box::new(ProcessAdapter::new(cfg)?)),
         }
