@@ -7,16 +7,19 @@ mod state;
 
 use alembic_adapter_registry::create_adapter;
 use alembic_engine::{
-    apply_plan, build_plan, compile_retort, is_brew_format, load_raw_yaml, load_retort, Plan,
+    apply_plan, build_plan, compile_retort, is_brew_format, load_raw_yaml, load_retort, Adapter,
+    Plan,
 };
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand};
+use io::write_topology;
 use std::path::PathBuf;
 
 use self::cast_django::{run_cast_django, CastDjangoConfig, CommandRunner};
 use self::diag::err;
 use self::io::{format_validation_errors, load_inventory, read_plan, write_inventory, write_plan};
 use self::state::load_state;
+use alembic_adapter_containerlab::ContainerlabAdapter;
 use alembic_core::TypeName;
 
 #[cfg(test)]
@@ -63,6 +66,18 @@ enum Command {
         dry_run: bool,
         #[arg(long, default_value_t = false)]
         allow_delete: bool,
+    },
+    Emit {
+        #[arg(short = 'f', long)]
+        file: PathBuf,
+        #[arg(long)]
+        retort: Option<PathBuf>,
+        #[arg(short = 'o', long)]
+        output: PathBuf,
+        #[arg(long)]
+        backend: Option<String>,
+        #[arg(long)]
+        backend_config: Option<PathBuf>,
     },
     Apply {
         #[arg(short = 'p', long)]
@@ -180,6 +195,18 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
                 }
                 println!("plan written to {}", output.display());
             }
+        }
+        Command::Emit {
+            file,
+            retort,
+            output,
+            backend: _,
+            backend_config: _,
+        } => {
+            let inventory = load_inventory(&file, retort.as_deref())?;
+            let _state = load_state().await?;
+            let topology = ContainerlabAdapter::to_topology(&inventory);
+            write_topology(&output, &topology)?;
         }
         Command::Apply {
             plan,

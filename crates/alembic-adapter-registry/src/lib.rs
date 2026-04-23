@@ -23,6 +23,7 @@ const SUPPORTED_BACKENDS: &[&str] = &[
     "generic",
     "peeringdb",
     "external",
+    "containerlab",
 ];
 
 #[derive(Debug, Deserialize)]
@@ -60,6 +61,12 @@ pub struct InfrahubConfig {
 
 #[derive(Debug, Deserialize)]
 pub struct GenericConfig {
+    pub config: Option<alembic_adapter_generic::GenericConfig>,
+    pub config_path: Option<PathBuf>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ContainerlabConfig {
     pub config: Option<alembic_adapter_generic::GenericConfig>,
     pub config_path: Option<PathBuf>,
 }
@@ -199,9 +206,9 @@ impl AdapterConfig {
             AdapterConfig::Peeringdb => {
                 Ok(Box::new(alembic_adapter_peeringdb::PeeringDBAdapter::new()))
             }
-            AdapterConfig::Containerlab => {
-                Ok(Box::new(alembic_adapter_containerlab::ContainerlabAdapter::new()))
-            }
+            AdapterConfig::Containerlab => Ok(Box::new(
+                alembic_adapter_containerlab::ContainerlabAdapter::new(),
+            )),
             AdapterConfig::External(cfg) => Ok(Box::new(ProcessAdapter::new(cfg)?)),
         }
     }
