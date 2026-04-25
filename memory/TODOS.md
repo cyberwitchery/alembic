@@ -1,1 +1,0 @@
-- [TODO-CLEANUP.md](../TODO-CLEANUP.md) — Codebase cleanup targets and completed work
