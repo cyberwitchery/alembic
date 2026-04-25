@@ -104,4 +104,6 @@ relationships are validated strictly by schema and `uid` references.
 - `docs/netbox.md`
 - `docs/nautobot.md`
 - `docs/infrahub.md`
+- `docs/external-adapters.md`
 - `docs/development.md`
+- `docs/case-studies/`
