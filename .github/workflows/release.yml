@@ -26,22 +26,15 @@ jobs:
         with:
           prefix-key: v0-rust-release
           cache-targets: true
-          workspaces: |
-            .
-            alembic
 
       - name: doc build
         env:
           RUSTDOCFLAGS: "--cfg docsrs"
           CARGO_PROFILE_DEV_DEBUG: 0
-        run: |
-          if [ -f alembic/Cargo.toml ]; then cd alembic; fi
-          cargo doc --workspace --all-features --no-deps
+        run: cargo doc --workspace --all-features --no-deps
 
       - name: run tests
-        run: |
-          if [ -f alembic/Cargo.toml ]; then cd alembic; fi
-          cargo test --workspace --all-features
+        run: cargo test --workspace --all-features
 
       - name: install sbom tool
         uses: taiki-e/install-action@v2
@@ -50,8 +43,7 @@ jobs:
 
       - name: generate sbom
         run: |
-          if [ -f alembic/Cargo.toml ]; then base="$GITHUB_WORKSPACE/alembic"; else base="$GITHUB_WORKSPACE"; fi
-          for manifest in "$base"/crates/*/Cargo.toml; do
+          for manifest in "$GITHUB_WORKSPACE"/crates/*/Cargo.toml; do
             crate="$(basename "$(dirname "$manifest")")"
             (cd /tmp && cargo cyclonedx --manifest-path "$manifest" \
               --format json \
@@ -74,8 +66,7 @@ jobs:
           set -euo pipefail
           version="${GITHUB_REF_NAME#v}"
           out="${RUNNER_TEMP}/release-notes.md"
-          if [ -f alembic/CHANGELOG.md ]; then base="$GITHUB_WORKSPACE/alembic"; else base="$GITHUB_WORKSPACE"; fi
-          changelog="${base}/CHANGELOG.md"
+          changelog="${GITHUB_WORKSPACE}/CHANGELOG.md"
           awk -v version="$version" '
             BEGIN { in_section = 0 }
             $0 ~ "^## \\[" version "\\]" { in_section = 1; print; next }
@@ -104,62 +95,44 @@ jobs:
       - name: publish alembic-core
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: |
-          if [ -f alembic/Cargo.toml ]; then cd alembic; fi
-          cargo publish -p alembic-core --no-verify
+        run: cargo publish -p alembic-core --no-verify
 
       - name: publish alembic-engine
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: |
-          if [ -f alembic/Cargo.toml ]; then cd alembic; fi
-          cargo publish -p alembic-engine --no-verify
+        run: cargo publish -p alembic-engine --no-verify
 
       - name: publish alembic-adapter-netbox
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: |
-          if [ -f alembic/Cargo.toml ]; then cd alembic; fi
-          cargo publish -p alembic-adapter-netbox --no-verify
+        run: cargo publish -p alembic-adapter-netbox --no-verify
 
       - name: publish alembic-adapter-nautobot
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: |
-          if [ -f alembic/Cargo.toml ]; then cd alembic; fi
-          cargo publish -p alembic-adapter-nautobot --no-verify
+        run: cargo publish -p alembic-adapter-nautobot --no-verify
 
       - name: publish alembic-adapter-infrahub
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: |
-          if [ -f alembic/Cargo.toml ]; then cd alembic; fi
-          cargo publish -p alembic-adapter-infrahub --no-verify
+        run: cargo publish -p alembic-adapter-infrahub --no-verify
 
       - name: publish alembic-adapter-generic
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: |
-          if [ -f alembic/Cargo.toml ]; then cd alembic; fi
-          cargo publish -p alembic-adapter-generic --no-verify
+        run: cargo publish -p alembic-adapter-generic --no-verify
 
       - name: publish alembic-adapter-peeringdb
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: |
-          if [ -f alembic/Cargo.toml ]; then cd alembic; fi
-          cargo publish -p alembic-adapter-peeringdb --no-verify
+        run: cargo publish -p alembic-adapter-peeringdb --no-verify
 
       - name: publish alembic-adapter-registry
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: |
-          if [ -f alembic/Cargo.toml ]; then cd alembic; fi
-          cargo publish -p alembic-adapter-registry --no-verify
+        run: cargo publish -p alembic-adapter-registry --no-verify
 
       - name: publish alembic-cli
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: |
-          if [ -f alembic/Cargo.toml ]; then cd alembic; fi
-          cargo publish -p alembic-cli --no-verify
+        run: cargo publish -p alembic-cli --no-verify

@@ -19,14 +19,8 @@ jobs:
 
       - name: cache cargo
         uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            .
-            alembic
 
       - name: miri tests (isolation disabled)
         env:
           MIRIFLAGS: "-Zmiri-disable-isolation"
-        run: |
-          if [ -f alembic/Cargo.toml ]; then cd alembic; fi
-          cargo miri test -p alembic-core --all-features
+        run: cargo miri test -p alembic-core --all-features

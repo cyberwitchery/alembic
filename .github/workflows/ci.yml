@@ -28,27 +28,18 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: |
-            .
-            alembic
           shared-key: alembic-ci
 
       - name: Format
-        run: |
-          if [ -f alembic/Cargo.toml ]; then cd alembic; fi
-          cargo fmt --all -- --check
+        run: cargo fmt --all -- --check
 
       - name: Lint (clippy)
-        run: |
-          if [ -f alembic/Cargo.toml ]; then cd alembic; fi
-          cargo clippy --workspace --all-targets --all-features -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
       - uses: taiki-e/install-action@cargo-deny
 
       - name: cargo-deny
-        run: |
-          if [ -f alembic/Cargo.toml ]; then cd alembic; fi
-          cargo deny check
+        run: cargo deny check
 
   coverage:
     name: coverage
@@ -105,9 +96,6 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: |
-            .
-            alembic
           shared-key: alembic-ci
 
       - name: Install cargo-llvm-cov
@@ -115,7 +103,6 @@ jobs:
 
       - name: Coverage
         run: |
-          if [ -f alembic/Cargo.toml ]; then cd alembic; fi
           cargo llvm-cov --workspace --all-features --fail-under-lines 80 \
             --ignore-filename-regex "netbox\\.rs/" \
             --lcov --output-path lcov.info
@@ -124,9 +111,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: coverage-lcov
-          path: |
-            lcov.info
-            alembic/lcov.info
+          path: lcov.info
 
   doc:
     name: doc
@@ -142,15 +127,10 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: |
-            .
-            alembic
           shared-key: alembic-ci
 
       - name: Build docs
-        run: |
-          if [ -f alembic/Cargo.toml ]; then cd alembic; fi
-          cargo doc --workspace --no-deps
+        run: cargo doc --workspace --no-deps
 
   success:
     name: success
