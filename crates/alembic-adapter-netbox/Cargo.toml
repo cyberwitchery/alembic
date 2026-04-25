@@ -20,7 +20,7 @@ serde_json.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-httpmock = "0.7"
-tempfile = "3"
+httpmock = { workspace = true }
+tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 uuid.workspace = true

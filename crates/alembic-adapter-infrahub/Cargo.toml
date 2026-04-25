@@ -23,4 +23,4 @@ graphql-parser = "0.4"
 tokio = { workspace = true, features = ["process"] }
 
 [dev-dependencies]
-httpmock = "0.7"
+httpmock = { workspace = true }

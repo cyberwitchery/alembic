@@ -25,4 +25,4 @@ serde_yaml.workspace = true
 tokio = { workspace = true, features = ["process"] }
 
 [dev-dependencies]
-tempfile = "3"
+tempfile = { workspace = true }
