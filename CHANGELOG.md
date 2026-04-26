@@ -1,5 +1,7 @@
 # changelog
 
+## [unreleased]
+
 ## [0.2.0] - 2026-04-27
 
 - cli: print provisioning summary (fields, tags, object types created/deprecated/deleted) when `--provision` is used or during `apply`
