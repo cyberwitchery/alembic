@@ -1,6 +1,6 @@
 //! plugin: allow extension of alembic using external binaries
 
-use semver::{BuildMetadata, Prerelease, Version, VersionReq};
+use semver::{Version, VersionReq};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::io::{self, BufRead, Write};
