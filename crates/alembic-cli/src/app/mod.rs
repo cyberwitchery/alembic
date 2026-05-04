@@ -7,15 +7,12 @@ mod plugins;
 mod state;
 
 use alembic_adapter_registry::create_adapter;
-use alembic_engine::plugin::PluginRequest;
 use alembic_engine::{
     apply_plan, build_plan, compile_retort, is_brew_format, load_raw_yaml, load_retort, Plan,
 };
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand};
-use plugins::PluginProcess;
 use std::path::PathBuf;
-use std::time::Duration;
 
 use self::cast_django::{run_cast_django, CastDjangoConfig, CommandRunner};
 use self::diag::err;
@@ -323,13 +320,10 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
                 )?;
             }
         },
-        Command::RunPlugin { name } => {
-            let mut proc = PluginProcess::spawn(&name)?;
-            let version = env!("CARGO_PKG_VERSION").to_string();
-            let timeout = Duration::from_secs(3);
-            let response = proc.send_request(&PluginRequest::empty(version), timeout)?;
-            println!("plugin response: {:?}", response);
-        }
+        Command::RunPlugin { name } => match plugins::run_plugin(&name) {
+            Ok(response) => println!("plugin response: {:?}", response),
+            Err(err) => println!("plugin error: {}", err),
+        },
     }
 
     Ok(())

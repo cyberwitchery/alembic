@@ -29,11 +29,7 @@ impl Drop for PluginProcess {
 }
 
 impl PluginProcess {
-    pub(crate) fn spawn(plugin_name: &str) -> Result<Self> {
-        let full_exe_path = format!(
-            "../alembic-ops/target/debug/alembic-adapter-{}",
-            plugin_name
-        );
+    pub(crate) fn spawn(full_exe_path: &str) -> Result<Self> {
         let mut cmd = Command::new(&full_exe_path);
         let args: &[String] = &[];
         cmd.args(args)
@@ -108,4 +104,38 @@ impl PluginProcess {
             Err(RecvTimeoutError::Disconnected) => Err(anyhow!("plugin disconnected")),
         }
     }
+}
+
+fn spawn_first_acceptable_candidate(
+    plugin_name: &str,
+    search_paths: &[String],
+) -> Result<PluginProcess> {
+    let prefixes = ["", "alembic-", "alembic-adapter-"];
+
+    for candidate_path in search_paths {
+        for prefix in prefixes {
+            let full_exe_path = format!("{}{}{}", candidate_path, prefix, plugin_name);
+            match PluginProcess::spawn(&full_exe_path) {
+                Ok(process) => return Ok(process),
+                Err(_err) => continue,
+            }
+        }
+    }
+
+    Err(anyhow!(
+        "couldn't find a plugin with the name '{}' on any of the {} search paths",
+        plugin_name,
+        search_paths.len(),
+    ))
+}
+
+pub fn run_plugin(name: &str) -> Result<PluginResponse> {
+    let search_paths = vec![
+        "../../target/debug/examples/".to_string(), // For tests
+        "../alembic-ops/target/debug/".to_string(), // For local usage
+    ];
+    let mut proc = spawn_first_acceptable_candidate(&name, &search_paths)?;
+    let version = env!("CARGO_PKG_VERSION").to_string();
+    let timeout = Duration::from_secs(3);
+    proc.send_request(&PluginRequest::empty(version), timeout)
 }

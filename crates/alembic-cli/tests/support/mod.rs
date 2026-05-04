@@ -1,3 +1,6 @@
+// Needed because each test file is compiled separately and complains about helper functions not used in their file.
+#![allow(dead_code, unused_imports)]
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use tempfile::tempdir;
