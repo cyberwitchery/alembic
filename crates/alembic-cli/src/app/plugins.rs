@@ -30,7 +30,7 @@ impl Drop for PluginProcess {
 
 impl PluginProcess {
     pub(crate) fn spawn(full_exe_path: &str) -> Result<Self> {
-        let mut cmd = Command::new(&full_exe_path);
+        let mut cmd = Command::new(full_exe_path);
         let args: &[String] = &[];
         cmd.args(args)
             .stdin(Stdio::piped())
@@ -134,7 +134,7 @@ pub fn run_plugin(name: &str) -> Result<PluginResponse> {
         "../../target/debug/examples/".to_string(), // For tests
         "../alembic-ops/target/debug/".to_string(), // For local usage
     ];
-    let mut proc = spawn_first_acceptable_candidate(&name, &search_paths)?;
+    let mut proc = spawn_first_acceptable_candidate(name, &search_paths)?;
     let version = env!("CARGO_PKG_VERSION").to_string();
     let timeout = Duration::from_secs(3);
     proc.send_request(&PluginRequest::empty(version), timeout)
