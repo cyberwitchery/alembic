@@ -24,6 +24,7 @@ tokio-postgres.workspace = true
 native-tls.workspace = true
 postgres-native-tls.workspace = true
 tracing.workspace = true
+semver.workspace = true
 
 [dev-dependencies]
 tempfile = { workspace = true }

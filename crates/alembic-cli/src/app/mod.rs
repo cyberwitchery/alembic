@@ -324,8 +324,10 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
         },
         Command::RunPlugin { name } => {
             let mut proc = PluginProcess::spawn(&name)?;
+            let version = env!("CARGO_PKG_VERSION");
             let response = proc.send_request(&PluginRequest {
                 json: serde_json::from_str("{}").unwrap(),
+                version: version.to_string(),
             })?;
             println!("plugin response: {:?}", response);
         }

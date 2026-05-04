@@ -96,7 +96,10 @@ impl PluginProcess {
         self.stdin.flush()?;
 
         match self.rx.recv_timeout(Duration::from_secs(2)) {
-            Ok(Ok(line)) => Ok(PluginResponse::ok(vec![line])),
+            Ok(Ok(line)) => {
+                let response = serde_json::from_str(&line)?;
+                Ok(response)
+            }
             Ok(Err(io_err)) => Err(anyhow!("plugin stdout error: {io_err}")),
             Err(RecvTimeoutError::Timeout) => Err(anyhow!("plugin timed out")),
             Err(RecvTimeoutError::Disconnected) => Err(anyhow!("plugin disconnected")),
