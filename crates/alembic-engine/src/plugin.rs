@@ -94,8 +94,18 @@ fn check_alembic_cli_version(
     required_version: &str,
     request: &PluginRequest,
 ) -> Result<(), PluginResponse> {
-    let version_req = VersionReq::parse(required_version).expect("FIXME");
-    let version_actual = Version::parse(&request.version).expect("FIXME");
+    let Ok(version_req) = VersionReq::parse(required_version) else {
+        return Err(PluginResponse::error(format!(
+            "failed to parse version requirement: '{}'",
+            required_version
+        )));
+    };
+    let Ok(version_actual) = Version::parse(&request.version) else {
+        return Err(PluginResponse::error(format!(
+            "failed to parse alembic cli version: '{}'",
+            request.version
+        )));
+    };
 
     if version_req.matches(&version_actual) {
         Ok(())
