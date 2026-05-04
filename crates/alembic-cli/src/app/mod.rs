@@ -3,14 +3,17 @@
 mod cast_django;
 mod diag;
 mod io;
+mod plugins;
 mod state;
 
 use alembic_adapter_registry::create_adapter;
+use alembic_engine::plugin::PluginRequest;
 use alembic_engine::{
     apply_plan, build_plan, compile_retort, is_brew_format, load_raw_yaml, load_retort, Plan,
 };
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand};
+use plugins::PluginProcess;
 use std::path::PathBuf;
 
 use self::cast_django::{run_cast_django, CastDjangoConfig, CommandRunner};
@@ -97,6 +100,10 @@ enum Command {
     Cast {
         #[command(subcommand)]
         target: CastTarget,
+    },
+    RunPlugin {
+        #[arg(long)]
+        name: String,
     },
 }
 
@@ -315,6 +322,13 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
                 )?;
             }
         },
+        Command::RunPlugin { name } => {
+            let mut proc = PluginProcess::spawn(&name)?;
+            let response = proc.send_request(&PluginRequest {
+                json: serde_json::from_str("{}").unwrap(),
+            })?;
+            println!("plugin response: {:?}", response);
+        }
     }
 
     Ok(())
