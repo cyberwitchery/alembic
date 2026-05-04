@@ -101,7 +101,7 @@ fn check_alembic_cli_version(
         Ok(())
     } else {
         Err(PluginResponse::error(format!(
-            "invalid alembic cli version {}, plugin requires {}",
+            "unsupported alembic cli version {}, plugin requires {}",
             request.version, required_version
         )))
     }
