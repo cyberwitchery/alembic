@@ -14,7 +14,7 @@ fn minimal_plugin() {
     if let Ok(ok_response) = response {
         assert!(ok_response.ok)
     } else {
-        assert!(false)
+        panic!("didn't get a response from plugin")
     }
 }
 
@@ -25,7 +25,7 @@ fn outdated_plugin() {
     if let Ok(ok_response) = response {
         assert!(!ok_response.ok)
     } else {
-        assert!(false)
+        panic!("didn't get a response from plugin")
     }
 }
 
