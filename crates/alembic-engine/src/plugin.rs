@@ -26,7 +26,7 @@ impl PluginRequest {
     pub fn empty(version: String) -> Self {
         Self {
             json: serde_json::from_str("{}").unwrap(),
-            version: version,
+            version,
         }
     }
 }
