@@ -88,14 +88,17 @@ impl PluginProcess {
     pub(crate) fn send_request(
         &mut self,
         request: &PluginRequest,
+        timeout: Duration,
     ) -> Result<PluginResponse, anyhow::Error> {
-        let mut payload = serde_json::to_string(request).expect("FIXME");
+        let Ok(mut payload) = serde_json::to_string(request) else {
+            return Err(anyhow!("failed to serialize plugin request"));
+        };
         payload.push('\n');
 
         self.stdin.write_all(payload.as_bytes())?;
         self.stdin.flush()?;
 
-        match self.rx.recv_timeout(Duration::from_secs(2)) {
+        match self.rx.recv_timeout(timeout) {
             Ok(Ok(line)) => {
                 let response = serde_json::from_str(&line)?;
                 Ok(response)
