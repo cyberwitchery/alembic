@@ -116,10 +116,13 @@ fn spawn_first_acceptable_candidate(
 
     for candidate_path in search_paths {
         for prefix in prefixes {
-            let full_exe_path = format!("{}{}{}", candidate_path.display(), prefix, plugin_name);
-            match PluginProcess::spawn(&full_exe_path) {
-                Ok(process) => return Ok(process),
-                Err(_err) => continue,
+            let full_exe_name = format!("{}{}", prefix, plugin_name);
+            let full_exe_path = candidate_path.join(full_exe_name);
+            if let Some(path) = full_exe_path.to_str() {
+                match PluginProcess::spawn(&path) {
+                    Ok(process) => return Ok(process),
+                    Err(_err) => continue,
+                }
             }
         }
     }

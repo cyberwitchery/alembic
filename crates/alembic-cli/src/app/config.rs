@@ -18,8 +18,8 @@ impl AppConfig {
     pub fn default() -> AppConfig {
         AppConfig {
             plugin_search_paths: vec![
-                "../../target/debug/examples/".into(), // For tests
-                "../alembic-ops/target/debug/".into(), // For local usage
+                "../../target/debug/examples".into(), // For tests
+                "../alembic-ops/target/debug".into(), // For local usage
             ],
         }
     }
