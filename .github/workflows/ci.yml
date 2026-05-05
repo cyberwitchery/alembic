@@ -102,7 +102,7 @@ jobs:
         uses: taiki-e/install-action@cargo-llvm-cov
 
       - name: Build examples (for tests)
-        run: cargo build --examples
+        run: cargo build --examples --target-dir "${CARGO_TARGET_DIR}
 
       - name: Coverage
         run: |
