@@ -1,8 +1,16 @@
 # plugins
 
-plugins are separate executable binaries that conform to the
+## running plugins
+
+`alembic run-plugin --name <plugin-name-goes-here>`
+
+Details TBD.
+
+## creating plugins
+
+Plugins are separate executable binaries that conform to the
 inter-process communication (ipc) protocol defined by `PluginRequest`
-and `PluginResponse`.
+and `PluginResponse`. It transfers data using strings over stdio.
 
 To make plugin creation as easy as possible, use the
 `alembic_plugin_main!`  macro in `alembic_engine`. The macro will
