@@ -911,6 +911,6 @@ fn outdated_plugin() {
 }
 
 fn build_and_run_plugin(name: &str, config: &AppConfig) -> Result<PluginResponse> {
-    escargot::CargoBuild::new().example(name);
+    escargot::CargoBuild::new().example(name).run()?;
     run_plugin(name, config)
 }
