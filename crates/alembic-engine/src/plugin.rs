@@ -66,7 +66,7 @@ impl PluginResponse {
 
 /// runs a newline-delimited json plugin loop.
 ///
-/// the handler is invoked once per request. responses are serialized back to stdout.
+/// the handler is invoked once per request. responses are serialized back to `writer`.
 pub fn plugin_loop<F>(
     mut handler: F,
     required_version: &str,
