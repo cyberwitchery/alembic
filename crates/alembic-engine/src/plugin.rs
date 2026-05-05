@@ -125,3 +125,13 @@ fn check_alembic_cli_version(
         )))
     }
 }
+
+#[test]
+fn cli_ok_version_check() {
+    assert!(check_alembic_cli_version(">0.5", &PluginRequest::empty("0.6.0".into())).is_ok());
+}
+
+#[test]
+fn cli_outdated_version_check() {
+    assert!(check_alembic_cli_version(">0.5", &PluginRequest::empty("0.4.0".into())).is_err());
+}
