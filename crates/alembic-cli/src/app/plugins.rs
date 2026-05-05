@@ -9,6 +9,7 @@ use std::io::BufRead;
 use std::io::BufReader;
 use std::io::BufWriter;
 use std::io::Write;
+use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc;
 use std::sync::mpsc::RecvTimeoutError;
@@ -109,13 +110,13 @@ impl PluginProcess {
 
 fn spawn_first_acceptable_candidate(
     plugin_name: &str,
-    search_paths: &[String],
+    search_paths: &[PathBuf],
 ) -> Result<PluginProcess> {
     let prefixes = ["", "alembic-", "alembic-adapter-"];
 
     for candidate_path in search_paths {
         for prefix in prefixes {
-            let full_exe_path = format!("{}{}{}", candidate_path, prefix, plugin_name);
+            let full_exe_path = format!("{}{}{}", candidate_path.display(), prefix, plugin_name);
             match PluginProcess::spawn(&full_exe_path) {
                 Ok(process) => return Ok(process),
                 Err(_err) => continue,

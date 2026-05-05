@@ -7,18 +7,19 @@ use figment::{
 };
 use serde::{Deserialize, Serialize};
 use std::fmt::Display;
+use std::path::PathBuf;
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub struct AppConfig {
-    pub plugin_search_paths: Vec<String>,
+    pub plugin_search_paths: Vec<PathBuf>,
 }
 
 impl AppConfig {
     pub fn default() -> AppConfig {
         AppConfig {
             plugin_search_paths: vec![
-                "../../target/debug/examples/".to_string(), // For tests
-                "../alembic-ops/target/debug/".to_string(), // For local usage
+                "../../target/debug/examples/".into(), // For tests
+                "../alembic-ops/target/debug/".into(), // For local usage
             ],
         }
     }
