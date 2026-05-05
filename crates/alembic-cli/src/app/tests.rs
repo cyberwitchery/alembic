@@ -1,8 +1,11 @@
 use super::test_support::*;
 use super::*;
+use crate::app::plugins::run_plugin;
+use alembic_engine::plugin::PluginResponse;
 use alembic_engine::Op;
 use std::collections::BTreeMap;
 use tempfile::tempdir;
+use AppConfig;
 
 fn key_str(raw: &str) -> alembic_core::Key {
     let mut map = BTreeMap::new();
@@ -589,7 +592,7 @@ objects:
             retort: None,
         },
     };
-    run(cli).await.unwrap();
+    run(cli, AppConfig::default()).await.unwrap();
 }
 
 #[tokio::test]
@@ -647,7 +650,7 @@ rules:
             output: out.clone(),
         },
     };
-    run(cli).await.unwrap();
+    run(cli, AppConfig::default()).await.unwrap();
     let raw = std::fs::read_to_string(out).unwrap();
     assert!(raw.contains("\"objects\""));
     std::env::set_current_dir(cwd).unwrap();
@@ -698,7 +701,7 @@ objects:
             allow_delete: false,
         },
     };
-    let err = run(cli).await.unwrap_err();
+    let err = run(cli, AppConfig::default()).await.unwrap_err();
     assert!(err.to_string().contains("missing NETBOX_URL"));
     std::env::set_current_dir(cwd).unwrap();
 }
@@ -721,7 +724,7 @@ async fn run_apply_missing_credentials_errors() {
             interactive: false,
         },
     };
-    let err = run(cli).await.unwrap_err();
+    let err = run(cli, AppConfig::default()).await.unwrap_err();
     assert!(err.to_string().contains("missing NETBOX_URL"));
     std::env::set_current_dir(cwd).unwrap();
 }
@@ -756,7 +759,7 @@ async fn run_apply_interactive_delete_requires_allow_delete() {
             interactive: true,
         },
     };
-    let err = run(cli).await.unwrap_err();
+    let err = run(cli, AppConfig::default()).await.unwrap_err();
     assert!(err
         .to_string()
         .contains("plan contains delete operations; re-run with --allow-delete"));
@@ -871,11 +874,38 @@ objects:
             allow_delete: false,
         },
     };
-    run(cli).await.unwrap();
+    run(cli, AppConfig::default()).await.unwrap();
 
     let raw = std::fs::read_to_string(&out).unwrap();
     assert!(raw.contains("\"op\": \"create\""));
     assert!(raw.contains("\"type_name\": \"dcim.device\""));
 
     std::env::set_current_dir(cwd).unwrap();
+}
+
+#[test]
+fn minimal_plugin() {
+    let response = build_and_run_plugin("minimal_plugin", &AppConfig::default());
+
+    if let Ok(ok_response) = response {
+        assert!(ok_response.ok)
+    } else {
+        panic!("didn't get a response from plugin")
+    }
+}
+
+#[test]
+fn outdated_plugin() {
+    let response = build_and_run_plugin("outdated_plugin", &AppConfig::default());
+
+    if let Ok(ok_response) = response {
+        assert!(!ok_response.ok)
+    } else {
+        panic!("didn't get a response from plugin")
+    }
+}
+
+pub fn build_and_run_plugin(name: &str, config: &AppConfig) -> Result<PluginResponse> {
+    escargot::CargoBuild::new().example(name);
+    run_plugin(name, config)
 }

@@ -14,7 +14,7 @@ pub struct AppConfig {
 }
 
 impl AppConfig {
-    fn default() -> AppConfig {
+    pub fn default() -> AppConfig {
         AppConfig {
             plugin_search_paths: vec![
                 "../../target/debug/examples/".to_string(), // For tests
