@@ -32,13 +32,13 @@ impl AppConfig {
     pub(crate) fn load() -> Result<AppConfig, AppConfigError> {
         match AppConfig::figment().extract() {
             Ok(config) => Ok(config),
-            Err(error) => Err(AppConfigError::FigmentError(error)),
+            Err(error) => Err(AppConfigError::FigmentError(Box::new(error))),
         }
     }
 }
 
 pub enum AppConfigError {
-    FigmentError(figment::Error),
+    FigmentError(Box<figment::Error>),
 }
 
 impl Display for AppConfigError {

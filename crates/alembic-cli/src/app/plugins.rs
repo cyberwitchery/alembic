@@ -119,7 +119,7 @@ fn spawn_first_acceptable_candidate(
             let full_exe_name = format!("{}{}", prefix, plugin_name);
             let full_exe_path = candidate_path.join(full_exe_name);
             if let Some(path) = full_exe_path.to_str() {
-                match PluginProcess::spawn(&path) {
+                match PluginProcess::spawn(path) {
                     Ok(process) => return Ok(process),
                     Err(_err) => continue,
                 }

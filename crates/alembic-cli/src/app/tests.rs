@@ -5,7 +5,6 @@ use alembic_engine::plugin::PluginResponse;
 use alembic_engine::Op;
 use std::collections::BTreeMap;
 use tempfile::tempdir;
-use AppConfig;
 
 fn key_str(raw: &str) -> alembic_core::Key {
     let mut map = BTreeMap::new();
