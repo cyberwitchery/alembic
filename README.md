@@ -107,3 +107,5 @@ relationships are validated strictly by schema and `uid` references.
 - `docs/external-adapters.md`
 - `docs/development.md`
 - `docs/case-studies/`
+- `docs/plugins/`
+- `docs/configuration/`

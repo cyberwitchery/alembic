@@ -4,11 +4,15 @@ mod app;
 mod telemetry;
 
 use app::Cli;
+use app::config::AppConfig;
 use clap::Parser;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     telemetry::init_tracing();
     let cli = Cli::parse();
-    app::run(cli).await
+    let config = AppConfig::load()
+        .map_err(|err| anyhow::anyhow!("{}", err))?;
+
+    app::run(cli, config).await
 }

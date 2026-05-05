@@ -5,6 +5,7 @@ mod diag;
 mod io;
 mod plugins;
 mod state;
+pub mod config;
 
 use alembic_adapter_registry::create_adapter;
 use alembic_engine::{
@@ -28,6 +29,7 @@ use self::state::{resolve_state_backend_config, state_path, StateBackendConfig};
 use alembic_engine::PostgresTlsMode;
 #[cfg(test)]
 use std::path::Path;
+use crate::app::config::AppConfig;
 
 /// top-level cli definition.
 #[derive(Parser)]
@@ -136,7 +138,7 @@ fn confirm(prompt: &str) -> Result<bool> {
     Ok(matches!(input.trim().to_lowercase().as_str(), "y" | "yes"))
 }
 
-pub(crate) async fn run(cli: Cli) -> Result<()> {
+pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
     match cli.command {
         Command::Validate { file, retort } => {
             let inventory = load_inventory(&file, retort.as_deref())?;
@@ -320,7 +322,7 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
                 )?;
             }
         },
-        Command::RunPlugin { name } => match plugins::run_plugin(&name) {
+        Command::RunPlugin { name } => match plugins::run_plugin(&name, &config) {
             Ok(response) => println!("plugin response: {:?}", response),
             Err(err) => println!("plugin error: {}", err),
         },

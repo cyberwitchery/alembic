@@ -13,6 +13,7 @@ use std::sync::mpsc;
 use std::sync::mpsc::RecvTimeoutError;
 use std::thread;
 use std::time::Duration;
+use crate::app::config::AppConfig;
 
 pub(crate) struct PluginProcess {
     child: Child,
@@ -129,12 +130,8 @@ fn spawn_first_acceptable_candidate(
     ))
 }
 
-pub fn run_plugin(name: &str) -> Result<PluginResponse> {
-    let search_paths = vec![
-        "../../target/debug/examples/".to_string(), // For tests
-        "../alembic-ops/target/debug/".to_string(), // For local usage
-    ];
-    let mut proc = spawn_first_acceptable_candidate(name, &search_paths)?;
+pub fn run_plugin(name: &str, config: &AppConfig) -> Result<PluginResponse> {
+    let mut proc = spawn_first_acceptable_candidate(name, &config.plugin_search_paths)?;
     let version = env!("CARGO_PKG_VERSION").to_string();
     let timeout = Duration::from_secs(3);
     proc.send_request(&PluginRequest::empty(version), timeout)
