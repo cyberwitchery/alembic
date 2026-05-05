@@ -3,13 +3,15 @@
 use semver::{Version, VersionReq};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::io::{self, BufRead, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 
 #[macro_export]
 macro_rules! alembic_plugin_main {
     ($handler:path, $required_version:literal) => {
         fn main() -> anyhow::Result<()> {
-            $crate::plugin::plugin_loop($handler, $required_version)
+            let stdin = std::io::stdin();
+            let mut stdout = std::io::BufWriter::new(std::io::stdout());
+            $crate::plugin::plugin_loop($handler, $required_version, (stdin, stdout))
         }
     };
 }
@@ -65,13 +67,15 @@ impl PluginResponse {
 /// runs a newline-delimited json plugin loop.
 ///
 /// the handler is invoked once per request. responses are serialized back to stdout.
-pub fn plugin_loop<F>(mut handler: F, required_version: &str) -> anyhow::Result<()>
+pub fn plugin_loop<F>(
+    mut handler: F,
+    required_version: &str,
+    (reader, mut writer): (impl Read, impl Write),
+) -> anyhow::Result<()>
 where
     F: FnMut(PluginRequest) -> PluginResponse,
 {
-    let stdin = io::stdin();
-    let mut stdout = io::BufWriter::new(io::stdout());
-    for line in stdin.lock().lines() {
+    for line in BufReader::new(reader).lines() {
         let line = match line {
             Ok(line) => line,
             Err(_) => break,
@@ -93,8 +97,8 @@ where
         let json = serde_json::to_string(&resp).unwrap_or_else(|_| {
             "{\"ok\":false,\"lines\":[],\"error\":\"encode failed\"}".to_string()
         });
-        writeln!(stdout, "{json}")?;
-        stdout.flush()?;
+        writeln!(writer, "{json}")?;
+        writer.flush()?;
     }
     Ok(())
 }
@@ -134,4 +138,34 @@ fn cli_ok_version_check() {
 #[test]
 fn cli_outdated_version_check() {
     assert!(check_alembic_cli_version(">0.5", &PluginRequest::empty("0.4.0".into())).is_err());
+}
+
+#[test]
+fn plugin_loop_responds() {
+    fn handler(request: PluginRequest) -> PluginResponse {
+        PluginResponse::ok(vec![request.json["hello"].to_string()])
+    }
+
+    let (in_reader, mut in_writer) = std::io::pipe().unwrap();
+    let (out_reader, out_writer) = std::io::pipe().unwrap();
+
+    let t = std::thread::spawn(move || {
+        assert!(plugin_loop(handler, ">=0.1.0", (in_reader, out_writer)).is_ok());
+    });
+
+    let request = PluginRequest {
+        json: serde_json::json!({"hello": "world"}),
+        version: "0.1.0".to_string(),
+    };
+    writeln!(in_writer, "{}", serde_json::to_string(&request).unwrap()).unwrap();
+    drop(in_writer);
+
+    let mut response = String::new();
+    BufReader::new(out_reader).read_line(&mut response).unwrap();
+
+    let response: PluginResponse = serde_json::from_str(&response).unwrap();
+    assert!(response.ok);
+    assert_eq!(response.lines, vec!["\"world\"".to_string()]);
+
+    t.join().unwrap();
 }
