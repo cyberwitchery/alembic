@@ -889,7 +889,10 @@ fn minimal_plugin() {
     if let Ok(ok_response) = response {
         assert!(ok_response.ok)
     } else {
-        panic!("didn't get a response from plugin")
+        panic!(
+            "didn't get a response from plugin: {}",
+            response.unwrap_err()
+        )
     }
 }
 
@@ -900,7 +903,10 @@ fn outdated_plugin() {
     if let Ok(ok_response) = response {
         assert!(!ok_response.ok)
     } else {
-        panic!("didn't get a response from plugin")
+        panic!(
+            "didn't get a response from plugin: {}",
+            response.unwrap_err()
+        )
     }
 }
 
