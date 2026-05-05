@@ -1,7 +1,6 @@
 use super::test_support::*;
 use super::*;
 use crate::app::plugins::run_plugin;
-use alembic_engine::plugin::PluginResponse;
 use alembic_engine::Op;
 use std::collections::BTreeMap;
 use tempfile::tempdir;
@@ -884,7 +883,8 @@ objects:
 
 #[test]
 fn minimal_plugin() {
-    let response = build_and_run_plugin("minimal_plugin", &AppConfig::default());
+    // N.B. `cargo test` will build all examples, so we can expect the binary to exist
+    let response = run_plugin("minimal_plugin", &AppConfig::default());
 
     if let Ok(ok_response) = response {
         assert!(ok_response.ok)
@@ -898,7 +898,8 @@ fn minimal_plugin() {
 
 #[test]
 fn outdated_plugin() {
-    let response = build_and_run_plugin("outdated_plugin", &AppConfig::default());
+    // N.B. `cargo test` will build all examples, so we can expect the binary to exist
+    let response = run_plugin("outdated_plugin", &AppConfig::default());
 
     if let Ok(ok_response) = response {
         assert!(!ok_response.ok)
@@ -908,9 +909,4 @@ fn outdated_plugin() {
             response.unwrap_err()
         )
     }
-}
-
-fn build_and_run_plugin(name: &str, config: &AppConfig) -> Result<PluginResponse> {
-    escargot::CargoBuild::new().example(name).run()?;
-    run_plugin(name, config)
 }

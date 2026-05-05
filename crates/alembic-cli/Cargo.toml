@@ -28,4 +28,3 @@ serde.workspace = true
 httpmock = { workspace = true }
 tempfile = { workspace = true }
 uuid.workspace = true
-escargot.workspace = true
