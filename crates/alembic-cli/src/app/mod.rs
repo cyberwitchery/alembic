@@ -1,11 +1,11 @@
 //! cli entrypoint for alembic.
 
 mod cast_django;
+pub mod config;
 mod diag;
 mod io;
 mod plugins;
 mod state;
-pub mod config;
 
 use alembic_adapter_registry::create_adapter;
 use alembic_engine::{
@@ -25,11 +25,11 @@ use alembic_core::TypeName;
 use self::cast_django::Runner;
 #[cfg(test)]
 use self::state::{resolve_state_backend_config, state_path, StateBackendConfig};
+use crate::app::config::AppConfig;
 #[cfg(test)]
 use alembic_engine::PostgresTlsMode;
 #[cfg(test)]
 use std::path::Path;
-use crate::app::config::AppConfig;
 
 /// top-level cli definition.
 #[derive(Parser)]

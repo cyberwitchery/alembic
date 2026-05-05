@@ -1,9 +1,12 @@
 //! configuration for the cli tool
 
-use std::fmt::Display;
-use serde::{Serialize, Deserialize};
-use figment::{Figment, providers::{Format, Toml, Env}};
 use figment::providers::Serialized;
+use figment::{
+    providers::{Env, Format, Toml},
+    Figment,
+};
+use serde::{Deserialize, Serialize};
+use std::fmt::Display;
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub struct AppConfig {

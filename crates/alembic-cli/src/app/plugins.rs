@@ -1,5 +1,6 @@
 //! handling of plugin subprocesses.
 
+use crate::app::config::AppConfig;
 use alembic_engine::plugin::PluginRequest;
 use alembic_engine::plugin::PluginResponse;
 use anyhow::{anyhow, Context, Result};
@@ -13,7 +14,6 @@ use std::sync::mpsc;
 use std::sync::mpsc::RecvTimeoutError;
 use std::thread;
 use std::time::Duration;
-use crate::app::config::AppConfig;
 
 pub(crate) struct PluginProcess {
     child: Child,
