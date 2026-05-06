@@ -3,12 +3,13 @@
 use semver::{Version, VersionReq};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::fmt::Display;
 use std::io::{BufRead, BufReader, Read, Write};
 
 #[macro_export]
 macro_rules! alembic_plugin_main {
     ($handler:path, $required_version:literal) => {
-        fn main() -> anyhow::Result<()> {
+        fn main() -> std::result::Result<(), PluginError> {
             let stdin = std::io::stdin();
             let mut stdout = std::io::BufWriter::new(std::io::stdout());
             $crate::plugin::plugin_loop($handler, $required_version, (stdin, stdout))
@@ -64,6 +65,29 @@ impl PluginResponse {
     }
 }
 
+#[derive(Debug)]
+pub enum PluginError {
+    IoError(std::io::Error),
+}
+
+impl std::error::Error for PluginError {}
+
+impl From<std::io::Error> for PluginError {
+    fn from(e: std::io::Error) -> Self {
+        PluginError::IoError(e)
+    }
+}
+
+impl Display for PluginError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PluginError::IoError(e) => {
+                write!(f, "Plugin IO error: {}", e)
+            }
+        }
+    }
+}
+
 /// runs a newline-delimited json plugin loop.
 ///
 /// the handler is invoked once per request. responses are serialized back to `writer`.
@@ -71,7 +95,7 @@ pub fn plugin_loop<F>(
     mut handler: F,
     required_version: &str,
     (reader, mut writer): (impl Read, impl Write),
-) -> anyhow::Result<()>
+) -> Result<(), PluginError>
 where
     F: FnMut(PluginRequest) -> PluginResponse,
 {

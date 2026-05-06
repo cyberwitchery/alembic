@@ -1,5 +1,5 @@
 use alembic_engine::alembic_plugin_main;
-use alembic_engine::plugin::{PluginRequest, PluginResponse};
+use alembic_engine::plugin::{PluginError, PluginRequest, PluginResponse};
 
 fn handle(request: PluginRequest) -> PluginResponse {
     PluginResponse::ok(vec![format!(
