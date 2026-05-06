@@ -324,7 +324,10 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
         },
         Command::RunPlugin { name } => match plugins::run_plugin(&name, &config) {
             Ok(response) => println!("plugin response: {:?}", response),
-            Err(err) => println!("plugin error: {}", err),
+            Err(err) => {
+                eprintln!("plugin error: {}", err);
+                std::process::exit(1);
+            }
         },
     }
 
