@@ -28,7 +28,7 @@ pub struct PluginRequest {
 impl PluginRequest {
     pub fn empty(version: String) -> Self {
         Self {
-            json: serde_json::from_str("{}").unwrap(),
+            json: serde_json::json!({}),
             version,
         }
     }
