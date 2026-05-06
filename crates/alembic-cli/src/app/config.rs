@@ -36,6 +36,7 @@ impl AppConfig {
     }
 }
 
+#[derive(Debug)]
 pub enum AppConfigError {
     FigmentError(Box<figment::Error>),
 }

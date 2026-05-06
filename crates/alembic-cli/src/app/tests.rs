@@ -590,7 +590,7 @@ objects:
             retort: None,
         },
     };
-    run(cli, AppConfig::default()).await.unwrap();
+    run(cli, AppConfig::load().unwrap()).await.unwrap();
 }
 
 #[tokio::test]
@@ -648,7 +648,7 @@ rules:
             output: out.clone(),
         },
     };
-    run(cli, AppConfig::default()).await.unwrap();
+    run(cli, AppConfig::load().unwrap()).await.unwrap();
     let raw = std::fs::read_to_string(out).unwrap();
     assert!(raw.contains("\"objects\""));
     std::env::set_current_dir(cwd).unwrap();
@@ -699,7 +699,7 @@ objects:
             allow_delete: false,
         },
     };
-    let err = run(cli, AppConfig::default()).await.unwrap_err();
+    let err = run(cli, AppConfig::load().unwrap()).await.unwrap_err();
     assert!(err.to_string().contains("missing NETBOX_URL"));
     std::env::set_current_dir(cwd).unwrap();
 }
@@ -722,7 +722,7 @@ async fn run_apply_missing_credentials_errors() {
             interactive: false,
         },
     };
-    let err = run(cli, AppConfig::default()).await.unwrap_err();
+    let err = run(cli, AppConfig::load().unwrap()).await.unwrap_err();
     assert!(err.to_string().contains("missing NETBOX_URL"));
     std::env::set_current_dir(cwd).unwrap();
 }
@@ -757,7 +757,7 @@ async fn run_apply_interactive_delete_requires_allow_delete() {
             interactive: true,
         },
     };
-    let err = run(cli, AppConfig::default()).await.unwrap_err();
+    let err = run(cli, AppConfig::load().unwrap()).await.unwrap_err();
     assert!(err
         .to_string()
         .contains("plan contains delete operations; re-run with --allow-delete"));
@@ -872,7 +872,7 @@ objects:
             allow_delete: false,
         },
     };
-    run(cli, AppConfig::default()).await.unwrap();
+    run(cli, AppConfig::load().unwrap()).await.unwrap();
 
     let raw = std::fs::read_to_string(&out).unwrap();
     assert!(raw.contains("\"op\": \"create\""));
@@ -884,7 +884,7 @@ objects:
 #[test]
 fn minimal_plugin() {
     // N.B. `cargo test` will build all examples, so we can expect the binary to exist
-    let response = run_plugin("minimal_plugin", &AppConfig::default());
+    let response = run_plugin("minimal_plugin", &AppConfig::load().unwrap());
 
     if let Ok(ok_response) = response {
         assert!(ok_response.ok)
@@ -899,7 +899,7 @@ fn minimal_plugin() {
 #[test]
 fn outdated_plugin() {
     // N.B. `cargo test` will build all examples, so we can expect the binary to exist
-    let response = run_plugin("outdated_plugin", &AppConfig::default());
+    let response = run_plugin("outdated_plugin", &AppConfig::load().unwrap());
 
     if let Ok(ok_response) = response {
         assert!(!ok_response.ok)

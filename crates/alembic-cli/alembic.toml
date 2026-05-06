@@ -1,0 +1,3 @@
+plugin_search_paths = [
+  "../../target/debug/examples/",
+]
