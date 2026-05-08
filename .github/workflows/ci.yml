@@ -105,7 +105,7 @@ jobs:
         run: cargo build --examples --target-dir "${CARGO_TARGET_DIR}"
 
       - name: Run tests (the normal way)
-        run: cargo test --target-dir "${CARGO_TARGET_DIR}"
+        run: ALEMBIC_PLUGIN_SEARCH_PATHS="${CARGO_TARGET_DIR}" cargo test
 
       - name: Coverage
         run: |
