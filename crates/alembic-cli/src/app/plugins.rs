@@ -134,9 +134,14 @@ fn spawn_first_acceptable_candidate(
     }
 
     Err(anyhow!(
-        "couldn't find a plugin with the name '{}' on any of the {} search paths",
+        "couldn't find a plugin with the name '{}' on any of the {} search paths ({})",
         plugin_name,
         search_paths.len(),
+        search_paths
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<String>>()
+            .join(", "),
     ))
 }
 
