@@ -104,6 +104,9 @@ jobs:
       - name: Build examples (for tests)
         run: cargo build --examples --target-dir "${CARGO_TARGET_DIR}"
 
+      - name: Run tests (the normal way)
+        run: cargo test
+
       - name: Coverage
         run: |
           cargo llvm-cov --workspace --all-features --fail-under-lines 80 \
