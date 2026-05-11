@@ -6,6 +6,7 @@ use figment::{
     Figment,
 };
 use serde::{Deserialize, Serialize};
+use std::error::Error;
 use std::fmt::Display;
 use std::path::PathBuf;
 
@@ -15,11 +16,6 @@ pub struct AppConfig {
 }
 
 impl AppConfig {
-    pub fn default() -> AppConfig {
-        AppConfig {
-            plugin_dir: "./plugins".into(),
-        }
-    }
     fn figment() -> Figment {
         Figment::from(Serialized::defaults(Self::default()))
             .merge(Toml::file("alembic.toml"))
@@ -34,10 +30,20 @@ impl AppConfig {
     }
 }
 
+impl Default for AppConfig {
+    fn default() -> AppConfig {
+        AppConfig {
+            plugin_dir: "./plugins".into(),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum AppConfigError {
     FigmentError(Box<figment::Error>),
 }
+
+impl Error for AppConfigError {}
 
 impl Display for AppConfigError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
