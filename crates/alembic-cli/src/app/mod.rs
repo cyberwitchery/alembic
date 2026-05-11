@@ -1,6 +1,7 @@
 //! cli entrypoint for alembic.
 
 mod cast_django;
+pub mod config;
 mod diag;
 mod io;
 mod state;
@@ -23,6 +24,7 @@ use alembic_core::TypeName;
 use self::cast_django::Runner;
 #[cfg(test)]
 use self::state::{resolve_state_backend_config, state_path, StateBackendConfig};
+use crate::app::config::AppConfig;
 #[cfg(test)]
 use alembic_engine::PostgresTlsMode;
 #[cfg(test)]
@@ -131,7 +133,7 @@ fn confirm(prompt: &str) -> Result<bool> {
     Ok(matches!(input.trim().to_lowercase().as_str(), "y" | "yes"))
 }
 
-pub(crate) async fn run(cli: Cli) -> Result<()> {
+pub(crate) async fn run(cli: Cli, _config: AppConfig) -> Result<()> {
     match cli.command {
         Command::Validate { file, retort } => {
             let inventory = load_inventory(&file, retort.as_deref())?;

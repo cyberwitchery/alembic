@@ -3,6 +3,7 @@
 mod app;
 mod telemetry;
 
+use app::config::AppConfig;
 use app::Cli;
 use clap::Parser;
 
@@ -10,5 +11,7 @@ use clap::Parser;
 async fn main() -> anyhow::Result<()> {
     telemetry::init_tracing();
     let cli = Cli::parse();
-    app::run(cli).await
+    let config = AppConfig::load().map_err(|err| anyhow::anyhow!("{}", err))?;
+
+    app::run(cli, config).await
 }
