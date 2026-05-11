@@ -107,7 +107,7 @@ impl AdapterConfig {
         }
     }
 
-    fn from_env(plugins: &Vec<Plugin>, backend: &str) -> Result<Self> {
+    fn from_env(plugins: &[Plugin], backend: &str) -> Result<Self> {
         match backend.to_lowercase().as_str() {
             "netbox" => Ok(AdapterConfig::Netbox(NetboxConfig {
                 url: None,
@@ -435,7 +435,7 @@ pub struct Plugin {
 }
 
 pub fn create_adapter(
-    plugins: &Vec<Plugin>,
+    plugins: &[Plugin],
     backend: Option<&str>,
     config_path: Option<PathBuf>,
 ) -> Result<Box<dyn Adapter>> {
@@ -457,7 +457,7 @@ pub fn create_adapter(
         if let Some(plugin) = plugins.iter().find(|p| p.name == backend) {
             load_config(&plugin.path)?
         } else {
-            AdapterConfig::from_env(&plugins, backend)?
+            AdapterConfig::from_env(plugins, backend)?
         }
     };
 
@@ -465,7 +465,7 @@ pub fn create_adapter(
 }
 
 fn load_config(path: &PathBuf) -> Result<AdapterConfig> {
-    let content = fs::read_to_string(&path)
+    let content = fs::read_to_string(path)
         .with_context(|| format!("read adapter config: {}", path.display()))?;
     let config: AdapterConfig = serde_yaml::from_str(&content)
         .with_context(|| format!("parse adapter config: {}", path.display()))?;
