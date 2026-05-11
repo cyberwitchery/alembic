@@ -107,7 +107,7 @@ impl AdapterConfig {
         }
     }
 
-    fn from_env(backend: &str) -> Result<Self> {
+    fn from_env(plugins: &Vec<Plugin>, backend: &str) -> Result<Self> {
         match backend.to_lowercase().as_str() {
             "netbox" => Ok(AdapterConfig::Netbox(NetboxConfig {
                 url: None,
@@ -136,8 +136,13 @@ impl AdapterConfig {
                 timeout_seconds: None,
             })),
             other => Err(anyhow!(
-                "unsupported backend {other} (expected one of: {})",
-                SUPPORTED_BACKENDS.join(", ")
+                "unsupported backend {other} (expected one of: {}; OR one of the plugins: {})",
+                SUPPORTED_BACKENDS.join(", "),
+                plugins
+                    .iter()
+                    .map(|p| p.name.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             )),
         }
     }
@@ -418,15 +423,24 @@ impl InfrahubSchemaConfig {
     }
 }
 
+/// A plugin is an external backend that can be
+/// referred to using its name instead of passing
+/// `--backend external --backend-config <path>` manually.
+#[derive(Debug)]
+pub struct Plugin {
+    /// should match the name passed to `--backend` flag
+    pub name: String,
+    /// path to the backend config yaml file that describes the plugin
+    pub path: PathBuf,
+}
+
 pub fn create_adapter(
+    plugins: &Vec<Plugin>,
     backend: Option<&str>,
     config_path: Option<PathBuf>,
 ) -> Result<Box<dyn Adapter>> {
     let config = if let Some(path) = config_path {
-        let content = fs::read_to_string(&path)
-            .with_context(|| format!("read adapter config: {}", path.display()))?;
-        let config: AdapterConfig = serde_yaml::from_str(&content)
-            .with_context(|| format!("parse adapter config: {}", path.display()))?;
+        let config = load_config(&path)?;
         if let Some(backend) = backend {
             if backend.to_lowercase() != config.backend_name() {
                 return Err(anyhow!(
@@ -439,10 +453,23 @@ pub fn create_adapter(
     } else {
         let backend =
             backend.ok_or_else(|| anyhow!("--backend or --backend-config is required"))?;
-        AdapterConfig::from_env(backend)?
+
+        if let Some(plugin) = plugins.iter().find(|p| p.name == backend) {
+            load_config(&plugin.path)?
+        } else {
+            AdapterConfig::from_env(&plugins, backend)?
+        }
     };
 
     config.build()
+}
+
+fn load_config(path: &PathBuf) -> Result<AdapterConfig> {
+    let content = fs::read_to_string(&path)
+        .with_context(|| format!("read adapter config: {}", path.display()))?;
+    let config: AdapterConfig = serde_yaml::from_str(&content)
+        .with_context(|| format!("parse adapter config: {}", path.display()))?;
+    Ok(config)
 }
 
 pub fn resolve_credentials(

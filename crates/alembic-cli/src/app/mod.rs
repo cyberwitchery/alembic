@@ -6,12 +6,13 @@ mod diag;
 mod io;
 mod state;
 
-use alembic_adapter_registry::create_adapter;
+use alembic_adapter_registry::{create_adapter, Plugin};
 use alembic_engine::{
     apply_plan, build_plan, compile_retort, is_brew_format, load_raw_yaml, load_retort, Plan,
 };
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand};
+use std::fs;
 use std::path::PathBuf;
 
 use self::cast_django::{run_cast_django, CastDjangoConfig, CommandRunner};
@@ -133,7 +134,7 @@ fn confirm(prompt: &str) -> Result<bool> {
     Ok(matches!(input.trim().to_lowercase().as_str(), "y" | "yes"))
 }
 
-pub(crate) async fn run(cli: Cli, _config: AppConfig) -> Result<()> {
+pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
     match cli.command {
         Command::Validate { file, retort } => {
             let inventory = load_inventory(&file, retort.as_deref())?;
@@ -159,7 +160,8 @@ pub(crate) async fn run(cli: Cli, _config: AppConfig) -> Result<()> {
         } => {
             let inventory = load_inventory(&file, retort.as_deref())?;
             let mut state = load_state().await?;
-            let adapter = create_adapter(backend.as_deref(), backend_config)?;
+            let plugins = search_for_plugins(&config);
+            let adapter = create_adapter(&plugins, backend.as_deref(), backend_config)?;
             if provision {
                 let provision_report = adapter.ensure_schema(&inventory.schema).await?;
                 if !provision_report.is_empty() {
@@ -191,7 +193,8 @@ pub(crate) async fn run(cli: Cli, _config: AppConfig) -> Result<()> {
             interactive,
         } => {
             let mut state = load_state().await?;
-            let adapter = create_adapter(backend.as_deref(), backend_config)?;
+            let plugins = search_for_plugins(&config);
+            let adapter = create_adapter(&plugins, backend.as_deref(), backend_config)?;
             let plan = read_plan(&plan)?;
 
             if interactive {
@@ -283,7 +286,8 @@ pub(crate) async fn run(cli: Cli, _config: AppConfig) -> Result<()> {
                 .as_deref()
                 .ok_or_else(|| anyhow!("import requires a retort with schema"))?;
             let retort = load_retort(retort_path)?;
-            let adapter = create_adapter(backend.as_deref(), backend_config)?;
+            let plugins = search_for_plugins(&config);
+            let adapter = create_adapter(&plugins, backend.as_deref(), backend_config)?;
             let state = load_state().await?;
             let types: Vec<TypeName> = retort.schema.types.keys().map(TypeName::new).collect();
             let report =
@@ -320,6 +324,33 @@ pub(crate) async fn run(cli: Cli, _config: AppConfig) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn search_for_plugins(config: &AppConfig) -> Vec<Plugin> {
+    let Ok(dir_contents) = fs::read_dir(&config.plugin_dir) else {
+        tracing::debug!("plugin dir '{}' not found", config.plugin_dir.display());
+        return vec![];
+    };
+
+    dir_contents
+        .flatten()
+        .filter(|e| {
+            e.path()
+                .extension()
+                .and_then(|s| s.to_str())
+                .map(|s| s == "yaml")
+                .unwrap_or(false)
+        })
+        .map(|e| Plugin {
+            name: e
+                .path()
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or_default()
+                .to_string(),
+            path: e.path(),
+        })
+        .collect()
 }
 
 #[cfg(test)]
