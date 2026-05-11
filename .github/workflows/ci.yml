@@ -108,7 +108,7 @@ jobs:
             --ignore-filename-regex "netbox\\.rs/" \
             --lcov --output-path lcov.info
         env:
-          ALEMBIC_PLUGIN_SEARCH_PATHS: target/llvm-cov-target/debug
+          ALEMBIC_PLUGIN_SEARCH_PATHS: ["target/llvm-cov-target/debug"]
 
       - name: Upload coverage artifact
         uses: actions/upload-artifact@v4
