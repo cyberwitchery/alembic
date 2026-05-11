@@ -149,5 +149,5 @@ pub fn run_plugin(name: &str, config: &AppConfig) -> Result<PluginResponse> {
     let mut proc = spawn_first_acceptable_candidate(name, &config.plugin_search_paths)?;
     let version = env!("CARGO_PKG_VERSION").to_string();
     let timeout = Duration::from_secs(3);
-    proc.send_request(&PluginRequest::empty(version), timeout)
+    proc.send_request(&PluginRequest::handshake(version), timeout)
 }

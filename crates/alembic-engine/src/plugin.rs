@@ -2,7 +2,6 @@
 
 use semver::{Version, VersionReq};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::fmt::Display;
 use std::io::{BufRead, BufReader, Read, Write};
 
@@ -20,15 +19,23 @@ macro_rules! alembic_plugin_main {
 /// ipc request sent to a plugin.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct PluginRequest {
-    pub json: Value,
+    pub command: PluginCommand,
     /// the version of the alembic cli (in semantic versioning format).
     pub version: String,
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+pub enum PluginCommand {
+    /// initial check to see that the plugin works
+    Handshake,
+    /// corresponds to the cli command 'apply'
+    Apply,
+}
+
 impl PluginRequest {
-    pub fn empty(version: String) -> Self {
+    pub fn handshake(version: String) -> Self {
         Self {
-            json: serde_json::json!({}),
+            command: PluginCommand::Handshake,
             version,
         }
     }
@@ -156,18 +163,21 @@ fn check_alembic_cli_version(
 
 #[test]
 fn cli_ok_version_check() {
-    assert!(check_alembic_cli_version(">0.5", &PluginRequest::empty("0.6.0".into())).is_ok());
+    assert!(check_alembic_cli_version(">0.5", &PluginRequest::handshake("0.6.0".into())).is_ok());
 }
 
 #[test]
 fn cli_outdated_version_check() {
-    assert!(check_alembic_cli_version(">0.5", &PluginRequest::empty("0.4.0".into())).is_err());
+    assert!(check_alembic_cli_version(">0.5", &PluginRequest::handshake("0.4.0".into())).is_err());
 }
 
 #[test]
 fn plugin_loop_responds() {
     fn handler(request: PluginRequest) -> PluginResponse {
-        PluginResponse::ok(vec![request.json["hello"].to_string()])
+        match request.command {
+            PluginCommand::Handshake => PluginResponse::ok(vec!["hand shaken".to_string()]),
+            PluginCommand::Apply => panic!("wrong command"),
+        }
     }
 
     let (in_reader, mut in_writer) = std::io::pipe().unwrap();
@@ -178,7 +188,7 @@ fn plugin_loop_responds() {
     });
 
     let request = PluginRequest {
-        json: serde_json::json!({"hello": "world"}),
+        command: PluginCommand::Handshake,
         version: "0.1.0".to_string(),
     };
     writeln!(in_writer, "{}", serde_json::to_string(&request).unwrap()).unwrap();
@@ -189,7 +199,7 @@ fn plugin_loop_responds() {
 
     let response: PluginResponse = serde_json::from_str(&response).unwrap();
     assert!(response.ok);
-    assert_eq!(response.lines, vec!["\"world\"".to_string()]);
+    assert_eq!(response.lines, vec!["hand shaken".to_string()]);
 
     t.join().unwrap();
 }
