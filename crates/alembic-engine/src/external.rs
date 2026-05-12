@@ -129,14 +129,14 @@ pub fn run_external_adapter<A: ExternalAdapter>(mut adapter: A) -> io::Result<()
         Err(err) => return write_error(format!("invalid request: {err}")),
     };
 
-    adapter.setup(&envelope.setup).map_err(io::Error::other)?;
-
     if envelope.version != EXTERNAL_PROTOCOL_VERSION {
         return write_error(format!(
             "unsupported protocol version {} (expected {})",
             envelope.version, EXTERNAL_PROTOCOL_VERSION
         ));
     }
+
+    adapter.setup(&envelope.setup).map_err(io::Error::other)?;
 
     let mut stdout = io::BufWriter::new(io::stdout());
     match envelope.request {
