@@ -341,15 +341,18 @@ fn search_for_plugins(config: &AppConfig) -> Vec<Plugin> {
                 .map(|s| s.to_lowercase() == "yaml")
                 .unwrap_or(false)
         })
-        .map(|e| Plugin {
-            name: e
-                .path()
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or_default()
-                .to_string()
-                .to_lowercase(),
-            path: e.path(),
+        .filter_map(|e| {
+            let path = e.path();
+            let Some(name) = path.file_stem().and_then(|s| s.to_str()) else {
+                return None;
+            };
+            if name == "" {
+                return None;
+            }
+            Some(Plugin {
+                name: name.to_string().to_lowercase(),
+                path: e.path(),
+            })
         })
         .collect()
 }
