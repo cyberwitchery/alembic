@@ -18,6 +18,7 @@ pub struct AppConfig {
 impl AppConfig {
     fn figment() -> Figment {
         Figment::from(Serialized::defaults(Self::default()))
+            .merge(Yaml::file("alembic.yaml"))
             .merge(Yaml::file("alembic.yml"))
             .merge(Env::prefixed("ALEMBIC_"))
     }
