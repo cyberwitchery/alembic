@@ -895,6 +895,7 @@ async fn minimal_external_adapter() {
         .join("target");
 
     let example_binary = target_dir
+        .join("ci")
         .join("debug")
         .join("examples")
         .join("minimal_external_adapter");
