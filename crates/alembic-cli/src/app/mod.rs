@@ -338,7 +338,7 @@ fn search_for_plugins(config: &AppConfig) -> Vec<Plugin> {
             e.path()
                 .extension()
                 .and_then(|s| s.to_str())
-                .map(|s| s.to_lowercase() == "yaml")
+                .map(|s| s.to_lowercase() == "yaml" || s.to_lowercase() == "yml")
                 .unwrap_or(false)
         })
         .filter_map(|e| {
