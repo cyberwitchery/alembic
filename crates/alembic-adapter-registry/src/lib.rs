@@ -136,13 +136,20 @@ impl AdapterConfig {
                 timeout_seconds: None,
             })),
             other => Err(anyhow!(
-                "unsupported backend {other} (expected one of: {}; OR one of the plugins: {})",
+                "unsupported backend {other} (expected one of: {}{})",
                 SUPPORTED_BACKENDS.join(", "),
-                plugins
-                    .iter()
-                    .map(|p| p.name.to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ")
+                if plugins.is_empty() {
+                    "".to_string()
+                } else {
+                    format!(
+                        "; OR one of the plugins: {}",
+                        plugins
+                            .iter()
+                            .map(|p| p.name.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                }
             )),
         }
     }
@@ -454,7 +461,7 @@ pub fn create_adapter(
         let backend =
             backend.ok_or_else(|| anyhow!("--backend or --backend-config is required"))?;
 
-        if let Some(plugin) = plugins.iter().find(|p| p.name == backend) {
+        if let Some(plugin) = plugins.iter().find(|p| p.name == backend.to_lowercase()) {
             load_config(&plugin.path)?
         } else {
             AdapterConfig::from_env(plugins, backend)?
