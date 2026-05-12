@@ -38,7 +38,7 @@ impl ExternalAdapter for MyAdapter {
     fn setup(&mut self, configuration: &serde_yaml::Value) -> Result<()> {
         if let Some(x) = configuration
             .get("my_backend_variable_x")
-            .and_then(serde_yaml::Value::as_str) {
+            .and_then(serde_yaml::Value::as_f64) {
             ...
         }
         Ok(())
