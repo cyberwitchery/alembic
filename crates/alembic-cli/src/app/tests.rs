@@ -894,11 +894,15 @@ async fn minimal_external_adapter() {
         .unwrap()
         .join("target");
 
-    let example_binary = target_dir
-        .join("ci")
-        .join("debug")
-        .join("examples")
-        .join("minimal_external_adapter");
+    let mut example_binary = target_dir;
+
+    if std::env::var("CI").is_ok() {
+        example_binary.push("ci");
+    }
+
+    example_binary.push("debug");
+    example_binary.push("examples");
+    example_binary.push("minimal_external_adapter");
 
     let config = AdapterConfig::External(ExternalConfig {
         command: Some(example_binary.to_str().unwrap().to_string()),
