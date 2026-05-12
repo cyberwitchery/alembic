@@ -27,3 +27,4 @@ lcov.info
 .cargo/*
 !.cargo/audit.toml
 alembic.yml
+alembic.yaml
