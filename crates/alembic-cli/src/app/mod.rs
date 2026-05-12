@@ -343,10 +343,8 @@ fn search_for_plugins(config: &AppConfig) -> Vec<Plugin> {
         })
         .filter_map(|e| {
             let path = e.path();
-            let Some(name) = path.file_stem().and_then(|s| s.to_str()) else {
-                return None;
-            };
-            if name == "" {
+            let name = path.file_stem().and_then(|s| s.to_str())?;
+            if name.is_empty() {
                 return None;
             }
             Some(Plugin {
