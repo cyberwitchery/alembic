@@ -327,8 +327,8 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
 }
 
 fn search_for_plugins(config: &AppConfig) -> Vec<Plugin> {
-    let Ok(dir_contents) = fs::read_dir(&config.plugin_dir) else {
-        tracing::debug!("plugin dir '{}' not found", config.plugin_dir.display());
+    let Ok(dir_contents) = fs::read_dir(&config.plugins_dir) else {
+        tracing::debug!("plugin dir '{}' not found", config.plugins_dir.display());
         return vec![];
     };
 

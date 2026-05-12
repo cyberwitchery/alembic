@@ -56,7 +56,23 @@ env:
 timeout_seconds: 60
 ```
 
-if you don't want a config file, you can pass `--backend <name>` and supply credentials via environment variables.
+if you don't want a config file, you can pass `--backend <name>` and
+supply credentials via environment variables.
+
+## plugins
+
+As a convenience, external adapter configs can be kept in a common
+directory (default: `plugins` in the working directory, see
+`docs/configuration.md` for how to change that). By passing the
+filename of such a config as the `--backend`, that backend config is
+automatically used.
+
+For example, if there's a backend config for a custom external adapter
+in `./plugins/my_adapter.yaml`; here's how to run it:
+
+```bash
+$ alembic apply --backend my_adapter
+```
 
 ## plan
 

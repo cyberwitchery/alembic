@@ -12,7 +12,7 @@ use std::path::PathBuf;
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub struct AppConfig {
-    pub plugin_dir: PathBuf,
+    pub plugins_dir: PathBuf,
 }
 
 impl AppConfig {
@@ -33,7 +33,7 @@ impl AppConfig {
 impl Default for AppConfig {
     fn default() -> AppConfig {
         AppConfig {
-            plugin_dir: "./plugins".into(),
+            plugins_dir: "./plugins".into(),
         }
     }
 }
