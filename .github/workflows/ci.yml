@@ -98,14 +98,15 @@ jobs:
         with:
           shared-key: alembic-ci
 
-      - name: Run tests simply
-        run: cargo test
+      # - name: Run tests simply
+      #   run: cargo test
 
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
 
       - name: Coverage
         run: |
+          cargo build --examples
           cargo llvm-cov --workspace --all-features --fail-under-lines 80 \
             --ignore-filename-regex "netbox\\.rs/" \
             --lcov --output-path lcov.info
