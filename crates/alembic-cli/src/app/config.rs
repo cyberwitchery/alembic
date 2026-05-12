@@ -1,8 +1,8 @@
 //! configuration for the cli tool
 
-use figment::providers::Serialized;
+use figment::providers::{Serialized, Yaml};
 use figment::{
-    providers::{Env, Format, Toml},
+    providers::{Env, Format},
     Figment,
 };
 use serde::{Deserialize, Serialize};
@@ -12,13 +12,14 @@ use std::path::PathBuf;
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub struct AppConfig {
-    pub plugin_dir: PathBuf,
+    pub plugins_dir: PathBuf,
 }
 
 impl AppConfig {
     fn figment() -> Figment {
         Figment::from(Serialized::defaults(Self::default()))
-            .merge(Toml::file("alembic.toml"))
+            .merge(Yaml::file("alembic.yaml"))
+            .merge(Yaml::file("alembic.yml"))
             .merge(Env::prefixed("ALEMBIC_"))
     }
 
@@ -33,7 +34,7 @@ impl AppConfig {
 impl Default for AppConfig {
     fn default() -> AppConfig {
         AppConfig {
-            plugin_dir: "./plugins".into(),
+            plugins_dir: "./plugins".into(),
         }
     }
 }

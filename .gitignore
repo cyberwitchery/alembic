@@ -26,3 +26,5 @@ lcov.info
 # Local tool config
 .cargo/*
 !.cargo/audit.toml
+alembic.yml
+alembic.yaml
