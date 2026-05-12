@@ -15,6 +15,8 @@ env:
   MY_BACKEND_URL: https://backend.example.com
   MY_BACKEND_TOKEN: $TOKEN
 timeout_seconds: 60
+setup:
+  my_backend_variable_x: 37.0
 ```
 
 ## protocol
@@ -33,6 +35,13 @@ use alembic_engine::alembic_external_main;
 struct MyAdapter;
 
 impl ExternalAdapter for MyAdapter {
+    fn setup(&mut self, configuration: &serde_yaml::Value) -> Result<()> {
+        if let Some(x) = configuration.get("my_backend_variable_x").and_then(serde_yaml::Value::as_str) {
+            ...
+        }
+        Ok(())
+    }
+
     fn read(
         &mut self,
         schema: &alembic_core::Schema,

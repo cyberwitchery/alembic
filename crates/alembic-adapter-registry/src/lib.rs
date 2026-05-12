@@ -72,6 +72,8 @@ pub struct ExternalConfig {
     #[serde(default)]
     pub env: BTreeMap<String, String>,
     pub timeout_seconds: Option<u64>,
+    #[serde(default)]
+    pub setup: serde_yaml::Value,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
@@ -134,6 +136,7 @@ impl AdapterConfig {
                 working_dir: None,
                 env: BTreeMap::new(),
                 timeout_seconds: None,
+                setup: serde_yaml::Value::default(),
             })),
             other => Err(anyhow!(
                 "unsupported backend {other} (expected one of: {}{})",
@@ -220,6 +223,7 @@ struct ProcessAdapter {
     working_dir: Option<PathBuf>,
     env: BTreeMap<String, String>,
     timeout: Duration,
+    setup: serde_yaml::Value,
 }
 
 impl ProcessAdapter {
@@ -235,6 +239,7 @@ impl ProcessAdapter {
             working_dir: cfg.working_dir,
             env: cfg.env,
             timeout,
+            setup: cfg.setup,
         })
     }
 
@@ -242,6 +247,7 @@ impl ProcessAdapter {
         let envelope = ExternalEnvelope {
             version: 1,
             request,
+            setup: self.setup.clone(),
         };
         let payload = serde_json::to_vec(&envelope).context("serialize external request")?;
         let output = self.run(payload).await?;
@@ -348,9 +354,11 @@ impl Adapter for ProcessAdapter {
     }
 }
 
+// Duplicated from external.rs?
 #[derive(Debug, Serialize)]
 struct ExternalEnvelope<'a> {
     version: u8,
+    pub setup: serde_yaml::Value,
     #[serde(flatten)]
     request: ExternalRequest<'a>,
 }
@@ -635,6 +643,7 @@ fi
             working_dir: None,
             env: BTreeMap::new(),
             timeout_seconds: Some(5),
+            setup: serde_yaml::Value::default(),
         });
         let adapter = config.build().unwrap();
         let schema = Schema {

@@ -14,6 +14,8 @@ pub const EXTERNAL_PROTOCOL_VERSION: u8 = 1;
 pub struct ExternalEnvelope {
     /// protocol version.
     pub version: u8,
+    /// custom plugin configuration.
+    pub setup: serde_yaml::Value,
     /// request payload.
     #[serde(flatten)]
     pub request: ExternalRequest,
@@ -96,6 +98,9 @@ impl<T> ExternalResponse<T> {
 
 /// external adapter helper trait.
 pub trait ExternalAdapter {
+    /// initial configuration of the adapter
+    fn setup(&mut self, configuration: &serde_yaml::Value) -> Result<()>;
+
     /// read objects from the backend.
     fn read(
         &mut self,
@@ -123,6 +128,8 @@ pub fn run_external_adapter<A: ExternalAdapter>(mut adapter: A) -> io::Result<()
         Ok(envelope) => envelope,
         Err(err) => return write_error(format!("invalid request: {err}")),
     };
+
+    adapter.setup(&envelope.setup).map_err(io::Error::other)?;
 
     if envelope.version != EXTERNAL_PROTOCOL_VERSION {
         return write_error(format!(
