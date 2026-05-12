@@ -354,11 +354,10 @@ impl Adapter for ProcessAdapter {
     }
 }
 
-// Duplicated from external.rs?
 #[derive(Debug, Serialize)]
 struct ExternalEnvelope<'a> {
     version: u8,
-    pub setup: serde_yaml::Value,
+    setup: serde_yaml::Value,
     #[serde(flatten)]
     request: ExternalRequest<'a>,
 }
