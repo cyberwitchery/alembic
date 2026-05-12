@@ -19,13 +19,13 @@ use self::cast_django::{run_cast_django, CastDjangoConfig, CommandRunner};
 use self::diag::err;
 use self::io::{format_validation_errors, load_inventory, read_plan, write_inventory, write_plan};
 use self::state::load_state;
+use crate::app::config::AppConfig;
 use alembic_core::TypeName;
 
 #[cfg(test)]
 use self::cast_django::Runner;
 #[cfg(test)]
 use self::state::{resolve_state_backend_config, state_path, StateBackendConfig};
-use crate::app::config::AppConfig;
 #[cfg(test)]
 use alembic_engine::PostgresTlsMode;
 #[cfg(test)]

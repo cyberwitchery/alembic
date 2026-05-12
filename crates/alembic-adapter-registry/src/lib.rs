@@ -157,7 +157,7 @@ impl AdapterConfig {
         }
     }
 
-    fn build(self) -> Result<Box<dyn Adapter>> {
+    pub fn build(self) -> Result<Box<dyn Adapter>> {
         match self {
             AdapterConfig::Netbox(cfg) => {
                 let (url, token) = resolve_credentials("NETBOX", cfg.url, cfg.token)?;
