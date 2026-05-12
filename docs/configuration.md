@@ -4,7 +4,7 @@ The alembic cli tool can be configured using a layered set of
 configuration sources, applied in the following order:
 
 1. Built in app defaults
-2. Keys set in `alembic.toml` (file placed in working directory)
+2. Keys set in `alembic.yml` (file placed in working directory)
 3. Environment variables with the prefix "ALEMBIC_"
 
 ## Available configuration keys
@@ -14,10 +14,10 @@ configuration sources, applied in the following order:
 
 ## Examples
 
-To set a path where to look for plugins, you can use an `alembic.toml`
+To set a path where to look for plugins, you can use an `alembic.yml`
 config file in your working directory:
 
-```toml
+```yaml
 plugins_dir="/home/user/alembic_plugins"
 ```
 

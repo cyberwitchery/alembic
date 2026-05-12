@@ -1,8 +1,8 @@
 //! configuration for the cli tool
 
-use figment::providers::Serialized;
+use figment::providers::{Serialized, Yaml};
 use figment::{
-    providers::{Env, Format, Toml},
+    providers::{Env, Format},
     Figment,
 };
 use serde::{Deserialize, Serialize};
@@ -18,7 +18,7 @@ pub struct AppConfig {
 impl AppConfig {
     fn figment() -> Figment {
         Figment::from(Serialized::defaults(Self::default()))
-            .merge(Toml::file("alembic.toml"))
+            .merge(Yaml::file("alembic.yml"))
             .merge(Env::prefixed("ALEMBIC_"))
     }
 
