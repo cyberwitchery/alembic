@@ -98,9 +98,6 @@ jobs:
         with:
           shared-key: alembic-ci
 
-      # - name: Run tests simply
-      #   run: cargo test
-
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
 
