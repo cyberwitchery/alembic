@@ -104,6 +104,7 @@ schema:
       fields:
         status:
           type: string
+        # To do the terminations properly, we need https://github.com/cyberwitchery/alembic/issues/32
         a_terminations:
           type: list
           item:
