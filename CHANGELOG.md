@@ -2,6 +2,11 @@
 
 ## [unreleased]
 
+## [0.3.0] - 2026-05-20
+
+- cli: improved support for running external adapters ("plugins")
+- cli: can pass config variables to external adapters
+
 ## [0.2.0] - 2026-04-27
 
 - cli: print provisioning summary (fields, tags, object types created/deprecated/deleted) when `--provision` is used or during `apply`
