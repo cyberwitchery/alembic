@@ -887,22 +887,7 @@ async fn minimal_external_adapter() {
     // This test depends on the example "minimal_external_adapter" in this crate.
     // Note that `cargo test` will build all examples, so we can expect the binary to exist.
 
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let target_dir = manifest_dir
-        .ancestors()
-        .find(|p| p.join("target").exists())
-        .unwrap()
-        .join("target");
-
-    let mut example_binary = target_dir;
-
-    if std::env::var("CI").is_ok() {
-        example_binary.push("ci");
-    }
-
-    example_binary.push("debug");
-    example_binary.push("examples");
-    example_binary.push("minimal_external_adapter");
+    let example_binary = find_example_binary("minimal_external_adapter");
 
     let config = AdapterConfig::External(ExternalConfig {
         command: Some(example_binary.to_str().unwrap().to_string()),
@@ -928,4 +913,25 @@ async fn minimal_external_adapter() {
     } else {
         panic!("error response from plugin: {}", response.unwrap_err())
     }
+}
+
+fn find_example_binary(name: &str) -> PathBuf {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let target_dir = manifest_dir
+        .ancestors()
+        .find(|p| p.join("target").exists())
+        .unwrap()
+        .join("target");
+
+    let mut example_binary = target_dir;
+
+    if std::env::var("CI").is_ok() {
+        example_binary.push("ci");
+    }
+
+    example_binary.push("debug");
+    example_binary.push("examples");
+    example_binary.push(name);
+
+    example_binary
 }
