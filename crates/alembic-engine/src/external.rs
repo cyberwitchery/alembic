@@ -218,10 +218,15 @@ mod tests {
     }
 
     #[derive(Debug, Default)]
-    struct TestExternalAdapter {}
+    struct TestExternalAdapter {
+        pub x: i64,
+    }
 
     impl ExternalAdapter for TestExternalAdapter {
-        fn setup(&mut self, _configuration: &Value) -> anyhow::Result<()> {
+        fn setup(&mut self, configuration: &Value) -> anyhow::Result<()> {
+            if let Some(x) = configuration.get("x").and_then(serde_yaml::Value::as_i64) {
+                self.x = x;
+            }
             Ok(())
         }
 
@@ -231,7 +236,16 @@ mod tests {
             _types: &[TypeName],
             _state: &StateData,
         ) -> anyhow::Result<Vec<ExternalObject>> {
-            Ok(Vec::new())
+            let mut result = vec![];
+            for _ in 0..self.x {
+                result.push(ExternalObject {
+                    type_name: TypeName::new(""),
+                    key: Default::default(),
+                    attrs: Default::default(),
+                    backend_id: None,
+                })
+            }
+            Ok(result)
         }
 
         fn write(
@@ -245,7 +259,7 @@ mod tests {
 
         fn ensure_schema(&mut self, schema: &Schema) -> anyhow::Result<ProvisionReport> {
             let mut created_fields = vec![];
-            for (ty_name, _) in &schema.types {
+            for ty_name in schema.types.keys() {
                 created_fields.push(ty_name.clone());
             }
             Ok(ProvisionReport {
@@ -377,6 +391,45 @@ mod tests {
             );
         }
         assert!(!response.ok);
+
+        t.join().unwrap();
+    }
+
+    #[test]
+    fn external_adapter_configuration() {
+        let adapter = TestExternalAdapter::default();
+
+        let (in_reader, mut in_writer) = std::io::pipe().unwrap();
+        let (out_reader, out_writer) = std::io::pipe().unwrap();
+
+        let t = std::thread::spawn(move || {
+            assert!(run_external_adapter(adapter, (in_reader, out_writer)).is_ok());
+        });
+
+        // The 'Write' request is booby trapped on TestExternalAdapter
+        let request = ExternalRequest::Read {
+            schema: Default::default(),
+            types: vec![],
+            state: Default::default(),
+        };
+        const MAGIC_NUMBER: usize = 13;
+
+        let envelope = ExternalEnvelope {
+            version: EXTERNAL_PROTOCOL_VERSION,
+            setup: serde_yaml::from_str(&format!("x: {MAGIC_NUMBER}")).unwrap(),
+            request,
+        };
+
+        writeln!(in_writer, "{}", serde_json::to_string(&envelope).unwrap()).unwrap();
+        drop(in_writer);
+
+        let mut response = String::new();
+        BufReader::new(out_reader).read_line(&mut response).unwrap();
+
+        let response: ExternalResponse<Vec<ExternalObject>> =
+            serde_json::from_str(&response).unwrap();
+        assert!(response.ok);
+        assert_eq!(response.result.unwrap().len(), MAGIC_NUMBER,);
 
         t.join().unwrap();
     }
