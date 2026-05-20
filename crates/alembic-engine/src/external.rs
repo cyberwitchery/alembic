@@ -129,14 +129,17 @@ pub fn run_external_adapter<A: ExternalAdapter>(
 
     let envelope: ExternalEnvelope = match serde_json::from_str(&input) {
         Ok(envelope) => envelope,
-        Err(err) => return write_error(format!("invalid request: {err}")),
+        Err(err) => return write_error(&mut writer, format!("invalid request: {err}")),
     };
 
     if envelope.version != EXTERNAL_PROTOCOL_VERSION {
-        return write_error(format!(
-            "unsupported protocol version {} (expected {})",
-            envelope.version, EXTERNAL_PROTOCOL_VERSION
-        ));
+        return write_error(
+            &mut writer,
+            format!(
+                "unsupported protocol version {} (expected {})",
+                envelope.version, EXTERNAL_PROTOCOL_VERSION
+            ),
+        );
     }
 
     adapter.setup(&envelope.setup).map_err(io::Error::other)?;
@@ -161,10 +164,9 @@ pub fn run_external_adapter<A: ExternalAdapter>(
     }
 }
 
-fn write_error(message: String) -> io::Result<()> {
-    let mut stdout = io::BufWriter::new(io::stdout());
+fn write_error(out: &mut impl Write, message: String) -> io::Result<()> {
     let response = ExternalResponse::<serde_json::Value>::error(message);
-    write_response(&mut stdout, response)
+    write_response(out, response)
 }
 
 fn write_response<T: Serialize>(
@@ -195,7 +197,7 @@ mod tests {
         run_external_adapter, ApplyReport, ExternalAdapter, ExternalEnvelope, ExternalObject,
         ExternalRequest, Op, ProvisionReport, StateData, EXTERNAL_PROTOCOL_VERSION,
     };
-    use alembic_core::{Schema, TypeName};
+    use alembic_core::{Schema, TypeName, TypeSchema};
     use serde_json::json;
     use serde_yaml::Value;
     use std::io::BufReader;
@@ -238,12 +240,16 @@ mod tests {
             _ops: &[Op],
             _state: &StateData,
         ) -> anyhow::Result<ApplyReport> {
-            Ok(ApplyReport::default())
+            Err(anyhow::anyhow!("unsupported operation"))
         }
 
-        fn ensure_schema(&mut self, _schema: &Schema) -> anyhow::Result<ProvisionReport> {
+        fn ensure_schema(&mut self, schema: &Schema) -> anyhow::Result<ProvisionReport> {
+            let mut created_fields = vec![];
+            for (ty_name, _) in &schema.types {
+                created_fields.push(ty_name.clone());
+            }
             Ok(ProvisionReport {
-                created_fields: vec!["a".to_string(), "b".to_string()],
+                created_fields,
                 ..Default::default()
             })
         }
@@ -260,8 +266,19 @@ mod tests {
             assert!(run_external_adapter(adapter, (in_reader, out_writer)).is_ok());
         });
 
+        let dummy_type_schema = TypeSchema {
+            key: [].into(),
+            fields: [].into(),
+        };
+
         let request = ExternalRequest::EnsureSchema {
-            schema: Schema::default(),
+            schema: Schema {
+                types: [
+                    ("a".to_string(), dummy_type_schema.clone()),
+                    ("b".to_string(), dummy_type_schema.clone()),
+                ]
+                .into(),
+            },
         };
         let envelope = ExternalEnvelope {
             version: EXTERNAL_PROTOCOL_VERSION,
@@ -281,6 +298,85 @@ mod tests {
             response.result.unwrap().created_fields,
             vec!["a".to_string(), "b".to_string()]
         );
+
+        t.join().unwrap();
+    }
+
+    #[test]
+    fn external_adapter_communication_error() {
+        let adapter = TestExternalAdapter::default();
+
+        let (in_reader, mut in_writer) = std::io::pipe().unwrap();
+        let (out_reader, out_writer) = std::io::pipe().unwrap();
+
+        let t = std::thread::spawn(move || {
+            assert!(run_external_adapter(adapter, (in_reader, out_writer)).is_ok());
+        });
+
+        // The 'Write' request is booby trapped on TestExternalAdapter
+        let request = ExternalRequest::Write {
+            schema: Default::default(),
+            ops: vec![],
+            state: Default::default(),
+        };
+        let envelope = ExternalEnvelope {
+            version: EXTERNAL_PROTOCOL_VERSION,
+            setup: Default::default(),
+            request,
+        };
+
+        writeln!(in_writer, "{}", serde_json::to_string(&envelope).unwrap()).unwrap();
+        drop(in_writer);
+
+        let mut response = String::new();
+        BufReader::new(out_reader).read_line(&mut response).unwrap();
+
+        let response: ExternalResponse<ProvisionReport> = serde_json::from_str(&response).unwrap();
+        assert!(response.error.is_some());
+        assert!(!response.ok);
+
+        t.join().unwrap();
+    }
+
+    #[test]
+    fn external_adapter_outdated() {
+        let adapter = TestExternalAdapter::default();
+
+        let (in_reader, mut in_writer) = std::io::pipe().unwrap();
+        let (out_reader, out_writer) = std::io::pipe().unwrap();
+
+        let t = std::thread::spawn(move || {
+            assert!(run_external_adapter(adapter, (in_reader, out_writer)).is_ok());
+        });
+
+        // The 'Write' request is booby trapped on TestExternalAdapter
+        let request = ExternalRequest::EnsureSchema {
+            schema: Default::default(),
+        };
+        let envelope = ExternalEnvelope {
+            version: EXTERNAL_PROTOCOL_VERSION + 1,
+            setup: Default::default(),
+            request,
+        };
+
+        writeln!(in_writer, "{}", serde_json::to_string(&envelope).unwrap()).unwrap();
+        drop(in_writer);
+
+        let mut response = String::new();
+        BufReader::new(out_reader).read_line(&mut response).unwrap();
+
+        let response: ExternalResponse<ProvisionReport> = serde_json::from_str(&response).unwrap();
+        if let Some(error) = response.error {
+            assert_eq!(
+                error,
+                format!(
+                    "unsupported protocol version {} (expected {})",
+                    EXTERNAL_PROTOCOL_VERSION + 1,
+                    EXTERNAL_PROTOCOL_VERSION
+                )
+            );
+        }
+        assert!(!response.ok);
 
         t.join().unwrap();
     }
