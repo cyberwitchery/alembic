@@ -363,7 +363,6 @@ mod tests {
             assert!(run_external_adapter(adapter, (in_reader, out_writer)).is_ok());
         });
 
-        // The 'Write' request is booby trapped on TestExternalAdapter
         let request = ExternalRequest::EnsureSchema {
             schema: Default::default(),
         };
@@ -406,7 +405,6 @@ mod tests {
             assert!(run_external_adapter(adapter, (in_reader, out_writer)).is_ok());
         });
 
-        // The 'Write' request is booby trapped on TestExternalAdapter
         let request = ExternalRequest::Read {
             schema: Default::default(),
             types: vec![],
