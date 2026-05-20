@@ -1,6 +1,8 @@
 use super::test_support::*;
 use super::*;
-use alembic_engine::Op;
+use alembic_adapter_registry::{AdapterConfig, ExternalConfig};
+use alembic_core::Schema;
+use alembic_engine::{Op, StateData, StateStore};
 use std::collections::BTreeMap;
 use tempfile::tempdir;
 
@@ -878,4 +880,58 @@ objects:
     assert!(raw.contains("\"type_name\": \"dcim.device\""));
 
     std::env::set_current_dir(cwd).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn minimal_external_adapter() {
+    // This test depends on the example "minimal_external_adapter" in this crate.
+    // Note that `cargo test` will build all examples, so we can expect the binary to exist.
+
+    let example_binary = find_example_binary("minimal_external_adapter");
+
+    let config = AdapterConfig::External(ExternalConfig {
+        command: Some(example_binary.to_str().unwrap().to_string()),
+        args: Vec::new(),
+        working_dir: None,
+        env: BTreeMap::new(),
+        timeout_seconds: Some(5),
+        setup: serde_yaml::Value::default(),
+    });
+
+    let adapter = config.build().unwrap();
+
+    let response = adapter
+        .write(
+            &Schema::default(),
+            &[],
+            &StateStore::new(Option::None, StateData::default()),
+        )
+        .await;
+
+    if let Ok(ok_response) = response {
+        assert!(ok_response.applied.is_empty())
+    } else {
+        panic!("error response from plugin: {}", response.unwrap_err())
+    }
+}
+
+fn find_example_binary(name: &str) -> PathBuf {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let target_dir = manifest_dir
+        .ancestors()
+        .find(|p| p.join("target").exists())
+        .unwrap()
+        .join("target");
+
+    let mut example_binary = target_dir;
+
+    if std::env::var("CI").is_ok() {
+        example_binary.push("ci");
+    }
+
+    example_binary.push("debug");
+    example_binary.push("examples");
+    example_binary.push(name);
+
+    example_binary
 }
