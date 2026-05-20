@@ -142,7 +142,9 @@ pub fn run_external_adapter<A: ExternalAdapter>(
         );
     }
 
-    adapter.setup(&envelope.setup).map_err(io::Error::other)?;
+    if let Err(e) = adapter.setup(&envelope.setup) {
+        return write_error(&mut writer, format!("invalid setup: {e}"));
+    }
 
     match envelope.request {
         ExternalRequest::Read {
