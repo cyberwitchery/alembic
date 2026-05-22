@@ -170,12 +170,32 @@ objects:
       if_type: "1000base-t"
       enabled: true
 
-  - uid: "4b8a93d3-6a6d-4ef5-9b04-1de2b8f5b8f2"
+  - uid: "5a1c43a4-4f52-4d07-8a2f-88ad1fbdf8c1"
     type: dcim.interface
     key:
       name: "eth1"
     attrs:
       name: "eth1"
+      device: "7b8f7a92-8fd0-4667-9a4b-9f3b5c9a4b1a"
+      if_type: "1000base-t"
+      enabled: true
+
+  - uid: "5a1c43a4-4f52-4d07-8a2f-88ad1fbdf8c2"
+    type: dcim.interface
+    key:
+      name: "eth2"
+    attrs:
+      name: "eth2"
+      device: "7b8f7a92-8fd0-4667-9a4b-9f3b5c9a4b1a"
+      if_type: "1000base-t"
+      enabled: true
+
+  - uid: "5a1c43a4-4f52-4d07-8a2f-88ad1fbdf8c3"
+    type: dcim.interface
+    key:
+      name: "eth3"
+    attrs:
+      name: "eth3"
       device: "7b8f7a92-8fd0-4667-9a4b-9f3b5c9a4b1a"
       if_type: "1000base-t"
       enabled: true
@@ -203,15 +223,6 @@ objects:
     key:
       label: "spine01:Ethernet2--leaf01:Ethernet49"
     attrs:
-      a_terminations: ["dc0adf72-3c0b-4c3a-8b18-23a7c0a7c0f1"]
-      b_terminations: ["c4a0c0f0-ef8a-4c7f-9b0a-2ff3a4d14fd1"]
-      status: "connected"
-
-  - uid: "30000000-0000-0000-0000-000000000601"
-    type: dcim.cable
-    key:
-      label: "spine01:Ethernet2--leaf01:Ethernet50"
-    attrs:
-      a_terminations: ["dc0adf72-3c0b-4c3a-8b18-23a7c0a7c0f1"]
-      b_terminations: ["c4a0c0f0-ef8a-4c7f-9b0a-2ff3a4d14666"]
+      a_terminations: ["5a1c43a4-4f52-4d07-8a2f-88ad1fbdf8c0"]
+      b_terminations: ["5a1c43a4-4f52-4d07-8a2f-88ad1fbdf8c2","5a1c43a4-4f52-4d07-8a2f-88ad1fbdf8c3"]
       status: "connected"
