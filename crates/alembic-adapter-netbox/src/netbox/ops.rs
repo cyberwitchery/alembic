@@ -14,7 +14,7 @@ use alembic_engine::{
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use netbox::{BulkDelete, QueryBuilder, Resource};
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
 const CUSTOM_OBJECT_FEATURE: &str = "custom-object";
@@ -988,9 +988,31 @@ fn resolve_value_for_type(
     value: Value,
     resolved: &BTreeMap<Uid, u64>,
 ) -> Result<Value> {
-    alembic_engine::resolve_value_for_type(field_type, value, resolved, |id| {
+    let value = alembic_engine::resolve_value_for_type(field_type, value, resolved, |id| {
         Value::Number((*id).into())
-    })
+    })?;
+
+    if let Some(target_type_name) = should_wrap_generic_fk_type(field_type) {
+        Ok(json!({"object_type": target_type_name, "object_id": value}))
+    } else {
+        Ok(value)
+    }
+}
+
+fn should_wrap_generic_fk_type(field_type: &FieldType) -> Option<String> {
+    fn extract_target_type_name(target: &str) -> Option<String> {
+        if target == "dcim.interface" {
+            Some(target.to_string())
+        } else {
+            None
+        }
+    }
+
+    match field_type {
+        FieldType::Ref { target } => extract_target_type_name(target),
+        FieldType::ListRef { target } => extract_target_type_name(target),
+        _ => return None,
+    }
 }
 
 fn query_from_key(
@@ -1650,6 +1672,36 @@ mod test_normalization {
         )
         .unwrap();
         assert_eq!(val, json!([5]));
+    }
+
+    #[test]
+    fn test_resolve_value_for_generic_fk_type() {
+        let resolved = BTreeMap::from([(Uid::from_u128(1), 42u64)]);
+
+        // Ref
+        let val = resolve_value_for_type(
+            &FieldType::Ref {
+                target: "dcim.interface".to_string(),
+            },
+            json!(Uid::from_u128(1).to_string()),
+            &resolved,
+        )
+        .unwrap();
+        assert_eq!(
+            val,
+            json!({"object_type": "dcim.interface", "object_id": 42})
+        );
+
+        // // ListRef
+        // let val = resolve_value_for_type(
+        //     &alembic_core::FieldType::ListRef {
+        //         target: "t".to_string(),
+        //     },
+        //     json!([Uid::from_u128(1).to_string()]),
+        //     &resolved,
+        // )
+        //     .unwrap();
+        // assert_eq!(val, json!([5]));
     }
 
     #[test]
