@@ -988,30 +988,41 @@ fn resolve_value_for_type(
     value: Value,
     resolved: &BTreeMap<Uid, u64>,
 ) -> Result<Value> {
-    let value = alembic_engine::resolve_value_for_type(field_type, value, resolved, |id| {
-        Value::Number((*id).into())
-    })?;
+    let resolved_value =
+        alembic_engine::resolve_value_for_type(field_type, value, resolved, |id| {
+            Value::Number((*id).into())
+        })?;
 
-    if let Some(target_type_name) = should_wrap_generic_fk_type(field_type) {
-        Ok(json!({"object_type": target_type_name, "object_id": value}))
-    } else {
-        Ok(value)
-    }
+    wrap_as_generic_fk_if_needed(field_type, resolved_value)
 }
 
-fn should_wrap_generic_fk_type(field_type: &FieldType) -> Option<String> {
-    fn should_wrap_target(target: &str) -> Option<String> {
-        if target == "dcim.interface" {
-            Some(target.to_string())
-        } else {
-            None
-        }
-    }
-
+fn wrap_as_generic_fk_if_needed(field_type: &FieldType, value: Value) -> Result<Value> {
     match field_type {
-        FieldType::Ref { target } => should_wrap_target(target),
-        FieldType::ListRef { target } => should_wrap_target(target),
-        _ => None,
+        FieldType::Ref { target } => {
+            if target == "dcim.interface" {
+                Ok(json!({"object_type": target.to_string(), "object_id": value}))
+            } else {
+                Ok(value)
+            }
+        }
+        FieldType::ListRef { target } => {
+            if let Some(array) = value.as_array() {
+                array
+                    .iter()
+                    .map(|element| {
+                        wrap_as_generic_fk_if_needed(
+                            &FieldType::Ref {
+                                target: target.clone(),
+                            },
+                            element.clone(),
+                        )
+                    })
+                    .collect()
+            } else {
+                Err(anyhow!("value has type {:?} (expected array)", field_type))
+            }
+        }
+        _ => Ok(value),
     }
 }
 
@@ -1676,7 +1687,7 @@ mod test_normalization {
 
     #[test]
     fn test_resolve_value_for_generic_fk_type() {
-        let resolved = BTreeMap::from([(Uid::from_u128(1), 42u64)]);
+        let resolved = BTreeMap::from([(Uid::from_u128(1), 42u64), (Uid::from_u128(2), 1000u64)]);
 
         // Ref
         let val = resolve_value_for_type(
@@ -1692,16 +1703,19 @@ mod test_normalization {
             json!({"object_type": "dcim.interface", "object_id": 42})
         );
 
-        // // ListRef
-        // let val = resolve_value_for_type(
-        //     &alembic_core::FieldType::ListRef {
-        //         target: "t".to_string(),
-        //     },
-        //     json!([Uid::from_u128(1).to_string()]),
-        //     &resolved,
-        // )
-        //     .unwrap();
-        // assert_eq!(val, json!([5]));
+        // ListRef
+        let val = resolve_value_for_type(
+            &alembic_core::FieldType::ListRef {
+                target: "dcim.interface".to_string(),
+            },
+            json!([Uid::from_u128(2).to_string(), Uid::from_u128(1).to_string()]),
+            &resolved,
+        )
+        .unwrap();
+        assert_eq!(
+            val,
+            json!([{"object_type": "dcim.interface", "object_id": 1000}, {"object_type": "dcim.interface", "object_id": 42}])
+        );
     }
 
     #[test]
