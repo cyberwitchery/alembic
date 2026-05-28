@@ -1000,7 +1000,7 @@ fn resolve_value_for_type(
 }
 
 fn should_wrap_generic_fk_type(field_type: &FieldType) -> Option<String> {
-    fn extract_target_type_name(target: &str) -> Option<String> {
+    fn should_wrap_target(target: &str) -> Option<String> {
         if target == "dcim.interface" {
             Some(target.to_string())
         } else {
@@ -1009,8 +1009,8 @@ fn should_wrap_generic_fk_type(field_type: &FieldType) -> Option<String> {
     }
 
     match field_type {
-        FieldType::Ref { target } => extract_target_type_name(target),
-        FieldType::ListRef { target } => extract_target_type_name(target),
+        FieldType::Ref { target } => should_wrap_target(target),
+        FieldType::ListRef { target } => should_wrap_target(target),
         _ => return None,
     }
 }
