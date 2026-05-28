@@ -104,15 +104,12 @@ schema:
       fields:
         status:
           type: string
-        # To do the terminations properly, we need https://github.com/cyberwitchery/alembic/issues/32
         a_terminations:
-          type: list
-          item:
-            type: string
+          type: list_ref
+          target: dcim.interface
         b_terminations:
-          type: list
-          item:
-            type: string
+          type: list_ref
+          target: dcim.interface
 
 objects:
   - uid: "f1c8a9d4-2a3b-4c5d-8e9f-0123456789ab"
