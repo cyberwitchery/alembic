@@ -1011,7 +1011,7 @@ fn should_wrap_generic_fk_type(field_type: &FieldType) -> Option<String> {
     match field_type {
         FieldType::Ref { target } => should_wrap_target(target),
         FieldType::ListRef { target } => should_wrap_target(target),
-        _ => return None,
+        _ => None,
     }
 }
 
