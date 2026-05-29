@@ -1005,7 +1005,7 @@ fn should_wrap_as_generic_foreign_key(type_name: &TypeName, key: &str) -> bool {
     }
 }
 
-/// adds a generic foreign key wrapper around types that requires it
+/// adds a generic foreign key wrapper around types that require it
 fn wrap_as_generic_foreign_key(field_type: &FieldType, value: Value) -> Result<Value> {
     match field_type {
         FieldType::Ref { target } => {
