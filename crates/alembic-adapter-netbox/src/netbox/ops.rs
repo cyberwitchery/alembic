@@ -16,6 +16,7 @@ use async_trait::async_trait;
 use netbox::{BulkDelete, QueryBuilder, Resource};
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
+use std::string::ToString;
 
 const CUSTOM_OBJECT_FEATURE: &str = "custom-object";
 const CUSTOM_OBJECT_APP_LABEL: &str = "netbox_custom_objects";
@@ -996,10 +997,13 @@ fn resolve_value_for_type(
     wrap_as_generic_fk_if_needed(field_type, resolved_value)
 }
 
+const REQUIRES_GENERIC_FK_WRAPPER: &[&str] = &["dcim.interface"];
+
+/// adds a generic foreign key wrapper around types that requires it
 fn wrap_as_generic_fk_if_needed(field_type: &FieldType, value: Value) -> Result<Value> {
     match field_type {
         FieldType::Ref { target } => {
-            if target == "dcim.interface" {
+            if REQUIRES_GENERIC_FK_WRAPPER.contains(&target.as_str()) {
                 Ok(json!({"object_type": target.to_string(), "object_id": value}))
             } else {
                 Ok(value)
