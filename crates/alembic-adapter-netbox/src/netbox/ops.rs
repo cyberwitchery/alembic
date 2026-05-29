@@ -965,14 +965,19 @@ fn build_request_body(
             .get(key)
             .ok_or_else(|| anyhow!("missing schema for field {key}"))?;
         let encoded = resolve_value_for_type(&field_schema.r#type, value.clone(), resolved)?;
+        let wrapped = if should_wrap_as_generic_foreign_key(type_name, key) {
+            wrap_as_generic_foreign_key(&field_schema.r#type, encoded)?
+        } else {
+            encoded
+        };
 
         if custom_fields.contains(key) {
             if !supports_feature(features, &["custom-fields"]) {
                 return Err(anyhow!("{} does not support custom fields", type_name));
             }
-            custom.insert(key.clone(), encoded);
+            custom.insert(key.clone(), wrapped);
         } else {
-            body.insert(api_key.to_string(), encoded);
+            body.insert(api_key.to_string(), wrapped);
         }
     }
 
@@ -988,32 +993,30 @@ fn resolve_value_for_type(
     value: Value,
     resolved: &BTreeMap<Uid, u64>,
 ) -> Result<Value> {
-    let resolved_value =
-        alembic_engine::resolve_value_for_type(field_type, value, resolved, |id| {
-            Value::Number((*id).into())
-        })?;
-
-    wrap_as_generic_fk_if_needed(field_type, resolved_value)
+    alembic_engine::resolve_value_for_type(field_type, value, resolved, |id| {
+        Value::Number((*id).into())
+    })
 }
 
-const REQUIRES_GENERIC_FK_WRAPPER: &[&str] = &["dcim.interface"];
+fn should_wrap_as_generic_foreign_key(type_name: &TypeName, key: &str) -> bool {
+    match type_name.as_str() {
+        "dcim.cable" => key == "a_terminations" || key == "b_terminations",
+        _ => false,
+    }
+}
 
 /// adds a generic foreign key wrapper around types that requires it
-fn wrap_as_generic_fk_if_needed(field_type: &FieldType, value: Value) -> Result<Value> {
+fn wrap_as_generic_foreign_key(field_type: &FieldType, value: Value) -> Result<Value> {
     match field_type {
         FieldType::Ref { target } => {
-            if REQUIRES_GENERIC_FK_WRAPPER.contains(&target.as_str()) {
-                Ok(json!({"object_type": target.to_string(), "object_id": value}))
-            } else {
-                Ok(value)
-            }
+            Ok(json!({"object_type": target.to_string(), "object_id": value}))
         }
         FieldType::ListRef { target } => {
             if let Some(array) = value.as_array() {
                 array
                     .iter()
                     .map(|element| {
-                        wrap_as_generic_fk_if_needed(
+                        wrap_as_generic_foreign_key(
                             &FieldType::Ref {
                                 target: target.clone(),
                             },
@@ -1025,7 +1028,7 @@ fn wrap_as_generic_fk_if_needed(field_type: &FieldType, value: Value) -> Result<
                 Err(anyhow!("value has type {:?} (expected array)", field_type))
             }
         }
-        _ => Ok(value),
+        _ => Err(anyhow!("can't wrap unsupported type {:?}", field_type)),
     }
 }
 
@@ -1689,34 +1692,53 @@ mod test_normalization {
     }
 
     #[test]
+    fn test_should_wrap_terminations_in_cables() {
+        assert!(should_wrap_as_generic_foreign_key(
+            &TypeName::new("dcim.cable"),
+            "a_terminations"
+        ));
+        assert!(!should_wrap_as_generic_foreign_key(
+            &TypeName::new("dcim.device"),
+            "a_terminations"
+        ));
+        assert!(!should_wrap_as_generic_foreign_key(
+            &TypeName::new("dcim.cable"),
+            "label"
+        ));
+    }
+
+    #[test]
     fn test_resolve_value_for_generic_fk_type() {
         let resolved = BTreeMap::from([(Uid::from_u128(1), 42u64), (Uid::from_u128(2), 1000u64)]);
 
         // Ref
-        let val = resolve_value_for_type(
-            &FieldType::Ref {
-                target: "dcim.interface".to_string(),
-            },
-            json!(Uid::from_u128(1).to_string()),
-            &resolved,
-        )
-        .unwrap();
+        let field_type = FieldType::Ref {
+            target: "dcim.interface".to_string(),
+        };
+        let val =
+            resolve_value_for_type(&field_type, json!(Uid::from_u128(1).to_string()), &resolved)
+                .unwrap();
+        let wrapped = wrap_as_generic_foreign_key(&field_type, val).unwrap();
+
         assert_eq!(
-            val,
+            wrapped,
             json!({"object_type": "dcim.interface", "object_id": 42})
         );
 
         // ListRef
+        let field_type = alembic_core::FieldType::ListRef {
+            target: "dcim.interface".to_string(),
+        };
         let val = resolve_value_for_type(
-            &alembic_core::FieldType::ListRef {
-                target: "dcim.interface".to_string(),
-            },
+            &field_type,
             json!([Uid::from_u128(2).to_string(), Uid::from_u128(1).to_string()]),
             &resolved,
         )
         .unwrap();
+        let wrapped = wrap_as_generic_foreign_key(&field_type, val).unwrap();
+
         assert_eq!(
-            val,
+            wrapped,
             json!([{"object_type": "dcim.interface", "object_id": 1000}, {"object_type": "dcim.interface", "object_id": 42}])
         );
     }
