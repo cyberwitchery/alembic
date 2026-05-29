@@ -16,7 +16,6 @@ use async_trait::async_trait;
 use netbox::{BulkDelete, QueryBuilder, Resource};
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
-use std::string::ToString;
 
 const CUSTOM_OBJECT_FEATURE: &str = "custom-object";
 const CUSTOM_OBJECT_APP_LABEL: &str = "netbox_custom_objects";
