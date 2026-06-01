@@ -1,5 +1,8 @@
 //! retort mapping: compile raw yaml into canonical ir.
 
+use crate::paths::{
+    extract_values, parse_relative_path, parse_selector_path, PathToken, SelectorToken,
+};
 use crate::render::{render_attrs, render_key, render_template, yaml_to_json};
 use alembic_core::{key_string, uid_v5, Inventory, JsonMap, Key, Object, Schema, TypeName, Uid};
 use anyhow::{anyhow, Context, Result};
@@ -72,25 +75,6 @@ pub struct UidV5Spec {
     #[serde(rename = "type", alias = "kind")]
     pub type_name: String,
     pub stable: String,
-}
-
-#[derive(Debug, Clone)]
-enum SelectorToken {
-    Key(String),
-    Index(usize),
-    Wildcard,
-}
-
-#[derive(Debug, Clone)]
-enum PathToken {
-    Key(String),
-    Index(usize),
-}
-
-#[derive(Debug)]
-struct RelativePath {
-    up: usize,
-    selectors: Vec<SelectorToken>,
 }
 
 pub fn load_retort(path: impl AsRef<Path>) -> Result<Retort> {
@@ -177,6 +161,10 @@ pub fn compile_retort(raw: &YamlValue, retort: &Retort) -> Result<Inventory> {
     };
     crate::report_to_result(crate::validate(&inventory))?;
     Ok(inventory)
+}
+
+fn inventory_sort_key(type_name: &TypeName, key: &Key) -> (String, String) {
+    (type_name.as_str().to_string(), key_string(key))
 }
 
 fn build_object(
@@ -284,57 +272,6 @@ fn resolve_uid_template(
     Ok(parsed)
 }
 
-fn parse_selector_path(path: &str) -> Result<Vec<SelectorToken>> {
-    if !path.starts_with('/') {
-        return Err(anyhow!("select path must start with '/'"));
-    }
-    let mut tokens = Vec::new();
-    for segment in path.trim_start_matches('/').split('/') {
-        if segment.is_empty() {
-            continue;
-        }
-        tokens.push(parse_selector_segment(segment)?);
-    }
-    Ok(tokens)
-}
-
-fn parse_selector_segment(segment: &str) -> Result<SelectorToken> {
-    if segment == "*" {
-        return Ok(SelectorToken::Wildcard);
-    }
-    if let Ok(index) = segment.parse::<usize>() {
-        return Ok(SelectorToken::Index(index));
-    }
-    Ok(SelectorToken::Key(segment.to_string()))
-}
-
-fn parse_relative_path(path: &str) -> Result<RelativePath> {
-    let mut rest = path.trim();
-    let mut up = 0;
-    while rest.starts_with('^') {
-        up += 1;
-        rest = &rest[1..];
-        if rest.starts_with('.') {
-            rest = &rest[1..];
-        }
-    }
-    if rest.starts_with('.') {
-        rest = &rest[1..];
-    }
-    if rest.starts_with('/') {
-        rest = &rest[1..];
-    }
-    let selectors = if rest.is_empty() {
-        Vec::new()
-    } else {
-        rest.split('/')
-            .filter(|s| !s.is_empty())
-            .map(parse_selector_segment)
-            .collect::<Result<Vec<_>>>()?
-    };
-    Ok(RelativePath { up, selectors })
-}
-
 fn select_paths(
     value: &YamlValue,
     selectors: &[SelectorToken],
@@ -386,109 +323,6 @@ fn select_paths(
             _ => {}
         },
     }
-}
-
-fn extract_values<'a>(
-    raw: &'a YamlValue,
-    path: &[PathToken],
-    rel: &RelativePath,
-) -> Result<Vec<&'a YamlValue>> {
-    let base_path = ancestor_path(raw, path, rel.up)?;
-    let Some(base_value) = value_at_path(raw, &base_path) else {
-        return Ok(Vec::new());
-    };
-    let mut results = Vec::new();
-    select_values(base_value, &rel.selectors, &mut results);
-    Ok(results)
-}
-
-fn ancestor_path(raw: &YamlValue, path: &[PathToken], up: usize) -> Result<Vec<PathToken>> {
-    let mut current: Vec<PathToken> = path.to_vec();
-    for _ in 0..up {
-        if current.is_empty() {
-            return Err(anyhow!("relative path escapes above root"));
-        }
-        current.pop();
-        while let Some(value) = value_at_path(raw, &current) {
-            if matches!(value, YamlValue::Sequence(_)) {
-                if current.is_empty() {
-                    break;
-                }
-                current.pop();
-            } else {
-                break;
-            }
-        }
-    }
-    Ok(current)
-}
-
-fn value_at_path<'a>(value: &'a YamlValue, path: &[PathToken]) -> Option<&'a YamlValue> {
-    let mut current = value;
-    for token in path {
-        match token {
-            PathToken::Key(key) => {
-                let YamlValue::Mapping(map) = current else {
-                    return None;
-                };
-                current = map.get(YamlValue::String(key.clone()))?;
-            }
-            PathToken::Index(index) => {
-                let YamlValue::Sequence(items) = current else {
-                    return None;
-                };
-                current = items.get(*index)?;
-            }
-        }
-    }
-    Some(current)
-}
-
-fn select_values<'a>(
-    value: &'a YamlValue,
-    selectors: &[SelectorToken],
-    results: &mut Vec<&'a YamlValue>,
-) {
-    if selectors.is_empty() {
-        results.push(value);
-        return;
-    }
-    match selectors[0].clone() {
-        SelectorToken::Key(key) => {
-            if let YamlValue::Mapping(map) = value {
-                if let Some(value) = map.get(YamlValue::String(key)) {
-                    select_values(value, &selectors[1..], results);
-                }
-            }
-        }
-        SelectorToken::Index(index) => {
-            if let YamlValue::Sequence(items) = value {
-                if let Some(value) = items.get(index) {
-                    select_values(value, &selectors[1..], results);
-                }
-            }
-        }
-        SelectorToken::Wildcard => match value {
-            YamlValue::Sequence(items) => {
-                for value in items {
-                    select_values(value, &selectors[1..], results);
-                }
-            }
-            YamlValue::Mapping(map) => {
-                for (key, value) in map {
-                    if key.as_str().is_none() {
-                        continue;
-                    }
-                    select_values(value, &selectors[1..], results);
-                }
-            }
-            _ => {}
-        },
-    }
-}
-
-fn inventory_sort_key(type_name: &TypeName, key: &Key) -> (String, String) {
-    (type_name.as_str().to_string(), key_string(key))
 }
 
 #[cfg(test)]
@@ -639,13 +473,6 @@ rules:
             false,
         );
         assert_eq!(first.ops, second.ops);
-    }
-
-    #[test]
-    fn parse_relative_path_tracks_parent_hops() {
-        let rel = parse_relative_path("^^.slug").unwrap();
-        assert_eq!(rel.up, 2);
-        assert_eq!(rel.selectors.len(), 1);
     }
 
     #[test]

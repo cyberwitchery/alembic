@@ -7,6 +7,7 @@ pub mod external;
 mod extract;
 mod loader;
 pub mod mapping;
+mod paths;
 mod pipeline;
 mod planner;
 mod render;
