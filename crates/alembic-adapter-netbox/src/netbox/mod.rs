@@ -371,6 +371,194 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cables() {
+        let server = MockServer::start();
+        let dir = tempdir().unwrap();
+        let state = StateStore::load(dir.path().join("state.json")).unwrap();
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
+
+        let _object_types = mock_list(
+            &server,
+            "/api/core/object-types/",
+            json!([
+                {
+                    "app_label": "dcim",
+                    "model": "cable",
+                    "rest_api_endpoint": "/api/dcim/cables/",
+                    "features": ["custom-fields", "tags"]
+                },
+                {
+                    "app_label": "dcim",
+                    "model": "interface",
+                    "rest_api_endpoint": "/api/dcim/interfaces/",
+                    "features": ["custom-fields", "tags"]
+                }
+            ]),
+        );
+        let _custom_fields = server.mock(|when, then| {
+            when.method(GET).path("/api/extras/custom-fields/");
+            then.status(200).json_body(page(json!([])));
+        });
+        let _interface_1_create = server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/dcim/interfaces/")
+                .json_body(json!({ "name": "eth01" }));
+            then.status(201)
+                .json_body(json!({ "id": 1, "name": "eth01" }));
+        });
+        let _interface_2_create = server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/dcim/interfaces/")
+                .json_body(json!({ "name": "eth02" }));
+            then.status(201)
+                .json_body(json!({ "id": 2, "name": "eth02" }));
+        });
+        let _cable_create = server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/dcim/cables/")
+                .json_body(json!({
+                    "label": "cable01",
+                    "a_terminations": [{ "object_id": 1, "object_type": "dcim.interface" }],
+                    "b_terminations": [{ "object_id": 2, "object_type": "dcim.interface" }],
+                }));
+            then.status(201).json_body(json!({
+                "id": 3,
+                "label": "cable01",
+            }));
+        });
+
+        let ops = vec![
+            Op::Create {
+                uid: uid(1),
+                type_name: TypeName::new("dcim.interface"),
+                desired: obj(
+                    uid(1),
+                    "dcim.interface",
+                    key("name", json!("eth01")),
+                    json!({
+                        "name": "eth01",
+                    }),
+                ),
+            },
+            Op::Create {
+                uid: uid(2),
+                type_name: TypeName::new("dcim.interface"),
+                desired: obj(
+                    uid(2),
+                    "dcim.interface",
+                    key("name", json!("eth02")),
+                    json!({
+                        "name": "eth02",
+                    }),
+                ),
+            },
+            Op::Create {
+                uid: uid(3),
+                type_name: TypeName::new("dcim.cable"),
+                desired: obj(
+                    uid(3),
+                    "dcim.cable",
+                    key("label", json!("cable01")),
+                    json!({
+                        "label": "cable01",
+                        "a_terminations": json!([uid(1)]),
+                        "b_terminations": json!([uid(2)]),
+                    }),
+                ),
+            },
+        ];
+
+        let schema = alembic_core::Schema {
+            types: std::collections::BTreeMap::from([
+                (
+                    "dcim.cable".to_string(),
+                    alembic_core::TypeSchema {
+                        key: std::collections::BTreeMap::from([(
+                            "label".to_string(),
+                            alembic_core::FieldSchema {
+                                r#type: alembic_core::FieldType::Slug,
+                                required: true,
+                                nullable: false,
+                                description: None,
+                                format: None,
+                                pattern: None,
+                            },
+                        )]),
+                        fields: std::collections::BTreeMap::from([
+                            (
+                                "label".to_string(),
+                                alembic_core::FieldSchema {
+                                    r#type: alembic_core::FieldType::Slug,
+                                    required: true,
+                                    nullable: false,
+                                    description: None,
+                                    format: None,
+                                    pattern: None,
+                                },
+                            ),
+                            (
+                                "a_terminations".to_string(),
+                                alembic_core::FieldSchema {
+                                    r#type: alembic_core::FieldType::ListRef {
+                                        target: "dcim.interface".to_string(),
+                                    },
+                                    required: true,
+                                    nullable: false,
+                                    description: None,
+                                    format: None,
+                                    pattern: None,
+                                },
+                            ),
+                            (
+                                "b_terminations".to_string(),
+                                alembic_core::FieldSchema {
+                                    r#type: alembic_core::FieldType::ListRef {
+                                        target: "dcim.interface".to_string(),
+                                    },
+                                    required: true,
+                                    nullable: false,
+                                    description: None,
+                                    format: None,
+                                    pattern: None,
+                                },
+                            ),
+                        ]),
+                    },
+                ),
+                (
+                    "dcim.interface".to_string(),
+                    alembic_core::TypeSchema {
+                        key: std::collections::BTreeMap::from([(
+                            "name".to_string(),
+                            alembic_core::FieldSchema {
+                                r#type: alembic_core::FieldType::String,
+                                required: true,
+                                nullable: false,
+                                description: None,
+                                format: None,
+                                pattern: None,
+                            },
+                        )]),
+                        fields: std::collections::BTreeMap::from([(
+                            "name".to_string(),
+                            alembic_core::FieldSchema {
+                                r#type: alembic_core::FieldType::String,
+                                required: true,
+                                nullable: false,
+                                description: None,
+                                format: None,
+                                pattern: None,
+                            },
+                        )]),
+                    },
+                ),
+            ]),
+        };
+        let report = adapter.write(&schema, &ops, &state).await.unwrap();
+        assert_eq!(report.applied.len(), 3);
+    }
+
+    #[tokio::test]
     async fn apply_creates_missing_tags() {
         let server = MockServer::start();
         let dir = tempdir().unwrap();

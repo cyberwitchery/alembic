@@ -14,7 +14,7 @@ use alembic_engine::{
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use netbox::{BulkDelete, QueryBuilder, Resource};
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
 const CUSTOM_OBJECT_FEATURE: &str = "custom-object";
@@ -965,14 +965,19 @@ fn build_request_body(
             .get(key)
             .ok_or_else(|| anyhow!("missing schema for field {key}"))?;
         let encoded = resolve_value_for_type(&field_schema.r#type, value.clone(), resolved)?;
+        let wrapped = if netbox::is_generic_fk(type_name.as_str(), key) {
+            wrap_as_generic_foreign_key(&field_schema.r#type, encoded)?
+        } else {
+            encoded
+        };
 
         if custom_fields.contains(key) {
             if !supports_feature(features, &["custom-fields"]) {
                 return Err(anyhow!("{} does not support custom fields", type_name));
             }
-            custom.insert(key.clone(), encoded);
+            custom.insert(key.clone(), wrapped);
         } else {
-            body.insert(api_key.to_string(), encoded);
+            body.insert(api_key.to_string(), wrapped);
         }
     }
 
@@ -991,6 +996,33 @@ fn resolve_value_for_type(
     alembic_engine::resolve_value_for_type(field_type, value, resolved, |id| {
         Value::Number((*id).into())
     })
+}
+
+/// adds a generic foreign key wrapper around types that require it
+fn wrap_as_generic_foreign_key(field_type: &FieldType, value: Value) -> Result<Value> {
+    match field_type {
+        FieldType::Ref { target } => {
+            Ok(json!({"object_type": target.to_string(), "object_id": value}))
+        }
+        FieldType::ListRef { target } => {
+            if let Some(array) = value.as_array() {
+                array
+                    .iter()
+                    .map(|element| {
+                        wrap_as_generic_foreign_key(
+                            &FieldType::Ref {
+                                target: target.clone(),
+                            },
+                            element.clone(),
+                        )
+                    })
+                    .collect()
+            } else {
+                Err(anyhow!("value has type {:?} (expected array)", field_type))
+            }
+        }
+        _ => Err(anyhow!("can't wrap unsupported type {:?}", field_type)),
+    }
 }
 
 fn query_from_key(
@@ -1650,6 +1682,42 @@ mod test_normalization {
         )
         .unwrap();
         assert_eq!(val, json!([5]));
+    }
+
+    #[test]
+    fn test_resolve_value_for_generic_fk_type() {
+        let resolved = BTreeMap::from([(Uid::from_u128(1), 42u64), (Uid::from_u128(2), 1000u64)]);
+
+        // Ref
+        let field_type = FieldType::Ref {
+            target: "dcim.interface".to_string(),
+        };
+        let val =
+            resolve_value_for_type(&field_type, json!(Uid::from_u128(1).to_string()), &resolved)
+                .unwrap();
+        let wrapped = wrap_as_generic_foreign_key(&field_type, val).unwrap();
+
+        assert_eq!(
+            wrapped,
+            json!({"object_type": "dcim.interface", "object_id": 42})
+        );
+
+        // ListRef
+        let field_type = alembic_core::FieldType::ListRef {
+            target: "dcim.interface".to_string(),
+        };
+        let val = resolve_value_for_type(
+            &field_type,
+            json!([Uid::from_u128(2).to_string(), Uid::from_u128(1).to_string()]),
+            &resolved,
+        )
+        .unwrap();
+        let wrapped = wrap_as_generic_foreign_key(&field_type, val).unwrap();
+
+        assert_eq!(
+            wrapped,
+            json!([{"object_type": "dcim.interface", "object_id": 1000}, {"object_type": "dcim.interface", "object_id": 42}])
+        );
     }
 
     #[test]
