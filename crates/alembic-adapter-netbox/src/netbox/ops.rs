@@ -965,7 +965,7 @@ fn build_request_body(
             .get(key)
             .ok_or_else(|| anyhow!("missing schema for field {key}"))?;
         let encoded = resolve_value_for_type(&field_schema.r#type, value.clone(), resolved)?;
-        let wrapped = if should_wrap_as_generic_foreign_key(type_name, key) {
+        let wrapped = if netbox::is_generic_fk(type_name.as_str(), key) {
             wrap_as_generic_foreign_key(&field_schema.r#type, encoded)?
         } else {
             encoded
@@ -996,13 +996,6 @@ fn resolve_value_for_type(
     alembic_engine::resolve_value_for_type(field_type, value, resolved, |id| {
         Value::Number((*id).into())
     })
-}
-
-fn should_wrap_as_generic_foreign_key(type_name: &TypeName, key: &str) -> bool {
-    match type_name.as_str() {
-        "dcim.cable" => key == "a_terminations" || key == "b_terminations",
-        _ => false,
-    }
 }
 
 /// adds a generic foreign key wrapper around types that require it
@@ -1689,22 +1682,6 @@ mod test_normalization {
         )
         .unwrap();
         assert_eq!(val, json!([5]));
-    }
-
-    #[test]
-    fn test_should_wrap_terminations_in_cables() {
-        assert!(should_wrap_as_generic_foreign_key(
-            &TypeName::new("dcim.cable"),
-            "a_terminations"
-        ));
-        assert!(!should_wrap_as_generic_foreign_key(
-            &TypeName::new("dcim.device"),
-            "a_terminations"
-        ));
-        assert!(!should_wrap_as_generic_foreign_key(
-            &TypeName::new("dcim.cable"),
-            "label"
-        ));
     }
 
     #[test]
