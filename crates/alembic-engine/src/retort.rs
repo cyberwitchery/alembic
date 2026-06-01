@@ -1,7 +1,7 @@
 //! retort mapping: compile raw yaml into canonical ir.
 
 use crate::paths::{
-    extract_values, parse_relative_path, parse_selector_path, PathToken, SelectorToken,
+    extract_values, parse_relative_path, parse_selector_path, select_paths, PathToken,
 };
 use crate::render::{render_attrs, render_key, render_template, yaml_to_json};
 use alembic_core::{key_string, uid_v5, Inventory, JsonMap, Key, Object, Schema, TypeName, Uid};
@@ -272,59 +272,6 @@ fn resolve_uid_template(
     Ok(parsed)
 }
 
-fn select_paths(
-    value: &YamlValue,
-    selectors: &[SelectorToken],
-    current_path: &mut Vec<PathToken>,
-    results: &mut Vec<Vec<PathToken>>,
-) {
-    if selectors.is_empty() {
-        results.push(current_path.clone());
-        return;
-    }
-
-    match selectors[0].clone() {
-        SelectorToken::Key(key) => {
-            if let YamlValue::Mapping(map) = value {
-                if let Some(value) = map.get(YamlValue::String(key.clone())) {
-                    current_path.push(PathToken::Key(key));
-                    select_paths(value, &selectors[1..], current_path, results);
-                    current_path.pop();
-                }
-            }
-        }
-        SelectorToken::Index(index) => {
-            if let YamlValue::Sequence(items) = value {
-                if let Some(value) = items.get(index) {
-                    current_path.push(PathToken::Index(index));
-                    select_paths(value, &selectors[1..], current_path, results);
-                    current_path.pop();
-                }
-            }
-        }
-        SelectorToken::Wildcard => match value {
-            YamlValue::Sequence(items) => {
-                for (index, value) in items.iter().enumerate() {
-                    current_path.push(PathToken::Index(index));
-                    select_paths(value, &selectors[1..], current_path, results);
-                    current_path.pop();
-                }
-            }
-            YamlValue::Mapping(map) => {
-                for (key, value) in map {
-                    let Some(key) = key.as_str() else {
-                        continue;
-                    };
-                    current_path.push(PathToken::Key(key.to_string()));
-                    select_paths(value, &selectors[1..], current_path, results);
-                    current_path.pop();
-                }
-            }
-            _ => {}
-        },
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -335,37 +282,6 @@ mod tests {
 
     fn parse_yaml(input: &str) -> YamlValue {
         serde_yaml::from_str(input).unwrap()
-    }
-
-    #[test]
-    fn wildcard_selector_returns_all_nodes() {
-        let raw = parse_yaml(
-            r#"
-sites:
-  - slug: a
-    devices:
-      - name: d1
-      - name: d2
-  - slug: b
-    devices:
-      - name: d3
-"#,
-        );
-        let selectors = parse_selector_path("/sites/*/devices/*").unwrap();
-        let mut selected = Vec::new();
-        select_paths(&raw, &selectors, &mut Vec::new(), &mut selected);
-        assert_eq!(selected.len(), 3);
-    }
-
-    #[test]
-    fn templates_substitute_and_error_on_missing() {
-        let mut vars = BTreeMap::new();
-        vars.insert("name".to_string(), JsonValue::String("leaf01".to_string()));
-        let rendered = render_template("device=${name}", &vars, "devices", "key").unwrap();
-        assert_eq!(rendered, "device=leaf01");
-
-        let err = render_template("device=${missing}", &vars, "devices", "key").unwrap_err();
-        assert!(err.to_string().contains("missing var"));
     }
 
     #[test]
@@ -473,14 +389,6 @@ rules:
             false,
         );
         assert_eq!(first.ops, second.ops);
-    }
-
-    #[test]
-    fn template_errors_on_non_string_var() {
-        let mut vars = BTreeMap::new();
-        vars.insert("asn".to_string(), JsonValue::Number(65001.into()));
-        let err = render_template("asn=${asn}", &vars, "rule", "key").unwrap_err();
-        assert!(err.to_string().contains("must be a string"));
     }
 
     #[test]

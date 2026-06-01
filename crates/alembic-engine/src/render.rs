@@ -275,4 +275,23 @@ uid:
         let err = render_yaml_value(&mapping, &vars, "rule", "attrs", false).unwrap_err();
         assert!(err.to_string().contains("missing var"));
     }
+
+    #[test]
+    fn templates_substitute_and_error_on_missing() {
+        let mut vars = BTreeMap::new();
+        vars.insert("name".to_string(), JsonValue::String("leaf01".to_string()));
+        let rendered = render_template("device=${name}", &vars, "devices", "key").unwrap();
+        assert_eq!(rendered, "device=leaf01");
+
+        let err = render_template("device=${missing}", &vars, "devices", "key").unwrap_err();
+        assert!(err.to_string().contains("missing var"));
+    }
+
+    #[test]
+    fn template_errors_on_non_string_var() {
+        let mut vars = BTreeMap::new();
+        vars.insert("asn".to_string(), JsonValue::Number(65001.into()));
+        let err = render_template("asn=${asn}", &vars, "rule", "key").unwrap_err();
+        assert!(err.to_string().contains("must be a string"));
+    }
 }

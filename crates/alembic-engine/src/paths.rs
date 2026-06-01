@@ -170,6 +170,59 @@ fn select_values<'a>(
     }
 }
 
+pub(crate) fn select_paths(
+    value: &YamlValue,
+    selectors: &[SelectorToken],
+    current_path: &mut Vec<PathToken>,
+    results: &mut Vec<Vec<PathToken>>,
+) {
+    if selectors.is_empty() {
+        results.push(current_path.clone());
+        return;
+    }
+
+    match selectors[0].clone() {
+        SelectorToken::Key(key) => {
+            if let YamlValue::Mapping(map) = value {
+                if let Some(value) = map.get(YamlValue::String(key.clone())) {
+                    current_path.push(PathToken::Key(key));
+                    select_paths(value, &selectors[1..], current_path, results);
+                    current_path.pop();
+                }
+            }
+        }
+        SelectorToken::Index(index) => {
+            if let YamlValue::Sequence(items) = value {
+                if let Some(value) = items.get(index) {
+                    current_path.push(PathToken::Index(index));
+                    select_paths(value, &selectors[1..], current_path, results);
+                    current_path.pop();
+                }
+            }
+        }
+        SelectorToken::Wildcard => match value {
+            YamlValue::Sequence(items) => {
+                for (index, value) in items.iter().enumerate() {
+                    current_path.push(PathToken::Index(index));
+                    select_paths(value, &selectors[1..], current_path, results);
+                    current_path.pop();
+                }
+            }
+            YamlValue::Mapping(map) => {
+                for (key, value) in map {
+                    let Some(key) = key.as_str() else {
+                        continue;
+                    };
+                    current_path.push(PathToken::Key(key.to_string()));
+                    select_paths(value, &selectors[1..], current_path, results);
+                    current_path.pop();
+                }
+            }
+            _ => {}
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -178,5 +231,29 @@ mod tests {
         let rel = parse_relative_path("^^.slug").unwrap();
         assert_eq!(rel.up, 2);
         assert_eq!(rel.selectors.len(), 1);
+    }
+
+    fn parse_yaml(input: &str) -> YamlValue {
+        serde_yaml::from_str(input).unwrap()
+    }
+
+    #[test]
+    fn wildcard_selector_returns_all_nodes() {
+        let raw = parse_yaml(
+            r#"
+sites:
+  - slug: a
+    devices:
+      - name: d1
+      - name: d2
+  - slug: b
+    devices:
+      - name: d3
+"#,
+        );
+        let selectors = parse_selector_path("/sites/*/devices/*").unwrap();
+        let mut selected = Vec::new();
+        select_paths(&raw, &selectors, &mut Vec::new(), &mut selected);
+        assert_eq!(selected.len(), 3);
     }
 }
