@@ -9,6 +9,7 @@ mod loader;
 pub mod mapping;
 mod pipeline;
 mod planner;
+mod render;
 mod retort;
 mod state;
 mod types;
