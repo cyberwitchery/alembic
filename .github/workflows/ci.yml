@@ -44,7 +44,7 @@ jobs:
   coverage:
     name: coverage
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     env:
       RUSTFLAGS: "-C debuginfo=0"
       CARGO_TARGET_DIR: target/ci
