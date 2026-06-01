@@ -495,7 +495,6 @@ fn inventory_sort_key(type_name: &TypeName, key: &Key) -> (String, String) {
 mod tests {
     use super::*;
     use crate::planner::plan;
-    use crate::render::render_yaml_value;
     use crate::state::StateStore;
     use crate::types::ObservedState;
     use tempfile::tempdir;
@@ -647,36 +646,6 @@ rules:
         let rel = parse_relative_path("^^.slug").unwrap();
         assert_eq!(rel.up, 2);
         assert_eq!(rel.selectors.len(), 1);
-    }
-
-    #[test]
-    fn render_uid_mapping_optional_skips_missing() {
-        let vars = BTreeMap::new();
-        let mapping: YamlValue = serde_yaml::from_str(
-            r#"
-uid?:
-  type: "dcim.site"
-  stable: "site=${slug}"
-"#,
-        )
-        .unwrap();
-        let rendered = render_yaml_value(&mapping, &vars, "rule", "attrs", false).unwrap();
-        assert!(rendered.is_none());
-    }
-
-    #[test]
-    fn render_uid_mapping_required_errors_on_missing() {
-        let vars = BTreeMap::new();
-        let mapping: YamlValue = serde_yaml::from_str(
-            r#"
-uid:
-  type: "dcim.site"
-  stable: "site=${slug}"
-"#,
-        )
-        .unwrap();
-        let err = render_yaml_value(&mapping, &vars, "rule", "attrs", false).unwrap_err();
-        assert!(err.to_string().contains("missing var"));
     }
 
     #[test]

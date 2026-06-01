@@ -239,3 +239,40 @@ fn render_template_optional(
     rendered.push_str(rest);
     Ok(Some(rendered))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_yaml::Value as YamlValue;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn render_uid_mapping_optional_skips_missing() {
+        let vars = BTreeMap::new();
+        let mapping: YamlValue = serde_yaml::from_str(
+            r#"
+uid?:
+  type: "dcim.site"
+  stable: "site=${slug}"
+"#,
+        )
+        .unwrap();
+        let rendered = render_yaml_value(&mapping, &vars, "rule", "attrs", false).unwrap();
+        assert!(rendered.is_none());
+    }
+
+    #[test]
+    fn render_uid_mapping_required_errors_on_missing() {
+        let vars = BTreeMap::new();
+        let mapping: YamlValue = serde_yaml::from_str(
+            r#"
+uid:
+  type: "dcim.site"
+  stable: "site=${slug}"
+"#,
+        )
+        .unwrap();
+        let err = render_yaml_value(&mapping, &vars, "rule", "attrs", false).unwrap_err();
+        assert!(err.to_string().contains("missing var"));
+    }
+}
