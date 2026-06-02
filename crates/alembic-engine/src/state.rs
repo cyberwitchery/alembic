@@ -2,12 +2,13 @@
 
 use crate::types::BackendId;
 use alembic_core::{TypeName, Uid};
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use tokio_postgres::Client;
 
 /// on-disk state schema.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -166,6 +167,7 @@ struct PostgresBackend {
 impl StateBackend for PostgresBackend {
     async fn load(&self) -> Result<StateData> {
         let client = self.connect().await?;
+        Self::acquire_advisory_lock(&client).await?;
 
         let row = client
             .query_opt(
@@ -199,6 +201,9 @@ impl StateBackend for PostgresBackend {
             )
             .await
             .with_context(|| "save postgres state payload")?;
+
+        // Self::unlock_advisory_lock(&client).await?; FAILS :(
+
         Ok(())
     }
 }
@@ -233,6 +238,42 @@ impl PostgresBackend {
                 });
                 Ok(client)
             }
+        }
+    }
+
+    async fn acquire_advisory_lock(client: &Client) -> Result<()> {
+        let advisory_lock = client
+            .query_opt("SELECT pg_try_advisory_lock(1)", &[])
+            .await
+            .with_context(|| "acquiring advisory lock")?;
+
+        if let Some(advisory_lock_row) = advisory_lock {
+            if advisory_lock_row.try_get::<_, bool>("pg_try_advisory_lock")? {
+                Ok(())
+            } else {
+                Err(anyhow!("failed to acquire advisory lock"))
+            }
+        } else {
+            Err(anyhow!("problem with advisory lock query, no row returned"))
+        }
+    }
+
+    async fn unlock_advisory_lock(client: &Client) -> Result<()> {
+        let advisory_lock = client
+            .query_opt("SELECT pg_advisory_unlock(1)", &[])
+            .await
+            .with_context(|| "unlocking advisory lock")?;
+
+        if let Some(advisory_lock_row) = advisory_lock {
+            if advisory_lock_row.try_get::<_, bool>("pg_advisory_unlock")? {
+                Ok(())
+            } else {
+                Err(anyhow!("failed to unlock advisory lock"))
+            }
+        } else {
+            Err(anyhow!(
+                "problem with advisory unlock query, no row returned"
+            ))
         }
     }
 }
