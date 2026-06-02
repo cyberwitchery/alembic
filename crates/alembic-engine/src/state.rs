@@ -173,7 +173,24 @@ impl PostgresBackend {
         if self.client.is_none() {
             self.client = Some(self.connect().await?);
         }
+        self.ensure_table_exist().await?;
         self.client.as_ref().ok_or(anyhow!("no client"))
+    }
+
+    async fn ensure_table_exist(&self) -> Result<()> {
+        self.client
+            .as_ref()
+            .unwrap()
+            .execute(
+                "CREATE TABLE IF NOT EXISTS alembic_state (\
+                state_key TEXT PRIMARY KEY, \
+                payload JSONB NOT NULL, \
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()\
+                )",
+                &[],
+            )
+            .await?;
+        Ok(())
     }
 }
 
