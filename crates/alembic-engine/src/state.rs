@@ -7,7 +7,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use tokio::sync::Mutex;
 use tokio_postgres::Client;
 
 /// on-disk state schema.
@@ -69,20 +70,21 @@ impl StateStore {
         key: impl Into<String>,
         tls_mode: PostgresTlsMode,
     ) -> Result<Self> {
-        let backend: Arc<Mutex<dyn StateBackend>> = Arc::new(Mutex::new(PostgresBackend {
+        let mut postgres_backend = PostgresBackend {
             url: url.into(),
             key: key.into(),
             tls_mode,
             client: None,
-        }));
-        let data = backend.lock().unwrap().load().await?;
+        };
+        let data = postgres_backend.load().await?;
+        let backend: Arc<Mutex<dyn StateBackend>> = Arc::new(Mutex::new(postgres_backend));
         Ok(Self::new(Some(backend), data))
     }
 
     /// load state from the configured backend.
     pub async fn load_async(&mut self) -> Result<()> {
         if let Some(backend) = &self.backend {
-            self.data = backend.lock().unwrap().load().await?;
+            self.data = backend.lock().await.load().await?;
         }
         Ok(())
     }
@@ -90,7 +92,7 @@ impl StateStore {
     /// persist state to the configured backend.
     pub async fn save_async(&self) -> Result<()> {
         if let Some(backend) = &self.backend {
-            backend.lock().unwrap().save(&self.data).await?;
+            backend.lock().await.save(&self.data).await?;
         }
         Ok(())
     }
@@ -180,7 +182,7 @@ impl StateBackend for PostgresBackend {
     async fn load(&mut self) -> Result<StateData> {
         let cloned_key = self.key.clone();
         let client = self.connect_or_reuse_client().await?;
-        Self::acquire_advisory_lock(&client).await?;
+        Self::acquire_advisory_lock(client).await?;
 
         let row = client
             .query_opt(
@@ -216,7 +218,7 @@ impl StateBackend for PostgresBackend {
             .await
             .with_context(|| "save postgres state payload")?;
 
-        Self::unlock_advisory_lock(&client).await?;
+        Self::unlock_advisory_lock(client).await?;
 
         Ok(())
     }
