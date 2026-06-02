@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio_postgres::Client;
 
 /// on-disk state schema.
@@ -27,20 +27,20 @@ pub enum PostgresTlsMode {
 /// trait for pluggable state backends.
 #[async_trait::async_trait]
 pub trait StateBackend: Send + Sync + std::fmt::Debug {
-    async fn load(&self) -> Result<StateData>;
-    async fn save(&self, data: &StateData) -> Result<()>;
+    async fn load(&mut self) -> Result<StateData>;
+    async fn save(&mut self, data: &StateData) -> Result<()>;
 }
 
 /// state store wrapper with load/save helpers.
 #[derive(Debug, Clone)]
 pub struct StateStore {
-    backend: Option<Arc<dyn StateBackend>>,
+    backend: Option<Arc<Mutex<dyn StateBackend>>>,
     data: StateData,
 }
 
 impl StateStore {
     /// create a new state store with an optional backend.
-    pub fn new(backend: Option<Arc<dyn StateBackend>>, data: StateData) -> Self {
+    pub fn new(backend: Option<Arc<Mutex<dyn StateBackend>>>, data: StateData) -> Self {
         Self { backend, data }
     }
 
@@ -49,8 +49,9 @@ impl StateStore {
         let path = path.as_ref().to_path_buf();
         // Always create a backend so we can save to the same path later.
         // The backend's load() method handles missing files gracefully.
-        let backend: Option<Arc<dyn StateBackend>> =
-            Some(Arc::new(LocalBackend { path: path.clone() }) as Arc<dyn StateBackend>);
+        let backend: Option<Arc<Mutex<dyn StateBackend>>> =
+            Some(Arc::new(Mutex::new(LocalBackend { path: path.clone() }))
+                as Arc<Mutex<dyn StateBackend>>);
         let data = if path.exists() {
             let raw = fs::read_to_string(&path)
                 .with_context(|| format!("read state: {}", path.display()))?;
@@ -68,19 +69,20 @@ impl StateStore {
         key: impl Into<String>,
         tls_mode: PostgresTlsMode,
     ) -> Result<Self> {
-        let backend: Arc<dyn StateBackend> = Arc::new(PostgresBackend {
+        let backend: Arc<Mutex<dyn StateBackend>> = Arc::new(Mutex::new(PostgresBackend {
             url: url.into(),
             key: key.into(),
             tls_mode,
-        });
-        let data = backend.load().await?;
+            client: None,
+        }));
+        let data = backend.lock().unwrap().load().await?;
         Ok(Self::new(Some(backend), data))
     }
 
     /// load state from the configured backend.
     pub async fn load_async(&mut self) -> Result<()> {
         if let Some(backend) = &self.backend {
-            self.data = backend.load().await?;
+            self.data = backend.lock().unwrap().load().await?;
         }
         Ok(())
     }
@@ -88,7 +90,7 @@ impl StateStore {
     /// persist state to the configured backend.
     pub async fn save_async(&self) -> Result<()> {
         if let Some(backend) = &self.backend {
-            backend.save(&self.data).await?;
+            backend.lock().unwrap().save(&self.data).await?;
         }
         Ok(())
     }
@@ -130,7 +132,7 @@ struct LocalBackend {
 
 #[async_trait::async_trait]
 impl StateBackend for LocalBackend {
-    async fn load(&self) -> Result<StateData> {
+    async fn load(&mut self) -> Result<StateData> {
         if self.path.exists() {
             let raw = fs::read_to_string(&self.path)
                 .with_context(|| format!("read state: {}", self.path.display()))?;
@@ -142,7 +144,7 @@ impl StateBackend for LocalBackend {
         }
     }
 
-    async fn save(&self, data: &StateData) -> Result<()> {
+    async fn save(&mut self, data: &StateData) -> Result<()> {
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent)
                 .with_context(|| format!("create state dir: {}", parent.display()))?;
@@ -161,18 +163,29 @@ struct PostgresBackend {
     url: String,
     key: String,
     tls_mode: PostgresTlsMode,
+    client: Option<Client>,
+}
+
+impl PostgresBackend {
+    async fn connect_or_reuse_client(&mut self) -> Result<&Client> {
+        if self.client.is_none() {
+            self.client = Some(self.connect().await?);
+        }
+        self.client.as_ref().ok_or(anyhow!("no client"))
+    }
 }
 
 #[async_trait::async_trait]
 impl StateBackend for PostgresBackend {
-    async fn load(&self) -> Result<StateData> {
-        let client = self.connect().await?;
+    async fn load(&mut self) -> Result<StateData> {
+        let cloned_key = self.key.clone();
+        let client = self.connect_or_reuse_client().await?;
         Self::acquire_advisory_lock(&client).await?;
 
         let row = client
             .query_opt(
                 "SELECT payload::text FROM alembic_state WHERE state_key = $1",
-                &[&self.key],
+                &[&cloned_key],
             )
             .await
             .with_context(|| "load postgres state payload")?;
@@ -187,8 +200,9 @@ impl StateBackend for PostgresBackend {
         serde_json::from_str::<StateData>(&raw).with_context(|| "parse postgres state payload")
     }
 
-    async fn save(&self, data: &StateData) -> Result<()> {
-        let client = self.connect().await?;
+    async fn save(&mut self, data: &StateData) -> Result<()> {
+        let cloned_key = self.key.clone();
+        let client = self.connect_or_reuse_client().await?;
 
         let payload = serde_json::to_string(data)?;
         client
@@ -197,12 +211,12 @@ impl StateBackend for PostgresBackend {
                  VALUES ($1, CAST($2 AS TEXT)::jsonb, NOW())
                  ON CONFLICT (state_key)
                  DO UPDATE SET payload = EXCLUDED.payload, updated_at = NOW()",
-                &[&self.key, &payload],
+                &[&cloned_key, &payload],
             )
             .await
             .with_context(|| "save postgres state payload")?;
 
-        // Self::unlock_advisory_lock(&client).await?; FAILS :(
+        Self::unlock_advisory_lock(&client).await?;
 
         Ok(())
     }
@@ -381,7 +395,7 @@ mod tests {
     #[tokio::test]
     async fn local_backend_load_missing_returns_empty() {
         let dir = TempDir::new().unwrap();
-        let backend = LocalBackend {
+        let mut backend = LocalBackend {
             path: dir.path().join("nope.json"),
         };
         let data = backend.load().await.unwrap();
@@ -392,7 +406,7 @@ mod tests {
     async fn local_backend_save_load_round_trip() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("sub").join("state.json");
-        let backend = LocalBackend { path: path.clone() };
+        let mut backend = LocalBackend { path: path.clone() };
 
         let mut data = StateData::default();
         data.mappings
