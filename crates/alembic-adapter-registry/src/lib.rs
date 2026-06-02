@@ -185,7 +185,7 @@ impl AdapterConfig {
 
     pub fn build(self) -> Result<Box<dyn Adapter>> {
         match self {
-            #[cfg(feature = "generic")]
+            #[cfg(feature = "netbox")]
             AdapterConfig::Netbox(cfg) => {
                 let (url, token) = resolve_credentials("NETBOX", cfg.url, cfg.token)?;
                 Ok(Box::new(alembic_adapter_netbox::NetBoxAdapter::new(
