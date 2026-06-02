@@ -947,6 +947,52 @@ fn build_plan_bootstraps_state_by_key() {
 }
 
 #[test]
+fn insert_with_duplicate_backend_id() {
+    let id = 123;
+    let mut observed = ObservedState::default();
+    observed
+        .insert(ObservedObject {
+            type_name: t("dcim.site"),
+            key: key_str("site=fra1"),
+            attrs: attrs_map(json!({ "name": "FRA1", "slug": "fra1" })),
+            backend_id: Some(BackendId::Int(id)),
+        })
+        .unwrap();
+
+    observed
+        .insert(ObservedObject {
+            type_name: t("dcim.site"),
+            key: key_str("site=fra2"),
+            attrs: attrs_map(json!({ "name": "FRA2", "slug": "fra2" })),
+            backend_id: Some(BackendId::Int(id)),
+        })
+        .expect_err("duplicate backend id not detected");
+}
+
+#[test]
+fn insert_with_duplicate_key() {
+    let key = "site=fra1";
+    let mut observed = ObservedState::default();
+    observed
+        .insert(ObservedObject {
+            type_name: t("dcim.site"),
+            key: key_str(key),
+            attrs: attrs_map(json!({ "name": "FRA1", "slug": "fra1" })),
+            backend_id: Some(BackendId::Int(123)),
+        })
+        .unwrap();
+
+    observed
+        .insert(ObservedObject {
+            type_name: t("dcim.site"),
+            key: key_str(key),
+            attrs: attrs_map(json!({ "name": "FRA1", "slug": "fra1" })),
+            backend_id: Some(BackendId::Int(456)),
+        })
+        .expect_err("duplicate key not detected");
+}
+
+#[test]
 fn build_plan_reobserves_after_bootstrap() {
     #[derive(Clone)]
     struct ReobserveAdapter {
