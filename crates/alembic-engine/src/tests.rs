@@ -916,6 +916,31 @@ fn build_plan_creates_ops() {
 }
 
 #[test]
+fn build_plan_with_duplicated_uids() {
+    let inventory = inv(vec![
+        obj(
+            uid(1),
+            "dcim.site",
+            "site=fra1",
+            json!({ "name": "FRA1", "slug": "fra1" }),
+        ),
+        obj(
+            uid(1),
+            "dcim.site",
+            "site=fra2",
+            json!({ "name": "FRA2", "slug": "fra2" }),
+        ),
+    ]);
+    let adapter = TestAdapter {
+        observed: ObservedState::default(),
+        report: ApplyReport::default(),
+    };
+    let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
+    let plan = futures::executor::block_on(build_plan(&adapter, &inventory, &mut state, false));
+    plan.expect_err("failed to detect duplicated uid");
+}
+
+#[test]
 fn build_plan_bootstraps_state_by_key() {
     let inventory = inv(vec![obj(
         uid(1),
