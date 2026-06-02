@@ -16,6 +16,8 @@ nautobot = ["dep:alembic-adapter-nautobot"]
 infrahub = ["dep:alembic-adapter-infrahub"]
 generic = ["dep:alembic-adapter-generic"]
 peeringdb = ["dep:alembic-adapter-peeringdb"]
+default = []
+all = ["netbox", "nautobot", "infrahub", "generic", "peeringdb"]
 
 [dependencies]
 alembic-core.workspace = true
