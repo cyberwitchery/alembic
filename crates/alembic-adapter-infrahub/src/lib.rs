@@ -517,7 +517,7 @@ impl Adapter for InfrahubAdapter {
                 .read_type_objects(&schema_info, &type_name, type_schema, &mappings)
                 .await?;
             for object in objects {
-                state.insert(object);
+                state.insert(object)?;
             }
         }
 

@@ -157,13 +157,15 @@ pub struct ObservedState {
 
 impl ObservedState {
     /// insert an observed object into both indexes.
-    pub fn insert(&mut self, object: ObservedObject) {
+    pub fn insert(&mut self, object: ObservedObject) -> anyhow::Result<()> {
         if let Some(id) = &object.backend_id {
             self.by_backend_id
                 .insert((object.type_name.clone(), id.clone()), object.clone());
         }
         self.by_key
             .insert((object.type_name.clone(), key_string(&object.key)), object);
+
+        Ok(())
     }
 }
 
