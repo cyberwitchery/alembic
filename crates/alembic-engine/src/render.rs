@@ -157,17 +157,26 @@ fn render_string_value(
     context: &str,
     allow_missing: bool,
 ) -> Result<Option<JsonValue>> {
-    if let Some(var) = placeholder_only(raw) {
-        if let Some(value) = vars.get(var) {
-            if value.is_null() && allow_missing {
+    if let Some(inner) = placeholder_only(raw) {
+        let placeholder = parse_placeholder(inner);
+        let Some(value) = vars.get(placeholder.name) else {
+            if allow_missing {
                 return Ok(None);
             }
-            return Ok(Some(value.clone()));
-        }
-        if allow_missing {
+            return Err(anyhow!(
+                "rule {rule}: missing var {} in {context}",
+                placeholder.name
+            ));
+        };
+        if value.is_null() && allow_missing {
             return Ok(None);
         }
-        return Err(anyhow!("rule {rule}: missing var {var} in {context}"));
+        // A lone `${var}` with no transforms preserves the raw typed value.
+        if placeholder.transforms.is_empty() {
+            return Ok(Some(value.clone()));
+        }
+        let rendered = apply_placeholder(value, &placeholder, rule, context)?;
+        return Ok(Some(JsonValue::String(rendered)));
     }
 
     if raw.contains("${") {
@@ -187,6 +196,76 @@ fn placeholder_only(input: &str) -> Option<&str> {
         return None;
     }
     Some(inner)
+}
+
+/// A parsed `${var|transform|...}` placeholder body: the variable name plus the
+/// (possibly empty) ordered list of transforms to apply after coercion.
+struct Placeholder<'a> {
+    name: &'a str,
+    transforms: Vec<&'a str>,
+}
+
+/// Parse the inside of a `${...}` placeholder into a var name and transform
+/// pipeline. The single shared parser used by both the embedded-template path
+/// (`render_template_optional`) and the lone-placeholder path
+/// (`render_string_value`). Surrounding whitespace on the name and on each
+/// transform is ignored, so `${ slug | upper }` and `${slug|upper}` are equal.
+fn parse_placeholder(inner: &str) -> Placeholder<'_> {
+    let mut parts = inner.split('|');
+    let name = parts.next().unwrap_or("").trim();
+    let transforms = parts.map(str::trim).collect();
+    Placeholder { name, transforms }
+}
+
+/// Coerce a looked-up var to its string form, then apply the transform pipeline.
+fn apply_placeholder(
+    value: &JsonValue,
+    placeholder: &Placeholder,
+    rule: &str,
+    context: &str,
+) -> Result<String> {
+    let rendered = coerce_to_string(value, placeholder.name, rule, context)?;
+    apply_transforms(rendered, &placeholder.transforms, rule, context)
+}
+
+/// Render a scalar var as a string. Strings pass through; numbers and bools are
+/// coerced to their natural form (`42`, `true`). Nulls, arrays, and objects
+/// have no template representation and are an error.
+fn coerce_to_string(value: &JsonValue, name: &str, rule: &str, context: &str) -> Result<String> {
+    match value {
+        JsonValue::String(value) => Ok(value.clone()),
+        JsonValue::Number(value) => Ok(value.to_string()),
+        JsonValue::Bool(value) => Ok(value.to_string()),
+        JsonValue::Null => Err(anyhow!(
+            "rule {rule}: var {name} in {context} is null and cannot be rendered as a string"
+        )),
+        JsonValue::Array(_) | JsonValue::Object(_) => Err(anyhow!(
+            "rule {rule}: var {name} in {context} must be a scalar (string, number, or bool)"
+        )),
+    }
+}
+
+/// Apply transforms left-to-right. An unknown transform name is an error rather
+/// than being silently ignored.
+fn apply_transforms(
+    mut value: String,
+    transforms: &[&str],
+    rule: &str,
+    context: &str,
+) -> Result<String> {
+    for transform in transforms {
+        value = match *transform {
+            "upper" => value.to_uppercase(),
+            "lower" => value.to_lowercase(),
+            "trim" => value.trim().to_string(),
+            other => {
+                return Err(anyhow!(
+                    "rule {rule}: unknown transform {other} in {context}"
+                ))
+            }
+        };
+    }
+    Ok(value)
 }
 
 pub(crate) fn render_template(
@@ -217,23 +296,20 @@ fn render_template_optional(
                 "rule {rule}: unterminated template in {context}: {template}"
             ));
         };
-        let name = &after[..end];
-        let value = vars.get(name);
-        let Some(value) = value else {
+        let placeholder = parse_placeholder(&after[..end]);
+        let Some(value) = vars.get(placeholder.name) else {
             if allow_missing {
                 return Ok(None);
             }
-            return Err(anyhow!("rule {rule}: missing var {name} in {context}"));
+            return Err(anyhow!(
+                "rule {rule}: missing var {} in {context}",
+                placeholder.name
+            ));
         };
         if value.is_null() && allow_missing {
             return Ok(None);
         }
-        let Some(value) = value.as_str() else {
-            return Err(anyhow!(
-                "rule {rule}: var {name} in {context} must be a string"
-            ));
-        };
-        rendered.push_str(value);
+        rendered.push_str(&apply_placeholder(value, &placeholder, rule, context)?);
         rest = &after[end + 1..];
     }
     rendered.push_str(rest);
@@ -288,10 +364,99 @@ uid:
     }
 
     #[test]
-    fn template_errors_on_non_string_var() {
+    fn template_coerces_number_var() {
         let mut vars = BTreeMap::new();
         vars.insert("asn".to_string(), JsonValue::Number(65001.into()));
-        let err = render_template("asn=${asn}", &vars, "rule", "key").unwrap_err();
-        assert!(err.to_string().contains("must be a string"));
+        let rendered = render_template("asn=${asn}", &vars, "rule", "key").unwrap();
+        assert_eq!(rendered, "asn=65001");
+    }
+
+    #[test]
+    fn template_coerces_bool_var() {
+        let mut vars = BTreeMap::new();
+        vars.insert("enabled".to_string(), JsonValue::Bool(true));
+        let rendered = render_template("flag=${enabled}", &vars, "rule", "key").unwrap();
+        assert_eq!(rendered, "flag=true");
+    }
+
+    #[test]
+    fn template_errors_on_array_var() {
+        let mut vars = BTreeMap::new();
+        vars.insert("tags".to_string(), serde_json::json!(["a", "b"]));
+        let err = render_template("tags=${tags}", &vars, "rule", "key").unwrap_err();
+        assert!(err.to_string().contains("must be a scalar"));
+    }
+
+    #[test]
+    fn template_applies_upper_transform() {
+        let mut vars = BTreeMap::new();
+        vars.insert("name".to_string(), JsonValue::String("leaf01".to_string()));
+        let rendered = render_template("${name|upper}", &vars, "rule", "key").unwrap();
+        assert_eq!(rendered, "LEAF01");
+    }
+
+    #[test]
+    fn template_applies_lower_transform() {
+        let mut vars = BTreeMap::new();
+        vars.insert("name".to_string(), JsonValue::String("LEAF01".to_string()));
+        let rendered = render_template("${name|lower}", &vars, "rule", "key").unwrap();
+        assert_eq!(rendered, "leaf01");
+    }
+
+    #[test]
+    fn template_applies_trim_transform() {
+        let mut vars = BTreeMap::new();
+        vars.insert(
+            "name".to_string(),
+            JsonValue::String("  leaf01  ".to_string()),
+        );
+        let rendered = render_template("name=${name|trim}", &vars, "rule", "key").unwrap();
+        assert_eq!(rendered, "name=leaf01");
+    }
+
+    #[test]
+    fn template_applies_chained_transforms() {
+        let mut vars = BTreeMap::new();
+        vars.insert("x".to_string(), JsonValue::String("  leaf01  ".to_string()));
+        let rendered = render_template("${x|trim|upper}", &vars, "rule", "key").unwrap();
+        assert_eq!(rendered, "LEAF01");
+    }
+
+    #[test]
+    fn template_errors_on_unknown_transform() {
+        let mut vars = BTreeMap::new();
+        vars.insert("name".to_string(), JsonValue::String("leaf01".to_string()));
+        let err = render_template("${name|frobnicate}", &vars, "rule", "key").unwrap_err();
+        assert!(err.to_string().contains("unknown transform frobnicate"));
+    }
+
+    #[test]
+    fn lone_placeholder_without_transform_preserves_type() {
+        let mut vars = BTreeMap::new();
+        vars.insert("asn".to_string(), JsonValue::Number(65001.into()));
+        let rendered = render_string_value("${asn}", &vars, "rule", "key", false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(rendered, JsonValue::Number(65001.into()));
+    }
+
+    #[test]
+    fn lone_placeholder_with_transform_coerces_and_applies() {
+        let mut vars = BTreeMap::new();
+        vars.insert("name".to_string(), JsonValue::String("leaf01".to_string()));
+        let rendered = render_string_value("${name|upper}", &vars, "rule", "key", false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(rendered, JsonValue::String("LEAF01".to_string()));
+    }
+
+    #[test]
+    fn lone_placeholder_number_with_transform_coerces() {
+        let mut vars = BTreeMap::new();
+        vars.insert("asn".to_string(), JsonValue::Number(65001.into()));
+        let rendered = render_string_value("${asn|trim}", &vars, "rule", "key", false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(rendered, JsonValue::String("65001".to_string()));
     }
 }

@@ -49,8 +49,10 @@ rules:
 
 ## templates
 
-- strings support `${var}` substitution only.
-- if the string is exactly `${var}`, the var value is inserted as-is.
+- strings support `${var}` substitution.
+- if the string is exactly `${var}` with no transform, the var value is inserted as-is, preserving its type.
+- when embedded in a larger string (or when a transform is applied), non-string scalars are coerced to their natural form (`42`, `true`); nulls, arrays, and objects are an error.
+- transforms can be applied with `${var|transform}` and chained left-to-right, e.g. `${name|trim|upper}`. available transforms: `upper`, `lower`, `trim`. an unknown transform name is an error.
 - missing required vars produce a rule-scoped error.
 
 ## uid

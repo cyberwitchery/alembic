@@ -2,6 +2,7 @@
 
 ## [unreleased]
 
+- engine: retort import-mapping templates now support `${var|transform}` transforms (`upper`, `lower`, `trim`, chainable left-to-right) and coerce non-string scalars (numbers, bools) to their natural string form; nulls, arrays/objects, and unknown transform names remain errors (#54)
 - cli: `plan --report` prints a read-only drift report (changed/missing/extra, with per-field diffs) and exits without writing a plan file or saving state
 - cli: `plan --report` now surfaces the `extra` category (objects present on the backend but not declared in intent) without requiring `--allow-delete`; previously `extra` was silently always empty
 - cli: `plan --report` and `--dry-run` are now mutually exclusive (passing both is rejected) instead of silently ignoring `--dry-run`
