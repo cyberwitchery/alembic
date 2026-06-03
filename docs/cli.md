@@ -90,6 +90,7 @@ NETBOX_URL=https://netbox.example.com NETBOX_TOKEN=$NETBOX_TOKEN \
 - `--provision` runs adapter provisioning (`ensure_schema`) before observing backend state
 - `--dry-run` prints the raw plan json instead of writing it
 - `--report` prints a read-only drift report and exits without writing a plan file or saving state
+- `--report` and `--dry-run` are mutually exclusive (both exit without applying); passing both is rejected at parse time
 - accepts any type string and arbitrary attrs (schema validation is required)
 
 ### drift report
@@ -110,6 +111,12 @@ it is one-way by construction: it only ever describes how observed state diverge
 from intent and never writes observed state back into the inventory or state
 store. `--output` is still required (as with `--dry-run`) but nothing is written
 to it.
+
+note that combining `--report` with `--provision` is not fully read-only:
+`--provision` still runs adapter provisioning (`ensure_schema`) against the
+backend before the report is computed, which can issue schema writes (e.g.
+creating netbox custom fields/tags). the report itself remains read-only; the
+schema writes come from `--provision`, not from the report.
 
 ## apply
 
