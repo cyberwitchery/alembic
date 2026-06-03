@@ -2723,4 +2723,93 @@ schema { query: Query }
             .unwrap();
         assert_eq!(id, "site-42");
     }
+
+    // Characterization tests pinning the empty-list vs absent-single asymmetry
+    // in `extract_field_value`. The `RelationList` arms always build a
+    // `Value::Array`, so an empty or missing inner array produces an empty array
+    // rather than null, and the final `value.is_null()` guard then lets it
+    // through as `Some(Value::Array([]))`. The `RelationSingle` arms instead fall
+    // back to `Value::Null` when the id is absent, which the same guard collapses
+    // to `None`. A future refactor of these arms must preserve this distinction.
+
+    #[test]
+    fn extract_field_value_relation_list_nested_paginated_empty_edges_returns_some_empty_array() {
+        // Edges array present but empty -> Some([]), not None.
+        let node = json!({ "peers": { "edges": [] } });
+        let value = extract_field_value(
+            &node,
+            "peers",
+            &FieldKind::RelationList(RelationShape::NestedPaginated),
+        )
+        .unwrap();
+        assert_eq!(value, Some(json!([])));
+    }
+
+    #[test]
+    fn extract_field_value_relation_list_nested_paginated_missing_edges_returns_some_empty_array() {
+        // Relation object present and non-null but with no `edges` key at all:
+        // `unwrap_or_default()` still yields an empty array -> Some([]).
+        let node = json!({ "peers": {} });
+        let value = extract_field_value(
+            &node,
+            "peers",
+            &FieldKind::RelationList(RelationShape::NestedPaginated),
+        )
+        .unwrap();
+        assert_eq!(value, Some(json!([])));
+    }
+
+    #[test]
+    fn extract_field_value_relation_list_nested_edged_empty_returns_some_empty_array() {
+        // Flat (node-edged) list shape, empty array -> Some([]).
+        let node = json!({ "peers": [] });
+        let value = extract_field_value(
+            &node,
+            "peers",
+            &FieldKind::RelationList(RelationShape::NestedEdged),
+        )
+        .unwrap();
+        assert_eq!(value, Some(json!([])));
+    }
+
+    #[test]
+    fn extract_field_value_relation_list_related_node_empty_returns_some_empty_array() {
+        // Flat (related-node) list shape, empty array -> Some([]).
+        let node = json!({ "children": [] });
+        let value = extract_field_value(
+            &node,
+            "children",
+            &FieldKind::RelationList(RelationShape::RelatedNode),
+        )
+        .unwrap();
+        assert_eq!(value, Some(json!([])));
+    }
+
+    #[test]
+    fn extract_field_value_relation_single_related_node_absent_id_returns_none() {
+        // Contrast with the list arms above: a single relation whose object is
+        // present but carries no `id` falls back to `Value::Null` -> None.
+        let node = json!({ "parent": { "kind": "DcimSite" } });
+        let value = extract_field_value(
+            &node,
+            "parent",
+            &FieldKind::RelationSingle(RelationShape::RelatedNode),
+        )
+        .unwrap();
+        assert_eq!(value, None);
+    }
+
+    #[test]
+    fn extract_field_value_relation_single_nested_edged_absent_id_returns_none() {
+        // Same contrast for the nested-edged single shape: `node` present but
+        // without an `id` -> None.
+        let node = json!({ "owner": { "node": {} } });
+        let value = extract_field_value(
+            &node,
+            "owner",
+            &FieldKind::RelationSingle(RelationShape::NestedEdged),
+        )
+        .unwrap();
+        assert_eq!(value, None);
+    }
 }
