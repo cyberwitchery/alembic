@@ -13,7 +13,7 @@ readme = "../../README.md"
 [dependencies]
 alembic-core.workspace = true
 alembic-engine.workspace = true
-alembic-adapter-registry.workspace = true
+alembic-adapter-registry = { workspace = true, features = ["all"] }
 alembic-django.workspace = true
 anyhow.workspace = true
 clap.workspace = true
