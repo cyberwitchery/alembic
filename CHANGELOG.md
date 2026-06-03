@@ -2,6 +2,7 @@
 
 ## [unreleased]
 
+- engine: apply now orders operations by a topological sort over references (creates/updates after the objects they reference, deletes in reverse) instead of relying on the retry fixpoint, giving deterministic O(V+E) ordering and correct delete ordering; reference cycles fall back to a stable order and the retry loop stays as a safety net (#47)
 - cli: `plan --report` prints a read-only drift report (changed/missing/extra, with per-field diffs) and exits without writing a plan file or saving state
 - cli: `plan --report` now surfaces the `extra` category (objects present on the backend but not declared in intent) without requiring `--allow-delete`; previously `extra` was silently always empty
 - cli: `plan --report` and `--dry-run` are now mutually exclusive (passing both is rejected) instead of silently ignoring `--dry-run`

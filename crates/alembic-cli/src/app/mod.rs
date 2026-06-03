@@ -236,7 +236,7 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                         "plan contains delete operations; re-run with --allow-delete"
                     ));
                 }
-                let ordered = alembic_engine::sort_ops_for_apply(&plan.ops);
+                let ordered = alembic_engine::sort_ops_for_apply(&plan.ops, &plan.schema);
                 let mut approved = Vec::new();
                 for op in ordered {
                     let prompt = match &op {

@@ -47,7 +47,7 @@ pub(crate) async fn apply(
 
     let provision = adapter.ensure_schema(&plan.schema).await?;
 
-    let ordered = sort_ops_for_apply(&plan.ops);
+    let ordered = sort_ops_for_apply(&plan.ops, &plan.schema);
     let mut report = adapter.write(&plan.schema, &ordered, state).await?;
     report.provision = provision;
 
