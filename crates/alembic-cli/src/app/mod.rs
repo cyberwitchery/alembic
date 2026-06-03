@@ -8,7 +8,8 @@ mod state;
 
 use alembic_adapter_registry::{create_adapter, Plugin};
 use alembic_engine::{
-    apply_plan, build_plan, compile_retort, is_brew_format, load_raw_yaml, load_retort, Plan,
+    apply_plan, build_plan, compile_retort, is_brew_format, load_raw_yaml, load_retort,
+    DriftReport, Plan,
 };
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand};
@@ -64,6 +65,10 @@ enum Command {
         provision: bool,
         #[arg(long, default_value_t = false)]
         dry_run: bool,
+        /// print a read-only drift report (desired vs observed) and exit without
+        /// writing a plan file or saving state. mutually exclusive with --dry-run.
+        #[arg(long, default_value_t = false, conflicts_with = "dry_run")]
+        report: bool,
         #[arg(long, default_value_t = false)]
         allow_delete: bool,
     },
@@ -134,6 +139,18 @@ fn confirm(prompt: &str) -> Result<bool> {
     Ok(matches!(input.trim().to_lowercase().as_str(), "y" | "yes"))
 }
 
+/// whether the planner should emit delete ops (objects present on the backend
+/// but not declared in intent).
+///
+/// `--report` never applies the plan, so it forces delete-detection on purely to
+/// populate the drift report's `extra` category. without this, the documented
+/// `plan ... --report` invocation would silently never surface unmanaged backend
+/// objects, regardless of `--allow-delete`. non-report paths are unchanged and
+/// remain governed solely by `--allow-delete`.
+fn should_detect_deletes(allow_delete: bool, report: bool) -> bool {
+    allow_delete || report
+}
+
 pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
     match cli.command {
         Command::Validate { file, retort } => {
@@ -156,6 +173,7 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             backend_config,
             provision,
             dry_run,
+            report,
             allow_delete,
         } => {
             let inventory = load_inventory(&file, retort.as_deref())?;
@@ -169,8 +187,18 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                 }
             }
 
-            let plan = build_plan(adapter.as_ref(), &inventory, &mut state, allow_delete).await?;
-            if dry_run {
+            let plan = build_plan(
+                adapter.as_ref(),
+                &inventory,
+                &mut state,
+                should_detect_deletes(allow_delete, report),
+            )
+            .await?;
+            if report {
+                // read-only: describe desired-vs-observed and exit without
+                // writing a plan file or saving state.
+                println!("{}", DriftReport::from_plan(&plan));
+            } else if dry_run {
                 let raw = serde_json::to_string_pretty(&plan)?;
                 println!("{raw}");
             } else {

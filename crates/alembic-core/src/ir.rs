@@ -154,7 +154,39 @@ impl From<Key> for BTreeMap<String, Value> {
 }
 
 pub fn key_string(key: &Key) -> String {
-    serde_json::to_string(&key.0).unwrap_or_default()
+    let new_key: Key = Key(key
+        .0
+        .iter()
+        .map(|(k, v)| (k.clone(), canonicalize_number(v.clone())))
+        .collect());
+    serde_json::to_string(&new_key).unwrap_or_default()
+}
+
+/// prefer integer representation if lossless
+fn canonicalize_number(v: Value) -> Value {
+    match v {
+        Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Value::Number(i.into())
+            } else if let Some(f) = n.as_f64() {
+                let i = f.round() as i64;
+                if f64::abs(i as f64 - f) < 1e-5 {
+                    Value::Number(i.into())
+                } else {
+                    Value::Number(serde_json::Number::from_f64(f).unwrap())
+                }
+            } else {
+                Value::Number(n)
+            }
+        }
+        Value::Object(map) => Value::Object(
+            map.into_iter()
+                .map(|(k, v)| (k, canonicalize_number(v)))
+                .collect(),
+        ),
+        Value::Array(arr) => Value::Array(arr.into_iter().map(canonicalize_number).collect()),
+        other => other,
+    }
 }
 
 pub const ALEMBIC_UID_NAMESPACE: Uuid = Uuid::from_bytes([
@@ -1259,5 +1291,19 @@ mod tests {
         let key = Key::default();
         let s = key_string(&key);
         assert_eq!(s, "{}");
+    }
+
+    #[test]
+    fn key_string_canonical_form() {
+        let mut k = BTreeMap::new();
+        k.insert("a".to_string(), serde_json::json!(1.0000001)); // becomes int
+        k.insert("b".to_string(), serde_json::json!(2.001)); // kept as float
+        k.insert(
+            "c".to_string(),
+            serde_json::json!({"d".to_string(): 2.99999999999}), // becomes int
+        );
+        let key = Key::from(k);
+        let s = key_string(&key);
+        assert_eq!(s, "{\"a\":1,\"b\":2.001,\"c\":{\"d\":3}}");
     }
 }

@@ -10,14 +10,23 @@ documentation = "https://docs.rs/alembic-adapter-registry"
 description = "Adapter registry and configuration for Alembic."
 readme = "../../README.md"
 
+[features]
+netbox = ["dep:alembic-adapter-netbox"]
+nautobot = ["dep:alembic-adapter-nautobot"]
+infrahub = ["dep:alembic-adapter-infrahub"]
+generic = ["dep:alembic-adapter-generic"]
+peeringdb = ["dep:alembic-adapter-peeringdb"]
+default = []
+all = ["netbox", "nautobot", "infrahub", "generic", "peeringdb"]
+
 [dependencies]
 alembic-core.workspace = true
 alembic-engine.workspace = true
-alembic-adapter-netbox.workspace = true
-alembic-adapter-nautobot.workspace = true
-alembic-adapter-infrahub.workspace = true
-alembic-adapter-generic.workspace = true
-alembic-adapter-peeringdb.workspace = true
+alembic-adapter-netbox = { workspace = true, optional = true }
+alembic-adapter-nautobot = { workspace = true, optional = true }
+alembic-adapter-infrahub = { workspace = true, optional = true }
+alembic-adapter-generic = { workspace = true, optional = true }
+alembic-adapter-peeringdb = { workspace = true, optional = true }
 anyhow.workspace = true
 async-trait.workspace = true
 serde.workspace = true

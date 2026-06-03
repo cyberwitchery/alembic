@@ -40,9 +40,9 @@ thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 uuid = { version = "1", features = ["serde", "v4", "v5"] }
 netbox = "0.5.4"
-nautobot = "0.3.1"
-infrahub = "0.1.0"
-reqwest = { version = "0.12", features = ["json"] }
+nautobot = "0.4.1"
+infrahub = "0.3.0"
+reqwest = { version = "0.13", features = ["json"] }
 regex = "1"
 ipnet = "2"
 tokio-postgres = "0.7"
@@ -50,7 +50,7 @@ native-tls = "0.2"
 postgres-native-tls = "0.5"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-httpmock = "0.7"
+httpmock = "0.8"
 tempfile = "3"
 futures = "0.3"
 figment = { version = "0.10", features = ["yaml", "env"] }

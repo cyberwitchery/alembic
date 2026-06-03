@@ -697,6 +697,7 @@ objects:
             backend_config: None,
             provision: false,
             dry_run: false,
+            report: false,
             allow_delete: false,
         },
     };
@@ -870,6 +871,7 @@ objects:
             backend_config: Some(config),
             provision: false,
             dry_run: false,
+            report: false,
             allow_delete: false,
         },
     };
@@ -878,6 +880,301 @@ objects:
     let raw = std::fs::read_to_string(&out).unwrap();
     assert!(raw.contains("\"op\": \"create\""));
     assert!(raw.contains("\"type_name\": \"dcim.device\""));
+
+    std::env::set_current_dir(cwd).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn run_plan_report_is_read_only() {
+    use httpmock::Method::GET;
+    use httpmock::MockServer;
+    use serde_json::json;
+
+    let _guard = cwd_lock().lock().await;
+    let server = MockServer::start();
+    let dir = tempdir().unwrap();
+    let brew = dir.path().join("brew.yaml");
+    let out = dir.path().join("plan.json");
+    let config = dir.path().join("adapter.yaml");
+    std::fs::write(
+        &brew,
+        r#"
+schema:
+  types:
+    dcim.device:
+      key:
+        name:
+          type: string
+      fields:
+        name:
+          type: string
+objects:
+  - uid: "00000000-0000-0000-0000-000000000001"
+    type: dcim.device
+    key:
+      name: "leaf01"
+    attrs:
+      name: "leaf01"
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        &config,
+        format!(
+            "backend: nautobot\nurl: {}\ntoken: token\n",
+            server.base_url()
+        ),
+    )
+    .unwrap();
+
+    let _content_types = server.mock(|when, then| {
+        when.method(GET)
+            .path("/api/extras/content-types/")
+            .query_param("limit", "200")
+            .query_param("offset", "0");
+        then.status(200).json_body(json!({
+            "count": 1,
+            "next": null,
+            "previous": null,
+            "results": [{
+                "app_label": "dcim",
+                "model": "device",
+                "display": "Device"
+            }]
+        }));
+    });
+
+    let _custom_fields = server.mock(|when, then| {
+        when.method(GET).path("/api/extras/custom-fields/");
+        then.status(200).json_body(json!({
+            "count": 0,
+            "next": null,
+            "previous": null,
+            "results": []
+        }));
+    });
+
+    let _tags = server.mock(|when, then| {
+        when.method(GET).path("/api/extras/tags/");
+        then.status(200).json_body(json!({
+            "count": 0,
+            "next": null,
+            "previous": null,
+            "results": []
+        }));
+    });
+
+    let _devices = server.mock(|when, then| {
+        when.method(GET)
+            .path("/api/dcim/devices/")
+            .query_param("limit", "200")
+            .query_param("offset", "0");
+        then.status(200).json_body(json!({
+            "count": 0,
+            "next": null,
+            "previous": null,
+            "results": []
+        }));
+    });
+
+    let cwd = std::env::current_dir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
+
+    let cli = Cli {
+        command: Command::Plan {
+            file: brew,
+            retort: None,
+            output: out.clone(),
+            backend: None,
+            backend_config: Some(config),
+            provision: false,
+            dry_run: false,
+            report: true,
+            allow_delete: false,
+        },
+    };
+    run(cli, AppConfig::load().unwrap()).await.unwrap();
+
+    // --report is read-only: no plan file is written and no state is persisted.
+    assert!(!out.exists(), "plan file must not be written for --report");
+    assert!(
+        !dir.path().join(".alembic/state.json").exists(),
+        "state must not be saved for --report"
+    );
+
+    std::env::set_current_dir(cwd).unwrap();
+}
+
+#[test]
+fn should_detect_deletes_forces_on_for_report() {
+    // report mode never applies the plan, so it forces delete-detection on to
+    // surface backend-only objects as `extra`.
+    assert!(should_detect_deletes(false, true));
+    assert!(should_detect_deletes(true, true));
+    // non-report paths are governed solely by --allow-delete.
+    assert!(should_detect_deletes(true, false));
+    assert!(!should_detect_deletes(false, false));
+}
+
+#[test]
+fn report_and_dry_run_conflict() {
+    use clap::Parser;
+    // --report and --dry-run both exit without applying; passing both is rejected
+    // at parse time rather than silently dropping --dry-run.
+    let result = Cli::try_parse_from([
+        "alembic",
+        "plan",
+        "-f",
+        "brew.yaml",
+        "-o",
+        "plan.json",
+        "--report",
+        "--dry-run",
+    ]);
+    // `Cli` is not `Debug`, so unwrap the error via `Option` rather than `expect_err`.
+    let err = result.err().expect("--report and --dry-run must conflict");
+    assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn run_plan_report_surfaces_extra() {
+    // regression test for the `extra` category: an object present on the backend
+    // but not declared in intent must surface under --report even without
+    // --allow-delete (the existing read-only test only covered a missing object).
+    use httpmock::Method::GET;
+    use httpmock::MockServer;
+    use serde_json::json;
+
+    let _guard = cwd_lock().lock().await;
+    let server = MockServer::start();
+    let dir = tempdir().unwrap();
+    let brew = dir.path().join("brew.yaml");
+    let config = dir.path().join("adapter.yaml");
+    // intent declares the schema but no objects; the backend holds an unmanaged
+    // device (leaf01), so the only drift is one `extra`.
+    std::fs::write(
+        &brew,
+        r#"
+schema:
+  types:
+    dcim.device:
+      key:
+        name:
+          type: string
+      fields:
+        name:
+          type: string
+objects: []
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        &config,
+        format!(
+            "backend: nautobot\nurl: {}\ntoken: token\n",
+            server.base_url()
+        ),
+    )
+    .unwrap();
+
+    let _content_types = server.mock(|when, then| {
+        when.method(GET)
+            .path("/api/extras/content-types/")
+            .query_param("limit", "200")
+            .query_param("offset", "0");
+        then.status(200).json_body(json!({
+            "count": 1,
+            "next": null,
+            "previous": null,
+            "results": [{
+                "app_label": "dcim",
+                "model": "device",
+                "display": "Device"
+            }]
+        }));
+    });
+
+    let _custom_fields = server.mock(|when, then| {
+        when.method(GET).path("/api/extras/custom-fields/");
+        then.status(200).json_body(json!({
+            "count": 0,
+            "next": null,
+            "previous": null,
+            "results": []
+        }));
+    });
+
+    let _tags = server.mock(|when, then| {
+        when.method(GET).path("/api/extras/tags/");
+        then.status(200).json_body(json!({
+            "count": 0,
+            "next": null,
+            "previous": null,
+            "results": []
+        }));
+    });
+
+    let _devices = server.mock(|when, then| {
+        when.method(GET)
+            .path("/api/dcim/devices/")
+            .query_param("limit", "200")
+            .query_param("offset", "0");
+        then.status(200).json_body(json!({
+            "count": 1,
+            "next": null,
+            "previous": null,
+            "results": [{
+                "id": "uuid-leaf01",
+                "name": "leaf01"
+            }]
+        }));
+    });
+
+    let cwd = std::env::current_dir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
+
+    let inventory = load_inventory(&brew, None).unwrap();
+    let mut state = load_state().await.unwrap();
+    let adapter = create_adapter(&[], None, Some(config)).unwrap();
+
+    // the buggy threading (allow_delete alone) never emits deletes, so the
+    // `extra` category is silently empty even though leaf01 is unmanaged.
+    let buggy = build_plan(
+        adapter.as_ref(),
+        &inventory,
+        &mut state,
+        should_detect_deletes(false, false),
+    )
+    .await
+    .unwrap();
+    assert!(
+        DriftReport::from_plan(&buggy).extra.is_empty(),
+        "without report-forced delete-detection the extra is invisible"
+    );
+
+    // report mode forces delete-detection, so the unmanaged backend object
+    // surfaces as an `extra` even though --allow-delete was not passed.
+    let plan = build_plan(
+        adapter.as_ref(),
+        &inventory,
+        &mut state,
+        should_detect_deletes(false, true),
+    )
+    .await
+    .unwrap();
+    let drift = DriftReport::from_plan(&plan);
+    assert_eq!(
+        drift.extra.len(),
+        1,
+        "report mode must surface unmanaged backend objects as extra"
+    );
+    assert_eq!(
+        drift.extra[0].type_name,
+        alembic_core::TypeName::new("dcim.device")
+    );
+    assert_eq!(drift.extra[0].key, key_str("name=leaf01"));
+    assert!(drift.missing.is_empty());
+    assert!(drift.changed.is_empty());
 
     std::env::set_current_dir(cwd).unwrap();
 }
