@@ -16,7 +16,7 @@ jobs:
       CARGO_TARGET_DIR: target/ci
     steps:
       - name: checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: set up rust
         uses: dtolnay/rust-toolchain@stable
@@ -80,14 +80,14 @@ jobs:
           fi
 
       - name: upload sbom
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: sbom-${{ github.ref_name }}
           path: "/tmp/alembic-sbom/sbom-${{ github.ref_name }}-*.cdx.json"
           if-no-files-found: error
 
       - name: attach sbom to release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           body_path: ${{ runner.temp }}/release-notes.md
           files: /tmp/alembic-sbom/sbom-${{ github.ref_name }}-*.cdx.json
