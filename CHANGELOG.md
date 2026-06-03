@@ -2,6 +2,8 @@
 
 ## [unreleased]
 
+- engine: apply now orders operations by a topological sort over references (creates/updates after the objects they reference, deletes in reverse) instead of relying on the retry fixpoint, giving deterministic O(V+E) ordering and correct delete ordering; reference cycles fall back to a stable order and the retry loop stays as a safety net (#47)
+
 ## [0.3.0] - 2026-05-20
 
 - cli: improved support for running external adapters ("plugins")

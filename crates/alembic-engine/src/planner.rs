@@ -2,9 +2,12 @@
 
 use crate::state::StateStore;
 use crate::types::{FieldChange, ObservedState, Op, Plan};
-use alembic_core::{key_string, uid_v5, JsonMap, Key, Object, TypeName};
+use alembic_core::{
+    key_string, uid_v5, FieldType, JsonMap, Key, Object, Schema, TypeName, TypeSchema, Uid,
+};
 use serde_json::Value;
-use std::collections::{BTreeMap, BTreeSet};
+use std::cmp::Reverse;
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 
 /// build a deterministic plan from desired and observed state.
 pub fn plan(
@@ -122,8 +125,11 @@ fn op_sort_key(type_name: &TypeName, key: &Key) -> (String, String) {
     (type_name.as_str().to_string(), key_string(key))
 }
 
+/// deterministic ordering key for a plan op: (type name, op weight, key string).
+type OrderKey = (String, u8, String);
+
 /// stable sort key for plan operations.
-fn op_order_key(op: &Op) -> (String, u8, String) {
+fn op_order_key(op: &Op) -> OrderKey {
     let (type_name, key, weight) = match op {
         Op::Create {
             type_name, desired, ..
@@ -136,15 +142,172 @@ fn op_order_key(op: &Op) -> (String, u8, String) {
     (type_name.as_str().to_string(), weight, key)
 }
 
-/// order operations for apply (creates/updates first, deletes last).
-pub fn sort_ops_for_apply(ops: &[Op]) -> Vec<Op> {
-    let mut result: Vec<Op> = ops.to_vec();
-    result.sort_by_key(|op| {
-        match op {
-            Op::Delete { .. } => (1u8, op_order_key(op)), // deletes last
-            _ => (0u8, op_order_key(op)),                 // creates/updates first
+/// collect the referenced uids carried by a value, recursing through list and
+/// map containers, using the field's schema to know where refs live.
+fn collect_refs_in_value(field_type: &FieldType, value: &Value, out: &mut BTreeSet<Uid>) {
+    match field_type {
+        FieldType::Ref { .. } => {
+            if let Some(uid) = value.as_str().and_then(|raw| Uid::parse_str(raw).ok()) {
+                out.insert(uid);
+            }
         }
-    });
+        FieldType::ListRef { .. } => {
+            if let Value::Array(items) = value {
+                for item in items {
+                    if let Some(uid) = item.as_str().and_then(|raw| Uid::parse_str(raw).ok()) {
+                        out.insert(uid);
+                    }
+                }
+            }
+        }
+        FieldType::List { item } => {
+            if let Value::Array(items) = value {
+                for item_value in items {
+                    collect_refs_in_value(item, item_value, out);
+                }
+            }
+        }
+        FieldType::Map { value: inner } => {
+            if let Value::Object(map) = value {
+                for entry in map.values() {
+                    collect_refs_in_value(inner, entry, out);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// collect every uid referenced by an object's attrs (or key) given its schema.
+/// fields are looked up in `fields` first, falling back to `key` so that
+/// reference-typed key components are picked up too.
+fn collect_referenced_uids(
+    type_schema: &TypeSchema,
+    attrs: &BTreeMap<String, Value>,
+) -> BTreeSet<Uid> {
+    let mut uids = BTreeSet::new();
+    for (field, value) in attrs {
+        if let Some(field_schema) = type_schema
+            .fields
+            .get(field)
+            .or_else(|| type_schema.key.get(field))
+        {
+            collect_refs_in_value(&field_schema.r#type, value, &mut uids);
+        }
+    }
+    uids
+}
+
+/// the uids an op depends on. creates/updates draw refs from the desired attrs
+/// and key; deletes only carry a key, so refs come from reference-typed key
+/// components (the op has no attrs to inspect).
+fn op_referenced_uids(op: &Op, schema: &Schema) -> BTreeSet<Uid> {
+    let Some(type_schema) = schema.types.get(op.type_name().as_str()) else {
+        return BTreeSet::new();
+    };
+    match op {
+        Op::Create { desired, .. } | Op::Update { desired, .. } => {
+            let mut uids = collect_referenced_uids(type_schema, &desired.attrs);
+            uids.extend(collect_referenced_uids(type_schema, &desired.key));
+            uids
+        }
+        Op::Delete { key, .. } => collect_referenced_uids(type_schema, key),
+    }
+}
+
+/// Kahn's algorithm with `op_order_key` as a deterministic tie-breaker.
+/// `edges[a]` holds the nodes that must come *after* node `a`. Nodes that
+/// remain in a reference cycle never reach in-degree zero; they are appended in
+/// stable `op_order_key` order so the result is always a total order (the
+/// apply_retry fixpoint resolves any residual ordering for them at apply time).
+fn stable_toposort(ops: &[&Op], edges: &[BTreeSet<usize>]) -> Vec<usize> {
+    let n = ops.len();
+    let keys: Vec<OrderKey> = ops.iter().map(|&op| op_order_key(op)).collect();
+
+    let mut indegree = vec![0usize; n];
+    for succs in edges {
+        for &b in succs {
+            indegree[b] += 1;
+        }
+    }
+
+    let mut ready: BinaryHeap<Reverse<(OrderKey, usize)>> = BinaryHeap::new();
+    for (i, &deg) in indegree.iter().enumerate() {
+        if deg == 0 {
+            ready.push(Reverse((keys[i].clone(), i)));
+        }
+    }
+
+    let mut order = Vec::with_capacity(n);
+    while let Some(Reverse((_, i))) = ready.pop() {
+        order.push(i);
+        for &b in &edges[i] {
+            indegree[b] -= 1;
+            if indegree[b] == 0 {
+                ready.push(Reverse((keys[b].clone(), b)));
+            }
+        }
+    }
+
+    // cyclic remainder: nodes that never reached in-degree zero. fall back to
+    // stable ordering for them so we still emit a total order without panicking.
+    if order.len() < n {
+        let mut placed = vec![false; n];
+        for &i in &order {
+            placed[i] = true;
+        }
+        let mut remaining: Vec<usize> = (0..n).filter(|&i| !placed[i]).collect();
+        remaining.sort_by(|&a, &b| keys[a].cmp(&keys[b]).then(a.cmp(&b)));
+        order.extend(remaining);
+    }
+
+    order
+}
+
+/// order ops by reference dependency. when `reverse` is false (creates/updates)
+/// an op is placed after the ops that create the uids it references; when true
+/// (deletes) an op is placed before the ops it references, so an object is
+/// removed only after everything referencing it.
+fn ordered_by_refs(ops: &[&Op], schema: &Schema, reverse: bool) -> Vec<Op> {
+    let uid_to_node: BTreeMap<Uid, usize> = ops
+        .iter()
+        .enumerate()
+        .map(|(i, op)| (op.uid(), i))
+        .collect();
+
+    let mut edges: Vec<BTreeSet<usize>> = vec![BTreeSet::new(); ops.len()];
+    for (i, &op) in ops.iter().enumerate() {
+        for referenced in op_referenced_uids(op, schema) {
+            let Some(&j) = uid_to_node.get(&referenced) else {
+                continue;
+            };
+            if i == j {
+                continue;
+            }
+            if reverse {
+                edges[i].insert(j); // i references j -> delete i before j
+            } else {
+                edges[j].insert(i); // i references j -> create j before i
+            }
+        }
+    }
+
+    stable_toposort(ops, &edges)
+        .into_iter()
+        .map(|i| ops[i].clone())
+        .collect()
+}
+
+/// order operations for apply: creates/updates first (topologically sorted so
+/// referenced objects are created before the objects that reference them),
+/// then deletes (reverse-toposorted so an object is deleted only after
+/// everything referencing it). reference cycles fall back to a stable order.
+pub fn sort_ops_for_apply(ops: &[Op], schema: &Schema) -> Vec<Op> {
+    let (non_deletes, deletes): (Vec<&Op>, Vec<&Op>) =
+        ops.iter().partition(|op| !matches!(op, Op::Delete { .. }));
+
+    let mut result = ordered_by_refs(&non_deletes, schema, false);
+    result.extend(ordered_by_refs(&deletes, schema, true));
     result
 }
 
@@ -153,7 +316,9 @@ mod tests {
     use super::*;
     use crate::state::{StateData, StateStore};
     use crate::types::{BackendId, ObservedObject, ObservedState};
-    use alembic_core::{JsonMap, Key, Object, Schema, TypeName, Uid};
+    use alembic_core::{
+        FieldSchema, FieldType, JsonMap, Key, Object, Schema, TypeName, TypeSchema, Uid,
+    };
     use serde_json::json;
     use std::collections::BTreeMap;
 
@@ -477,7 +642,7 @@ mod tests {
                 desired: make_object(2, "dcim.site", "ams1", make_attrs(&[])),
             },
         ];
-        let sorted = sort_ops_for_apply(&ops);
+        let sorted = sort_ops_for_apply(&ops, &empty_schema());
         assert!(matches!(&sorted[0], Op::Create { .. }));
         assert!(matches!(&sorted[1], Op::Delete { .. }));
     }
@@ -499,7 +664,7 @@ mod tests {
                 backend_id: None,
             },
         ];
-        let sorted = sort_ops_for_apply(&ops);
+        let sorted = sort_ops_for_apply(&ops, &empty_schema());
         assert!(matches!(&sorted[0], Op::Update { .. }));
         assert!(matches!(&sorted[1], Op::Delete { .. }));
     }
@@ -520,7 +685,7 @@ mod tests {
                 backend_id: None,
             },
         ];
-        let sorted = sort_ops_for_apply(&ops);
+        let sorted = sort_ops_for_apply(&ops, &empty_schema());
         // Both deletes come last, sorted alphabetically by type
         assert!(
             matches!(&sorted[0], Op::Delete { type_name, .. } if type_name.as_str() == "a.type")
@@ -532,7 +697,7 @@ mod tests {
 
     #[test]
     fn sort_ops_empty_input() {
-        let sorted = sort_ops_for_apply(&[]);
+        let sorted = sort_ops_for_apply(&[], &empty_schema());
         assert!(sorted.is_empty());
     }
 
@@ -552,8 +717,256 @@ mod tests {
                 desired: make_object(1, "dcim.site", "aaa1", make_attrs(&[])),
             },
         ];
-        let sorted = sort_ops_for_apply(&ops);
+        let sorted = sort_ops_for_apply(&ops, &empty_schema());
         assert!(matches!(&sorted[0], Op::Create { .. }));
         assert!(matches!(&sorted[1], Op::Update { .. }));
+    }
+
+    // --- sort_ops_for_apply: topological ordering by reference (issue #47) ---
+
+    fn field(r#type: FieldType) -> FieldSchema {
+        FieldSchema {
+            r#type,
+            required: false,
+            nullable: true,
+            format: None,
+            pattern: None,
+            description: None,
+        }
+    }
+
+    fn ref_t() -> FieldType {
+        FieldType::Ref {
+            target: "node".to_string(),
+        }
+    }
+
+    fn list_ref_t() -> FieldType {
+        FieldType::ListRef {
+            target: "node".to_string(),
+        }
+    }
+
+    /// schema with a single type `node` keyed by `slug` plus the given fields.
+    fn node_schema(fields: &[(&str, FieldType)]) -> Schema {
+        let mut field_map = BTreeMap::new();
+        for (name, ty) in fields {
+            field_map.insert(name.to_string(), field(ty.clone()));
+        }
+        let mut key = BTreeMap::new();
+        key.insert("slug".to_string(), field(FieldType::Slug));
+        let mut types = BTreeMap::new();
+        types.insert(
+            "node".to_string(),
+            TypeSchema {
+                key,
+                fields: field_map,
+            },
+        );
+        Schema { types }
+    }
+
+    /// a uuid string ref value for the given uid.
+    fn uref(uid: u128) -> serde_json::Value {
+        json!(Uid::from_u128(uid).to_string())
+    }
+
+    fn create_node(uid: u128, slug: &str, attrs: JsonMap) -> Op {
+        Op::Create {
+            uid: Uid::from_u128(uid),
+            type_name: TypeName::new("node"),
+            desired: make_object(uid, "node", slug, attrs),
+        }
+    }
+
+    /// position of the op carrying `uid` in the ordered output.
+    fn order_index(ops: &[Op], uid: u128) -> usize {
+        ops.iter()
+            .position(|op| op.uid().as_u128() == uid)
+            .expect("uid present in ordered ops")
+    }
+
+    #[test]
+    fn toposort_linear_ref_chain() {
+        let schema = node_schema(&[("next", ref_t())]);
+        let ops = vec![
+            create_node(1, "a", make_attrs(&[("next", uref(2))])),
+            create_node(2, "b", make_attrs(&[("next", uref(3))])),
+            create_node(3, "c", make_attrs(&[])),
+        ];
+        let sorted = sort_ops_for_apply(&ops, &schema);
+        // referenced objects are created before the objects referencing them.
+        assert!(order_index(&sorted, 3) < order_index(&sorted, 2));
+        assert!(order_index(&sorted, 2) < order_index(&sorted, 1));
+    }
+
+    #[test]
+    fn toposort_diamond_shared_dep() {
+        let schema = node_schema(&[("parent", ref_t()), ("left", ref_t()), ("right", ref_t())]);
+        let ops = vec![
+            create_node(1, "d", make_attrs(&[("left", uref(2)), ("right", uref(3))])),
+            create_node(2, "b", make_attrs(&[("parent", uref(4))])),
+            create_node(3, "c", make_attrs(&[("parent", uref(4))])),
+            create_node(4, "a", make_attrs(&[])),
+        ];
+        let sorted = sort_ops_for_apply(&ops, &schema);
+        let (a, b, c, d) = (
+            order_index(&sorted, 4),
+            order_index(&sorted, 2),
+            order_index(&sorted, 3),
+            order_index(&sorted, 1),
+        );
+        assert!(a < b && a < c, "shared dep created first");
+        assert!(b < d && c < d, "both branches created before the joiner");
+    }
+
+    #[test]
+    fn toposort_list_ref_fan_out() {
+        let schema = node_schema(&[("members", list_ref_t())]);
+        let ops = vec![
+            create_node(
+                1,
+                "a",
+                make_attrs(&[("members", json!([uref(2), uref(3), uref(4)]))]),
+            ),
+            create_node(2, "b", make_attrs(&[])),
+            create_node(3, "c", make_attrs(&[])),
+            create_node(4, "d", make_attrs(&[])),
+        ];
+        let sorted = sort_ops_for_apply(&ops, &schema);
+        let a = order_index(&sorted, 1);
+        assert!(order_index(&sorted, 2) < a);
+        assert!(order_index(&sorted, 3) < a);
+        assert!(order_index(&sorted, 4) < a);
+    }
+
+    #[test]
+    fn toposort_refs_nested_in_list_and_map() {
+        let schema = node_schema(&[
+            (
+                "group",
+                FieldType::List {
+                    item: Box::new(ref_t()),
+                },
+            ),
+            (
+                "lookup",
+                FieldType::Map {
+                    value: Box::new(ref_t()),
+                },
+            ),
+        ]);
+        let ops = vec![
+            create_node(
+                1,
+                "a",
+                make_attrs(&[
+                    ("group", json!([uref(2)])),
+                    ("lookup", json!({ "k": uref(3) })),
+                ]),
+            ),
+            create_node(2, "b", make_attrs(&[])),
+            create_node(3, "c", make_attrs(&[])),
+        ];
+        let sorted = sort_ops_for_apply(&ops, &schema);
+        let a = order_index(&sorted, 1);
+        assert!(order_index(&sorted, 2) < a, "ref nested in list");
+        assert!(order_index(&sorted, 3) < a, "ref nested in map");
+    }
+
+    #[test]
+    fn toposort_reference_cycle_falls_back_to_stable_order() {
+        let schema = node_schema(&[("next", ref_t())]);
+        let ops = vec![
+            create_node(1, "aaa", make_attrs(&[("next", uref(2))])),
+            create_node(2, "bbb", make_attrs(&[("next", uref(1))])),
+        ];
+        let sorted = sort_ops_for_apply(&ops, &schema);
+        // a cycle still yields a total order without panicking or dropping ops.
+        assert_eq!(sorted.len(), 2);
+        // the cyclic remainder is emitted in stable op_order_key (slug) order.
+        assert_eq!(order_index(&sorted, 1), 0);
+        assert_eq!(order_index(&sorted, 2), 1);
+    }
+
+    #[test]
+    fn reverse_toposort_deletes_child_before_parent() {
+        // `child` is keyed by a reference to `node`, so deleting the parent
+        // node must wait until the referencing child is gone.
+        let mut node_key = BTreeMap::new();
+        node_key.insert("slug".to_string(), field(FieldType::Slug));
+        let mut child_key = BTreeMap::new();
+        child_key.insert("parent".to_string(), field(ref_t()));
+        child_key.insert("slug".to_string(), field(FieldType::Slug));
+        let mut types = BTreeMap::new();
+        types.insert(
+            "node".to_string(),
+            TypeSchema {
+                key: node_key,
+                fields: BTreeMap::new(),
+            },
+        );
+        types.insert(
+            "child".to_string(),
+            TypeSchema {
+                key: child_key,
+                fields: BTreeMap::new(),
+            },
+        );
+        let schema = Schema { types };
+
+        let parent_key = Key::from(BTreeMap::from([("slug".to_string(), json!("p"))]));
+        let child_key_val = Key::from(BTreeMap::from([
+            ("parent".to_string(), uref(1)),
+            ("slug".to_string(), json!("c")),
+        ]));
+        let ops = vec![
+            Op::Delete {
+                uid: Uid::from_u128(1),
+                type_name: TypeName::new("node"),
+                key: parent_key,
+                backend_id: None,
+            },
+            Op::Delete {
+                uid: Uid::from_u128(2),
+                type_name: TypeName::new("child"),
+                key: child_key_val,
+                backend_id: None,
+            },
+        ];
+        let sorted = sort_ops_for_apply(&ops, &schema);
+        assert!(
+            order_index(&sorted, 2) < order_index(&sorted, 1),
+            "child deleted before the parent it references"
+        );
+        assert!(sorted.iter().all(|op| matches!(op, Op::Delete { .. })));
+    }
+
+    #[test]
+    fn toposort_keeps_deletes_after_creates_and_updates() {
+        let schema = node_schema(&[("next", ref_t())]);
+        let ops = vec![
+            Op::Delete {
+                uid: Uid::from_u128(9),
+                type_name: TypeName::new("node"),
+                key: make_key("z"),
+                backend_id: None,
+            },
+            create_node(1, "a", make_attrs(&[("next", uref(2))])),
+            create_node(2, "b", make_attrs(&[])),
+        ];
+        let sorted = sort_ops_for_apply(&ops, &schema);
+        let non_delete_count = sorted
+            .iter()
+            .filter(|op| !matches!(op, Op::Delete { .. }))
+            .count();
+        let delete_pos = sorted
+            .iter()
+            .position(|op| matches!(op, Op::Delete { .. }))
+            .unwrap();
+        // every create/update precedes the single delete.
+        assert_eq!(delete_pos, non_delete_count);
+        // and the create chain is still toposorted within its block.
+        assert!(order_index(&sorted, 2) < order_index(&sorted, 1));
     }
 }
