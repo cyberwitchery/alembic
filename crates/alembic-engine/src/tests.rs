@@ -851,7 +851,7 @@ fn apply_order_puts_deletes_last() {
         },
     ];
 
-    let ordered = sort_ops_for_apply(&ops);
+    let ordered = sort_ops_for_apply(&ops, &Schema::default());
     assert!(matches!(ordered.first().unwrap(), Op::Create { .. }));
     assert!(matches!(ordered.last().unwrap(), Op::Delete { .. }));
 }
