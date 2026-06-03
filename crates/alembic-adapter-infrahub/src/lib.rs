@@ -2094,6 +2094,116 @@ schema { query: Query }
         assert!(!attrs.contains_key("missing"));
     }
 
+    // Characterization tests for `extract_field_value`: they pin the current
+    // mapping from each Infrahub GraphQL node shape to an IR value. The function
+    // is otherwise only exercised indirectly through `extract_attrs`.
+
+    #[test]
+    fn extract_field_value_attribute_returns_inner_value() {
+        let node = json!({ "name": { "value": "alpha" } });
+        let value = extract_field_value(&node, "name", &FieldKind::Attribute).unwrap();
+        assert_eq!(value, Some(json!("alpha")));
+    }
+
+    #[test]
+    fn extract_field_value_relation_single_related_node_returns_id() {
+        let node = json!({ "parent": { "id": "r1", "kind": "DcimSite" } });
+        let value = extract_field_value(
+            &node,
+            "parent",
+            &FieldKind::RelationSingle(RelationShape::RelatedNode),
+        )
+        .unwrap();
+        assert_eq!(value, Some(json!("r1")));
+    }
+
+    #[test]
+    fn extract_field_value_relation_single_nested_edged_returns_node_id() {
+        let node = json!({ "owner": { "node": { "id": "n1" } } });
+        let value = extract_field_value(
+            &node,
+            "owner",
+            &FieldKind::RelationSingle(RelationShape::NestedEdged),
+        )
+        .unwrap();
+        assert_eq!(value, Some(json!("n1")));
+    }
+
+    #[test]
+    fn extract_field_value_relation_single_nested_paginated_returns_node_id() {
+        let node = json!({ "owner": { "node": { "id": "p1" } } });
+        let value = extract_field_value(
+            &node,
+            "owner",
+            &FieldKind::RelationSingle(RelationShape::NestedPaginated),
+        )
+        .unwrap();
+        assert_eq!(value, Some(json!("p1")));
+    }
+
+    #[test]
+    fn extract_field_value_relation_list_related_node_returns_ids() {
+        let node = json!({
+            "children": [
+                { "id": "m1", "kind": "DcimSite" },
+                { "id": "m2", "kind": "DcimSite" }
+            ]
+        });
+        let value = extract_field_value(
+            &node,
+            "children",
+            &FieldKind::RelationList(RelationShape::RelatedNode),
+        )
+        .unwrap();
+        assert_eq!(value, Some(json!(["m1", "m2"])));
+    }
+
+    #[test]
+    fn extract_field_value_relation_list_nested_paginated_returns_ids() {
+        let node = json!({
+            "peers": { "edges": [{ "node": { "id": "p1" } }, { "node": { "id": "p2" } }] }
+        });
+        let value = extract_field_value(
+            &node,
+            "peers",
+            &FieldKind::RelationList(RelationShape::NestedPaginated),
+        )
+        .unwrap();
+        assert_eq!(value, Some(json!(["p1", "p2"])));
+    }
+
+    #[test]
+    fn extract_field_value_relation_list_nested_edged_returns_ids() {
+        let node = json!({
+            "peers": [{ "node": { "id": "e1" } }, { "node": { "id": "e2" } }]
+        });
+        let value = extract_field_value(
+            &node,
+            "peers",
+            &FieldKind::RelationList(RelationShape::NestedEdged),
+        )
+        .unwrap();
+        assert_eq!(value, Some(json!(["e1", "e2"])));
+    }
+
+    #[test]
+    fn extract_field_value_missing_field_returns_none() {
+        // The field is absent from the node: the early return fires before the
+        // `kind` match, so the result is `None` for any kind.
+        let node = json!({ "present": { "value": "x" } });
+        let value = extract_field_value(&node, "absent", &FieldKind::Attribute).unwrap();
+        assert_eq!(value, None);
+    }
+
+    #[test]
+    fn extract_field_value_null_field_returns_none() {
+        // The field is present but JSON null: this also short-circuits to `None`
+        // ahead of the `kind` match.
+        let node = json!({ "name": null });
+        let value = extract_field_value(&node, "name", &FieldKind::Attribute).unwrap();
+        assert_eq!(value, None);
+    }
+
     #[test]
     fn schema_missing_and_validate_schema() {
         let type_schema = type_schema(
