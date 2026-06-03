@@ -2626,7 +2626,7 @@ schema { query: Query }
         let repo_mock = server.mock(|when, then| {
             when.method(POST)
                 .path("/graphql")
-                .body_contains("CoreRepository");
+                .body_includes("CoreRepository");
             then.status(200).json_body(json!({
                 "data": {
                     "CoreRepository": { "edges": [ { "node": { "id": "repo-1" } } ] }
@@ -2637,7 +2637,7 @@ schema { query: Query }
         let process_mock = server.mock(|when, then| {
             when.method(POST)
                 .path("/graphql")
-                .body_contains("InfrahubRepositoryProcess");
+                .body_includes("InfrahubRepositoryProcess");
             then.status(200).json_body(json!({
                 "data": {
                     "InfrahubRepositoryProcess": { "ok": true, "task": { "id": "task-1" } }
@@ -2680,7 +2680,7 @@ schema { query: Query }
         server.mock(|when, then| {
             when.method(POST)
                 .path("/graphql")
-                .body_contains("DcimSite");
+                .body_includes("DcimSite");
             then.status(200).json_body(json!({
                 "data": {
                     "DcimSite": {
@@ -2721,21 +2721,21 @@ schema { query: Query }
             then.status(200).body(GRAPHQL_SCHEMA);
         });
         server.mock(|when, then| {
-            when.method(POST).path("/graphql").body_contains("Create");
+            when.method(POST).path("/graphql").body_includes("Create");
             then.status(200).json_body(json!({
                 "data": { "DcimSiteCreate": { "ok": true, "object": { "id": "site-1" } } },
                 "errors": []
             }));
         });
         server.mock(|when, then| {
-            when.method(POST).path("/graphql").body_contains("Update");
+            when.method(POST).path("/graphql").body_includes("Update");
             then.status(200).json_body(json!({
                 "data": { "DcimSiteUpdate": { "ok": true, "object": { "id": "site-2" } } },
                 "errors": []
             }));
         });
         server.mock(|when, then| {
-            when.method(POST).path("/graphql").body_contains("Delete");
+            when.method(POST).path("/graphql").body_includes("Delete");
             then.status(200).json_body(json!({
                 "data": { "DcimSiteDelete": { "ok": true } },
                 "errors": []
@@ -2807,7 +2807,7 @@ schema { query: Query }
         server.mock(|when, then| {
             when.method(POST)
                 .path("/graphql")
-                .body_contains("DcimSite");
+                .body_includes("DcimSite");
             then.status(200).json_body(json!({
                 "data": {
                     "DcimSite": {
