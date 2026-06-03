@@ -88,7 +88,28 @@ NETBOX_URL=https://netbox.example.com NETBOX_TOKEN=$NETBOX_TOKEN \
 - writes json plan to the output path
 - honors `--allow-delete` if you want delete ops
 - `--provision` runs adapter provisioning (`ensure_schema`) before observing backend state
+- `--dry-run` prints the raw plan json instead of writing it
+- `--report` prints a read-only drift report and exits without writing a plan file or saving state
 - accepts any type string and arbitrary attrs (schema validation is required)
+
+### drift report
+
+```bash
+NETBOX_URL=https://netbox.example.com NETBOX_TOKEN=$NETBOX_TOKEN \
+  alembic plan --backend netbox -f examples/brew.yaml -o plan.json --report
+```
+
+`--report` surfaces the same desired-vs-observed diff that `plan` computes, as a
+standalone human-readable summary grouped into three categories:
+
+- **changed**: declared and present on the backend, but one or more fields diverge (lists the per-field `from -> to`)
+- **missing**: declared in intent but absent from the backend
+- **extra**: present on the backend but not declared in intent
+
+it is one-way by construction: it only ever describes how observed state diverges
+from intent and never writes observed state back into the inventory or state
+store. `--output` is still required (as with `--dry-run`) but nothing is written
+to it.
 
 ## apply
 

@@ -697,6 +697,7 @@ objects:
             backend_config: None,
             provision: false,
             dry_run: false,
+            report: false,
             allow_delete: false,
         },
     };
@@ -870,6 +871,7 @@ objects:
             backend_config: Some(config),
             provision: false,
             dry_run: false,
+            report: false,
             allow_delete: false,
         },
     };
@@ -878,6 +880,127 @@ objects:
     let raw = std::fs::read_to_string(&out).unwrap();
     assert!(raw.contains("\"op\": \"create\""));
     assert!(raw.contains("\"type_name\": \"dcim.device\""));
+
+    std::env::set_current_dir(cwd).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn run_plan_report_is_read_only() {
+    use httpmock::Method::GET;
+    use httpmock::MockServer;
+    use serde_json::json;
+
+    let _guard = cwd_lock().lock().await;
+    let server = MockServer::start();
+    let dir = tempdir().unwrap();
+    let brew = dir.path().join("brew.yaml");
+    let out = dir.path().join("plan.json");
+    let config = dir.path().join("adapter.yaml");
+    std::fs::write(
+        &brew,
+        r#"
+schema:
+  types:
+    dcim.device:
+      key:
+        name:
+          type: string
+      fields:
+        name:
+          type: string
+objects:
+  - uid: "00000000-0000-0000-0000-000000000001"
+    type: dcim.device
+    key:
+      name: "leaf01"
+    attrs:
+      name: "leaf01"
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        &config,
+        format!(
+            "backend: nautobot\nurl: {}\ntoken: token\n",
+            server.base_url()
+        ),
+    )
+    .unwrap();
+
+    let _content_types = server.mock(|when, then| {
+        when.method(GET)
+            .path("/api/extras/content-types/")
+            .query_param("limit", "200")
+            .query_param("offset", "0");
+        then.status(200).json_body(json!({
+            "count": 1,
+            "next": null,
+            "previous": null,
+            "results": [{
+                "app_label": "dcim",
+                "model": "device",
+                "display": "Device"
+            }]
+        }));
+    });
+
+    let _custom_fields = server.mock(|when, then| {
+        when.method(GET).path("/api/extras/custom-fields/");
+        then.status(200).json_body(json!({
+            "count": 0,
+            "next": null,
+            "previous": null,
+            "results": []
+        }));
+    });
+
+    let _tags = server.mock(|when, then| {
+        when.method(GET).path("/api/extras/tags/");
+        then.status(200).json_body(json!({
+            "count": 0,
+            "next": null,
+            "previous": null,
+            "results": []
+        }));
+    });
+
+    let _devices = server.mock(|when, then| {
+        when.method(GET)
+            .path("/api/dcim/devices/")
+            .query_param("limit", "200")
+            .query_param("offset", "0");
+        then.status(200).json_body(json!({
+            "count": 0,
+            "next": null,
+            "previous": null,
+            "results": []
+        }));
+    });
+
+    let cwd = std::env::current_dir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
+
+    let cli = Cli {
+        command: Command::Plan {
+            file: brew,
+            retort: None,
+            output: out.clone(),
+            backend: None,
+            backend_config: Some(config),
+            provision: false,
+            dry_run: false,
+            report: true,
+            allow_delete: false,
+        },
+    };
+    run(cli, AppConfig::load().unwrap()).await.unwrap();
+
+    // --report is read-only: no plan file is written and no state is persisted.
+    assert!(!out.exists(), "plan file must not be written for --report");
+    assert!(
+        !dir.path().join(".alembic/state.json").exists(),
+        "state must not be saved for --report"
+    );
 
     std::env::set_current_dir(cwd).unwrap();
 }

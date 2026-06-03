@@ -8,7 +8,8 @@ mod state;
 
 use alembic_adapter_registry::{create_adapter, Plugin};
 use alembic_engine::{
-    apply_plan, build_plan, compile_retort, is_brew_format, load_raw_yaml, load_retort, Plan,
+    apply_plan, build_plan, compile_retort, is_brew_format, load_raw_yaml, load_retort,
+    DriftReport, Plan,
 };
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand};
@@ -64,6 +65,10 @@ enum Command {
         provision: bool,
         #[arg(long, default_value_t = false)]
         dry_run: bool,
+        /// print a read-only drift report (desired vs observed) and exit without
+        /// writing a plan file or saving state.
+        #[arg(long, default_value_t = false)]
+        report: bool,
         #[arg(long, default_value_t = false)]
         allow_delete: bool,
     },
@@ -156,6 +161,7 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             backend_config,
             provision,
             dry_run,
+            report,
             allow_delete,
         } => {
             let inventory = load_inventory(&file, retort.as_deref())?;
@@ -170,7 +176,11 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             }
 
             let plan = build_plan(adapter.as_ref(), &inventory, &mut state, allow_delete).await?;
-            if dry_run {
+            if report {
+                // read-only: describe desired-vs-observed and exit without
+                // writing a plan file or saving state.
+                println!("{}", DriftReport::from_plan(&plan));
+            } else if dry_run {
                 let raw = serde_json::to_string_pretty(&plan)?;
                 println!("{raw}");
             } else {

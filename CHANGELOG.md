@@ -2,6 +2,9 @@
 
 ## [unreleased]
 
+- cli: `plan --report` prints a read-only drift report (changed/missing/extra, with per-field diffs) and exits without writing a plan file or saving state
+- engine: add `DriftReport` (built from a `&Plan`, with `Display` + `Serialize`) surfacing the desired-vs-observed diff as a one-way, read-only report
+
 ## [0.3.0] - 2026-05-20
 
 - cli: improved support for running external adapters ("plugins")
