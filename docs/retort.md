@@ -62,7 +62,8 @@ rules:
 - strings support `${var}` substitution.
 - if the string is exactly `${var}` with no transform, the var value is inserted as-is, preserving its type.
 - when embedded in a larger string (or when a transform is applied), non-string scalars are coerced to their natural form (`42`, `true`); nulls, arrays, and objects are an error.
-- transforms can be applied with `${var|transform}` and chained left-to-right, e.g. `${name|trim|upper}`. available transforms: `upper`, `lower`, `trim`. an unknown transform name is an error.
+- transforms can be applied with `${var|transform}` and chained left-to-right, e.g. `${name|trim|slug}`. available transforms: `upper`, `lower`, `trim`, `slug`. an unknown transform name is an error.
+- `slug` lowercases the value and replaces every run of characters outside `[a-z0-9]` with a single `-` (trimming leading/trailing `-`), turning a human-readable name into a valid `slug` value, e.g. `${name|slug}` maps `Frankfurt DC1` to `frankfurt-dc1`. it errors if the result would be empty (the input had no ascii alphanumerics).
 - missing required vars produce a rule-scoped error.
 
 ## uid
