@@ -248,17 +248,17 @@ fn select_values<'a>(
         results.push(value);
         return;
     }
-    match selectors[0].clone() {
+    match &selectors[0] {
         SelectorToken::Key(key) => {
             if let YamlValue::Mapping(map) = value {
-                if let Some(value) = map.get(YamlValue::String(key)) {
+                if let Some(value) = map.get(key.as_str()) {
                     select_values(value, &selectors[1..], results);
                 }
             }
         }
         SelectorToken::Index(index) => {
             if let YamlValue::Sequence(items) = value {
-                if let Some(value) = items.get(index) {
+                if let Some(value) = items.get(*index) {
                     select_values(value, &selectors[1..], results);
                 }
             }
@@ -282,12 +282,12 @@ fn select_values<'a>(
         SelectorToken::Predicate(predicate) => match value {
             YamlValue::Sequence(items) => {
                 for item in items {
-                    if node_satisfies(item, &predicate) {
+                    if node_satisfies(item, predicate) {
                         select_values(item, &selectors[1..], results);
                     }
                 }
             }
-            YamlValue::Mapping(_) if node_satisfies(value, &predicate) => {
+            YamlValue::Mapping(_) if node_satisfies(value, predicate) => {
                 select_values(value, &selectors[1..], results);
             }
             _ => {}
@@ -306,7 +306,7 @@ fn node_satisfies(value: &YamlValue, predicate: &Predicate) -> bool {
     let YamlValue::Mapping(map) = value else {
         return false;
     };
-    let field = map.get(YamlValue::String(predicate.field.clone()));
+    let field = map.get(predicate.field.as_str());
     match predicate.op {
         PredicateOp::Exists => matches!(field, Some(value) if !value.is_null()),
         PredicateOp::NotExists => match field {
@@ -347,11 +347,11 @@ pub(crate) fn select_paths(
         return;
     }
 
-    match selectors[0].clone() {
+    match &selectors[0] {
         SelectorToken::Key(key) => {
             if let YamlValue::Mapping(map) = value {
-                if let Some(value) = map.get(YamlValue::String(key.clone())) {
-                    current_path.push(PathToken::Key(key));
+                if let Some(value) = map.get(key.as_str()) {
+                    current_path.push(PathToken::Key(key.clone()));
                     select_paths(value, &selectors[1..], current_path, results);
                     current_path.pop();
                 }
@@ -359,8 +359,8 @@ pub(crate) fn select_paths(
         }
         SelectorToken::Index(index) => {
             if let YamlValue::Sequence(items) = value {
-                if let Some(value) = items.get(index) {
-                    current_path.push(PathToken::Index(index));
+                if let Some(value) = items.get(*index) {
+                    current_path.push(PathToken::Index(*index));
                     select_paths(value, &selectors[1..], current_path, results);
                     current_path.pop();
                 }
@@ -389,14 +389,14 @@ pub(crate) fn select_paths(
         SelectorToken::Predicate(predicate) => match value {
             YamlValue::Sequence(items) => {
                 for (index, item) in items.iter().enumerate() {
-                    if node_satisfies(item, &predicate) {
+                    if node_satisfies(item, predicate) {
                         current_path.push(PathToken::Index(index));
                         select_paths(item, &selectors[1..], current_path, results);
                         current_path.pop();
                     }
                 }
             }
-            YamlValue::Mapping(_) if node_satisfies(value, &predicate) => {
+            YamlValue::Mapping(_) if node_satisfies(value, predicate) => {
                 select_paths(value, &selectors[1..], current_path, results);
             }
             _ => {}
