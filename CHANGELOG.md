@@ -2,6 +2,7 @@
 
 ## [unreleased]
 
+- engine: retort templates gain a `slug` transform (`${name|slug}`) that derives a valid `slug`-format value from a human-readable string (lowercase, runs of characters outside `[a-z0-9]` collapsed to a single `-`, leading/trailing `-` trimmed); it errors when the input has no ascii alphanumerics rather than emitting an empty slug
 - engine: retort import-mapping templates now support `${var|transform}` transforms (`upper`, `lower`, `trim`, chainable left-to-right) and coerce non-string scalars (numbers, bools) to their natural string form; nulls, arrays/objects, and unknown transform names remain errors (#54)
 - engine: apply now orders operations by a topological sort over references (creates/updates after the objects they reference, deletes in reverse) instead of relying on the retry fixpoint, giving deterministic O(V+E) ordering and correct delete ordering; reference cycles fall back to a stable order and the retry loop stays as a safety net (#47)
 - cli: `plan --report` prints a read-only drift report (changed/missing/extra, with per-field diffs) and exits without writing a plan file or saving state

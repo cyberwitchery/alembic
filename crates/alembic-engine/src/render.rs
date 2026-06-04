@@ -258,6 +258,20 @@ fn apply_transforms(
             "upper" => value.to_uppercase(),
             "lower" => value.to_lowercase(),
             "trim" => value.trim().to_string(),
+            // `mapping::slugify` lowercases, collapses runs of non-`[a-z0-9]`
+            // to a single `-`, and trims leading/trailing `-`, producing a valid
+            // `slug` value. An input with no ascii alphanumerics (e.g. `---`)
+            // slugifies to an empty string, which is not a valid slug, so we
+            // error rather than emit it.
+            "slug" => {
+                let slug = crate::mapping::slugify(&value);
+                if slug.is_empty() {
+                    return Err(anyhow!(
+                        "rule {rule}: slug transform produced an empty slug in {context}"
+                    ));
+                }
+                slug
+            }
             other => {
                 return Err(anyhow!(
                     "rule {rule}: unknown transform {other} in {context}"
@@ -458,5 +472,91 @@ uid:
             .unwrap()
             .unwrap();
         assert_eq!(rendered, JsonValue::String("65001".to_string()));
+    }
+
+    /// render `${name|slug}` over a single string var.
+    fn slug_of(input: &str) -> String {
+        let mut vars = BTreeMap::new();
+        vars.insert("name".to_string(), JsonValue::String(input.to_string()));
+        render_template("${name|slug}", &vars, "rule", "key").unwrap()
+    }
+
+    #[test]
+    fn template_applies_slug_transform() {
+        assert_eq!(slug_of("Frankfurt DC1"), "frankfurt-dc1");
+        assert_eq!(slug_of("leaf-01"), "leaf-01"); // already a slug, unchanged
+        assert_eq!(slug_of("  Spine  "), "spine"); // surrounding whitespace dropped
+        assert_eq!(slug_of("a__b"), "a-b"); // underscores normalize to '-'
+        assert_eq!(slug_of("AS65001"), "as65001"); // lowercased
+        assert_eq!(slug_of("he\u{fc}llo"), "he-llo"); // non-ascii char -> single '-'
+    }
+
+    #[test]
+    fn template_slug_errors_on_empty_result() {
+        let mut vars = BTreeMap::new();
+        vars.insert("name".to_string(), JsonValue::String("---".to_string()));
+        let err = render_template("${name|slug}", &vars, "rule", "key").unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("slug transform produced an empty slug"));
+    }
+
+    #[test]
+    fn template_chains_trim_and_slug() {
+        let mut vars = BTreeMap::new();
+        vars.insert(
+            "x".to_string(),
+            JsonValue::String("  Frankfurt DC1  ".to_string()),
+        );
+        let rendered = render_template("${x|trim|slug}", &vars, "rule", "key").unwrap();
+        assert_eq!(rendered, "frankfurt-dc1");
+    }
+
+    #[test]
+    fn slug_transform_outputs_valid_slug() {
+        use alembic_core::{
+            validate_inventory, FieldFormat, FieldSchema, FieldType, Inventory, JsonMap, Key,
+            Object, Schema, TypeName, TypeSchema,
+        };
+
+        // route a slugified value through alembic-core's real `slug` format
+        // validator, proving the transform emits something the schema accepts.
+        fn is_valid_slug(candidate: &str) -> bool {
+            let type_schema = TypeSchema {
+                key: BTreeMap::from([(
+                    "slug".to_string(),
+                    FieldSchema {
+                        r#type: FieldType::String,
+                        required: true,
+                        nullable: false,
+                        description: None,
+                        format: Some(FieldFormat::Slug),
+                        pattern: None,
+                    },
+                )]),
+                fields: BTreeMap::new(),
+            };
+            let mut key = BTreeMap::new();
+            key.insert("slug".to_string(), serde_json::json!(candidate));
+            let object = Object::new(
+                uuid::Uuid::from_u128(1),
+                TypeName::new("site"),
+                Key::from(key),
+                JsonMap::default(),
+            )
+            .unwrap();
+            validate_inventory(&Inventory {
+                schema: Schema {
+                    types: BTreeMap::from([("site".to_string(), type_schema)]),
+                },
+                objects: vec![object],
+            })
+            .is_ok()
+        }
+
+        assert!(is_valid_slug(&slug_of("Frankfurt DC1")));
+        assert!(is_valid_slug(&slug_of("AS65001")));
+        // the validator genuinely discriminates: a non-slug is rejected.
+        assert!(!is_valid_slug("Frankfurt DC1"));
     }
 }
