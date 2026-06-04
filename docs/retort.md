@@ -40,13 +40,15 @@ rules:
 
 ### predicates
 
-- a path segment may carry one or more trailing predicates to filter by field value, e.g. `/devices[role=leaf]`.
+- a path segment may carry one or more trailing predicates to filter by a field's value or presence, e.g. `/devices[role=leaf]` or `/devices[primary_ip]`.
 - the base may be a key (`devices[role=leaf]`), a wildcard (`*[role=leaf]`), an array index, or absent (a bare `[role=leaf]`).
-- operators are `=` (equals) and `!=` (not-equals). `field` is a single mapping key (no nested paths); `value` is the literal text up to the closing `]`, so values may contain `/` (e.g. a cidr `[prefix=10.0.0.0/24]`).
+- value operators are `=` (equals) and `!=` (not-equals). `field` is a single mapping key (no nested paths); `value` is the literal text up to the closing `]`, so values may contain `/` (e.g. a cidr `[prefix=10.0.0.0/24]`).
 - applied to a sequence a predicate keeps each element that satisfies it (a filtered wildcard); applied to a mapping it is a guard that keeps the node only when it satisfies the predicate.
 - a node satisfies `field=value` when it is a mapping whose `field` is a scalar (string, number, or bool) rendered as text equal to `value`. numbers and bools use their natural form (`42`, `true`); null, sequence, and mapping field values never match.
 - `field!=value` requires the field to be present and scalar with a differing rendering — a missing or non-scalar field does not satisfy `!=`.
-- chained predicates on one segment are ANDed, e.g. `[role=leaf][vendor=cisco]`.
+- a predicate body with no `=` is an existence test. `[field]` keeps a node when it is a mapping whose `field` is present and non-null, for *any* value type (sequences, mappings, empty strings, `false`, and `0` all count); this is presence, not the scalar-only comparison that `=`/`!=` perform, e.g. `/devices[primary_ip]`.
+- `[!field]` is the complement of `[field]`: it keeps a node when `field` is absent or null. an empty field name (`[]` or `[!]`) is an error.
+- chained predicates on one segment are ANDed, e.g. `[role=leaf][vendor=cisco]` or `[role=leaf][primary_ip]`.
 
 ## vars
 

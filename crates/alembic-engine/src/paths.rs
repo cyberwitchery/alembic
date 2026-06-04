@@ -5,6 +5,8 @@ use serde_yaml::Value as YamlValue;
 pub(crate) enum PredicateOp {
     Eq,
     Ne,
+    Exists,
+    NotExists,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -118,14 +120,26 @@ fn parse_predicates(mut rest: &str) -> Result<Vec<Predicate>> {
     Ok(predicates)
 }
 
-/// Parse the inside of a predicate (`field=value` or `field!=value`). The
-/// operator is the first `=`, optionally preceded by `!` for not-equals; the
-/// value is the literal remainder up to the closing `]`.
+/// Parse the inside of a predicate. With an `=`, it is a value predicate
+/// (`field=value`, or `field!=value` when `!` immediately precedes the `=`) and
+/// the value is the literal remainder up to the closing `]`. With no `=`, it is
+/// an existence predicate: a bare `field` is `Exists`, and a leading `!`
+/// (`!field`) is `NotExists`. An empty field name is an error in every form.
 fn parse_predicate(inner: &str) -> Result<Predicate> {
     let Some(eq) = inner.find('=') else {
-        return Err(anyhow!(
-            "predicate '{inner}' is missing an '=' or '!=' operator"
-        ));
+        // No `=`: an existence predicate. A leading `!` negates it.
+        let (op, field) = match inner.strip_prefix('!') {
+            Some(rest) => (PredicateOp::NotExists, rest.trim()),
+            None => (PredicateOp::Exists, inner.trim()),
+        };
+        if field.is_empty() {
+            return Err(anyhow!("predicate '{inner}' has an empty field name"));
+        }
+        return Ok(Predicate {
+            field: field.to_string(),
+            op,
+            value: String::new(),
+        });
     };
     let (op, field_end) = if eq > 0 && inner.as_bytes()[eq - 1] == b'!' {
         (PredicateOp::Ne, eq - 1)
@@ -281,23 +295,30 @@ fn select_values<'a>(
     }
 }
 
-/// A node satisfies `field=value` when it is a mapping whose `field` is a scalar
-/// rendered as text equal to `value`. `field!=value` requires the field to be
-/// present and scalar with a differing rendering, so a missing or non-scalar
-/// field never satisfies `!=`.
+/// A node satisfies a predicate only when it is a mapping. `field=value` and
+/// `field!=value` compare the field's scalar rendering (see `render_scalar`), so
+/// a missing or non-scalar field never satisfies them. `[field]` (`Exists`) holds
+/// when `field` is present and non-null, for ANY value type -- sequences and
+/// mappings included, since this tests presence rather than a scalar value.
+/// `[!field]` (`NotExists`) is the complement: it holds when `field` is absent or
+/// null.
 fn node_satisfies(value: &YamlValue, predicate: &Predicate) -> bool {
     let YamlValue::Mapping(map) = value else {
         return false;
     };
-    let Some(field) = map.get(YamlValue::String(predicate.field.clone())) else {
-        return false;
-    };
-    match render_scalar(field) {
-        Some(rendered) => match predicate.op {
-            PredicateOp::Eq => rendered == predicate.value,
-            PredicateOp::Ne => rendered != predicate.value,
+    let field = map.get(YamlValue::String(predicate.field.clone()));
+    match predicate.op {
+        PredicateOp::Exists => matches!(field, Some(value) if !value.is_null()),
+        PredicateOp::NotExists => match field {
+            Some(value) => value.is_null(),
+            None => true,
         },
-        None => false,
+        PredicateOp::Eq => {
+            matches!(field.and_then(render_scalar), Some(rendered) if rendered == predicate.value)
+        }
+        PredicateOp::Ne => {
+            matches!(field.and_then(render_scalar), Some(rendered) if rendered != predicate.value)
+        }
     }
 }
 
@@ -488,6 +509,20 @@ sites:
             parse_selector_path("/[role!=leaf]").unwrap(),
             vec![predicate("role", PredicateOp::Ne, "leaf")],
         );
+        assert_eq!(
+            parse_selector_path("/devices[primary_ip]").unwrap(),
+            vec![
+                SelectorToken::Key("devices".to_string()),
+                predicate("primary_ip", PredicateOp::Exists, ""),
+            ],
+        );
+        assert_eq!(
+            parse_selector_path("/devices[!primary_ip]").unwrap(),
+            vec![
+                SelectorToken::Key("devices".to_string()),
+                predicate("primary_ip", PredicateOp::NotExists, ""),
+            ],
+        );
     }
 
     #[test]
@@ -498,8 +533,13 @@ sites:
         let empty_field = parse_selector_path("/devices[=leaf]").unwrap_err();
         assert!(empty_field.to_string().contains("empty field name"));
 
-        let missing_op = parse_selector_path("/devices[role]").unwrap_err();
-        assert!(missing_op.to_string().contains("operator"));
+        // `[role]` is now a valid existence predicate, but a predicate with no
+        // field name (`[]` or `[!]`) is still malformed.
+        let empty_exists = parse_selector_path("/devices[]").unwrap_err();
+        assert!(empty_exists.to_string().contains("empty field name"));
+
+        let empty_not_exists = parse_selector_path("/devices[!]").unwrap_err();
+        assert!(empty_not_exists.to_string().contains("empty field name"));
     }
 
     #[test]
@@ -610,6 +650,106 @@ devices:
         );
         assert!(select_agreeing(&raw, "/devices[role=leaf]").is_empty());
         assert!(select_agreeing(&raw, "/devices[role!=leaf]").is_empty());
+    }
+
+    #[test]
+    fn existence_predicate_keeps_present_non_null_fields() {
+        let raw = parse_yaml(
+            r#"
+devices:
+  - name: scalar
+    primary_ip: 10.0.0.1
+  - name: absent
+  - name: null_value
+    primary_ip: null
+  - name: empty_list
+    primary_ip: []
+  - name: empty_map
+    primary_ip: {}
+  - name: empty_string
+    primary_ip: ""
+  - name: false_value
+    primary_ip: false
+  - name: zero
+    primary_ip: 0
+"#,
+        );
+        // `[field]` keeps every element whose `primary_ip` is present and
+        // non-null, whatever the value's type: scalars, sequences, mappings,
+        // empty strings, `false`, and `0` all count -- only absent or null fail.
+        assert_eq!(
+            names(&select_agreeing(&raw, "/devices[primary_ip]")),
+            vec![
+                "scalar",
+                "empty_list",
+                "empty_map",
+                "empty_string",
+                "false_value",
+                "zero",
+            ],
+        );
+        // `[!field]` is the exact complement: absent OR null.
+        assert_eq!(
+            names(&select_agreeing(&raw, "/devices[!primary_ip]")),
+            vec!["absent", "null_value"],
+        );
+    }
+
+    #[test]
+    fn existence_predicate_guards_mapping_node() {
+        let raw = parse_yaml(
+            r#"
+device:
+  name: a
+  primary_ip: 10.0.0.1
+"#,
+        );
+        // `[field]` keeps the mapping when the field is present; `[!field]` does not.
+        assert_eq!(
+            names(&select_agreeing(&raw, "/device[primary_ip]")),
+            vec!["a"]
+        );
+        assert!(select_agreeing(&raw, "/device[!primary_ip]").is_empty());
+
+        // When the mapping lacks the field, the guards swap.
+        let without = parse_yaml(
+            r#"
+device:
+  name: a
+"#,
+        );
+        assert!(select_agreeing(&without, "/device[primary_ip]").is_empty());
+        assert_eq!(
+            names(&select_agreeing(&without, "/device[!primary_ip]")),
+            vec!["a"]
+        );
+    }
+
+    #[test]
+    fn existence_predicate_chains_with_value_predicates() {
+        let raw = parse_yaml(
+            r#"
+devices:
+  - name: a
+    role: leaf
+    primary_ip: 10.0.0.1
+  - name: b
+    role: leaf
+  - name: c
+    role: spine
+    primary_ip: 10.0.0.2
+"#,
+        );
+        // role=leaf AND primary_ip present -> only a.
+        assert_eq!(
+            names(&select_agreeing(&raw, "/devices[role=leaf][primary_ip]")),
+            vec!["a"],
+        );
+        // role=leaf AND primary_ip absent -> only b.
+        assert_eq!(
+            names(&select_agreeing(&raw, "/devices[role=leaf][!primary_ip]")),
+            vec!["b"],
+        );
     }
 
     #[test]
