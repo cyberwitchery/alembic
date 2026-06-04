@@ -1,11 +1,25 @@
 use anyhow::{anyhow, Result};
 use serde_yaml::Value as YamlValue;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PredicateOp {
+    Eq,
+    Ne,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Predicate {
+    field: String,
+    op: PredicateOp,
+    value: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) enum SelectorToken {
     Key(String),
     Index(usize),
     Wildcard,
+    Predicate(Predicate),
 }
 
 #[derive(Debug, Clone)]
@@ -25,23 +39,108 @@ pub(crate) fn parse_selector_path(path: &str) -> Result<Vec<SelectorToken>> {
         return Err(anyhow!("select path must start with '/'"));
     }
     let mut tokens = Vec::new();
-    for segment in path.trim_start_matches('/').split('/') {
+    for segment in split_path_segments(path.trim_start_matches('/')) {
         if segment.is_empty() {
             continue;
         }
-        tokens.push(parse_selector_segment(segment)?);
+        tokens.extend(parse_selector_segment(segment)?);
     }
     Ok(tokens)
 }
 
-fn parse_selector_segment(segment: &str) -> Result<SelectorToken> {
-    if segment == "*" {
-        return Ok(SelectorToken::Wildcard);
+/// Split a path on `/`, treating any `/` inside `[...]` as literal so predicate
+/// values may contain slashes (e.g. the CIDR in `[prefix=10.0.0.0/24]`).
+fn split_path_segments(path: &str) -> Vec<&str> {
+    let mut segments = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0;
+    for (idx, ch) in path.char_indices() {
+        match ch {
+            '[' => depth += 1,
+            ']' => depth = depth.saturating_sub(1),
+            '/' if depth == 0 => {
+                segments.push(&path[start..idx]);
+                start = idx + 1;
+            }
+            _ => {}
+        }
     }
-    if let Ok(index) = segment.parse::<usize>() {
-        return Ok(SelectorToken::Index(index));
+    segments.push(&path[start..]);
+    segments
+}
+
+/// Parse a single segment into its base selector (if any) followed by its
+/// trailing predicates, e.g. `devices[role=leaf][vendor=cisco]`.
+fn parse_selector_segment(segment: &str) -> Result<Vec<SelectorToken>> {
+    let bracket = segment.find('[');
+    let base = match bracket {
+        Some(idx) => &segment[..idx],
+        None => segment,
+    };
+    let mut tokens = Vec::new();
+    if !base.is_empty() {
+        tokens.push(parse_base_selector(base));
     }
-    Ok(SelectorToken::Key(segment.to_string()))
+    if let Some(idx) = bracket {
+        for predicate in parse_predicates(&segment[idx..])? {
+            tokens.push(SelectorToken::Predicate(predicate));
+        }
+    }
+    if tokens.is_empty() {
+        return Err(anyhow!("empty path segment"));
+    }
+    Ok(tokens)
+}
+
+fn parse_base_selector(base: &str) -> SelectorToken {
+    if base == "*" {
+        SelectorToken::Wildcard
+    } else if let Ok(index) = base.parse::<usize>() {
+        SelectorToken::Index(index)
+    } else {
+        SelectorToken::Key(base.to_string())
+    }
+}
+
+/// Parse one or more `[field op value]` predicates from the start of `rest`.
+fn parse_predicates(mut rest: &str) -> Result<Vec<Predicate>> {
+    let mut predicates = Vec::new();
+    while !rest.is_empty() {
+        if !rest.starts_with('[') {
+            return Err(anyhow!("unexpected text after predicate: '{rest}'"));
+        }
+        let Some(end) = rest.find(']') else {
+            return Err(anyhow!("unterminated '[' in path segment"));
+        };
+        predicates.push(parse_predicate(&rest[1..end])?);
+        rest = &rest[end + 1..];
+    }
+    Ok(predicates)
+}
+
+/// Parse the inside of a predicate (`field=value` or `field!=value`). The
+/// operator is the first `=`, optionally preceded by `!` for not-equals; the
+/// value is the literal remainder up to the closing `]`.
+fn parse_predicate(inner: &str) -> Result<Predicate> {
+    let Some(eq) = inner.find('=') else {
+        return Err(anyhow!(
+            "predicate '{inner}' is missing an '=' or '!=' operator"
+        ));
+    };
+    let (op, field_end) = if eq > 0 && inner.as_bytes()[eq - 1] == b'!' {
+        (PredicateOp::Ne, eq - 1)
+    } else {
+        (PredicateOp::Eq, eq)
+    };
+    let field = inner[..field_end].trim();
+    if field.is_empty() {
+        return Err(anyhow!("predicate '{inner}' has an empty field name"));
+    }
+    Ok(Predicate {
+        field: field.to_string(),
+        op,
+        value: inner[eq + 1..].to_string(),
+    })
 }
 
 pub(crate) fn parse_relative_path(path: &str) -> Result<RelativePath> {
@@ -60,14 +159,13 @@ pub(crate) fn parse_relative_path(path: &str) -> Result<RelativePath> {
     if rest.starts_with('/') {
         rest = &rest[1..];
     }
-    let selectors = if rest.is_empty() {
-        Vec::new()
-    } else {
-        rest.split('/')
-            .filter(|s| !s.is_empty())
-            .map(parse_selector_segment)
-            .collect::<Result<Vec<_>>>()?
-    };
+    let mut selectors = Vec::new();
+    for segment in split_path_segments(rest) {
+        if segment.is_empty() {
+            continue;
+        }
+        selectors.extend(parse_selector_segment(segment)?);
+    }
     Ok(RelativePath { up, selectors })
 }
 
@@ -167,6 +265,53 @@ fn select_values<'a>(
             }
             _ => {}
         },
+        SelectorToken::Predicate(predicate) => match value {
+            YamlValue::Sequence(items) => {
+                for item in items {
+                    if node_satisfies(item, &predicate) {
+                        select_values(item, &selectors[1..], results);
+                    }
+                }
+            }
+            YamlValue::Mapping(_) if node_satisfies(value, &predicate) => {
+                select_values(value, &selectors[1..], results);
+            }
+            _ => {}
+        },
+    }
+}
+
+/// A node satisfies `field=value` when it is a mapping whose `field` is a scalar
+/// rendered as text equal to `value`. `field!=value` requires the field to be
+/// present and scalar with a differing rendering, so a missing or non-scalar
+/// field never satisfies `!=`.
+fn node_satisfies(value: &YamlValue, predicate: &Predicate) -> bool {
+    let YamlValue::Mapping(map) = value else {
+        return false;
+    };
+    let Some(field) = map.get(YamlValue::String(predicate.field.clone())) else {
+        return false;
+    };
+    match render_scalar(field) {
+        Some(rendered) => match predicate.op {
+            PredicateOp::Eq => rendered == predicate.value,
+            PredicateOp::Ne => rendered != predicate.value,
+        },
+        None => false,
+    }
+}
+
+/// Render a scalar yaml value to the text a predicate compares against. Strings
+/// pass through; numbers and bools use their natural form (`42`, `true`). Null,
+/// sequences, mappings, and tagged values are not scalars and never match.
+fn render_scalar(value: &YamlValue) -> Option<String> {
+    match value {
+        YamlValue::String(text) => Some(text.clone()),
+        YamlValue::Number(number) => Some(number.to_string()),
+        YamlValue::Bool(boolean) => Some(boolean.to_string()),
+        YamlValue::Null | YamlValue::Sequence(_) | YamlValue::Mapping(_) | YamlValue::Tagged(_) => {
+            None
+        }
     }
 }
 
@@ -220,6 +365,21 @@ pub(crate) fn select_paths(
             }
             _ => {}
         },
+        SelectorToken::Predicate(predicate) => match value {
+            YamlValue::Sequence(items) => {
+                for (index, item) in items.iter().enumerate() {
+                    if node_satisfies(item, &predicate) {
+                        current_path.push(PathToken::Index(index));
+                        select_paths(item, &selectors[1..], current_path, results);
+                        current_path.pop();
+                    }
+                }
+            }
+            YamlValue::Mapping(_) if node_satisfies(value, &predicate) => {
+                select_paths(value, &selectors[1..], current_path, results);
+            }
+            _ => {}
+        },
     }
 }
 
@@ -255,5 +415,278 @@ sites:
         let mut selected = Vec::new();
         select_paths(&raw, &selectors, &mut Vec::new(), &mut selected);
         assert_eq!(selected.len(), 3);
+    }
+
+    /// Resolve a selector path through BOTH traversals and assert they agree,
+    /// returning the matched values. Used by every predicate test below so the
+    /// "select_values and select_paths behave identically" requirement is
+    /// checked on each case rather than asserted once.
+    fn select_agreeing<'a>(raw: &'a YamlValue, path: &str) -> Vec<&'a YamlValue> {
+        let selectors = parse_selector_path(path).unwrap();
+        let mut direct = Vec::new();
+        select_values(raw, &selectors, &mut direct);
+        let mut paths = Vec::new();
+        select_paths(raw, &selectors, &mut Vec::new(), &mut paths);
+        let via_paths: Vec<&YamlValue> = paths
+            .iter()
+            .map(|path| value_at_path(raw, path).unwrap())
+            .collect();
+        assert_eq!(direct, via_paths, "traversals disagree for `{path}`");
+        direct
+    }
+
+    fn names(values: &[&YamlValue]) -> Vec<String> {
+        values
+            .iter()
+            .map(|value| {
+                value
+                    .get("name")
+                    .and_then(|n| n.as_str())
+                    .unwrap()
+                    .to_string()
+            })
+            .collect()
+    }
+
+    fn predicate(field: &str, op: PredicateOp, value: &str) -> SelectorToken {
+        SelectorToken::Predicate(Predicate {
+            field: field.to_string(),
+            op,
+            value: value.to_string(),
+        })
+    }
+
+    #[test]
+    fn parses_predicate_forms() {
+        assert_eq!(
+            parse_selector_path("/devices[role=leaf]").unwrap(),
+            vec![
+                SelectorToken::Key("devices".to_string()),
+                predicate("role", PredicateOp::Eq, "leaf"),
+            ],
+        );
+        assert_eq!(
+            parse_selector_path("/*[role=leaf]").unwrap(),
+            vec![
+                SelectorToken::Wildcard,
+                predicate("role", PredicateOp::Eq, "leaf")
+            ],
+        );
+        assert_eq!(
+            parse_selector_path("/[role=leaf]").unwrap(),
+            vec![predicate("role", PredicateOp::Eq, "leaf")],
+        );
+        assert_eq!(
+            parse_selector_path("/devices[a=x][b=y]").unwrap(),
+            vec![
+                SelectorToken::Key("devices".to_string()),
+                predicate("a", PredicateOp::Eq, "x"),
+                predicate("b", PredicateOp::Eq, "y"),
+            ],
+        );
+        assert_eq!(
+            parse_selector_path("/[role!=leaf]").unwrap(),
+            vec![predicate("role", PredicateOp::Ne, "leaf")],
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_predicates() {
+        let unterminated = parse_selector_path("/devices[role=leaf").unwrap_err();
+        assert!(unterminated.to_string().contains("unterminated"));
+
+        let empty_field = parse_selector_path("/devices[=leaf]").unwrap_err();
+        assert!(empty_field.to_string().contains("empty field name"));
+
+        let missing_op = parse_selector_path("/devices[role]").unwrap_err();
+        assert!(missing_op.to_string().contains("operator"));
+    }
+
+    #[test]
+    fn predicate_filters_sequence_elements() {
+        let raw = parse_yaml(
+            r#"
+devices:
+  - name: a
+    role: leaf
+  - name: b
+    role: spine
+  - name: c
+    role: leaf
+"#,
+        );
+        assert_eq!(
+            names(&select_agreeing(&raw, "/devices[role=leaf]")),
+            vec!["a", "c"]
+        );
+    }
+
+    #[test]
+    fn predicate_guards_mapping_node() {
+        let raw = parse_yaml(
+            r#"
+device:
+  name: a
+  role: leaf
+"#,
+        );
+        assert_eq!(
+            names(&select_agreeing(&raw, "/device[role=leaf]")),
+            vec!["a"]
+        );
+        assert!(select_agreeing(&raw, "/device[role=spine]").is_empty());
+    }
+
+    #[test]
+    fn chained_predicates_are_anded() {
+        let raw = parse_yaml(
+            r#"
+devices:
+  - name: a
+    role: leaf
+    vendor: cisco
+  - name: b
+    role: leaf
+    vendor: juniper
+  - name: c
+    role: spine
+    vendor: cisco
+"#,
+        );
+        assert_eq!(
+            names(&select_agreeing(&raw, "/devices[role=leaf][vendor=cisco]")),
+            vec!["a"],
+        );
+    }
+
+    #[test]
+    fn not_equals_filters_sequence() {
+        let raw = parse_yaml(
+            r#"
+devices:
+  - name: a
+    role: leaf
+  - name: b
+    role: spine
+"#,
+        );
+        assert_eq!(
+            names(&select_agreeing(&raw, "/devices[role!=leaf]")),
+            vec!["b"]
+        );
+    }
+
+    #[test]
+    fn missing_field_never_matches() {
+        let raw = parse_yaml(
+            r#"
+devices:
+  - name: a
+    role: leaf
+  - name: b
+"#,
+        );
+        // `=` skips the element that lacks the field.
+        assert_eq!(
+            names(&select_agreeing(&raw, "/devices[role=leaf]")),
+            vec!["a"]
+        );
+        // `!=` requires the field to be present, so the field-less element is excluded too.
+        assert!(select_agreeing(&raw, "/devices[role!=leaf]").is_empty());
+    }
+
+    #[test]
+    fn non_scalar_field_never_matches() {
+        let raw = parse_yaml(
+            r#"
+devices:
+  - name: a
+    role:
+      - leaf
+  - name: b
+    role:
+      kind: leaf
+"#,
+        );
+        assert!(select_agreeing(&raw, "/devices[role=leaf]").is_empty());
+        assert!(select_agreeing(&raw, "/devices[role!=leaf]").is_empty());
+    }
+
+    #[test]
+    fn number_and_bool_values_match_natural_text() {
+        let raw = parse_yaml(
+            r#"
+devices:
+  - name: a
+    asn: 65001
+    enabled: true
+  - name: b
+    asn: 65002
+    enabled: false
+"#,
+        );
+        assert_eq!(
+            names(&select_agreeing(&raw, "/devices[asn=65001]")),
+            vec!["a"]
+        );
+        assert_eq!(
+            names(&select_agreeing(&raw, "/devices[enabled=true]")),
+            vec!["a"]
+        );
+        assert_eq!(
+            names(&select_agreeing(&raw, "/devices[enabled=false]")),
+            vec!["b"]
+        );
+    }
+
+    #[test]
+    fn predicate_value_may_contain_slash() {
+        let raw = parse_yaml(
+            r#"
+prefixes:
+  - name: a
+    prefix: 10.0.0.0/24
+  - name: b
+    prefix: 10.0.1.0/24
+"#,
+        );
+        // The '/' inside [...] must not start a new segment.
+        let selectors = parse_selector_path("/prefixes/*[prefix=10.0.0.0/24]").unwrap();
+        assert_eq!(selectors.len(), 3);
+        assert_eq!(
+            names(&select_agreeing(&raw, "/prefixes/*[prefix=10.0.0.0/24]")),
+            vec!["a"],
+        );
+    }
+
+    #[test]
+    fn wildcard_then_predicate_combo() {
+        let raw = parse_yaml(
+            r#"
+sites:
+  - slug: s1
+    devices:
+      - name: a
+        role: leaf
+      - name: b
+        role: spine
+  - slug: s2
+    devices:
+      - name: c
+        role: leaf
+"#,
+        );
+        assert_eq!(
+            names(&select_agreeing(&raw, "/sites/*/devices/*[role=leaf]")),
+            vec!["a", "c"],
+        );
+    }
+
+    #[test]
+    fn relative_path_splitting_is_bracket_aware() {
+        let rel = parse_relative_path(".prefixes/*[prefix=10.0.0.0/24]").unwrap();
+        // Key(prefixes), Wildcard, Predicate -- not split on the CIDR '/'.
+        assert_eq!(rel.selectors.len(), 3);
+        assert_eq!(rel.up, 0);
     }
 }

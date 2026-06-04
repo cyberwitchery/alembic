@@ -334,6 +334,62 @@ prefixes:
     }
 
     #[test]
+    fn predicate_select_filters_emitted_objects() {
+        let raw = parse_yaml(
+            r#"
+devices:
+  - name: leaf01
+    role: leaf
+  - name: spine01
+    role: spine
+  - name: leaf02
+    role: leaf
+"#,
+        );
+        let retort = parse_yaml(
+            r#"
+schema:
+  types:
+    dcim.device:
+      key:
+        device:
+          type: slug
+      fields:
+        name:
+          type: string
+rules:
+  - name: leaves
+    select: /devices[role=leaf]
+    emit:
+      type: dcim.device
+      key:
+        device: "${name}"
+      vars:
+        name: { from: .name, required: true }
+      attrs:
+        name: ${name}
+"#,
+        );
+        let retort: Retort = serde_yaml::from_value(retort).unwrap();
+        let inventory = compile_retort(&raw, &retort).unwrap();
+        let json = serde_json::to_value(&inventory).unwrap();
+        let objects = json.get("objects").unwrap().as_array().unwrap();
+        // Only the two leaf devices are emitted; the spine is filtered out.
+        let names: Vec<&str> = objects
+            .iter()
+            .map(|obj| {
+                obj.get("attrs")
+                    .unwrap()
+                    .get("name")
+                    .unwrap()
+                    .as_str()
+                    .unwrap()
+            })
+            .collect();
+        assert_eq!(names, vec!["leaf01", "leaf02"]);
+    }
+
+    #[test]
     fn plan_is_deterministic_across_runs() {
         let raw = parse_yaml(
             r#"
