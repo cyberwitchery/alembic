@@ -2,6 +2,7 @@
 
 ## [unreleased]
 
+- engine: retort selectors gain existence predicates that complement the `=`/`!=` value predicates (#53): `/devices[primary_ip]` keeps a node when its field is present and non-null (ANY value type -- sequences, mappings, empty strings, `false`, and `0` all count, since this tests presence rather than a scalar value), and `/devices[!primary_ip]` is the complement, keeping a node when the field is absent or null. they chain and AND with value predicates (`[role=leaf][primary_ip]`); an empty field name (`[]`, `[!]`) is rejected
 - engine: retort templates gain a `slug` transform (`${name|slug}`) that derives a valid `slug`-format value from a human-readable string (lowercase, runs of characters outside `[a-z0-9]` collapsed to a single `-`, leading/trailing `-` trimmed); it errors when the input has no ascii alphanumerics rather than emitting an empty slug
 - engine: retort selectors now support value-filtered predicates (`/devices[role=leaf]`): `=`/`!=` operators, chained `[a=x][b=y]` predicates (logical AND), and key/wildcard/index/bare predicate forms; on a sequence a predicate filters elements, on a mapping it guards the node. segment splitting is bracket-aware so predicate values may contain `/` (e.g. cidrs like `10.0.0.0/24`) (#53)
 - engine: retort import-mapping templates now support `${var|transform}` transforms (`upper`, `lower`, `trim`, chainable left-to-right) and coerce non-string scalars (numbers, bools) to their natural string form; nulls, arrays/objects, and unknown transform names remain errors (#54)
