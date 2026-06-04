@@ -38,6 +38,16 @@ rules:
 - `/sites/*/devices/*` walks maps and arrays in order.
 - wildcards preserve input order for deterministic compilation.
 
+### predicates
+
+- a path segment may carry one or more trailing predicates to filter by field value, e.g. `/devices[role=leaf]`.
+- the base may be a key (`devices[role=leaf]`), a wildcard (`*[role=leaf]`), an array index, or absent (a bare `[role=leaf]`).
+- operators are `=` (equals) and `!=` (not-equals). `field` is a single mapping key (no nested paths); `value` is the literal text up to the closing `]`, so values may contain `/` (e.g. a cidr `[prefix=10.0.0.0/24]`).
+- applied to a sequence a predicate keeps each element that satisfies it (a filtered wildcard); applied to a mapping it is a guard that keeps the node only when it satisfies the predicate.
+- a node satisfies `field=value` when it is a mapping whose `field` is a scalar (string, number, or bool) rendered as text equal to `value`. numbers and bools use their natural form (`42`, `true`); null, sequence, and mapping field values never match.
+- `field!=value` requires the field to be present and scalar with a differing rendering — a missing or non-scalar field does not satisfy `!=`.
+- chained predicates on one segment are ANDed, e.g. `[role=leaf][vendor=cisco]`.
+
 ## vars
 
 - `vars` extract data relative to the selected node.
