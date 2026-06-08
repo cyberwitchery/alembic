@@ -158,7 +158,7 @@ pub struct ObservedState {
 
 impl ObservedState {
     /// insert an observed object into both indexes.
-    /// Disallows duplicate indexes (both ids and keys).
+    /// Disallows duplicate backend ids.
     pub fn insert(&mut self, object: ObservedObject) -> Result<()> {
         if let Some(id) = &object.backend_id {
             let key = (object.type_name.clone(), id.clone());
@@ -172,12 +172,6 @@ impl ObservedState {
         }
 
         let key = (object.type_name.clone(), key_string(&object.key));
-        if self.by_key.contains_key(&key) {
-            return Err(anyhow!(
-                "ObservedState already contains an object with key {:?}",
-                key
-            ));
-        }
         self.by_key.insert(key, object);
 
         Ok(())

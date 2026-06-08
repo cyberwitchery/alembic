@@ -995,29 +995,6 @@ fn insert_with_duplicate_backend_id() {
 }
 
 #[test]
-fn insert_with_duplicate_key() {
-    let key = "site=fra1";
-    let mut observed = ObservedState::default();
-    observed
-        .insert(ObservedObject {
-            type_name: t("dcim.site"),
-            key: key_str(key),
-            attrs: attrs_map(json!({ "name": "FRA1", "slug": "fra1" })),
-            backend_id: Some(BackendId::Int(123)),
-        })
-        .unwrap();
-
-    observed
-        .insert(ObservedObject {
-            type_name: t("dcim.site"),
-            key: key_str(key),
-            attrs: attrs_map(json!({ "name": "FRA1", "slug": "fra1" })),
-            backend_id: Some(BackendId::Int(456)),
-        })
-        .expect_err("duplicate key not detected");
-}
-
-#[test]
 fn build_plan_reobserves_after_bootstrap() {
     #[derive(Clone)]
     struct ReobserveAdapter {
