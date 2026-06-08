@@ -232,7 +232,7 @@ impl StateBackend for PostgresBackend {
 
         if rows_modified == 0 {
             return Err(anyhow!(
-                "failed to save state into postgres, possibly due to a concurrent race condition"
+                "failed to save state into postgres (could be a race condition)"
             ));
         }
 
