@@ -9,5 +9,5 @@ keys are structured maps; alembic canonicalizes them as JSON for matching and so
 - `02-tenant-vrf-vlan.md`: tenant-scoped vrf/vlan/prefix
 - `03-circuits.md`: provider + circuit + termination
 - `04-model-to-netbox.md`: model data and apply to netbox
-- `05-import-csv.md`: import from csv into netbox via retort
 - `06-django-dcim.md`: generate a simple django-based dcim
+- `07-nautobot-to-netbox.md`: migrate between backends with a `map` translation step

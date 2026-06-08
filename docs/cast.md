@@ -1,13 +1,13 @@
 # cast (django)
 
-`alembic cast django` turns a brew/ir file into a runnable Django project + app.
+`alembic cast django` turns an inventory (ir) file into a runnable Django project + app.
 It is regen-safe: generated files are overwritten, while user-owned files are
 created once and then preserved.
 
 ## quickstart
 
 ```bash
-alembic cast django -f examples/brew.yaml -o ./out \
+alembic cast django -f examples/inventory.yaml -o ./out \
   --project alembic_project \
   --app alembic_app \
   --python python3

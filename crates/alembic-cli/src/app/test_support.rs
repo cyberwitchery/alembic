@@ -119,10 +119,10 @@ impl Runner for FixtureRunner {
     }
 }
 
-pub(crate) fn write_minimal_brew(dir: &Path) -> PathBuf {
-    let brew = dir.join("brew.yaml");
-    std::fs::write(&brew, "schema:\n  types: {}\nobjects: []\n").unwrap();
-    brew
+pub(crate) fn write_minimal_inventory(dir: &Path) -> PathBuf {
+    let inventory = dir.join("inventory.yaml");
+    std::fs::write(&inventory, "schema:\n  types: {}\nobjects: []\n").unwrap();
+    inventory
 }
 
 pub(crate) fn write_settings(output_dir: &Path, project_name: &str) -> PathBuf {
@@ -142,10 +142,10 @@ pub(crate) fn write_settings(output_dir: &Path, project_name: &str) -> PathBuf {
     settings
 }
 
-pub(crate) fn write_site_brew(dir: &Path) -> PathBuf {
-    let brew = dir.join("brew.yaml");
+pub(crate) fn write_site_inventory(dir: &Path) -> PathBuf {
+    let inventory = dir.join("inventory.yaml");
     std::fs::write(
-        &brew,
+        &inventory,
         r#"
 schema:
   types:
@@ -169,7 +169,7 @@ objects:
 "#,
     )
     .unwrap();
-    brew
+    inventory
 }
 
 pub(crate) fn env_lock() -> &'static Mutex<()> {

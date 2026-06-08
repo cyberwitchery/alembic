@@ -7,10 +7,7 @@ mod io;
 mod state;
 
 use alembic_adapter_registry::{create_adapter, Plugin};
-use alembic_engine::{
-    apply_plan, build_plan, compile_retort, is_brew_format, load_raw_yaml, load_retort,
-    DriftReport, Plan,
-};
+use alembic_engine::{apply_plan, build_plan, DriftReport, Plan};
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand};
 use std::fs;
@@ -47,14 +44,10 @@ enum Command {
     Validate {
         #[arg(short = 'f', long)]
         file: PathBuf,
-        #[arg(long)]
-        retort: Option<PathBuf>,
     },
     Plan {
         #[arg(short = 'f', long)]
         file: PathBuf,
-        #[arg(long)]
-        retort: Option<PathBuf>,
         #[arg(short = 'o', long)]
         output: PathBuf,
         #[arg(long)]
@@ -84,19 +77,24 @@ enum Command {
         #[arg(short = 'i', long, default_value_t = false)]
         interactive: bool,
     },
-    Distill {
+    /// transform an ir inventory into another ir inventory (ir -> ir).
+    Map {
+        /// input ir inventory file.
         #[arg(short = 'f', long)]
         file: PathBuf,
+        /// map specification (target schema + rules).
         #[arg(long)]
-        retort: PathBuf,
+        spec: PathBuf,
         #[arg(short = 'o', long)]
         output: PathBuf,
     },
+    /// observe a backend's live state into canonical ir.
     Import {
         #[arg(short = 'o', long)]
         output: PathBuf,
-        #[arg(long)]
-        retort: Option<PathBuf>,
+        /// inventory whose schema selects which types to observe.
+        #[arg(short = 'f', long)]
+        file: PathBuf,
         #[arg(long)]
         backend: Option<String>,
         #[arg(long)]
@@ -153,8 +151,8 @@ fn should_detect_deletes(allow_delete: bool, report: bool) -> bool {
 
 pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
     match cli.command {
-        Command::Validate { file, retort } => {
-            let inventory = load_inventory(&file, retort.as_deref())?;
+        Command::Validate { file } => {
+            let inventory = load_inventory(&file)?;
             let report = alembic_engine::validate(&inventory);
             if report.is_ok() {
                 println!("ok");
@@ -167,7 +165,6 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
         }
         Command::Plan {
             file,
-            retort,
             output,
             backend,
             backend_config,
@@ -176,7 +173,7 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             report,
             allow_delete,
         } => {
-            let inventory = load_inventory(&file, retort.as_deref())?;
+            let inventory = load_inventory(&file)?;
             let mut state = load_state().await?;
             let plugins = search_for_plugins(&config);
             let adapter = create_adapter(&plugins, backend.as_deref(), backend_config)?;
@@ -290,37 +287,33 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                 println!("applied {} operations", report.applied.len());
             }
         }
-        Command::Distill {
-            file,
-            retort,
-            output,
-        } => {
-            let raw = load_raw_yaml(&file)?;
-            if is_brew_format(&raw) {
-                return Err(anyhow!("distill expects raw yaml without objects"));
-            }
-            let retort = load_retort(&retort)?;
-            let inventory = compile_retort(&raw, &retort)?;
+        Command::Map { file, spec, output } => {
+            let input = load_inventory(&file)?;
+            let spec = alembic_engine::load_map_spec(&spec)?;
+            let inventory = alembic_engine::compile_map(&input, &spec)?;
             write_inventory(&output, &inventory)?;
             println!("ir written to {}", output.display());
         }
         Command::Import {
             output,
-            retort,
+            file,
             backend,
             backend_config,
         } => {
-            let retort_path = retort
-                .as_deref()
-                .ok_or_else(|| anyhow!("import requires a retort with schema"))?;
-            let retort = load_retort(retort_path)?;
+            // observe live backend state into ir; the inventory's schema selects
+            // which types to observe.
+            let inventory = load_inventory(&file)?;
             let plugins = search_for_plugins(&config);
             let adapter = create_adapter(&plugins, backend.as_deref(), backend_config)?;
             let state = load_state().await?;
-            let types: Vec<TypeName> = retort.schema.types.keys().map(TypeName::new).collect();
-            let report =
-                alembic_engine::import_inventory(adapter.as_ref(), &retort.schema, &types, &state)
-                    .await?;
+            let types: Vec<TypeName> = inventory.schema.types.keys().map(TypeName::new).collect();
+            let report = alembic_engine::import_inventory(
+                adapter.as_ref(),
+                &inventory.schema,
+                &types,
+                &state,
+            )
+            .await?;
             write_inventory(&output, &report.inventory)?;
             println!("inventory written to {}", output.display());
         }

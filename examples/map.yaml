@@ -1,0 +1,52 @@
+# map the netbox-shaped inventory in examples/map-input.yaml into an
+# infrahub-shaped vocabulary:
+#
+#   alembic map -f examples/map-input.yaml --spec examples/map.yaml -o ir.json
+#
+# `schema` is the target schema; the output is validated against it. each rule
+# selects source objects by a type pattern (with optional predicates) and emits
+# target objects, reusing the mapping layer's template + transform syntax.
+schema:
+  types:
+    location.site:
+      key:
+        slug:
+          type: slug
+      fields:
+        label:
+          type: string
+    infra.device:
+      key:
+        hostname:
+          type: slug
+      fields:
+        role:
+          type: string
+        # a reference to the renamed site type. because the `sites` rule below is
+        # a 1:1 rename, map rewrites this ref from the source `dcim.site` uid to
+        # the new `location.site` uid automatically.
+        location:
+          type: ref
+          target: location.site
+rules:
+  # 1:1 rename of a type and a field, with a transform on the value.
+  - name: sites
+    match: "dcim.site"
+    emit:
+      type: location.site
+      key:
+        slug: "${key.slug}"
+      attrs:
+        label: "${attrs.name|upper}"
+
+  # a predicate keeps only leaf devices; the carried `site` ref is rewired to the
+  # renamed site by the ref pass.
+  - name: leaf-devices
+    match: "dcim.device[attrs.role=leaf]"
+    emit:
+      type: infra.device
+      key:
+        hostname: "${key.name}"
+      attrs:
+        role: "${attrs.role}"
+        location: "${attrs.site}"

@@ -100,14 +100,14 @@ echo "importing from infrahub..."
 ALEMBIC_STATE_BACKEND=local ALEMBIC_STATE_PATH="$INFRAHUB_STATE_PATH" \
   cargo run -p alembic-cli -- import \
   -o /tmp/alembic-infrahub-import.yaml \
-  --retort "$ROOT/examples/e2e-retort.yaml" \
+  -f "$ROOT/examples/e2e.yaml" \
   --backend-config "$INFRAHUB_CONFIG"
 
 echo "importing from netbox..."
 ALEMBIC_STATE_BACKEND=local ALEMBIC_STATE_PATH="$NETBOX_STATE_PATH" \
   cargo run -p alembic-cli -- import \
   -o /tmp/alembic-netbox-import.yaml \
-  --retort "$ROOT/examples/e2e-retort.yaml" \
+  -f "$ROOT/examples/e2e.yaml" \
   --backend-config "$NETBOX_CONFIG"
 
 grep -q "firmware_version" /tmp/alembic-infrahub-import.yaml

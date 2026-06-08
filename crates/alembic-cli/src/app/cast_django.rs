@@ -1,4 +1,4 @@
-use super::io::load_brew_only;
+use super::io::load_inventory;
 use alembic_django::DjangoEmitOptions;
 use anyhow::{anyhow, Context, Result};
 use std::fs;
@@ -61,7 +61,7 @@ pub(super) struct CastDjangoConfig {
 }
 
 pub(super) fn run_cast_django(runner: &dyn Runner, config: CastDjangoConfig) -> Result<()> {
-    let inventory = load_brew_only(&config.file)?;
+    let inventory = load_inventory(&config.file)?;
     let project_name = config.project.as_deref().unwrap_or("alembic_project");
     let app_name = config.app.as_deref().unwrap_or("alembic_app");
     validate_python_identifier(project_name, "project")?;
