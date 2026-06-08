@@ -130,21 +130,21 @@ objects:
     )
     .unwrap();
 
-    let inventory = load_brew(&base).unwrap();
+    let inventory = load_inventory(&base).unwrap();
     assert_eq!(inventory.objects.len(), 2);
 }
 
 #[test]
-fn load_json_brew() {
+fn load_json_inventory() {
     let dir = tempdir().unwrap();
-    let path = dir.path().join("brew.json");
+    let path = dir.path().join("inventory.json");
     std::fs::write(
         &path,
         r#"{ "schema": { "types": { "dcim.site": { "key": { "site": { "type": "slug" } }, "fields": { "name": { "type": "string" }, "slug": { "type": "slug" } } } } }, "objects": [ { "uid": "00000000-0000-0000-0000-000000000010", "type": "dcim.site", "key": { "site": "fra1" }, "attrs": { "name": "FRA1", "slug": "fra1" } } ] }"#,
     )
     .unwrap();
 
-    let inventory = load_brew(&path).unwrap();
+    let inventory = load_inventory(&path).unwrap();
     assert_eq!(inventory.objects.len(), 1);
 }
 
@@ -195,7 +195,7 @@ objects:
     )
     .unwrap();
 
-    let inventory = load_brew(&path).unwrap();
+    let inventory = load_inventory(&path).unwrap();
     let generic = &inventory.objects[0];
     assert_eq!(generic.type_name.as_str(), "services.vpn");
     assert!(generic.attrs.contains_key("pre_shared_key"));
@@ -252,7 +252,7 @@ objects:
     )
     .unwrap();
 
-    let inventory = load_brew(&b).unwrap();
+    let inventory = load_inventory(&b).unwrap();
     assert_eq!(inventory.objects.len(), 2);
 }
 
@@ -312,7 +312,7 @@ objects:
     )
     .unwrap();
 
-    let inventory = load_brew(&a).unwrap();
+    let inventory = load_inventory(&a).unwrap();
     assert_eq!(inventory.objects.len(), 2);
 }
 
@@ -330,10 +330,10 @@ objects: []
     )
     .unwrap();
 
-    let err = load_brew(&base).unwrap_err();
+    let err = load_inventory(&base).unwrap_err();
     let message = err.to_string();
     assert!(
-        message.contains("load brew") || message.contains("read brew"),
+        message.contains("load inventory") || message.contains("read inventory"),
         "unexpected error: {message}"
     );
 }
@@ -344,7 +344,7 @@ fn load_errors_on_invalid_yaml() {
     let path = dir.path().join("invalid.yaml");
     std::fs::write(&path, "objects: [").unwrap();
 
-    let err = load_brew(&path).unwrap_err();
+    let err = load_inventory(&path).unwrap_err();
     assert!(err.to_string().contains("parse yaml"));
 }
 
@@ -865,7 +865,7 @@ fn apply_order_puts_deletes_last() {
         },
     ];
 
-    let ordered = sort_ops_for_apply(&ops);
+    let ordered = sort_ops_for_apply(&ops, &Schema::default());
     assert!(matches!(ordered.first().unwrap(), Op::Create { .. }));
     assert!(matches!(ordered.last().unwrap(), Op::Delete { .. }));
 }

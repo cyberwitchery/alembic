@@ -13,12 +13,12 @@ alembic is a data-model-first converger + loader for dcim/ipam systems. it defin
 
 ## quickstart
 
-1) create a brew file (yaml) describing your desired state. see `examples/brew.yaml`.
+1) create an inventory file (yaml) describing your desired state. see `examples/inventory.yaml`.
 
 2) validate:
 
 ```bash
-cargo run -p alembic-cli -- validate -f examples/brew.yaml
+cargo run -p alembic-cli -- validate -f examples/inventory.yaml
 ```
 
 3) plan (writes a json plan file):
@@ -26,15 +26,15 @@ cargo run -p alembic-cli -- validate -f examples/brew.yaml
 ```bash
 # netbox
 NETBOX_URL=https://netbox.example.com NETBOX_TOKEN=... \
-  cargo run -p alembic-cli -- plan --backend netbox -f examples/brew.yaml -o plan.json
+  cargo run -p alembic-cli -- plan --backend netbox -f examples/inventory.yaml -o plan.json
 
 # nautobot
 NAUTOBOT_URL=https://nautobot.example.com NAUTOBOT_TOKEN=... \
-  cargo run -p alembic-cli -- plan --backend nautobot -f examples/brew.yaml -o plan.json
+  cargo run -p alembic-cli -- plan --backend nautobot -f examples/inventory.yaml -o plan.json
 
 # infrahub
 INFRAHUB_URL=https://infrahub.example.com INFRAHUB_TOKEN=... \
-  cargo run -p alembic-cli -- plan --backend infrahub -f examples/brew.yaml -o plan.json
+  cargo run -p alembic-cli -- plan --backend infrahub -f examples/inventory.yaml -o plan.json
 ```
 
 4) apply:
@@ -44,17 +44,10 @@ NETBOX_URL=https://netbox.example.com NETBOX_TOKEN=... \
   cargo run -p alembic-cli -- apply --backend netbox -p plan.json --allow-delete
 ```
 
-5) raw + retort:
+5) optional: generate a django app from an inventory:
 
 ```bash
-cargo run -p alembic-cli -- distill -f examples/raw.yaml --retort examples/retort.yaml -o ir.json
-cargo run -p alembic-cli -- plan -f examples/raw.yaml --retort examples/retort.yaml -o plan.json
-```
-
-6) optional: generate a django app from a brew inventory:
-
-```bash
-cargo run -p alembic-cli -- cast django -f examples/brew.yaml -o ./out \
+cargo run -p alembic-cli -- cast django -f examples/inventory.yaml -o ./out \
   --project alembic_project --app alembic_app
 ```
 
@@ -94,8 +87,8 @@ relationships are validated strictly by schema and `uid` references.
 
 - `docs/index.md`
 - `docs/ir.md`
-- `docs/brew.md`
-- `docs/retort.md`
+- `docs/inventory.md`
+- `docs/map.md`
 - `docs/engine.md`
 - `docs/plan.md`
 - `docs/state.md`
