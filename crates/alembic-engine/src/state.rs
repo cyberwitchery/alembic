@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio_postgres::Client;
+use tracing::trace;
 
 /// on-disk state schema.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -182,7 +183,7 @@ impl StateBackend for PostgresBackend {
     async fn load(&mut self) -> Result<StateData> {
         let cloned_key = self.key.clone();
         let client = self.connect_or_reuse_client().await?;
-        Self::acquire_advisory_lock(client).await?;
+        Self::acquire_advisory_lock(client, &cloned_key).await?;
 
         let row = client
             .query_opt(
@@ -218,7 +219,7 @@ impl StateBackend for PostgresBackend {
             .await
             .with_context(|| "save postgres state payload")?;
 
-        Self::unlock_advisory_lock(client).await?;
+        Self::unlock_advisory_lock(client, &cloned_key).await?;
 
         Ok(())
     }
@@ -257,14 +258,18 @@ impl PostgresBackend {
         }
     }
 
-    async fn acquire_advisory_lock(client: &Client) -> Result<()> {
+    async fn acquire_advisory_lock(client: &Client, key: &str) -> Result<()> {
         let advisory_lock = client
-            .query_opt("SELECT pg_try_advisory_lock(1)", &[])
+            .query_opt(
+                "SELECT pg_try_advisory_lock($1)",
+                &[&Self::str_key_as_primary_key(key)],
+            )
             .await
             .with_context(|| "acquiring advisory lock")?;
 
         if let Some(advisory_lock_row) = advisory_lock {
             if advisory_lock_row.try_get::<_, bool>("pg_try_advisory_lock")? {
+                trace!("acquired advisory lock (key={key})");
                 Ok(())
             } else {
                 Err(anyhow!("failed to acquire advisory lock"))
@@ -274,14 +279,18 @@ impl PostgresBackend {
         }
     }
 
-    async fn unlock_advisory_lock(client: &Client) -> Result<()> {
+    async fn unlock_advisory_lock(client: &Client, key: &str) -> Result<()> {
         let advisory_lock = client
-            .query_opt("SELECT pg_advisory_unlock(1)", &[])
+            .query_opt(
+                "SELECT pg_advisory_unlock($1)",
+                &[&Self::str_key_as_primary_key(key)],
+            )
             .await
             .with_context(|| "unlocking advisory lock")?;
 
         if let Some(advisory_lock_row) = advisory_lock {
             if advisory_lock_row.try_get::<_, bool>("pg_advisory_unlock")? {
+                trace!("unlocked advisory lock (key={key})");
                 Ok(())
             } else {
                 Err(anyhow!("failed to unlock advisory lock"))
@@ -291,6 +300,13 @@ impl PostgresBackend {
                 "problem with advisory unlock query, no row returned"
             ))
         }
+    }
+
+    fn str_key_as_primary_key(key: &str) -> i64 {
+        if key == "default" {
+            return 0;
+        }
+        key.parse().expect("invalid key, can't parse it as i64")
     }
 }
 
