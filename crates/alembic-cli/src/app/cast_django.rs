@@ -1,5 +1,5 @@
-use super::io::load_inventory;
 use alembic_django::DjangoEmitOptions;
+use alembic_engine::load_inventory;
 use anyhow::{anyhow, Context, Result};
 use std::fs;
 use std::path::{Path, PathBuf};

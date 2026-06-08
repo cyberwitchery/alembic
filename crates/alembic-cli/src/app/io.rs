@@ -28,8 +28,3 @@ pub(super) fn read_plan(path: &Path) -> Result<Plan> {
     let raw = fs::read_to_string(path).with_context(|| format!("read plan: {}", path.display()))?;
     serde_json::from_str(&raw).with_context(|| format!("parse plan: {}", path.display()))
 }
-
-/// load a canonical inventory (ir) file, merging includes and validating it.
-pub(super) fn load_inventory(path: &Path) -> Result<alembic_core::Inventory> {
-    alembic_engine::load_inventory(path)
-}

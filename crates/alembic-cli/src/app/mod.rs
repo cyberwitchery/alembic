@@ -7,7 +7,7 @@ mod io;
 mod state;
 
 use alembic_adapter_registry::{create_adapter, Plugin};
-use alembic_engine::{apply_plan, build_plan, DriftReport, Plan};
+use alembic_engine::{apply_plan, build_plan, load_inventory, DriftReport, Plan};
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand};
 use std::fs;
@@ -15,7 +15,7 @@ use std::path::PathBuf;
 
 use self::cast_django::{run_cast_django, CastDjangoConfig, CommandRunner};
 use self::diag::err;
-use self::io::{format_validation_errors, load_inventory, read_plan, write_inventory, write_plan};
+use self::io::{format_validation_errors, read_plan, write_inventory, write_plan};
 use self::state::load_state;
 use crate::app::config::AppConfig;
 use alembic_core::TypeName;
