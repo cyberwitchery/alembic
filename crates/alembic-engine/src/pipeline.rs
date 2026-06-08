@@ -35,13 +35,9 @@ fn detect_key_collisions(observed: &ObservedState) -> Result<()> {
     let mut keys = BTreeMap::<_, Vec<BackendId>>::new();
     for ((type_name, backend_id), object) in &observed.by_backend_id {
         let key = (type_name.clone(), key_string(&object.key));
-        if keys.contains_key(&key) {
-            if let Some(ids) = keys.get_mut(&key) {
-                ids.push(backend_id.clone());
-            }
-        } else {
-            keys.insert(key, vec![backend_id.clone()]);
-        }
+        keys.entry(key)
+            .and_modify(|ids| ids.push(backend_id.clone()))
+            .or_insert(vec![backend_id.clone()]);
     }
 
     let collisions = keys
