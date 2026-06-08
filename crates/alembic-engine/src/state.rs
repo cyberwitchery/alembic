@@ -213,7 +213,7 @@ impl StateBackend for PostgresBackend {
     async fn save(&mut self, data: &StateData) -> Result<()> {
         let client = self.connect().await?;
         let Some(loaded_version) = self.loaded_version else {
-            return Err(anyhow!("muse load state before saving"));
+            return Err(anyhow!("must load state before saving"));
         };
         self.loaded_version = None;
 
