@@ -28,3 +28,7 @@ lcov.info
 !.cargo/audit.toml
 alembic.yml
 alembic.yaml
+
+# Local working notes (not part of the repo)
+memory/
+CLEANUP.md
