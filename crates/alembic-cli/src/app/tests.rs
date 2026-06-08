@@ -269,13 +269,13 @@ fn cast_django_runs_migrations_by_default() {
     std::fs::create_dir_all(&output).unwrap();
     std::fs::write(output.join("manage.py"), "").unwrap();
     write_settings(&output, "alembic_project");
-    let brew = write_minimal_brew(dir.path());
+    let inventory = write_minimal_inventory(dir.path());
 
     let runner = MockRunner::new();
     run_cast_django(
         &runner,
         CastDjangoConfig {
-            file: brew,
+            file: inventory,
             output: output.clone(),
             project: Some("alembic_project".to_string()),
             app: Some("alembic_app".to_string()),
@@ -333,13 +333,13 @@ fn cast_django_skips_migrate_with_flag() {
     std::fs::create_dir_all(&output).unwrap();
     std::fs::write(output.join("manage.py"), "").unwrap();
     write_settings(&output, "alembic_project");
-    let brew = write_minimal_brew(dir.path());
+    let inventory = write_minimal_inventory(dir.path());
 
     let runner = MockRunner::new();
     run_cast_django(
         &runner,
         CastDjangoConfig {
-            file: brew,
+            file: inventory,
             output: output.clone(),
             project: Some("alembic_project".to_string()),
             app: Some("alembic_app".to_string()),
@@ -363,13 +363,13 @@ fn cast_django_skips_migrate_with_flag() {
 fn cast_django_integration_writes_generated_files() {
     let dir = tempdir().unwrap();
     let output = dir.path().join("out");
-    let brew = write_site_brew(dir.path());
+    let inventory = write_site_inventory(dir.path());
     let runner = FixtureRunner::new(output.clone());
 
     run_cast_django(
         &runner,
         CastDjangoConfig {
-            file: brew,
+            file: inventory,
             output: output.clone(),
             project: Some("alembic_project".to_string()),
             app: Some("alembic_app".to_string()),
@@ -416,117 +416,6 @@ fn read_plan_invalid_json_errors() {
 }
 
 #[test]
-fn load_inventory_brew_ignores_retort() {
-    let dir = tempdir().unwrap();
-    let brew = dir.path().join("brew.yaml");
-    let retort = dir.path().join("retort.yaml");
-    std::fs::write(
-        &brew,
-        r#"schema:
-  types:
-    dcim.site:
-      key:
-        site:
-          type: slug
-      fields:
-        name:
-          type: string
-        slug:
-          type: slug
-objects:
-  - uid: "00000000-0000-0000-0000-000000000001"
-    type: dcim.site
-    key:
-      site: "fra1"
-    attrs:
-      name: "FRA1"
-      slug: "fra1"
-"#,
-    )
-    .unwrap();
-    std::fs::write(
-        &retort,
-        r#"version: 1
-schema:
-  types: {}
-rules: []
-"#,
-    )
-    .unwrap();
-
-    let inventory = load_inventory(&brew, Some(&retort)).unwrap();
-    assert_eq!(inventory.objects.len(), 1);
-}
-
-#[test]
-fn load_inventory_raw_requires_retort() {
-    let dir = tempdir().unwrap();
-    let raw = dir.path().join("raw.yaml");
-    std::fs::write(
-        &raw,
-        r#"sites:
-  - slug: fra1
-    name: FRA1
-"#,
-    )
-    .unwrap();
-    let err = load_inventory(&raw, None).unwrap_err();
-    assert!(err.to_string().contains("raw yaml requires --retort"));
-}
-
-#[test]
-fn load_inventory_raw_with_retort() {
-    let dir = tempdir().unwrap();
-    let raw = dir.path().join("raw.yaml");
-    let retort = dir.path().join("retort.yaml");
-    std::fs::write(
-        &raw,
-        r#"sites:
-  - slug: fra1
-    name: FRA1
-"#,
-    )
-    .unwrap();
-    std::fs::write(
-        &retort,
-        r#"version: 1
-schema:
-  types:
-    dcim.site:
-      key:
-        site:
-          type: slug
-      fields:
-        name:
-          type: string
-        slug:
-          type: slug
-rules:
-  - name: sites
-    select: /sites/*
-    emit:
-      type: dcim.site
-      key:
-        site: "${slug}"
-      vars:
-        slug: { from: .slug, required: true }
-        name: { from: .name, required: true }
-      attrs:
-        name: ${name}
-        slug: ${slug}
-"#,
-    )
-    .unwrap();
-
-    let inventory = load_inventory(&raw, Some(&retort)).unwrap();
-    assert_eq!(inventory.objects.len(), 1);
-    assert_eq!(inventory.objects[0].type_name.as_str(), "dcim.site");
-    let source = inventory.objects[0].source.as_ref().unwrap();
-    assert_eq!(source.file, raw);
-    assert_eq!(source.line, None);
-}
-
-#[test]
 fn format_validation_errors_prefers_source_locations() {
     let mut key = BTreeMap::new();
     key.insert("site".to_string(), serde_json::json!("fra1"));
@@ -557,11 +446,11 @@ fn format_validation_errors_prefers_source_locations() {
 }
 
 #[tokio::test]
-async fn run_validate_brew() {
+async fn run_validate_inventory() {
     let dir = tempdir().unwrap();
-    let brew = dir.path().join("brew.yaml");
+    let inventory = dir.path().join("inventory.yaml");
     std::fs::write(
-        &brew,
+        &inventory,
         r#"schema:
   types:
     dcim.site:
@@ -586,56 +475,57 @@ objects:
     .unwrap();
 
     let cli = Cli {
-        command: Command::Validate {
-            file: brew,
-            retort: None,
-        },
+        command: Command::Validate { file: inventory },
     };
     run(cli, AppConfig::load().unwrap()).await.unwrap();
 }
 
 #[tokio::test]
-async fn run_distill_raw() {
+async fn run_map_ir() {
     let _guard = cwd_lock().lock().await;
     let dir = tempdir().unwrap();
-    let raw = dir.path().join("raw.yaml");
-    let retort = dir.path().join("retort.yaml");
-    let out = dir.path().join("ir.json");
+    let input = dir.path().join("in.json");
+    let spec = dir.path().join("map.yaml");
+    let out = dir.path().join("out.json");
+    // an ir inventory (dcim.site) to be renamed to location.site.
     std::fs::write(
-        &raw,
-        r#"sites:
-  - slug: fra1
-    name: FRA1
-"#,
+        &input,
+        r#"{
+  "schema": {
+    "types": {
+      "dcim.site": {
+        "key": { "site": { "type": "slug" } },
+        "fields": { "name": { "type": "string" } }
+      }
+    }
+  },
+  "objects": [
+    { "uid": "00000000-0000-0000-0000-000000000001", "type": "dcim.site",
+      "key": { "site": "fra1" }, "attrs": { "name": "FRA1" } }
+  ]
+}"#,
     )
     .unwrap();
     std::fs::write(
-        &retort,
-        r#"version: 1
-schema:
+        &spec,
+        r#"schema:
   types:
-    dcim.site:
+    location.site:
       key:
-        site:
-          type: slug
-      fields:
-        name:
-          type: string
         slug:
           type: slug
+      fields:
+        label:
+          type: string
 rules:
   - name: sites
-    select: /sites/*
+    match: "dcim.site"
     emit:
-      type: dcim.site
+      type: location.site
       key:
-        site: "${slug}"
-      vars:
-        slug: { from: .slug, required: true }
-        name: { from: .name, required: true }
+        slug: "${key.site}"
       attrs:
-        name: ${name}
-        slug: ${slug}
+        label: "${attrs.name}"
 "#,
     )
     .unwrap();
@@ -643,15 +533,17 @@ rules:
     std::env::set_current_dir(dir.path()).unwrap();
 
     let cli = Cli {
-        command: Command::Distill {
-            file: raw,
-            retort,
+        command: Command::Map {
+            file: input,
+            spec,
             output: out.clone(),
         },
     };
     run(cli, AppConfig::load().unwrap()).await.unwrap();
     let raw = std::fs::read_to_string(out).unwrap();
-    assert!(raw.contains("\"objects\""));
+    assert!(raw.contains("location.site"));
+    assert!(raw.contains("\"label\""));
+    assert!(!raw.contains("dcim.site"));
     std::env::set_current_dir(cwd).unwrap();
 }
 
@@ -659,10 +551,10 @@ rules:
 async fn run_plan_missing_credentials_errors() {
     let _guard = cwd_lock().lock().await;
     let dir = tempdir().unwrap();
-    let brew = dir.path().join("brew.yaml");
+    let inventory = dir.path().join("inventory.yaml");
     let out = dir.path().join("plan.json");
     std::fs::write(
-        &brew,
+        &inventory,
         r#"schema:
   types:
     dcim.site:
@@ -690,8 +582,7 @@ objects:
 
     let cli = Cli {
         command: Command::Plan {
-            file: brew,
-            retort: None,
+            file: inventory,
             output: out,
             backend: Some("netbox".to_string()),
             backend_config: None,
@@ -775,11 +666,11 @@ async fn run_plan_nautobot_backend() {
     let _guard = cwd_lock().lock().await;
     let server = MockServer::start();
     let dir = tempdir().unwrap();
-    let brew = dir.path().join("brew.yaml");
+    let inventory = dir.path().join("inventory.yaml");
     let out = dir.path().join("plan.json");
     let config = dir.path().join("adapter.yaml");
     std::fs::write(
-        &brew,
+        &inventory,
         r#"
 schema:
   types:
@@ -864,8 +755,7 @@ objects:
 
     let cli = Cli {
         command: Command::Plan {
-            file: brew,
-            retort: None,
+            file: inventory,
             output: out.clone(),
             backend: None,
             backend_config: Some(config),
@@ -893,11 +783,11 @@ async fn run_plan_report_is_read_only() {
     let _guard = cwd_lock().lock().await;
     let server = MockServer::start();
     let dir = tempdir().unwrap();
-    let brew = dir.path().join("brew.yaml");
+    let inventory = dir.path().join("inventory.yaml");
     let out = dir.path().join("plan.json");
     let config = dir.path().join("adapter.yaml");
     std::fs::write(
-        &brew,
+        &inventory,
         r#"
 schema:
   types:
@@ -982,8 +872,7 @@ objects:
 
     let cli = Cli {
         command: Command::Plan {
-            file: brew,
-            retort: None,
+            file: inventory,
             output: out.clone(),
             backend: None,
             backend_config: Some(config),
@@ -1025,7 +914,7 @@ fn report_and_dry_run_conflict() {
         "alembic",
         "plan",
         "-f",
-        "brew.yaml",
+        "inventory.yaml",
         "-o",
         "plan.json",
         "--report",
@@ -1048,12 +937,12 @@ async fn run_plan_report_surfaces_extra() {
     let _guard = cwd_lock().lock().await;
     let server = MockServer::start();
     let dir = tempdir().unwrap();
-    let brew = dir.path().join("brew.yaml");
+    let inventory = dir.path().join("inventory.yaml");
     let config = dir.path().join("adapter.yaml");
     // intent declares the schema but no objects; the backend holds an unmanaged
     // device (leaf01), so the only drift is one `extra`.
     std::fs::write(
-        &brew,
+        &inventory,
         r#"
 schema:
   types:
@@ -1133,7 +1022,7 @@ objects: []
     let cwd = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
 
-    let inventory = load_inventory(&brew, None).unwrap();
+    let inventory = load_inventory(&inventory).unwrap();
     let mut state = load_state().await.unwrap();
     let adapter = create_adapter(&[], None, Some(config)).unwrap();
 

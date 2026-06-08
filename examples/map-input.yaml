@@ -1,0 +1,56 @@
+# a small canonical inventory in a netbox-shaped vocabulary, used as the input
+# to `alembic map` (see examples/map.yaml). this is ordinary ir: the kind of
+# file `import` produces.
+schema:
+  types:
+    dcim.site:
+      key:
+        slug:
+          type: slug
+      fields:
+        name:
+          type: string
+    dcim.device:
+      key:
+        name:
+          type: slug
+      fields:
+        role:
+          type: string
+        site:
+          type: ref
+          target: dcim.site
+objects:
+  - uid: 11111111-1111-1111-1111-111111111111
+    type: dcim.site
+    key:
+      slug: fra1
+    attrs:
+      name: Frankfurt
+  - uid: 22222222-2222-2222-2222-222222222222
+    type: dcim.site
+    key:
+      slug: ams1
+    attrs:
+      name: Amsterdam
+  - uid: 33333333-3333-3333-3333-333333333333
+    type: dcim.device
+    key:
+      name: leaf01
+    attrs:
+      role: leaf
+      site: 11111111-1111-1111-1111-111111111111
+  - uid: 44444444-4444-4444-4444-444444444444
+    type: dcim.device
+    key:
+      name: spine01
+    attrs:
+      role: spine
+      site: 11111111-1111-1111-1111-111111111111
+  - uid: 55555555-5555-5555-5555-555555555555
+    type: dcim.device
+    key:
+      name: leaf02
+    attrs:
+      role: leaf
+      site: 22222222-2222-2222-2222-222222222222

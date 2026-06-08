@@ -1,9 +1,18 @@
-use crate::retort::UidV5Spec;
 use alembic_core::{uid_v5, Key};
 use anyhow::{anyhow, Result};
+use serde::Deserialize;
 use serde_json::{Map as JsonObject, Value as JsonValue};
 use serde_yaml::{Mapping as YamlMapping, Value as YamlValue};
 use std::collections::BTreeMap;
+
+/// a `v5: { type, stable }` uid spec, shared by the map emit path (`transform`)
+/// and the `${ uid: { type, stable } }` attr form rendered here.
+#[derive(Debug, Deserialize)]
+pub struct UidV5Spec {
+    #[serde(rename = "type", alias = "kind")]
+    pub type_name: String,
+    pub stable: String,
+}
 
 pub(crate) fn render_attrs(
     attrs: &BTreeMap<String, YamlValue>,

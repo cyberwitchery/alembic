@@ -12,7 +12,7 @@ if [[ -z "${NETBOX_URL:-}" || -z "${NETBOX_TOKEN:-}" ]]; then
   exit 1
 fi
 
-BREW="examples/talks/dknog-2026/netbox-vm-hypervisor.yaml"
+INVENTORY="examples/talks/dknog-2026/netbox-vm-hypervisor.yaml"
 PLAN="/tmp/dknog-netbox-vm-plan.json"
 NETBOX_CONFIG="$(mktemp /tmp/alembic-netbox-XXXX.yaml)"
 trap 'rm -f "$NETBOX_CONFIG"' EXIT
@@ -27,11 +27,11 @@ echo "== preflight =="
 curl -fsS -H "Authorization: Token ${NETBOX_TOKEN}" "${NETBOX_URL%/}/api/" >/dev/null
 
 echo "== validate =="
-cargo run -p alembic-cli -- validate -f "$BREW"
+cargo run -p alembic-cli -- validate -f "$INVENTORY"
 
 echo "== plan =="
 cargo run -p alembic-cli -- plan \
-  -f "$BREW" \
+  -f "$INVENTORY" \
   --backend-config "$NETBOX_CONFIG" \
   -o "$PLAN"
 
@@ -45,7 +45,7 @@ cargo run -p alembic-cli -- apply \
 
 echo "== convergence check =="
 cargo run -p alembic-cli -- plan \
-  -f "$BREW" \
+  -f "$INVENTORY" \
   --backend-config "$NETBOX_CONFIG" \
   -o /tmp/dknog-netbox-vm-plan-after.json
 
