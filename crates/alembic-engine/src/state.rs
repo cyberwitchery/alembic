@@ -2,12 +2,14 @@
 
 use crate::types::BackendId;
 use alembic_core::{TypeName, Uid};
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use tokio::sync::Mutex;
+use tokio_postgres::Client;
 
 /// on-disk state schema.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -26,20 +28,20 @@ pub enum PostgresTlsMode {
 /// trait for pluggable state backends.
 #[async_trait::async_trait]
 pub trait StateBackend: Send + Sync + std::fmt::Debug {
-    async fn load(&self) -> Result<StateData>;
-    async fn save(&self, data: &StateData) -> Result<()>;
+    async fn load(&mut self) -> Result<StateData>;
+    async fn save(&mut self, data: &StateData) -> Result<()>;
 }
 
 /// state store wrapper with load/save helpers.
 #[derive(Debug, Clone)]
 pub struct StateStore {
-    backend: Option<Arc<dyn StateBackend>>,
+    backend: Option<Arc<Mutex<dyn StateBackend>>>,
     data: StateData,
 }
 
 impl StateStore {
     /// create a new state store with an optional backend.
-    pub fn new(backend: Option<Arc<dyn StateBackend>>, data: StateData) -> Self {
+    pub fn new(backend: Option<Arc<Mutex<dyn StateBackend>>>, data: StateData) -> Self {
         Self { backend, data }
     }
 
@@ -48,8 +50,9 @@ impl StateStore {
         let path = path.as_ref().to_path_buf();
         // Always create a backend so we can save to the same path later.
         // The backend's load() method handles missing files gracefully.
-        let backend: Option<Arc<dyn StateBackend>> =
-            Some(Arc::new(LocalBackend { path: path.clone() }) as Arc<dyn StateBackend>);
+        let backend: Option<Arc<Mutex<dyn StateBackend>>> =
+            Some(Arc::new(Mutex::new(LocalBackend { path: path.clone() }))
+                as Arc<Mutex<dyn StateBackend>>);
         let data = if path.exists() {
             let raw = fs::read_to_string(&path)
                 .with_context(|| format!("read state: {}", path.display()))?;
@@ -67,19 +70,21 @@ impl StateStore {
         key: impl Into<String>,
         tls_mode: PostgresTlsMode,
     ) -> Result<Self> {
-        let backend: Arc<dyn StateBackend> = Arc::new(PostgresBackend {
+        let mut postgres_backend = PostgresBackend {
             url: url.into(),
             key: key.into(),
             tls_mode,
-        });
-        let data = backend.load().await?;
+            loaded_version: None,
+        };
+        let data = postgres_backend.load().await?;
+        let backend: Arc<Mutex<dyn StateBackend>> = Arc::new(Mutex::new(postgres_backend));
         Ok(Self::new(Some(backend), data))
     }
 
     /// load state from the configured backend.
     pub async fn load_async(&mut self) -> Result<()> {
         if let Some(backend) = &self.backend {
-            self.data = backend.load().await?;
+            self.data = backend.lock().await.load().await?;
         }
         Ok(())
     }
@@ -87,7 +92,7 @@ impl StateStore {
     /// persist state to the configured backend.
     pub async fn save_async(&self) -> Result<()> {
         if let Some(backend) = &self.backend {
-            backend.save(&self.data).await?;
+            backend.lock().await.save(&self.data).await?;
         }
         Ok(())
     }
@@ -129,7 +134,7 @@ struct LocalBackend {
 
 #[async_trait::async_trait]
 impl StateBackend for LocalBackend {
-    async fn load(&self) -> Result<StateData> {
+    async fn load(&mut self) -> Result<StateData> {
         if self.path.exists() {
             let raw = fs::read_to_string(&self.path)
                 .with_context(|| format!("read state: {}", self.path.display()))?;
@@ -141,7 +146,7 @@ impl StateBackend for LocalBackend {
         }
     }
 
-    async fn save(&self, data: &StateData) -> Result<()> {
+    async fn save(&mut self, data: &StateData) -> Result<()> {
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent)
                 .with_context(|| format!("create state dir: {}", parent.display()))?;
@@ -160,16 +165,34 @@ struct PostgresBackend {
     url: String,
     key: String,
     tls_mode: PostgresTlsMode,
+    loaded_version: Option<i32>,
+}
+
+impl PostgresBackend {
+    async fn ensure_table_exist(client: &Client) -> Result<()> {
+        client
+            .execute(
+                "CREATE TABLE IF NOT EXISTS alembic_state (\
+                state_key TEXT PRIMARY KEY, \
+                payload JSONB NOT NULL, \
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), \
+                loaded_version INTEGER NOT NULL DEFAULT 1\
+                )",
+                &[],
+            )
+            .await?;
+        Ok(())
+    }
 }
 
 #[async_trait::async_trait]
 impl StateBackend for PostgresBackend {
-    async fn load(&self) -> Result<StateData> {
+    async fn load(&mut self) -> Result<StateData> {
         let client = self.connect().await?;
 
         let row = client
             .query_opt(
-                "SELECT payload::text FROM alembic_state WHERE state_key = $1",
+                "SELECT payload::text, loaded_version FROM alembic_state WHERE state_key = $1",
                 &[&self.key],
             )
             .await
@@ -179,26 +202,40 @@ impl StateBackend for PostgresBackend {
             return Ok(StateData::default());
         };
 
+        self.loaded_version = Some(row.try_get::<_, i32>("loaded_version")?);
+
         let raw: String = row
             .try_get(0)
             .with_context(|| "decode postgres state payload")?;
         serde_json::from_str::<StateData>(&raw).with_context(|| "parse postgres state payload")
     }
 
-    async fn save(&self, data: &StateData) -> Result<()> {
+    async fn save(&mut self, data: &StateData) -> Result<()> {
         let client = self.connect().await?;
+        let Some(loaded_version) = self.loaded_version else {
+            return Err(anyhow!("muse load state before saving"));
+        };
+        self.loaded_version = None;
 
         let payload = serde_json::to_string(data)?;
-        client
+        let rows_modified = client
             .execute(
                 "INSERT INTO alembic_state (state_key, payload, updated_at)
                  VALUES ($1, CAST($2 AS TEXT)::jsonb, NOW())
                  ON CONFLICT (state_key)
-                 DO UPDATE SET payload = EXCLUDED.payload, updated_at = NOW()",
-                &[&self.key, &payload],
+                 DO UPDATE SET payload = EXCLUDED.payload, updated_at = NOW(), loaded_version = $3+1
+                 WHERE alembic_state.loaded_version = $3",
+                &[&self.key, &payload, &loaded_version],
             )
             .await
             .with_context(|| "save postgres state payload")?;
+
+        if rows_modified == 0 {
+            return Err(anyhow!(
+                "failed to save state into postgres, possibly due to a concurrent race condition"
+            ));
+        }
+
         Ok(())
     }
 }
@@ -216,6 +253,7 @@ impl PostgresBackend {
                         tracing::warn!("postgres state backend connection error: {err}");
                     }
                 });
+                Self::ensure_table_exist(&client).await?;
                 Ok(client)
             }
             PostgresTlsMode::Require => {
@@ -231,6 +269,7 @@ impl PostgresBackend {
                         tracing::warn!("postgres state backend connection error: {err}");
                     }
                 });
+                Self::ensure_table_exist(&client).await?;
                 Ok(client)
             }
         }
@@ -340,7 +379,7 @@ mod tests {
     #[tokio::test]
     async fn local_backend_load_missing_returns_empty() {
         let dir = TempDir::new().unwrap();
-        let backend = LocalBackend {
+        let mut backend = LocalBackend {
             path: dir.path().join("nope.json"),
         };
         let data = backend.load().await.unwrap();
@@ -351,7 +390,7 @@ mod tests {
     async fn local_backend_save_load_round_trip() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("sub").join("state.json");
-        let backend = LocalBackend { path: path.clone() };
+        let mut backend = LocalBackend { path: path.clone() };
 
         let mut data = StateData::default();
         data.mappings
