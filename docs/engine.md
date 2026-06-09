@@ -4,7 +4,7 @@ the engine is responsible for loading, validating, planning, and applying change
 
 ## pipeline
 
-1) load brew files (supports `include` / `imports`) or compile raw yaml with a retort
+1) load inventory files (supports `include` / `imports`)
 2) validate object envelopes, keys, and schema references
 3) observe backend state via adapter (default scope: desired + schema types)
 4) bootstrap state mappings by key when missing
