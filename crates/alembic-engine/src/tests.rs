@@ -792,7 +792,7 @@ async fn state_store_postgres_tls_roundtrip_when_configured() {
 }
 
 #[tokio::test]
-async fn state_store_postgres_prevent_double_save_when_configured() {
+async fn state_store_postgres_consecutive_saves_when_configured() {
     let Ok(url) = std::env::var("ALEMBIC_TEST_POSTGRES_URL") else {
         return;
     };
@@ -802,10 +802,8 @@ async fn state_store_postgres_prevent_double_save_when_configured() {
         .await
         .unwrap();
     store.save_async().await.unwrap();
-    store
-        .save_async()
-        .await
-        .expect_err("saving twice should fail");
+    store.save_async().await.unwrap();
+    store.save_async().await.unwrap();
 }
 
 #[tokio::test]

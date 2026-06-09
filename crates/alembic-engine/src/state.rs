@@ -223,7 +223,7 @@ impl StateBackend for PostgresBackend {
             ));
         }
 
-        self.loaded_version = None;
+        self.loaded_version = Some(loaded_version + 1);
 
         Ok(())
     }
