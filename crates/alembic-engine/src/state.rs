@@ -180,7 +180,18 @@ impl PostgresBackend {
                 )",
                 &[],
             )
-            .await?;
+            .await
+            .with_context(|| "ensure postgres alembic_state table exists")?;
+
+        // If the table already existed, CREATE TABLE IF NOT EXISTS won't add new columns.
+        client
+            .execute(
+                "ALTER TABLE alembic_state ADD COLUMN IF NOT EXISTS loaded_version INTEGER NOT NULL DEFAULT 1",
+                &[],
+            )
+            .await
+            .with_context(|| "ensure postgres alembic_state.loaded_version column exists")?;
+
         Ok(())
     }
 }
