@@ -216,7 +216,6 @@ impl StateBackend for PostgresBackend {
         let Some(loaded_version) = self.loaded_version else {
             return Err(anyhow!("must load state before saving"));
         };
-        self.loaded_version = None;
 
         let payload = serde_json::to_string(data)?;
         let rows_modified = client
@@ -238,6 +237,8 @@ impl StateBackend for PostgresBackend {
                 loaded_version
             ));
         }
+
+        self.loaded_version = None;
 
         Ok(())
     }
