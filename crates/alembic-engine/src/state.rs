@@ -199,6 +199,7 @@ impl StateBackend for PostgresBackend {
             .with_context(|| "load postgres state payload")?;
 
         let Some(row) = row else {
+            self.loaded_version = Some(0);
             return Ok(StateData::default());
         };
 
