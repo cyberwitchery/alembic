@@ -130,10 +130,16 @@ alembic apply -p plan.json \
 
 - applies a plan file
 - deletes are blocked unless `--allow-delete` is provided
-- `--interactive` prompts per operation and applies only approved ops through the same engine path used by non-interactive apply
+- `--interactive` prompts per operation and applies only approved ops
+  through the same engine path used by non-interactive apply
 - the `peeringdb` backend is read-only; apply will return an error
-- apply runs adapter provisioning (`ensure_schema`) before writes; for netbox this can create custom fields/tags and custom object types when supported
-- infrahub provisioning can generate and load a schema file when configured in the backend config
+- apply runs adapter provisioning (`ensure_schema`) before writes; for
+  netbox this can create custom fields/tags and custom object types
+  when supported
+- infrahub provisioning can generate and load a schema file when
+  configured in the backend config
+
+note that apply has no transaction semantics. state is persisted after each successful write, so a crash partway through leaves backend objects with no corresponding cleanup and no rollback.
 
 ## map
 
