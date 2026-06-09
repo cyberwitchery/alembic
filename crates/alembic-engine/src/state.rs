@@ -233,7 +233,9 @@ impl StateBackend for PostgresBackend {
 
         if rows_modified == 0 {
             return Err(anyhow!(
-                "failed to save state into postgres (could be a race condition)"
+                "failed to save postgres state for key '{}': optimistic lock failed (expected loaded_version={})",
+                self.key,
+                loaded_version
             ));
         }
 
