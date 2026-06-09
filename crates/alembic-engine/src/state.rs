@@ -75,6 +75,7 @@ impl StateStore {
             key: key.into(),
             tls_mode,
             loaded_version: None,
+            table_ensured: false,
         };
         let data = postgres_backend.load().await?;
         let backend: Arc<Mutex<dyn StateBackend>> = Arc::new(Mutex::new(postgres_backend));
@@ -166,34 +167,7 @@ struct PostgresBackend {
     key: String,
     tls_mode: PostgresTlsMode,
     loaded_version: Option<i32>,
-}
-
-impl PostgresBackend {
-    async fn ensure_table_exist(client: &Client) -> Result<()> {
-        client
-            .execute(
-                "CREATE TABLE IF NOT EXISTS alembic_state (\
-                state_key TEXT PRIMARY KEY, \
-                payload JSONB NOT NULL, \
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), \
-                loaded_version INTEGER NOT NULL DEFAULT 1\
-                )",
-                &[],
-            )
-            .await
-            .with_context(|| "ensure postgres alembic_state table exists")?;
-
-        // If the table already existed, CREATE TABLE IF NOT EXISTS won't add new columns.
-        client
-            .execute(
-                "ALTER TABLE alembic_state ADD COLUMN IF NOT EXISTS loaded_version INTEGER NOT NULL DEFAULT 1",
-                &[],
-            )
-            .await
-            .with_context(|| "ensure postgres alembic_state.loaded_version column exists")?;
-
-        Ok(())
-    }
+    table_ensured: bool,
 }
 
 #[async_trait::async_trait]
@@ -256,7 +230,38 @@ impl StateBackend for PostgresBackend {
 }
 
 impl PostgresBackend {
-    async fn connect(&self) -> Result<tokio_postgres::Client> {
+    async fn ensure_table(&mut self, client: &Client) -> Result<()> {
+        if self.table_ensured {
+            return Ok(());
+        }
+
+        client
+            .execute(
+                "CREATE TABLE IF NOT EXISTS alembic_state (\
+                state_key TEXT PRIMARY KEY, \
+                payload JSONB NOT NULL, \
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), \
+                loaded_version INTEGER NOT NULL DEFAULT 1\
+                )",
+                &[],
+            )
+            .await
+            .with_context(|| "ensure postgres alembic_state table exists")?;
+
+        // If the table already existed, CREATE TABLE IF NOT EXISTS won't add new columns.
+        client
+            .execute(
+                "ALTER TABLE alembic_state ADD COLUMN IF NOT EXISTS loaded_version INTEGER NOT NULL DEFAULT 1",
+                &[],
+            )
+            .await
+            .with_context(|| "ensure postgres alembic_state.loaded_version column exists")?;
+
+        self.table_ensured = true;
+        Ok(())
+    }
+
+    async fn connect(&mut self) -> Result<tokio_postgres::Client> {
         match self.tls_mode {
             PostgresTlsMode::Disable => {
                 let (client, connection) =
@@ -268,7 +273,7 @@ impl PostgresBackend {
                         tracing::warn!("postgres state backend connection error: {err}");
                     }
                 });
-                Self::ensure_table_exist(&client).await?;
+                self.ensure_table(&client).await?;
                 Ok(client)
             }
             PostgresTlsMode::Require => {
@@ -284,7 +289,7 @@ impl PostgresBackend {
                         tracing::warn!("postgres state backend connection error: {err}");
                     }
                 });
-                Self::ensure_table_exist(&client).await?;
+                self.ensure_table(&client).await?;
                 Ok(client)
             }
         }
