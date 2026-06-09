@@ -49,10 +49,10 @@ objects:
 ## commands
 
 ```bash
-alembic cast django -f /path/to/inventory.yaml -o /tmp/alembic-django \
+alembic cast django -f /path/to/inventory.yaml -o /tmp/alembic-adapter-django \
   --project dcim_project --app dcim_app
 
-cd /tmp/alembic-django
+cd /tmp/alembic-adapter-django
 python manage.py makemigrations --dry-run --verbosity 2
 python manage.py migrate
 python manage.py runserver

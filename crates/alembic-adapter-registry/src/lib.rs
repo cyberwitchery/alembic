@@ -1,5 +1,6 @@
 //! adapter registry and config loading for alembic.
 
+use alembic_adapter_django::cast_django::DjangoConfig;
 use alembic_engine::{
     Adapter, ApplyReport, BackendId, ObservedObject, ObservedState, Op, ProvisionReport, StateData,
     StateStore,
@@ -27,6 +28,8 @@ const SUPPORTED_BACKENDS: &[&str] = &[
     "generic",
     #[cfg(feature = "peeringdb")]
     "peeringdb",
+    #[cfg(feature = "django")]
+    "django",
     "external",
 ];
 
@@ -43,6 +46,8 @@ pub enum AdapterConfig {
     Generic(GenericConfig),
     #[cfg(feature = "peeringdb")]
     Peeringdb,
+    #[cfg(feature = "django")]
+    Django(DjangoConfig),
     External(ExternalConfig),
 }
 
@@ -126,6 +131,8 @@ impl AdapterConfig {
             AdapterConfig::Generic(_) => "generic",
             #[cfg(feature = "peeringdb")]
             AdapterConfig::Peeringdb => "peeringdb",
+            #[cfg(feature = "django")]
+            AdapterConfig::Django(_) => "django",
             AdapterConfig::External(_) => "external",
         }
     }
@@ -156,6 +163,16 @@ impl AdapterConfig {
             })),
             #[cfg(feature = "peeringdb")]
             "peeringdb" => Ok(AdapterConfig::Peeringdb),
+            #[cfg(feature = "django")]
+            "django" => Ok(AdapterConfig::Django(DjangoConfig {
+                file: Default::default(),
+                output: Default::default(),
+                project: None,
+                app: None,
+                python: "".to_string(),
+                no_migrate: false,
+                no_admin: false,
+            })),
             "external" => Ok(AdapterConfig::External(ExternalConfig {
                 command: None,
                 args: Vec::new(),
@@ -241,6 +258,10 @@ impl AdapterConfig {
             #[cfg(feature = "peeringdb")]
             AdapterConfig::Peeringdb => {
                 Ok(Box::new(alembic_adapter_peeringdb::PeeringDBAdapter::new()))
+            }
+            #[cfg(feature = "django")]
+            AdapterConfig::Django(cfg) => {
+                Ok(Box::new(alembic_adapter_django::DjangoAdapter::new(cfg)))
             }
             AdapterConfig::External(cfg) => Ok(Box::new(ProcessAdapter::new(cfg)?)),
         }

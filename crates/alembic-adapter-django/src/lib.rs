@@ -1,10 +1,51 @@
 //! django app generation from alembic ir.
 
+use crate::cast_django::{CommandRunner, DjangoConfig};
 use alembic_core::{FieldFormat, FieldType, Inventory, Schema, TypeName, TypeSchema};
+use alembic_engine::{Adapter, ApplyReport, ObservedState, Op, StateStore};
 use anyhow::Result;
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
+
+pub mod cast_django;
+
+pub struct DjangoAdapter {
+    config: DjangoConfig,
+}
+
+impl DjangoAdapter {
+    pub fn new(config: DjangoConfig) -> Self {
+        Self { config }
+    }
+}
+
+#[async_trait]
+impl Adapter for DjangoAdapter {
+    async fn read(
+        &self,
+        _schema: &Schema,
+        _types: &[TypeName],
+        _state: &StateStore,
+    ) -> Result<ObservedState> {
+        Err(anyhow::anyhow!(
+            "`read` is not implemented for the django adapter"
+        ))
+    }
+
+    async fn write(
+        &self,
+        _schema: &Schema,
+        _ops: &[Op],
+        _state: &StateStore,
+    ) -> Result<ApplyReport> {
+        let apply_report = ApplyReport::default();
+        let runner = CommandRunner::new();
+        cast_django::run_cast_django(&runner, &self.config)?;
+        Ok(apply_report)
+    }
+}
 
 const GENERATED_MODELS: &str = "generated_models.py";
 const GENERATED_ADMIN: &str = "generated_admin.py";

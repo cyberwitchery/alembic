@@ -12,6 +12,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "alembic-adapter-django"
+version = "0.3.0"
+dependencies = [
+ "alembic-core",
+ "alembic-engine",
+ "anyhow",
+ "async-trait",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "uuid",
+]
+
+[[package]]
 name = "alembic-adapter-generic"
 version = "0.3.0"
 dependencies = [
@@ -100,6 +114,7 @@ dependencies = [
 name = "alembic-adapter-registry"
 version = "0.3.0"
 dependencies = [
+ "alembic-adapter-django",
  "alembic-adapter-generic",
  "alembic-adapter-infrahub",
  "alembic-adapter-nautobot",
@@ -120,9 +135,9 @@ dependencies = [
 name = "alembic-cli"
 version = "0.3.0"
 dependencies = [
+ "alembic-adapter-django",
  "alembic-adapter-registry",
  "alembic-core",
- "alembic-django",
  "alembic-engine",
  "anyhow",
  "clap",
@@ -147,18 +162,6 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.17",
- "uuid",
-]
-
-[[package]]
-name = "alembic-django"
-version = "0.3.0"
-dependencies = [
- "alembic-core",
- "anyhow",
- "serde",
- "serde_json",
- "tempfile",
  "uuid",
 ]
 

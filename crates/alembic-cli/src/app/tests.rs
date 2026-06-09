@@ -274,7 +274,7 @@ fn cast_django_runs_migrations_by_default() {
     let runner = MockRunner::new();
     run_cast_django(
         &runner,
-        CastDjangoConfig {
+        DjangoAdapterConfig {
             file: inventory,
             output: output.clone(),
             project: Some("alembic_project".to_string()),
@@ -338,7 +338,7 @@ fn cast_django_skips_migrate_with_flag() {
     let runner = MockRunner::new();
     run_cast_django(
         &runner,
-        CastDjangoConfig {
+        DjangoAdapterConfig {
             file: inventory,
             output: output.clone(),
             project: Some("alembic_project".to_string()),
@@ -368,7 +368,7 @@ fn cast_django_integration_writes_generated_files() {
 
     run_cast_django(
         &runner,
-        CastDjangoConfig {
+        DjangoAdapterConfig {
             file: inventory,
             output: output.clone(),
             project: Some("alembic_project".to_string()),

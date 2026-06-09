@@ -1,18 +1,21 @@
-use alembic_django::DjangoEmitOptions;
+#![allow(dead_code)]
+
+use crate::DjangoEmitOptions;
 use alembic_engine::load_inventory;
 use anyhow::{anyhow, Context, Result};
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 
-pub(super) trait Runner {
+pub trait Runner {
     fn run(&self, program: &str, args: &[&str], cwd: Option<&Path>) -> Result<()>;
 }
 
-pub(super) struct CommandRunner;
+pub struct CommandRunner;
 
 impl CommandRunner {
-    pub(super) fn new() -> Self {
+    pub fn new() -> Self {
         Self
     }
 
@@ -50,17 +53,18 @@ impl Runner for CommandRunner {
     }
 }
 
-pub(super) struct CastDjangoConfig {
-    pub(super) file: PathBuf,
-    pub(super) output: PathBuf,
-    pub(super) project: Option<String>,
-    pub(super) app: Option<String>,
-    pub(super) python: String,
-    pub(super) no_migrate: bool,
-    pub(super) no_admin: bool,
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DjangoConfig {
+    pub file: PathBuf,
+    pub output: PathBuf,
+    pub project: Option<String>,
+    pub app: Option<String>,
+    pub python: String,
+    pub no_migrate: bool,
+    pub no_admin: bool,
 }
 
-pub(super) fn run_cast_django(runner: &dyn Runner, config: CastDjangoConfig) -> Result<()> {
+pub fn run_cast_django(runner: &dyn Runner, config: &DjangoConfig) -> Result<()> {
     let inventory = load_inventory(&config.file)?;
     let project_name = config.project.as_deref().unwrap_or("alembic_project");
     let app_name = config.app.as_deref().unwrap_or("alembic_app");
@@ -78,7 +82,7 @@ pub(super) fn run_cast_django(runner: &dyn Runner, config: CastDjangoConfig) -> 
     let options = DjangoEmitOptions {
         emit_admin: !config.no_admin,
     };
-    alembic_django::emit_django_app(&app_dir, &inventory, options)?;
+    crate::emit_django_app(&app_dir, &inventory, options)?;
     ensure_installed_apps_entries(output_dir, project_name, &["rest_framework", app_name])?;
     ensure_project_urls(output_dir, project_name, app_name)?;
     run_manage_check(runner, output_dir, &config.python)?;
