@@ -7,8 +7,8 @@ use alembic_core::{
 };
 use alembic_engine::{
     apply_non_delete_with_retries, build_key_from_schema, query_filters_from_key, Adapter,
-    AdapterApplyError, AppliedOp, ApplyReport, BackendId, ObservedObject, ObservedState, Op,
-    ProvisionReport, RetryApplyDriver,
+    AdapterApplyError, AppliedOp, ApplyReport, BackendId, Emitter, ObservedObject, ObservedState,
+    Observer, Op, ProvisionReport, RetryApplyDriver,
 };
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
@@ -18,7 +18,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 #[async_trait]
-impl Adapter for NautobotAdapter {
+impl Observer for NautobotAdapter {
     async fn read(
         &self,
         schema: &Schema,
@@ -81,7 +81,10 @@ impl Adapter for NautobotAdapter {
 
         Ok(state)
     }
+}
 
+#[async_trait]
+impl Emitter for NautobotAdapter {
     async fn write(
         &self,
         schema: &Schema,
@@ -242,7 +245,10 @@ impl Adapter for NautobotAdapter {
             ..Default::default()
         })
     }
+}
 
+#[async_trait]
+impl Adapter for NautobotAdapter {
     async fn ensure_schema(&self, schema: &Schema) -> Result<ProvisionReport> {
         let registry: ObjectTypeRegistry = self.client.fetch_object_types().await?;
         let custom_fields_by_type = self.client.fetch_custom_fields().await?;

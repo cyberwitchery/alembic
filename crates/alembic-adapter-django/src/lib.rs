@@ -2,7 +2,7 @@
 
 use crate::cast_django::{CommandRunner, DjangoConfig};
 use alembic_core::{FieldFormat, FieldType, Inventory, Object, Schema, TypeName, TypeSchema};
-use alembic_engine::{Adapter, AppliedOp, ApplyReport, ObservedState, Op, StateStore};
+use alembic_engine::{AppliedOp, ApplyReport, Emitter, Op, StateStore};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -22,18 +22,7 @@ impl DjangoAdapter {
 }
 
 #[async_trait]
-impl Adapter for DjangoAdapter {
-    async fn read(
-        &self,
-        _schema: &Schema,
-        _types: &[TypeName],
-        _state: &StateStore,
-    ) -> Result<ObservedState> {
-        Err(anyhow::anyhow!(
-            "`read` is not implemented for the django adapter"
-        ))
-    }
-
+impl Emitter for DjangoAdapter {
     async fn write(&self, schema: &Schema, ops: &[Op], _state: &StateStore) -> Result<ApplyReport> {
         let mut inventory = Inventory {
             schema: schema.clone(),

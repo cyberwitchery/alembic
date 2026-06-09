@@ -1,8 +1,8 @@
 //! adapter registry and config loading for alembic.
 
 use alembic_engine::{
-    Adapter, ApplyReport, BackendId, ObservedObject, ObservedState, Op, ProvisionReport, StateData,
-    StateStore,
+    Adapter, ApplyReport, Backend, BackendId, Emitter, ObservedObject, ObservedState, Observer, Op,
+    ProvisionReport, StateData, StateStore,
 };
 use anyhow::{anyhow, Context, Result};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -196,21 +196,21 @@ impl AdapterConfig {
         }
     }
 
-    pub fn build(self) -> Result<Box<dyn Adapter>> {
+    pub fn build(self) -> Result<Backend> {
         match self {
             #[cfg(feature = "netbox")]
             AdapterConfig::Netbox(cfg) => {
                 let (url, token) = resolve_credentials("NETBOX", cfg.url, cfg.token)?;
-                Ok(Box::new(alembic_adapter_netbox::NetBoxAdapter::new(
-                    &url, &token,
-                )?))
+                Ok(Backend::Adapter(Box::new(
+                    alembic_adapter_netbox::NetBoxAdapter::new(&url, &token)?,
+                )))
             }
             #[cfg(feature = "nautobot")]
             AdapterConfig::Nautobot(cfg) => {
                 let (url, token) = resolve_credentials("NAUTOBOT", cfg.url, cfg.token)?;
-                Ok(Box::new(alembic_adapter_nautobot::NautobotAdapter::new(
-                    &url, &token,
-                )?))
+                Ok(Backend::Adapter(Box::new(
+                    alembic_adapter_nautobot::NautobotAdapter::new(&url, &token)?,
+                )))
             }
             #[cfg(feature = "infrahub")]
             AdapterConfig::Infrahub(cfg) => {
@@ -225,7 +225,7 @@ impl AdapterConfig {
                         adapter = adapter.with_schema_push(schema_push);
                     }
                 }
-                Ok(Box::new(adapter))
+                Ok(Backend::Adapter(Box::new(adapter)))
             }
             #[cfg(feature = "generic")]
             AdapterConfig::Generic(cfg) => {
@@ -247,19 +247,21 @@ impl AdapterConfig {
                     serde_yaml::from_str(&content)
                         .with_context(|| format!("parse generic config: {}", path.display()))?
                 };
-                Ok(Box::new(alembic_adapter_generic::GenericAdapter::new(
-                    config,
-                )?))
+                Ok(Backend::Adapter(Box::new(
+                    alembic_adapter_generic::GenericAdapter::new(config)?,
+                )))
             }
             #[cfg(feature = "peeringdb")]
-            AdapterConfig::Peeringdb => {
-                Ok(Box::new(alembic_adapter_peeringdb::PeeringDBAdapter::new()))
-            }
+            AdapterConfig::Peeringdb => Ok(Backend::Observer(Box::new(
+                alembic_adapter_peeringdb::PeeringDBAdapter::new(),
+            ))),
             #[cfg(feature = "django")]
-            AdapterConfig::Django(cfg) => {
-                Ok(Box::new(alembic_adapter_django::DjangoAdapter::new(cfg)))
+            AdapterConfig::Django(cfg) => Ok(Backend::Emitter(Box::new(
+                alembic_adapter_django::DjangoAdapter::new(cfg),
+            ))),
+            AdapterConfig::External(cfg) => {
+                Ok(Backend::Adapter(Box::new(ProcessAdapter::new(cfg)?)))
             }
-            AdapterConfig::External(cfg) => Ok(Box::new(ProcessAdapter::new(cfg)?)),
         }
     }
 }
@@ -355,7 +357,7 @@ impl ProcessAdapter {
 }
 
 #[async_trait::async_trait]
-impl Adapter for ProcessAdapter {
+impl Observer for ProcessAdapter {
     async fn read(
         &self,
         schema: &alembic_core::Schema,
@@ -383,7 +385,10 @@ impl Adapter for ProcessAdapter {
         }
         Ok(observed)
     }
+}
 
+#[async_trait::async_trait]
+impl Emitter for ProcessAdapter {
     async fn write(
         &self,
         schema: &alembic_core::Schema,
@@ -396,7 +401,10 @@ impl Adapter for ProcessAdapter {
         self.call(ExternalRequest::Write { schema, ops, state })
             .await
     }
+}
 
+#[async_trait::async_trait]
+impl Adapter for ProcessAdapter {
     async fn ensure_schema(&self, schema: &alembic_core::Schema) -> Result<ProvisionReport> {
         self.call(ExternalRequest::EnsureSchema { schema }).await
     }
@@ -497,11 +505,11 @@ pub struct Plugin {
     pub path: PathBuf,
 }
 
-pub fn create_adapter(
+pub fn create_backend(
     plugins: &[Plugin],
     backend: Option<&str>,
     config_path: Option<PathBuf>,
-) -> Result<Box<dyn Adapter>> {
+) -> Result<Backend> {
     let config = if let Some(path) = config_path {
         let config = load_config(&path)?;
         if let Some(backend) = backend {
@@ -695,13 +703,18 @@ fi
             timeout_seconds: Some(5),
             setup: serde_yaml::Value::default(),
         });
-        let adapter = config.build().unwrap();
+        let backend = config.build().unwrap();
         let schema = Schema {
             types: BTreeMap::new(),
         };
         let state = StateStore::new(None, StateData::default());
 
-        let observed = adapter.read(&schema, &[], &state).await.unwrap();
+        let observed = backend
+            .observer()
+            .unwrap()
+            .read(&schema, &[], &state)
+            .await
+            .unwrap();
         assert_eq!(observed.by_key.len(), 1);
 
         let uid = Uid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
@@ -718,14 +731,24 @@ fi
             type_name: TypeName::new("dcim.site"),
             desired: obj,
         }];
-        let report = adapter.write(&schema, &ops, &state).await.unwrap();
+        let report = backend
+            .emitter()
+            .unwrap()
+            .write(&schema, &ops, &state)
+            .await
+            .unwrap();
         assert_eq!(report.applied.len(), 1);
         assert_eq!(
             report.applied[0].backend_id,
             Some(BackendId::String("site-1".to_string()))
         );
 
-        let provision = adapter.ensure_schema(&schema).await.unwrap();
+        let provision = backend
+            .adapter()
+            .unwrap()
+            .ensure_schema(&schema)
+            .await
+            .unwrap();
         assert!(provision
             .created_object_types
             .contains(&"dcim.site".to_string()));
