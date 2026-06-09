@@ -19,6 +19,13 @@ allow = [
     "Unicode-DFS-2016",
     "CDLA-Permissive-2.0",
 ]
+exceptions = [
+    # aws-lc-sys vendors AWS-LC (a BoringSSL fork), whose license expression
+    # includes the OpenSSL license alongside ISC/Apache-2.0. It is pulled in
+    # transitively via rustls's default aws-lc-rs crypto provider. The OpenSSL
+    # license is acceptable for our use, so allow it for this crate only.
+    { name = "aws-lc-sys", allow = ["OpenSSL"] },
+]
 confidence-threshold = 0.8
 
 [bans]
