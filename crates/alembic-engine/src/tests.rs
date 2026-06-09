@@ -829,7 +829,7 @@ async fn state_store_postgres_prevent_race_condition_when_configured() {
     store_b.load_async().await.unwrap(); // preparing to save
 
     store_a.save_async().await.unwrap();
-    store_a.save_async().await.expect_err("race condition");
+    store_b.save_async().await.expect_err("race condition");
 }
 
 #[tokio::test]
