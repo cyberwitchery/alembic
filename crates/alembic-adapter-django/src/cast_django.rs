@@ -3,7 +3,7 @@
 use crate::DjangoEmitOptions;
 use alembic_engine::load_inventory;
 use anyhow::{anyhow, Context, Result};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
@@ -53,15 +53,34 @@ impl Runner for CommandRunner {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct DjangoConfig {
     pub file: PathBuf,
     pub output: PathBuf,
+    #[serde(default)]
     pub project: Option<String>,
+    #[serde(default)]
     pub app: Option<String>,
+    #[serde(default)]
     pub python: String,
+    #[serde(default)]
     pub no_migrate: bool,
+    #[serde(default)]
     pub no_admin: bool,
+}
+
+impl Default for DjangoConfig {
+    fn default() -> Self {
+        DjangoConfig {
+            file: Default::default(),
+            output: Default::default(),
+            project: None,
+            app: None,
+            python: "python3".to_string(),
+            no_migrate: false,
+            no_admin: false,
+        }
+    }
 }
 
 pub fn run_cast_django(runner: &dyn Runner, config: &DjangoConfig) -> Result<()> {

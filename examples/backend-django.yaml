@@ -1,0 +1,8 @@
+backend: django
+file: ./examples/inventory.yaml
+output: ./out
+project: alembic_project
+app: alembic_app
+python: python3
+no_migrate: false
+no_admin: false
