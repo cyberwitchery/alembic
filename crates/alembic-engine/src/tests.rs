@@ -792,6 +792,47 @@ async fn state_store_postgres_tls_roundtrip_when_configured() {
 }
 
 #[tokio::test]
+async fn state_store_postgres_prevent_double_save_when_configured() {
+    let Ok(url) = std::env::var("ALEMBIC_TEST_POSTGRES_URL") else {
+        return;
+    };
+    let key = format!("alembic-test-{}", Uuid::new_v4());
+
+    let store = StateStore::load_postgres(url.clone(), key.clone(), PostgresTlsMode::Disable)
+        .await
+        .unwrap();
+    store.save_async().await.unwrap();
+    store
+        .save_async()
+        .await
+        .expect_err("saving twice should fail");
+}
+
+#[tokio::test]
+async fn state_store_postgres_prevent_race_condition_when_configured() {
+    let Ok(url) = std::env::var("ALEMBIC_TEST_POSTGRES_URL") else {
+        return;
+    };
+    let key = format!("alembic-test-{}", Uuid::new_v4());
+
+    let mut store_a = StateStore::load_postgres(url.clone(), key.clone(), PostgresTlsMode::Disable)
+        .await
+        .unwrap();
+    store_a.save_async().await.unwrap(); // ensures a "1" (or higher) in the version column
+
+    // Another client connects to the database
+    let mut store_b = StateStore::load_postgres(url.clone(), key.clone(), PostgresTlsMode::Disable)
+        .await
+        .unwrap();
+
+    store_a.load_async().await.unwrap(); // preparing to save
+    store_b.load_async().await.unwrap(); // preparing to save
+
+    store_a.save_async().await.unwrap();
+    store_a.save_async().await.expect_err("race condition");
+}
+
+#[tokio::test]
 async fn state_store_load_async_no_backend() {
     let mut store = StateStore::new(None, StateData::default());
     // Should succeed without error even with no backend
