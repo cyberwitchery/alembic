@@ -164,8 +164,9 @@ impl ObservedState {
             let key = (object.type_name.clone(), id.clone());
             if self.by_backend_id.contains_key(&key) {
                 return Err(anyhow!(
-                    "ObservedState already contains an object with key {:?}",
-                    key
+                    "ObservedState already contains an object with backend id {} for type {}",
+                    id,
+                    object.type_name
                 ));
             }
             self.by_backend_id.insert(key, object.clone());
