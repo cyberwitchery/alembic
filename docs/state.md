@@ -42,7 +42,7 @@ use environment variables to select a state backend:
 - `ALEMBIC_STATE_POSTGRES_TLS=disable|require` (optional, default `disable`)
 - postgres connection warnings are emitted through `tracing` (visible in cli by default at `warn` level)
 
-the postgres backend stores state payloads in `alembic_state(state_key, payload, updated_at)`.
+the postgres backend stores state payloads in `alembic_state(state_key, payload, updated_at, loaded_version)`.
 the table can be pre-provisioned (otherwise, the runtime will create
 it on first connection).
 
