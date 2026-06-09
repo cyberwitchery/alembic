@@ -49,6 +49,7 @@ the table must be pre-provisioned (runtime does not create it).
 CREATE TABLE IF NOT EXISTS alembic_state (
   state_key TEXT PRIMARY KEY,
   payload JSONB NOT NULL,
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  loaded_version INTEGER NOT NULL DEFAULT 1
 );
 ```
