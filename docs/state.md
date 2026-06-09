@@ -43,7 +43,8 @@ use environment variables to select a state backend:
 - postgres connection warnings are emitted through `tracing` (visible in cli by default at `warn` level)
 
 the postgres backend stores state payloads in `alembic_state(state_key, payload, updated_at)`.
-the table must be pre-provisioned (runtime does not create it).
+the table can be pre-provisioned (otherwise, the runtime will create
+it on first connection).
 
 ```sql
 CREATE TABLE IF NOT EXISTS alembic_state (
