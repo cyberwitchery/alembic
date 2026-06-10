@@ -1,6 +1,6 @@
 # alembic
 
-distills data between dcim/ipam systems, co-evolved with ai
+distills data between dcim/ipam systems, co-evolved with ai[^ai]
 
 alembic is a data-model-first converger + loader for dcim/ipam systems. it defines a canonical, vendor-neutral ir (intermediate representation) and an engine that validates, plans, and applies changes to a backend. it supports multiple backend adapters, including NetBox, Nautobot, Infrahub, generic REST APIs, and PeeringDB (read-only).
 
@@ -65,6 +65,28 @@ an infrahub schema file and applying it during `apply`.
 
 relationships are validated strictly by schema and `uid` references.
 
+## when not to use alembic
+
+alembic converges a vendor-neutral model across one or more dcim/ipam backends. it is probably the wrong tool when:
+
+- **single backend, simple one-off load.** to push a handful of objects into one netbox or nautobot instance, pynetbox or a csv import is less setup and easier to reason about.
+- **ephemeral or event-driven infra.** alembic models desired state and reconciles it against observed state; it is not a queue consumer or per-event handler. if objects churn on every deploy, a reconcile-on-demand tool fits poorly.
+- **you need built-in approval, audit, or rbac.** alembic emits a deterministic, reviewable plan artifact, but it is not a workflow engine: it does not manage approvals, sign-offs, or per-user permissions. wire the plan into your own ci/review process if you need those.
+
+## comparison to alternatives
+
+alembic's distinguishing property is a canonical, vendor-neutral ir with a deterministic plan/apply that converges the same model across multiple dcim/ipam backends. related tools, and where they differ:
+
+- **terraform + netbox provider**: declarative per-resource iac with plan/apply and state in tfstate. strong for managing netbox itself; each provider is system-specific, so there is no shared vendor-neutral model converged across backends.
+- **nautobot ssot / diode**: purpose-built data sync for one product (nautobot ssot keeps nautobot as the source of truth; diode ingests into netbox). strong when that product is your sot; alembic is backend-agnostic and converges the same ir across several backends.
+- **infrahub native sync**: infrahub's own sync between infrahub and external systems. tight infrahub integration; alembic treats infrahub as one backend among several behind the same ir.
+- **ansible**: imperative, module-per-system automation. flexible and widely used; it runs tasks rather than diffing a desired model into a reviewable plan.
+- **pynetbox / scripts**: direct api access for bespoke loads. minimal and precise for one backend; you build your own modeling, diffing, and state tracking.
+
+## maturity
+
+alembic is at v0.3.0: early, pre-1.0, and actively developed. the ir, plan format, and on-disk state layout may change between releases. pin a version if you depend on current behavior.
+
 ## workspace layout
 
 - `crates/alembic-core`: ir types, serde, validation primitives
@@ -100,3 +122,5 @@ relationships are validated strictly by schema and `uid` references.
 - `docs/external-adapters.md`
 - `docs/development.md`
 - `docs/case-studies/`
+
+[^ai]: "co-evolved with ai" describes how alembic was built (alongside ai tooling), not a feature of the tool. alembic itself does not embed an llm or make ai-driven changes; plans and applies are deterministic.
