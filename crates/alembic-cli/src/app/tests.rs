@@ -416,6 +416,40 @@ fn read_plan_invalid_json_errors() {
 }
 
 #[test]
+fn warn_misleading_output_extension_flags_yaml() {
+    // always-JSON outputs named like yaml get a (non-fatal) heads-up that mentions
+    // the path and the actual format.
+    let msg = warn_misleading_output_extension(Path::new("plan.yaml"))
+        .expect("a .yaml output path should warn");
+    assert!(msg.contains("plan.yaml"));
+    assert!(msg.contains("JSON"));
+    assert!(
+        warn_misleading_output_extension(Path::new("out.yml")).is_some(),
+        ".yml should warn too"
+    );
+    // detection is case-insensitive on the extension.
+    assert!(warn_misleading_output_extension(Path::new("out.YAML")).is_some());
+}
+
+#[test]
+fn warn_misleading_output_extension_allows_json() {
+    assert!(warn_misleading_output_extension(Path::new("plan.json")).is_none());
+}
+
+#[test]
+fn warn_misleading_output_extension_allows_no_extension() {
+    assert!(warn_misleading_output_extension(Path::new("plan")).is_none());
+}
+
+#[test]
+fn cli_command_definition_is_valid() {
+    // clap's own assertions over the derived command: catches duplicate flags,
+    // malformed help, broken conflicts, etc. at test time rather than at runtime.
+    use clap::CommandFactory;
+    Cli::command().debug_assert();
+}
+
+#[test]
 fn format_validation_errors_prefers_source_locations() {
     let mut key = BTreeMap::new();
     key.insert("site".to_string(), serde_json::json!("fra1"));
