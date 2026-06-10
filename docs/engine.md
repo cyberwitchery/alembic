@@ -57,5 +57,7 @@ diffing is **additive-only**: only fields declared in your desired inventory are
 import reads backend state via the adapter and emits a canonical inventory:
 
 - `uid` is re-derived as `uid_v5(type, key)` to keep identities stable
-- `attrs` are pulled from observed records
 - `attrs` are pulled from observed records (including backend custom fields/tags where supported)
+- observed attrs are **projected onto the schema**: any attr whose key is not declared in the type's `fields` is dropped, with a `warn` log naming `<type>.<field>`. server-computed fields (e.g. `last_updated`) are not in the schema and could never be managed, so keeping them would only make the imported inventory fail validation. a type absent from the schema is passed through untouched.
+
+import projection and the **additive-only** diff rules above are complementary: import never carries an undeclared field into your inventory, and planning only converges the fields you declare — an attr present on the backend but absent from your inventory is left untouched.
