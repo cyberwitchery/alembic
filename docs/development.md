@@ -41,6 +41,16 @@ cargo build --workspace
 cargo test --workspace --all-features
 ```
 
+### test environment variables
+
+most of the suite is hermetic and needs no setup. a few tests are opt-in: they **skip silently** (early return, not a failure) when their prerequisites are missing, which is exactly why they are easy to miss.
+
+- `ALEMBIC_TEST_POSTGRES_URL`: a postgres connection URL. enables the postgres state-store roundtrip tests in `alembic-engine`; unset, they are skipped.
+- `ALEMBIC_TEST_POSTGRES_TLS_URL`: a TLS-enabled postgres URL. additionally enables the TLS roundtrip test; unset, it is skipped.
+- `ALEMBIC_CAST_PYTHON`: python interpreter for the `cast django` e2e tests (default `python3`). those tests also skip when `django` + `djangorestframework` are not importable.
+
+the rest of the suite is hermetic against ambient `ALEMBIC_STATE_*` variables: a stray `ALEMBIC_STATE_BACKEND=postgres` in your shell will not affect `cargo test`. those runtime variables are documented in [state.md](state.md).
+
 ## e2e
 
 The NetBox + Infrahub end-to-end script provisions schema, applies objects, and imports them back to IR.
