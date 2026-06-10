@@ -29,11 +29,10 @@ fn state_path_uses_dot_alembic() {
 
 #[test]
 fn resolve_state_backend_defaults_to_local() {
-    let _guard = env_lock().lock().unwrap();
-    let old_backend = std::env::var("ALEMBIC_STATE_BACKEND").ok();
-    let old_path = std::env::var("ALEMBIC_STATE_PATH").ok();
-    std::env::remove_var("ALEMBIC_STATE_BACKEND");
-    std::env::remove_var("ALEMBIC_STATE_PATH");
+    let _env = EnvVarGuard::acquire(&[
+        ("ALEMBIC_STATE_BACKEND", None),
+        ("ALEMBIC_STATE_PATH", None),
+    ]);
 
     let root = Path::new("/tmp/example");
     let config = resolve_state_backend_config(root).unwrap();
@@ -43,26 +42,14 @@ fn resolve_state_backend_defaults_to_local() {
             path: root.join(".alembic/state.json")
         }
     );
-
-    if let Some(value) = old_backend {
-        std::env::set_var("ALEMBIC_STATE_BACKEND", value);
-    } else {
-        std::env::remove_var("ALEMBIC_STATE_BACKEND");
-    }
-    if let Some(value) = old_path {
-        std::env::set_var("ALEMBIC_STATE_PATH", value);
-    } else {
-        std::env::remove_var("ALEMBIC_STATE_PATH");
-    }
 }
 
 #[test]
 fn resolve_state_backend_uses_custom_local_path() {
-    let _guard = env_lock().lock().unwrap();
-    let old_backend = std::env::var("ALEMBIC_STATE_BACKEND").ok();
-    let old_path = std::env::var("ALEMBIC_STATE_PATH").ok();
-    std::env::set_var("ALEMBIC_STATE_BACKEND", "local");
-    std::env::set_var("ALEMBIC_STATE_PATH", "/tmp/custom-state.json");
+    let _env = EnvVarGuard::acquire(&[
+        ("ALEMBIC_STATE_BACKEND", Some("local")),
+        ("ALEMBIC_STATE_PATH", Some("/tmp/custom-state.json")),
+    ]);
 
     let config = resolve_state_backend_config(Path::new("/tmp/ignored")).unwrap();
     assert_eq!(
@@ -71,62 +58,31 @@ fn resolve_state_backend_uses_custom_local_path() {
             path: PathBuf::from("/tmp/custom-state.json")
         }
     );
-
-    if let Some(value) = old_backend {
-        std::env::set_var("ALEMBIC_STATE_BACKEND", value);
-    } else {
-        std::env::remove_var("ALEMBIC_STATE_BACKEND");
-    }
-    if let Some(value) = old_path {
-        std::env::set_var("ALEMBIC_STATE_PATH", value);
-    } else {
-        std::env::remove_var("ALEMBIC_STATE_PATH");
-    }
 }
 
 #[test]
 fn resolve_state_backend_postgres_requires_url() {
-    let _guard = env_lock().lock().unwrap();
-    let old_backend = std::env::var("ALEMBIC_STATE_BACKEND").ok();
-    let old_url = std::env::var("ALEMBIC_STATE_POSTGRES_URL").ok();
-    let old_tls = std::env::var("ALEMBIC_STATE_POSTGRES_TLS").ok();
-    std::env::set_var("ALEMBIC_STATE_BACKEND", "postgres");
-    std::env::remove_var("ALEMBIC_STATE_POSTGRES_URL");
+    let _env = EnvVarGuard::acquire(&[
+        ("ALEMBIC_STATE_BACKEND", Some("postgres")),
+        ("ALEMBIC_STATE_POSTGRES_URL", None),
+        ("ALEMBIC_STATE_POSTGRES_TLS", None),
+    ]);
 
     let err = resolve_state_backend_config(Path::new("/tmp/ignored")).unwrap_err();
     assert!(err.to_string().contains("ALEMBIC_STATE_POSTGRES_URL"));
-
-    if let Some(value) = old_backend {
-        std::env::set_var("ALEMBIC_STATE_BACKEND", value);
-    } else {
-        std::env::remove_var("ALEMBIC_STATE_BACKEND");
-    }
-    if let Some(value) = old_url {
-        std::env::set_var("ALEMBIC_STATE_POSTGRES_URL", value);
-    } else {
-        std::env::remove_var("ALEMBIC_STATE_POSTGRES_URL");
-    }
-    if let Some(value) = old_tls {
-        std::env::set_var("ALEMBIC_STATE_POSTGRES_TLS", value);
-    } else {
-        std::env::remove_var("ALEMBIC_STATE_POSTGRES_TLS");
-    }
 }
 
 #[test]
 fn resolve_state_backend_postgres_with_default_key() {
-    let _guard = env_lock().lock().unwrap();
-    let old_backend = std::env::var("ALEMBIC_STATE_BACKEND").ok();
-    let old_url = std::env::var("ALEMBIC_STATE_POSTGRES_URL").ok();
-    let old_key = std::env::var("ALEMBIC_STATE_KEY").ok();
-    let old_tls = std::env::var("ALEMBIC_STATE_POSTGRES_TLS").ok();
-    std::env::set_var("ALEMBIC_STATE_BACKEND", "postgres");
-    std::env::set_var(
-        "ALEMBIC_STATE_POSTGRES_URL",
-        "postgres://user:pass@localhost:5432/alembic",
-    );
-    std::env::remove_var("ALEMBIC_STATE_KEY");
-    std::env::remove_var("ALEMBIC_STATE_POSTGRES_TLS");
+    let _env = EnvVarGuard::acquire(&[
+        ("ALEMBIC_STATE_BACKEND", Some("postgres")),
+        (
+            "ALEMBIC_STATE_POSTGRES_URL",
+            Some("postgres://user:pass@localhost:5432/alembic"),
+        ),
+        ("ALEMBIC_STATE_KEY", None),
+        ("ALEMBIC_STATE_POSTGRES_TLS", None),
+    ]);
 
     let config = resolve_state_backend_config(Path::new("/tmp/ignored")).unwrap();
     assert_eq!(
@@ -137,43 +93,19 @@ fn resolve_state_backend_postgres_with_default_key() {
             tls_mode: PostgresTlsMode::Disable,
         }
     );
-
-    if let Some(value) = old_backend {
-        std::env::set_var("ALEMBIC_STATE_BACKEND", value);
-    } else {
-        std::env::remove_var("ALEMBIC_STATE_BACKEND");
-    }
-    if let Some(value) = old_url {
-        std::env::set_var("ALEMBIC_STATE_POSTGRES_URL", value);
-    } else {
-        std::env::remove_var("ALEMBIC_STATE_POSTGRES_URL");
-    }
-    if let Some(value) = old_key {
-        std::env::set_var("ALEMBIC_STATE_KEY", value);
-    } else {
-        std::env::remove_var("ALEMBIC_STATE_KEY");
-    }
-    if let Some(value) = old_tls {
-        std::env::set_var("ALEMBIC_STATE_POSTGRES_TLS", value);
-    } else {
-        std::env::remove_var("ALEMBIC_STATE_POSTGRES_TLS");
-    }
 }
 
 #[test]
 fn resolve_state_backend_postgres_with_tls_require() {
-    let _guard = env_lock().lock().unwrap();
-    let old_backend = std::env::var("ALEMBIC_STATE_BACKEND").ok();
-    let old_url = std::env::var("ALEMBIC_STATE_POSTGRES_URL").ok();
-    let old_key = std::env::var("ALEMBIC_STATE_KEY").ok();
-    let old_tls = std::env::var("ALEMBIC_STATE_POSTGRES_TLS").ok();
-    std::env::set_var("ALEMBIC_STATE_BACKEND", "postgres");
-    std::env::set_var(
-        "ALEMBIC_STATE_POSTGRES_URL",
-        "postgres://user:pass@localhost:5432/alembic",
-    );
-    std::env::set_var("ALEMBIC_STATE_KEY", "workspace-a");
-    std::env::set_var("ALEMBIC_STATE_POSTGRES_TLS", "require");
+    let _env = EnvVarGuard::acquire(&[
+        ("ALEMBIC_STATE_BACKEND", Some("postgres")),
+        (
+            "ALEMBIC_STATE_POSTGRES_URL",
+            Some("postgres://user:pass@localhost:5432/alembic"),
+        ),
+        ("ALEMBIC_STATE_KEY", Some("workspace-a")),
+        ("ALEMBIC_STATE_POSTGRES_TLS", Some("require")),
+    ]);
 
     let config = resolve_state_backend_config(Path::new("/tmp/ignored")).unwrap();
     assert_eq!(
@@ -184,60 +116,21 @@ fn resolve_state_backend_postgres_with_tls_require() {
             tls_mode: PostgresTlsMode::Require,
         }
     );
-
-    if let Some(value) = old_backend {
-        std::env::set_var("ALEMBIC_STATE_BACKEND", value);
-    } else {
-        std::env::remove_var("ALEMBIC_STATE_BACKEND");
-    }
-    if let Some(value) = old_url {
-        std::env::set_var("ALEMBIC_STATE_POSTGRES_URL", value);
-    } else {
-        std::env::remove_var("ALEMBIC_STATE_POSTGRES_URL");
-    }
-    if let Some(value) = old_key {
-        std::env::set_var("ALEMBIC_STATE_KEY", value);
-    } else {
-        std::env::remove_var("ALEMBIC_STATE_KEY");
-    }
-    if let Some(value) = old_tls {
-        std::env::set_var("ALEMBIC_STATE_POSTGRES_TLS", value);
-    } else {
-        std::env::remove_var("ALEMBIC_STATE_POSTGRES_TLS");
-    }
 }
 
 #[test]
 fn resolve_state_backend_postgres_with_invalid_tls_mode_errors() {
-    let _guard = env_lock().lock().unwrap();
-    let old_backend = std::env::var("ALEMBIC_STATE_BACKEND").ok();
-    let old_url = std::env::var("ALEMBIC_STATE_POSTGRES_URL").ok();
-    let old_tls = std::env::var("ALEMBIC_STATE_POSTGRES_TLS").ok();
-    std::env::set_var("ALEMBIC_STATE_BACKEND", "postgres");
-    std::env::set_var(
-        "ALEMBIC_STATE_POSTGRES_URL",
-        "postgres://user:pass@localhost:5432/alembic",
-    );
-    std::env::set_var("ALEMBIC_STATE_POSTGRES_TLS", "weird");
+    let _env = EnvVarGuard::acquire(&[
+        ("ALEMBIC_STATE_BACKEND", Some("postgres")),
+        (
+            "ALEMBIC_STATE_POSTGRES_URL",
+            Some("postgres://user:pass@localhost:5432/alembic"),
+        ),
+        ("ALEMBIC_STATE_POSTGRES_TLS", Some("weird")),
+    ]);
 
     let err = resolve_state_backend_config(Path::new("/tmp/ignored")).unwrap_err();
     assert!(err.to_string().contains("ALEMBIC_STATE_POSTGRES_TLS"));
-
-    if let Some(value) = old_backend {
-        std::env::set_var("ALEMBIC_STATE_BACKEND", value);
-    } else {
-        std::env::remove_var("ALEMBIC_STATE_BACKEND");
-    }
-    if let Some(value) = old_url {
-        std::env::set_var("ALEMBIC_STATE_POSTGRES_URL", value);
-    } else {
-        std::env::remove_var("ALEMBIC_STATE_POSTGRES_URL");
-    }
-    if let Some(value) = old_tls {
-        std::env::set_var("ALEMBIC_STATE_POSTGRES_TLS", value);
-    } else {
-        std::env::remove_var("ALEMBIC_STATE_POSTGRES_TLS");
-    }
 }
 
 #[test]
@@ -585,6 +478,12 @@ rules:
 async fn run_plan_missing_credentials_errors() {
     let _guard = cwd_lock().lock().await;
     let dir = tempdir().unwrap();
+    let state_path = dir.path().join(".alembic").join("state.json");
+    let _env = EnvVarGuard::acquire_async(&[
+        ("ALEMBIC_STATE_BACKEND", Some("local")),
+        ("ALEMBIC_STATE_PATH", Some(state_path.to_str().unwrap())),
+    ])
+    .await;
     let inventory = dir.path().join("inventory.yaml");
     let out = dir.path().join("plan.json");
     std::fs::write(
@@ -635,6 +534,12 @@ objects:
 async fn run_apply_missing_credentials_errors() {
     let _guard = cwd_lock().lock().await;
     let dir = tempdir().unwrap();
+    let state_path = dir.path().join(".alembic").join("state.json");
+    let _env = EnvVarGuard::acquire_async(&[
+        ("ALEMBIC_STATE_BACKEND", Some("local")),
+        ("ALEMBIC_STATE_PATH", Some(state_path.to_str().unwrap())),
+    ])
+    .await;
     let plan_path = dir.path().join("plan.json");
     std::fs::write(&plan_path, r#"{ "ops": [] }"#).unwrap();
     let cwd = std::env::current_dir().unwrap();
@@ -658,6 +563,12 @@ async fn run_apply_missing_credentials_errors() {
 async fn run_apply_interactive_delete_requires_allow_delete() {
     let _guard = cwd_lock().lock().await;
     let dir = tempdir().unwrap();
+    let state_path = dir.path().join(".alembic").join("state.json");
+    let _env = EnvVarGuard::acquire_async(&[
+        ("ALEMBIC_STATE_BACKEND", Some("local")),
+        ("ALEMBIC_STATE_PATH", Some(state_path.to_str().unwrap())),
+    ])
+    .await;
     let plan_path = dir.path().join("plan.json");
     let plan = Plan {
         schema: alembic_core::Schema {
@@ -700,6 +611,12 @@ async fn run_plan_nautobot_backend() {
     let _guard = cwd_lock().lock().await;
     let server = MockServer::start();
     let dir = tempdir().unwrap();
+    let state_path = dir.path().join(".alembic").join("state.json");
+    let _env = EnvVarGuard::acquire_async(&[
+        ("ALEMBIC_STATE_BACKEND", Some("local")),
+        ("ALEMBIC_STATE_PATH", Some(state_path.to_str().unwrap())),
+    ])
+    .await;
     let inventory = dir.path().join("inventory.yaml");
     let out = dir.path().join("plan.json");
     let config = dir.path().join("adapter.yaml");
@@ -817,6 +734,12 @@ async fn run_plan_report_is_read_only() {
     let _guard = cwd_lock().lock().await;
     let server = MockServer::start();
     let dir = tempdir().unwrap();
+    let state_path = dir.path().join(".alembic").join("state.json");
+    let _env = EnvVarGuard::acquire_async(&[
+        ("ALEMBIC_STATE_BACKEND", Some("local")),
+        ("ALEMBIC_STATE_PATH", Some(state_path.to_str().unwrap())),
+    ])
+    .await;
     let inventory = dir.path().join("inventory.yaml");
     let out = dir.path().join("plan.json");
     let config = dir.path().join("adapter.yaml");
@@ -971,6 +894,12 @@ async fn run_plan_report_surfaces_extra() {
     let _guard = cwd_lock().lock().await;
     let server = MockServer::start();
     let dir = tempdir().unwrap();
+    let state_path = dir.path().join(".alembic").join("state.json");
+    let _env = EnvVarGuard::acquire_async(&[
+        ("ALEMBIC_STATE_BACKEND", Some("local")),
+        ("ALEMBIC_STATE_PATH", Some(state_path.to_str().unwrap())),
+    ])
+    .await;
     let inventory = dir.path().join("inventory.yaml");
     let config = dir.path().join("adapter.yaml");
     // intent declares the schema but no objects; the backend holds an unmanaged
