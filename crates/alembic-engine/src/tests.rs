@@ -1126,3 +1126,157 @@ fn apply_plan_updates_state() {
         Some(BackendId::Int(55))
     );
 }
+
+#[test]
+fn observed_insert_records_duplicate_keys() {
+    let mut observed = ObservedState::default();
+    observed.insert(ObservedObject {
+        type_name: t("dcim.site"),
+        key: key_str("site=fra1"),
+        attrs: attrs_map(json!({ "name": "FIRST" })),
+        backend_id: Some(BackendId::Int(1)),
+    });
+    observed.insert(ObservedObject {
+        type_name: t("dcim.site"),
+        key: key_str("site=fra1"),
+        attrs: attrs_map(json!({ "name": "SECOND" })),
+        backend_id: Some(BackendId::Int(2)),
+    });
+
+    // the colliding (type, key) pair is recorded.
+    assert_eq!(observed.duplicate_keys.len(), 1);
+    assert!(observed
+        .duplicate_keys
+        .iter()
+        .any(|(type_name, _)| type_name == &t("dcim.site")));
+    // distinct backend ids must not be flagged as a backend-id collision.
+    assert!(observed.duplicate_backend_ids.is_empty());
+
+    // the latest object still wins the by_key slot (prior behavior preserved).
+    assert_eq!(observed.by_key.len(), 1);
+    let survivor = observed
+        .by_key
+        .values()
+        .next()
+        .expect("by_key retains the surviving object");
+    assert_eq!(survivor.backend_id, Some(BackendId::Int(2)));
+}
+
+#[test]
+fn observed_insert_records_duplicate_backend_ids() {
+    let mut observed = ObservedState::default();
+    // the same backend id under two different natural keys isolates the
+    // backend-id collision from any key collision.
+    observed.insert(ObservedObject {
+        type_name: t("dcim.site"),
+        key: key_str("site=a"),
+        attrs: attrs_map(json!({})),
+        backend_id: Some(BackendId::Int(7)),
+    });
+    observed.insert(ObservedObject {
+        type_name: t("dcim.site"),
+        key: key_str("site=b"),
+        attrs: attrs_map(json!({})),
+        backend_id: Some(BackendId::Int(7)),
+    });
+
+    assert_eq!(observed.duplicate_backend_ids.len(), 1);
+    assert!(observed
+        .duplicate_backend_ids
+        .contains(&(t("dcim.site"), BackendId::Int(7))));
+    // distinct keys must not be flagged as a key collision.
+    assert!(observed.duplicate_keys.is_empty());
+}
+
+#[test]
+fn bootstrap_skips_binding_on_ambiguous_duplicate_key() {
+    let desired_uid = uid(44);
+    let desired = vec![obj(
+        desired_uid,
+        "dcim.site",
+        "site=fra1",
+        json!({ "name": "FRA1" }),
+    )];
+
+    // two backend objects share the natural key — an ambiguous collision.
+    let mut observed = ObservedState::default();
+    observed.insert(ObservedObject {
+        type_name: t("dcim.site"),
+        key: key_str("site=fra1"),
+        attrs: attrs_map(json!({ "name": "FRA1" })),
+        backend_id: Some(BackendId::Int(100)),
+    });
+    observed.insert(ObservedObject {
+        type_name: t("dcim.site"),
+        key: key_str("site=fra1"),
+        attrs: attrs_map(json!({ "name": "FRA1" })),
+        backend_id: Some(BackendId::Int(200)),
+    });
+
+    let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
+    let updated = crate::bootstrap_state_from_observed(&mut state, &desired, &observed);
+
+    // the uid must be left unbound rather than bound to an arbitrary overwrite
+    // winner (pre-fix this bound the uid to BackendId::Int(200)).
+    assert!(!updated);
+    assert_eq!(state.backend_id(t("dcim.site"), desired_uid), None);
+}
+
+#[test]
+fn bootstrap_binds_unique_key() {
+    let desired_uid = uid(45);
+    let desired = vec![obj(
+        desired_uid,
+        "dcim.site",
+        "site=ber1",
+        json!({ "name": "BER1" }),
+    )];
+
+    let mut observed = ObservedState::default();
+    observed.insert(ObservedObject {
+        type_name: t("dcim.site"),
+        key: key_str("site=ber1"),
+        attrs: attrs_map(json!({ "name": "BER1" })),
+        backend_id: Some(BackendId::Int(300)),
+    });
+
+    let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
+    let updated = crate::bootstrap_state_from_observed(&mut state, &desired, &observed);
+
+    // a unique natural key binds exactly as before.
+    assert!(updated);
+    assert_eq!(
+        state.backend_id(t("dcim.site"), desired_uid),
+        Some(BackendId::Int(300))
+    );
+}
+
+#[test]
+fn observed_insert_unique_keys_produce_no_duplicates() {
+    let mut observed = ObservedState::default();
+    observed.insert(ObservedObject {
+        type_name: t("dcim.site"),
+        key: key_str("site=a"),
+        attrs: attrs_map(json!({})),
+        backend_id: Some(BackendId::Int(1)),
+    });
+    observed.insert(ObservedObject {
+        type_name: t("dcim.site"),
+        key: key_str("site=b"),
+        attrs: attrs_map(json!({})),
+        backend_id: Some(BackendId::Int(2)),
+    });
+    // a different type reusing the same key/id values must not collide, since
+    // the indexes are keyed by (type, key) and (type, backend_id).
+    observed.insert(ObservedObject {
+        type_name: t("dcim.device"),
+        key: key_str("site=a"),
+        attrs: attrs_map(json!({})),
+        backend_id: Some(BackendId::Int(1)),
+    });
+
+    assert!(observed.duplicate_keys.is_empty());
+    assert!(observed.duplicate_backend_ids.is_empty());
+    assert_eq!(observed.by_key.len(), 3);
+    assert_eq!(observed.by_backend_id.len(), 3);
+}

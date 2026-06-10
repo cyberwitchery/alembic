@@ -96,10 +96,18 @@ pub(crate) fn bootstrap_state_from_observed(
         {
             continue;
         }
-        if let Some(obs) = observed
-            .by_key
-            .get(&(object.type_name.clone(), key_string(&object.key)))
-        {
+        let key = key_string(&object.key);
+        let lookup_key = (object.type_name.clone(), key.clone());
+        if observed.duplicate_keys.contains(&lookup_key) {
+            tracing::warn!(
+                "skipping uid bootstrap for type {} (key {key}): the observed backend state has a \
+                 duplicate natural key, so the matching backend object is ambiguous; leaving the \
+                 uid unbound for the operator to disambiguate",
+                object.type_name
+            );
+            continue;
+        }
+        if let Some(obs) = observed.by_key.get(&lookup_key) {
             if obs.type_name != object.type_name {
                 continue;
             }

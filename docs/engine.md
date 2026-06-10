@@ -7,7 +7,7 @@ the engine is responsible for loading, validating, planning, and applying change
 1) load inventory files (supports `include` / `imports`)
 2) validate object envelopes, keys, and schema references
 3) observe backend state via adapter (default scope: desired + schema types)
-4) bootstrap state mappings by key when missing
+4) bootstrap state mappings by key when missing (duplicate observed keys are warned about and left unbound, never guessed)
 5) plan deterministic operations
 6) provision schema primitives on apply (custom fields/tags/custom objects where supported)
 7) apply operations in dependency order

@@ -26,6 +26,7 @@ The uid (uuid) is always a string. the backend id can be either an integer (e.g.
 - supports both integer (e.g. NetBox) and string/uuid (e.g. Nautobot) backend ids.
 - provides stability across renames (key changes).
 - when empty, alembic can bootstrap mappings by matching observed objects by key (canonical JSON form).
+- duplicate natural keys in observed backend state are detected during observe: a `tracing` warning is emitted for each, and bootstrap leaves the affected uid **unbound** rather than guessing which of the colliding backend objects to bind it to. disambiguate the backend (so the key is unique) or set the mapping explicitly to resolve it. unique keys bind exactly as before.
 - updated after apply based on adapter results.
 - safe to delete if you want to re-discover by key, but expect extra lookups.
 - custom types are stored under their type string.

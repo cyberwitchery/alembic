@@ -14,6 +14,7 @@
 - cli: `plan --report` and `--dry-run` are now mutually exclusive (passing both is rejected) instead of silently ignoring `--dry-run`
 - engine: add `DriftReport` (built from a `&Plan`, with `Display` + `Serialize`) surfacing the desired-vs-observed diff as a one-way, read-only report
 - cli: explain the file formats each subcommand reads and writes (#89). every argument now carries help text: `--file` inventories are YAML or JSON chosen by extension (`.json` => JSON, else YAML), `plan`/`map`/`import --output` are always JSON regardless of extension, and `apply --plan` is a JSON plan as produced by `alembic plan`. `--help` gains a long description documenting the IR format model in one place, and writing an always-JSON `--output` to a `.yaml`/`.yml` path now prints a non-fatal warning instead of silently producing JSON under a yaml name
+- engine: detect duplicate natural keys (and backend ids) in observed backend state during `observe`/bootstrap (#44). previously a backend that returned two objects sharing a key for a type silently overwrote the first observed-state mapping, and bootstrap could bind a uid to the wrong backend object permanently with no warning. the collision is now tracked, a `tracing::warn!` is emitted per duplicate, and bootstrap leaves an ambiguous uid **unbound** for the operator to disambiguate instead of guessing the overwrite winner. unique keys bind exactly as before
 
 ## [0.3.0] - 2026-05-20
 

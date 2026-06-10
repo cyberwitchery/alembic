@@ -23,6 +23,18 @@ pub(crate) async fn observe(
     let types_vec: Vec<_> = types.into_iter().collect();
 
     let observed = adapter.read(&inventory.schema, &types_vec, state).await?;
+    for (type_name, key) in &observed.duplicate_keys {
+        tracing::warn!(
+            "duplicate natural key observed in backend state for type {type_name} (key {key}); \
+             uid mappings for it are unreliable and ambiguous bindings will be skipped on bootstrap"
+        );
+    }
+    for (type_name, backend_id) in &observed.duplicate_backend_ids {
+        tracing::warn!(
+            "duplicate backend id observed in backend state for type {type_name} (id {backend_id}); \
+             the observed-state index for it is ambiguous"
+        );
+    }
     crate::bootstrap_state_from_observed(state, &inventory.objects, &observed);
     Ok(observed)
 }

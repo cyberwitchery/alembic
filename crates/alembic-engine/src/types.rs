@@ -3,7 +3,7 @@
 use alembic_core::{key_string, JsonMap, Key, Object, Schema, TypeName, Uid};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 /// generic backend identifier (integer or string/uuid).
@@ -153,17 +153,38 @@ pub struct ObservedState {
     pub by_backend_id: BTreeMap<(TypeName, BackendId), ObservedObject>,
     /// observed objects keyed by natural key.
     pub by_key: BTreeMap<(TypeName, String), ObservedObject>,
+    /// `(type, key)` pairs observed more than once. the latest object wins the
+    /// `by_key` slot, but the natural-key match is ambiguous and must not be
+    /// trusted to bind a uid to a backend object.
+    pub duplicate_keys: BTreeSet<(TypeName, String)>,
+    /// `(type, backend_id)` pairs observed more than once; the `by_backend_id`
+    /// match for them is ambiguous.
+    pub duplicate_backend_ids: BTreeSet<(TypeName, BackendId)>,
 }
 
 impl ObservedState {
-    /// insert an observed object into both indexes.
+    /// insert an observed object into both indexes, tracking key collisions.
+    ///
+    /// the latest object wins each index slot (preserving prior behavior), but
+    /// when a `(type, key)` or `(type, backend_id)` pair is observed more than
+    /// once the colliding pair is recorded so callers can refuse to bind a uid
+    /// to an ambiguous backend object. tracking is silent here; the `observe`
+    /// pipeline is responsible for warning about the recorded collisions.
     pub fn insert(&mut self, object: ObservedObject) {
         if let Some(id) = &object.backend_id {
-            self.by_backend_id
-                .insert((object.type_name.clone(), id.clone()), object.clone());
+            let backend_key = (object.type_name.clone(), id.clone());
+            if self
+                .by_backend_id
+                .insert(backend_key.clone(), object.clone())
+                .is_some()
+            {
+                self.duplicate_backend_ids.insert(backend_key);
+            }
         }
-        self.by_key
-            .insert((object.type_name.clone(), key_string(&object.key)), object);
+        let natural_key = (object.type_name.clone(), key_string(&object.key));
+        if self.by_key.insert(natural_key.clone(), object).is_some() {
+            self.duplicate_keys.insert(natural_key);
+        }
     }
 }
 
