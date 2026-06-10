@@ -471,9 +471,10 @@ rules:
 
     let cli = Cli {
         command: Command::Map {
-            file: input,
-            spec,
-            output: out.clone(),
+            action: None,
+            file: Some(input),
+            spec: Some(spec),
+            output: Some(out.clone()),
         },
     };
     run(cli, AppConfig::load().unwrap()).await.unwrap();
@@ -482,6 +483,107 @@ rules:
     assert!(raw.contains("\"label\""));
     assert!(!raw.contains("dcim.site"));
     std::env::set_current_dir(cwd).unwrap();
+}
+
+#[tokio::test]
+async fn run_map_transform_evaluates_a_transform() {
+    let dir = tempdir().unwrap();
+    let spec = dir.path().join("map.yaml");
+    std::fs::write(
+        &spec,
+        "transforms:\n  inline: |\n    def cidr_host(v):\n        return v.split(\"/\")[0]\n",
+    )
+    .unwrap();
+    let cli = Cli {
+        command: Command::Map {
+            action: Some(MapAction::Transform {
+                spec,
+                name: "cidr_host".to_string(),
+                value: "\"10.0.0.1/24\"".to_string(),
+                args: vec![],
+            }),
+            file: None,
+            spec: None,
+            output: None,
+        },
+    };
+    run(cli, AppConfig::load().unwrap()).await.unwrap();
+}
+
+#[tokio::test]
+async fn run_map_transform_surfaces_fail() {
+    let dir = tempdir().unwrap();
+    let spec = dir.path().join("map.yaml");
+    std::fs::write(
+        &spec,
+        "transforms:\n  inline: |\n    def reject(v):\n        fail(\"bad: \" + v)\n",
+    )
+    .unwrap();
+    let cli = Cli {
+        command: Command::Map {
+            action: Some(MapAction::Transform {
+                spec,
+                name: "reject".to_string(),
+                value: "\"x\"".to_string(),
+                args: vec![],
+            }),
+            file: None,
+            spec: None,
+            output: None,
+        },
+    };
+    let err = run(cli, AppConfig::load().unwrap()).await.unwrap_err();
+    assert!(
+        err.to_string().contains("transform reject failed"),
+        "{err:#}"
+    );
+}
+
+#[tokio::test]
+async fn run_map_transform_rejects_invalid_json_value() {
+    let dir = tempdir().unwrap();
+    let spec = dir.path().join("map.yaml");
+    std::fs::write(
+        &spec,
+        "transforms:\n  inline: |\n    def f(v):\n        return v\n",
+    )
+    .unwrap();
+    let cli = Cli {
+        command: Command::Map {
+            action: Some(MapAction::Transform {
+                spec,
+                name: "f".to_string(),
+                value: "not-json".to_string(),
+                args: vec![],
+            }),
+            file: None,
+            spec: None,
+            output: None,
+        },
+    };
+    let err = run(cli, AppConfig::load().unwrap()).await.unwrap_err();
+    assert!(
+        err.to_string().contains("value is not valid json"),
+        "{err:#}"
+    );
+}
+
+#[tokio::test]
+async fn run_map_without_flat_args_errors() {
+    let cli = Cli {
+        command: Command::Map {
+            action: None,
+            file: None,
+            spec: None,
+            output: None,
+        },
+    };
+    let err = run(cli, AppConfig::load().unwrap()).await.unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("alembic map requires -f, --spec, and -o"),
+        "{err:#}"
+    );
 }
 
 #[tokio::test]

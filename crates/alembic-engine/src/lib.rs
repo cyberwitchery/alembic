@@ -13,6 +13,8 @@ mod planner;
 mod predicate;
 mod pretty_printing;
 mod render;
+#[cfg(feature = "starlark")]
+mod starlark_transforms;
 mod state;
 mod transform;
 mod types;
@@ -36,7 +38,7 @@ pub use extract::{import_inventory, ImportReport};
 pub use loader::load_inventory;
 pub use planner::{plan, sort_ops_for_apply};
 pub use state::{PostgresTlsMode, StateData, StateStore};
-pub use transform::{compile_map, load_map_spec, MapSpec};
+pub use transform::{compile_map, eval_map_transform, load_map_spec, MapSpec, TransformsSpec};
 pub use types::{
     Adapter, AppliedOp, ApplyReport, BackendId, FieldChange, ObservedObject, ObservedState, Op,
     Plan, PlanSummary, ProvisionReport,

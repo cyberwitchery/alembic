@@ -92,14 +92,16 @@ enum Command {
     },
     /// transform an ir inventory into another ir inventory (ir -> ir).
     Map {
+        #[command(subcommand)]
+        action: Option<MapAction>,
         /// input ir inventory file.
         #[arg(short = 'f', long)]
-        file: PathBuf,
+        file: Option<PathBuf>,
         /// map specification (target schema + rules).
         #[arg(long)]
-        spec: PathBuf,
+        spec: Option<PathBuf>,
         #[arg(short = 'o', long)]
-        output: PathBuf,
+        output: Option<PathBuf>,
     },
     /// observe a backend's live state into canonical ir.
     Import {
@@ -112,6 +114,24 @@ enum Command {
         backend: Option<String>,
         #[arg(long)]
         backend_config: Option<PathBuf>,
+    },
+}
+
+/// map subcommands.
+#[derive(Subcommand)]
+enum MapAction {
+    /// evaluate a single transform against a json value, for iterating on a
+    /// map spec's user-defined transforms without an inventory or backend.
+    Transform {
+        /// map specification carrying the transforms block.
+        #[arg(long)]
+        spec: PathBuf,
+        /// transform name (user-defined or built-in).
+        name: String,
+        /// json-encoded input value, e.g. '"nxos"'.
+        value: String,
+        /// json-encoded extra literal arguments.
+        args: Vec<String>,
     },
 }
 
@@ -278,16 +298,47 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                 println!("applied {} operations", report.applied.len());
             }
         }
-        Command::Map { file, spec, output } => {
-            let input = load_inventory(&file)?;
-            let spec = alembic_engine::load_map_spec(&spec)?;
-            let inventory = alembic_engine::compile_map(&input, &spec)?;
-            if let Some(msg) = warn_misleading_output_extension(&output) {
-                eprintln!("{msg}");
+        Command::Map {
+            action,
+            file,
+            spec,
+            output,
+        } => match action {
+            Some(MapAction::Transform {
+                spec,
+                name,
+                value,
+                args,
+            }) => {
+                let spec = alembic_engine::load_map_spec(&spec)?;
+                let value: serde_json::Value = serde_json::from_str(&value)
+                    .map_err(|err| anyhow!("value is not valid json: {err}"))?;
+                let args = args
+                    .iter()
+                    .map(|arg| {
+                        serde_json::from_str(arg)
+                            .map_err(|err| anyhow!("argument {arg} is not valid json: {err}"))
+                    })
+                    .collect::<Result<Vec<serde_json::Value>>>()?;
+                let result = alembic_engine::eval_map_transform(&spec, &name, &value, &args)?;
+                println!("{}", serde_json::to_string(&result)?);
             }
-            write_inventory(&output, &inventory)?;
-            println!("ir written to {}", output.display());
-        }
+            None => {
+                let (Some(file), Some(spec), Some(output)) = (file, spec, output) else {
+                    return Err(anyhow!(
+                        "alembic map requires -f, --spec, and -o (or the transform subcommand)"
+                    ));
+                };
+                let input = load_inventory(&file)?;
+                let spec = alembic_engine::load_map_spec(&spec)?;
+                let inventory = alembic_engine::compile_map(&input, &spec)?;
+                if let Some(msg) = warn_misleading_output_extension(&output) {
+                    eprintln!("{msg}");
+                }
+                write_inventory(&output, &inventory)?;
+                println!("ir written to {}", output.display());
+            }
+        },
         Command::Import {
             output,
             file,

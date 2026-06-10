@@ -14,7 +14,9 @@
 //! at, so an emit can pull a value off a related object.
 
 use crate::predicate::{parse_predicates, Predicate, PredicateOp};
-use crate::render::{render_attrs, render_key, render_template, UidV5Spec};
+use crate::render::{
+    render_attrs, render_key, render_template, RenderCtx, TransformRegistry, UidV5Spec,
+};
 use alembic_core::{
     key_string, uid_v5, FieldType, Inventory, JsonMap, Key, Object, Schema, TypeName, Uid,
 };
@@ -23,7 +25,7 @@ use serde::Deserialize;
 use serde_json::Value as JsonValue;
 use serde_yaml::Value as YamlValue;
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 /// uid override for an emit: a deterministic `v5: { type, stable }` or an
@@ -43,6 +45,28 @@ pub struct MapSpec {
     pub schema: Schema,
     #[serde(default)]
     pub rules: Vec<MapRule>,
+    /// user-defined starlark transforms, consulted by `${var|name}` pipelines
+    /// before the built-ins (requires the `starlark` feature).
+    #[serde(default)]
+    pub transforms: Option<TransformsSpec>,
+    /// directory of the spec file, captured by `load_map_spec` and used to
+    /// resolve `transforms.file` and starlark `load()` paths. `None` for specs
+    /// parsed from strings: a relative `transforms.file` then resolves against
+    /// the process cwd and `load()` is an error.
+    #[serde(skip)]
+    pub base_dir: Option<PathBuf>,
+}
+
+/// the `transforms:` block of a map spec: starlark source from a file or
+/// inline. exactly one of the two must be set.
+#[derive(Debug, Deserialize)]
+pub struct TransformsSpec {
+    /// path to a starlark file; a relative path resolves against the spec file.
+    #[serde(default)]
+    pub file: Option<PathBuf>,
+    /// inline starlark source.
+    #[serde(default)]
+    pub inline: Option<String>,
 }
 
 /// a single ir→ir rule: select source objects, emit one or more target objects
@@ -184,21 +208,91 @@ fn json_scalar(value: &JsonValue) -> Option<String> {
     }
 }
 
-/// load a map spec from a yaml file.
+/// load a map spec from a yaml file. the spec remembers the file's directory so
+/// `transforms.file` and starlark `load()` paths resolve relative to it.
 pub fn load_map_spec(path: impl AsRef<Path>) -> Result<MapSpec> {
     let path = path.as_ref();
     let raw = std::fs::read_to_string(path)
         .with_context(|| format!("read map spec: {}", path.display()))?;
-    serde_yaml::from_str(&raw).with_context(|| format!("parse map spec: {}", path.display()))
+    let mut spec: MapSpec = serde_yaml::from_str(&raw)
+        .with_context(|| format!("parse map spec: {}", path.display()))?;
+    spec.base_dir = path.parent().map(Path::to_path_buf);
+    Ok(spec)
+}
+
+/// build the transform registry for a spec: empty (built-ins only) without a
+/// `transforms:` block, otherwise the compiled starlark module. starlark is
+/// compiled once here, not per template.
+fn transform_registry(spec: &MapSpec) -> Result<TransformRegistry> {
+    let Some(transforms) = &spec.transforms else {
+        return Ok(TransformRegistry::EMPTY);
+    };
+    #[cfg(not(feature = "starlark"))]
+    {
+        let _ = transforms;
+        Err(anyhow!(
+            "map spec has a transforms block but alembic-engine was built without the starlark feature"
+        ))
+    }
+    #[cfg(feature = "starlark")]
+    {
+        let (source, filename) = match (&transforms.file, &transforms.inline) {
+            (Some(_), Some(_)) | (None, None) => {
+                return Err(anyhow!(
+                    "map spec transforms: requires exactly one of file or inline"
+                ));
+            }
+            (Some(file), None) => {
+                let path = match &spec.base_dir {
+                    Some(base) if file.is_relative() => base.join(file),
+                    _ => file.clone(),
+                };
+                let source = std::fs::read_to_string(&path)
+                    .with_context(|| format!("read transforms file: {}", path.display()))?;
+                (source, path.display().to_string())
+            }
+            (None, Some(inline)) => (inline.clone(), "transforms".to_string()),
+        };
+        let user = crate::starlark_transforms::StarlarkTransforms::compile(
+            &source,
+            &filename,
+            spec.base_dir.as_deref(),
+        )?;
+        Ok(TransformRegistry::with_user(user))
+    }
+}
+
+/// evaluate a single named transform from a map spec against a json value,
+/// consulting the spec's user transforms first, then the built-ins. backs
+/// `alembic map transform`, the iteration loop for writing transforms: one
+/// value in, the typed result out, no inventory or backend involved.
+pub fn eval_map_transform(
+    spec: &MapSpec,
+    name: &str,
+    value: &JsonValue,
+    args: &[JsonValue],
+) -> Result<JsonValue> {
+    let registry = transform_registry(spec)?;
+    crate::render::apply_single_transform(&registry, name, value, args)
+}
+
+/// per-run immutables shared by every emit: the compiled transform registry and
+/// the source-object index used to resolve reference lookups.
+struct MapRun<'a> {
+    transforms: TransformRegistry,
+    index: BTreeMap<Uid, &'a Object>,
 }
 
 /// transform an ir inventory into another ir inventory under the target schema.
 pub fn compile_map(input: &Inventory, spec: &MapSpec) -> Result<Inventory> {
+    let run = MapRun {
+        transforms: transform_registry(spec)?,
+        // source uid -> object, for resolving reference lookups.
+        index: input.objects.iter().map(|o| (o.uid, o)).collect(),
+    };
     let mut objects = Vec::new();
     // source uid -> emitted uid, used to re-derive ref values in pass 2.
     let mut remap: BTreeMap<Uid, Uid> = BTreeMap::new();
-    // source objects by uid, for resolving reference lookups.
-    let index: BTreeMap<Uid, &Object> = input.objects.iter().map(|o| (o.uid, o)).collect();
 
     for rule in &spec.rules {
         let matcher = Matcher::parse(&rule.r#match)
@@ -229,8 +323,8 @@ pub fn compile_map(input: &Inventory, spec: &MapSpec) -> Result<Inventory> {
                         rule,
                         emits,
                         vars,
+                        &run,
                         remap_source,
-                        &index,
                         &mut objects,
                         &mut remap,
                     )?;
@@ -250,12 +344,20 @@ pub fn compile_map(input: &Inventory, spec: &MapSpec) -> Result<Inventory> {
                     if !matcher.predicates_match(&vars) {
                         continue;
                     }
-                    let group_key = render_template(group_expr, &vars, &rule.name, "group_by")?;
+                    let group_key = render_template(
+                        group_expr,
+                        &RenderCtx {
+                            vars: &vars,
+                            transforms: &run.transforms,
+                            rule: &rule.name,
+                        },
+                        "group_by",
+                    )?;
                     groups.entry(group_key).or_default().push(src);
                 }
                 for (group_key, members) in &groups {
                     let vars = group_vars(group_key, members);
-                    emit_objects(rule, emits, vars, None, &index, &mut objects, &mut remap)?;
+                    emit_objects(rule, emits, vars, &run, None, &mut objects, &mut remap)?;
                 }
             }
         }
@@ -282,8 +384,8 @@ fn emit_objects(
     rule: &MapRule,
     emits: &[MapEmit],
     mut vars: BTreeMap<String, JsonValue>,
+    run: &MapRun,
     remap_source: Option<Uid>,
-    index: &BTreeMap<Uid, &Object>,
     objects: &mut Vec<Object>,
     remap: &mut BTreeMap<Uid, Uid>,
 ) -> Result<()> {
@@ -291,20 +393,35 @@ fn emit_objects(
     // bound under `lookup.<name>`, mirroring `uids.<name>`, so a lookup can never
     // shadow the object's own vars (`uid`, `key.*`, `attrs.*`, ...).
     for (name, lookup) in &rule.lookups {
-        let value = resolve_lookup(name, lookup, &vars, &rule.name, index)?;
+        let ctx = RenderCtx {
+            vars: &vars,
+            transforms: &run.transforms,
+            rule: &rule.name,
+        };
+        let value = resolve_lookup(name, lookup, &ctx, &run.index)?;
         vars.insert(format!("lookup.{name}"), value);
     }
     // compute named uids once, exposed as `uids.name` to every emit.
     for (name, uid_spec) in &rule.uids {
         let context = format!("uids.{name}");
-        let uid = resolve_uid_spec(uid_spec, &vars, &rule.name, &context)?;
+        let ctx = RenderCtx {
+            vars: &vars,
+            transforms: &run.transforms,
+            rule: &rule.name,
+        };
+        let uid = resolve_uid_spec(uid_spec, &ctx, &context)?;
         vars.insert(context, JsonValue::String(uid.to_string()));
     }
+    let ctx = RenderCtx {
+        vars: &vars,
+        transforms: &run.transforms,
+        rule: &rule.name,
+    };
     for emit in emits {
-        let key = render_key(&emit.key, &vars, &rule.name)?;
-        let type_name = TypeName::new(render_template(&emit.type_name, &vars, &rule.name, "type")?);
-        let uid = resolve_emit_uid(&emit.uid, &vars, &rule.name, type_name.as_str(), &key)?;
-        let attrs = render_attrs(&emit.attrs, &vars, &rule.name, "attrs")?;
+        let key = render_key(&emit.key, &ctx)?;
+        let type_name = TypeName::new(render_template(&emit.type_name, &ctx, "type")?);
+        let uid = resolve_emit_uid(&emit.uid, &ctx, type_name.as_str(), &key)?;
+        let attrs = render_attrs(&emit.attrs, &ctx, "attrs")?;
         let attrs = JsonMap::from(attrs.into_iter().collect::<BTreeMap<_, _>>());
 
         if let Some(source) = remap_source {
@@ -327,12 +444,12 @@ fn emit_objects(
 fn resolve_lookup(
     name: &str,
     lookup: &Lookup,
-    vars: &BTreeMap<String, JsonValue>,
-    rule: &str,
+    ctx: &RenderCtx,
     index: &BTreeMap<Uid, &Object>,
 ) -> Result<JsonValue> {
+    let rule = ctx.rule;
     let context = format!("lookups.{name}");
-    let rendered = render_template(&lookup.r#ref, vars, rule, &context)?;
+    let rendered = render_template(&lookup.r#ref, ctx, &context)?;
     let uid = Uuid::parse_str(&rendered).with_context(|| {
         format!("rule {rule}: lookup {name} ref is not a valid uuid: {rendered}")
     })?;
@@ -413,35 +530,30 @@ fn flatten(prefix: &str, value: &JsonValue, out: &mut BTreeMap<String, JsonValue
 /// an explicit override defers to `resolve_uid_spec`.
 fn resolve_emit_uid(
     uid: &Option<EmitUid>,
-    vars: &BTreeMap<String, JsonValue>,
-    rule: &str,
+    ctx: &RenderCtx,
     type_name: &str,
     key: &Key,
 ) -> Result<Uid> {
     match uid {
         None => Ok(uid_v5(type_name, &key_string(key))),
-        Some(spec) => resolve_uid_spec(spec, vars, rule, "uid"),
+        Some(spec) => resolve_uid_spec(spec, ctx, "uid"),
     }
 }
 
 /// resolve an explicit uid spec — a `v5: {type, stable}` pair or a uuid-string
 /// template — against the current vars. shared by emit uids and named `uids`.
-fn resolve_uid_spec(
-    spec: &EmitUid,
-    vars: &BTreeMap<String, JsonValue>,
-    rule: &str,
-    context: &str,
-) -> Result<Uid> {
+fn resolve_uid_spec(spec: &EmitUid, ctx: &RenderCtx, context: &str) -> Result<Uid> {
+    let rule = ctx.rule;
     match spec {
         EmitUid::Template(template) => {
-            let rendered = render_template(template, vars, rule, context)?;
+            let rendered = render_template(template, ctx, context)?;
             Uuid::parse_str(&rendered).with_context(|| {
                 format!("rule {rule}: uid template is not a valid uuid: {rendered}")
             })
         }
         EmitUid::V5 { v5 } => {
-            let kind = render_template(&v5.type_name, vars, rule, context)?;
-            let stable = render_template(&v5.stable, vars, rule, context)?;
+            let kind = render_template(&v5.type_name, ctx, context)?;
+            let stable = render_template(&v5.stable, ctx, context)?;
             if kind.trim().is_empty() || stable.trim().is_empty() {
                 return Err(anyhow!(
                     "rule {rule}: uid v5 requires non-empty type and stable values"
@@ -922,5 +1034,256 @@ rules:
             out.objects[0].attrs.get("status").unwrap(),
             &json!("Active")
         );
+    }
+
+    // --- user-defined starlark transforms ---
+
+    #[cfg(not(feature = "starlark"))]
+    #[test]
+    fn transforms_block_errors_without_the_feature() {
+        let input = input_inventory(json!([]));
+        let err = compile_map(
+            &input,
+            &spec(
+                r#"
+transforms:
+  inline: |
+    def f(v):
+        return v
+"#,
+            ),
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("without the starlark feature"),
+            "{err:#}"
+        );
+    }
+
+    #[cfg(feature = "starlark")]
+    mod starlark {
+        use super::*;
+
+        /// the issue's motivating example: a netbox-shaped address with a cidr
+        /// suffix denormalised into a connectable `ansible_host`.
+        #[test]
+        fn inline_transform_derives_attr_end_to_end() {
+            let input = input_inventory(json!([
+                { "uid": Uuid::from_u128(1).to_string(), "type": "dcim.device",
+                  "key": { "name": "leaf01" },
+                  "attrs": { "address": "198.51.100.1/24", "platform": "nxos" } }
+            ]));
+            let out = compile_map(
+                &input,
+                &spec(
+                    r#"
+transforms:
+  inline: |
+    ANSIBLE_OS = {"nxos": "cisco.nxos.nxos", "eos": "arista.eos.eos"}
+
+    def cidr_host(v):
+        return v.split("/")[0]
+
+    def ansible_os(platform):
+        if platform not in ANSIBLE_OS:
+            fail("no ansible_network_os mapping for platform: " + platform)
+        return ANSIBLE_OS[platform]
+schema:
+  types:
+    ansible.host:
+      key:
+        name: { type: string }
+      fields:
+        ansible_host: { type: string }
+        ansible_network_os: { type: string }
+rules:
+  - name: hosts
+    match: "dcim.device"
+    emit:
+      type: ansible.host
+      key:
+        name: "${key.name}"
+      attrs:
+        ansible_host: "${attrs.address|cidr_host}"
+        ansible_network_os: "${attrs.platform|ansible_os}"
+"#,
+                ),
+            )
+            .unwrap();
+            assert_eq!(out.objects.len(), 1);
+            let attrs = &out.objects[0].attrs;
+            assert_eq!(attrs.get("ansible_host").unwrap(), &json!("198.51.100.1"));
+            assert_eq!(
+                attrs.get("ansible_network_os").unwrap(),
+                &json!("cisco.nxos.nxos")
+            );
+        }
+
+        /// a transform returning a dict lands typed in a `json`-typed attr and
+        /// passes schema validation.
+        #[test]
+        fn typed_dict_return_fills_a_json_attr() {
+            let input = input_inventory(json!([
+                { "uid": Uuid::from_u128(1).to_string(), "type": "dcim.device",
+                  "key": { "name": "leaf01" }, "attrs": { "platform": "eos" } }
+            ]));
+            let out = compile_map(
+                &input,
+                &spec(
+                    r#"
+transforms:
+  inline: |
+    def profile(platform):
+        return {"os": platform, "ports": [22, 830]}
+schema:
+  types:
+    lab.node:
+      key:
+        name: { type: string }
+      fields:
+        profile: { type: json }
+rules:
+  - name: nodes
+    match: "dcim.device"
+    emit:
+      type: lab.node
+      key:
+        name: "${key.name}"
+      attrs:
+        profile: "${attrs.platform|profile}"
+"#,
+                ),
+            )
+            .unwrap();
+            assert_eq!(
+                out.objects[0].attrs.get("profile").unwrap(),
+                &json!({"os": "eos", "ports": [22, 830]})
+            );
+        }
+
+        /// `key:` templates feed uid derivation, so a transformed value there is
+        /// coerced to a string; a collection return is rejected.
+        #[test]
+        fn key_context_coerces_scalars_and_rejects_collections() {
+            let input = input_inventory(json!([
+                { "uid": Uuid::from_u128(1).to_string(), "type": "dcim.device",
+                  "key": { "name": "leaf01" }, "attrs": {} }
+            ]));
+            let scalar_spec = r#"
+transforms:
+  inline: |
+    def n(v):
+        return 42
+schema:
+  types:
+    lab.node:
+      key:
+        name: { type: string }
+rules:
+  - name: nodes
+    match: "dcim.device"
+    emit:
+      type: lab.node
+      key:
+        name: "${key.name|n}"
+"#;
+            let out = compile_map(&input, &spec(scalar_spec)).unwrap();
+            assert_eq!(out.objects[0].key.get("name").unwrap(), &json!("42"));
+
+            let collection_spec = scalar_spec.replace("return 42", "return [v]");
+            let err = compile_map(&input, &spec(&collection_spec)).unwrap_err();
+            assert!(err.to_string().contains("must be a scalar"), "{err:#}");
+        }
+
+        #[test]
+        fn transforms_block_requires_exactly_one_source() {
+            let input = input_inventory(json!([]));
+            for block in [
+                "transforms: {}",
+                "transforms:\n  file: a.star\n  inline: \"x = 1\"",
+            ] {
+                let err = compile_map(&input, &spec(block)).unwrap_err();
+                assert!(
+                    err.to_string()
+                        .contains("requires exactly one of file or inline"),
+                    "{err:#}"
+                );
+            }
+        }
+
+        /// a file-based transforms block with a `load()` dependency, loaded the
+        /// way the cli does it: `load_map_spec` captures the spec directory and
+        /// both paths resolve against it.
+        #[test]
+        fn file_transforms_with_load_resolve_against_the_spec_dir() {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(
+                dir.path().join("lib.star"),
+                "def shout(v):\n    return v.upper()\n",
+            )
+            .unwrap();
+            std::fs::write(
+                dir.path().join("transforms.star"),
+                "load(\"lib.star\", \"shout\")\n\ndef loud_host(v):\n    return shout(v.split(\"/\")[0])\n",
+            )
+            .unwrap();
+            std::fs::write(
+                dir.path().join("map.yaml"),
+                r#"
+transforms:
+  file: ./transforms.star
+schema:
+  types:
+    lab.node:
+      key:
+        name: { type: string }
+rules:
+  - name: nodes
+    match: "dcim.device"
+    emit:
+      type: lab.node
+      key:
+        name: "${attrs.address|loud_host}"
+"#,
+            )
+            .unwrap();
+            let map_spec = load_map_spec(dir.path().join("map.yaml")).unwrap();
+            let input = input_inventory(json!([
+                { "uid": Uuid::from_u128(1).to_string(), "type": "dcim.device",
+                  "key": { "name": "leaf01" }, "attrs": { "address": "leaf01/24" } }
+            ]));
+            let out = compile_map(&input, &map_spec).unwrap();
+            assert_eq!(out.objects[0].key.get("name").unwrap(), &json!("LEAF01"));
+        }
+
+        #[test]
+        fn eval_map_transform_runs_user_builtin_and_errors() {
+            let map_spec = spec(
+                r#"
+transforms:
+  inline: |
+    def pad(v, width, fill):
+        return fill * (width - len(v)) + v
+
+    def reject(v):
+        fail("rejected: " + v)
+"#,
+            );
+            let result =
+                eval_map_transform(&map_spec, "pad", &json!("7"), &[json!(3), json!("0")]).unwrap();
+            assert_eq!(result, json!("007"));
+
+            let result = eval_map_transform(&map_spec, "upper", &json!("q"), &[]).unwrap();
+            assert_eq!(result, json!("Q"));
+
+            let err = eval_map_transform(&map_spec, "reject", &json!("v"), &[]).unwrap_err();
+            assert!(err.to_string().contains("rejected: v"), "{err:#}");
+
+            let err = eval_map_transform(&map_spec, "nope", &json!("v"), &[]).unwrap_err();
+            assert!(
+                err.to_string().contains("unknown transform nope"),
+                "{err:#}"
+            );
+        }
     }
 }

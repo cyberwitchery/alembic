@@ -10,8 +10,14 @@ documentation = "https://docs.rs/alembic-engine"
 description = "Planning, apply, and state engine for Alembic."
 readme = "../../README.md"
 
+[features]
+# user-defined map template transforms written in starlark. off by default so
+# library consumers keep a lean dependency tree; the cli enables it.
+starlark = ["dep:starlark"]
+
 [dependencies]
 alembic-core.workspace = true
+starlark = { workspace = true, optional = true }
 anyhow.workspace = true
 async-trait.workspace = true
 serde.workspace = true
