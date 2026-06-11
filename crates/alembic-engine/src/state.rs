@@ -6,6 +6,7 @@ use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -48,19 +49,12 @@ impl StateStore {
     /// load state from a file path.
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
-        // Always create a backend so we can save to the same path later.
-        // The backend's load() method handles missing files gracefully.
+        // Read + parse lives in one place (`read_state_file`); a missing file
+        // yields the default state. Always build a backend so we can save back
+        // to the same path later.
+        let data = read_state_file(&path)?;
         let backend: Option<Arc<Mutex<dyn StateBackend>>> =
-            Some(Arc::new(Mutex::new(LocalBackend { path: path.clone() }))
-                as Arc<Mutex<dyn StateBackend>>);
-        let data = if path.exists() {
-            let raw = fs::read_to_string(&path)
-                .with_context(|| format!("read state: {}", path.display()))?;
-            serde_json::from_str::<StateData>(&raw)
-                .with_context(|| format!("parse state: {}", path.display()))?
-        } else {
-            StateData::default()
-        };
+            Some(Arc::new(Mutex::new(LocalBackend { path })) as Arc<Mutex<dyn StateBackend>>);
         Ok(Self::new(backend, data))
     }
 
@@ -128,23 +122,76 @@ impl StateStore {
     }
 }
 
+/// Read and parse the on-disk state file, returning [`StateData::default`] when
+/// the file is absent. This is the single read+parse path shared by
+/// [`StateStore::load`] and [`LocalBackend::load`]. A parse failure carries
+/// actionable context, since in practice it usually means an interrupted write
+/// left the file truncated.
+fn read_state_file(path: &Path) -> Result<StateData> {
+    if !path.exists() {
+        return Ok(StateData::default());
+    }
+    let raw =
+        fs::read_to_string(path).with_context(|| format!("read state: {}", path.display()))?;
+    serde_json::from_str::<StateData>(&raw).with_context(|| {
+        format!(
+            "parse state file {}: it may be corrupt or truncated (likely from an \
+             interrupted write); inspect or remove it to recover",
+            path.display()
+        )
+    })
+}
+
 #[derive(Debug)]
 struct LocalBackend {
     path: PathBuf,
 }
 
+impl LocalBackend {
+    /// Per-process temp path used for the durable write. Including the pid keeps
+    /// a leftover temp file from a crashed or concurrent run from colliding with
+    /// this one (`<path>.<pid>.tmp`).
+    fn tmp_path(&self) -> PathBuf {
+        let mut tmp = self.path.clone().into_os_string();
+        tmp.push(format!(".{}.tmp", std::process::id()));
+        PathBuf::from(tmp)
+    }
+
+    /// Durable atomic write: stream `bytes` into `tmp`, fsync the data, rename
+    /// `tmp` over `path`, then fsync the parent directory so the rename entry
+    /// itself is durable. Without the fsyncs a crash can make the rename's
+    /// metadata durable while the data blocks are not, leaving the destination
+    /// truncated or empty.
+    fn write_durable(tmp: &Path, path: &Path, bytes: &[u8]) -> Result<()> {
+        let mut file = fs::File::create(tmp)
+            .with_context(|| format!("create state tmp: {}", tmp.display()))?;
+        file.write_all(bytes)
+            .with_context(|| format!("write state tmp: {}", tmp.display()))?;
+        file.sync_all()
+            .with_context(|| format!("fsync state tmp: {}", tmp.display()))?;
+        drop(file);
+
+        fs::rename(tmp, path).with_context(|| format!("write state: {}", path.display()))?;
+
+        // fsync the parent directory so the rename is durable. Opening a
+        // directory as a file fails on some platforms (e.g. Windows); alembic
+        // targets Unix, so ignore that case gracefully.
+        let parent = path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        if let Ok(dir) = fs::File::open(parent) {
+            dir.sync_all()
+                .with_context(|| format!("fsync state dir: {}", parent.display()))?;
+        }
+        Ok(())
+    }
+}
+
 #[async_trait::async_trait]
 impl StateBackend for LocalBackend {
     async fn load(&mut self) -> Result<StateData> {
-        if self.path.exists() {
-            let raw = fs::read_to_string(&self.path)
-                .with_context(|| format!("read state: {}", self.path.display()))?;
-            let data = serde_json::from_str::<StateData>(&raw)
-                .with_context(|| format!("parse state: {}", self.path.display()))?;
-            Ok(data)
-        } else {
-            Ok(StateData::default())
-        }
+        read_state_file(&self.path)
     }
 
     async fn save(&mut self, data: &StateData) -> Result<()> {
@@ -153,11 +200,14 @@ impl StateBackend for LocalBackend {
                 .with_context(|| format!("create state dir: {}", parent.display()))?;
         }
         let raw = serde_json::to_string_pretty(data)?;
-        let tmp = self.path.with_extension("json.tmp");
-        fs::write(&tmp, &raw).with_context(|| format!("write state tmp: {}", tmp.display()))?;
-        fs::rename(&tmp, &self.path)
-            .with_context(|| format!("write state: {}", self.path.display()))?;
-        Ok(())
+        let tmp = self.tmp_path();
+
+        // Durably write to the temp file and rename it over the target. On any
+        // failure, best-effort remove the temp file so a partial write does not
+        // leak onto disk.
+        Self::write_durable(&tmp, &self.path, raw.as_bytes()).inspect_err(|_| {
+            let _ = fs::remove_file(&tmp);
+        })
     }
 }
 
@@ -440,5 +490,86 @@ mod tests {
         store.set_backend_id(t("x"), uid(1), BackendId::Int(1));
         store.load_async().await.unwrap();
         assert_eq!(store.backend_id(t("x"), uid(1)), Some(BackendId::Int(1)));
+    }
+
+    #[tokio::test]
+    async fn local_backend_save_leaves_no_tmp_file() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("state.json");
+        let mut backend = LocalBackend { path: path.clone() };
+
+        backend.save(&StateData::default()).await.unwrap();
+        assert!(path.exists());
+
+        let leftovers: Vec<String> = fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "leftover temp files: {leftovers:?}");
+    }
+
+    #[tokio::test]
+    async fn local_backend_save_creates_nested_parent_dirs() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("a").join("b").join("c").join("state.json");
+        let mut backend = LocalBackend { path: path.clone() };
+
+        backend.save(&StateData::default()).await.unwrap();
+        assert!(path.exists());
+    }
+
+    #[tokio::test]
+    async fn local_backend_load_corrupt_file_errors() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("state.json");
+        fs::write(&path, "{ this is not valid json").unwrap();
+        let mut backend = LocalBackend { path };
+
+        let err = backend.load().await.unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("corrupt"),
+            "error should mention corruption: {msg}"
+        );
+    }
+
+    #[test]
+    fn local_backend_tmp_path_contains_pid() {
+        let backend = LocalBackend {
+            path: PathBuf::from("/var/lib/alembic/state.json"),
+        };
+        let tmp = backend.tmp_path();
+        let name = tmp.to_string_lossy();
+        let pid = std::process::id().to_string();
+        assert!(
+            name.contains(pid.as_str()),
+            "temp name should contain the pid {pid}: {name}"
+        );
+        assert!(
+            name.ends_with(".tmp"),
+            "temp name should end with .tmp: {name}"
+        );
+        assert!(
+            name.starts_with("/var/lib/alembic/state.json"),
+            "temp name should extend the target path: {name}"
+        );
+    }
+
+    #[test]
+    fn state_store_load_missing_file_is_default() {
+        let dir = TempDir::new().unwrap();
+        let store = StateStore::load(dir.path().join("absent.json")).unwrap();
+        assert!(store.all_mappings().is_empty());
+    }
+
+    #[test]
+    fn state_store_load_corrupt_file_errors() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("state.json");
+        fs::write(&path, "not json at all").unwrap();
+        let err = StateStore::load(&path).unwrap_err();
+        assert!(format!("{err:#}").contains("corrupt"));
     }
 }
