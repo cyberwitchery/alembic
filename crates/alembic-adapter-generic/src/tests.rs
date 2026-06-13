@@ -1,5 +1,5 @@
 use super::*;
-use alembic_core::{FieldSchema, FieldType, TypeSchema};
+use alembic_core::{FieldSchema, FieldType, Key, TypeSchema};
 use alembic_engine::{StateData, StateStore};
 use httpmock::prelude::*;
 use httpmock::Method::PATCH;
@@ -125,6 +125,17 @@ fn test_schema() -> Schema {
 fn empty_schema() -> Schema {
     Schema {
         types: BTreeMap::new(),
+    }
+}
+
+fn field_schema(r#type: FieldType) -> FieldSchema {
+    FieldSchema {
+        r#type,
+        required: false,
+        nullable: false,
+        description: None,
+        format: None,
+        pattern: None,
     }
 }
 
@@ -271,31 +282,23 @@ fn test_resolve_value_for_type_list_ref_not_array() {
         &resolved,
     )
     .unwrap_err();
-    assert!(err.to_string().contains("expected array for list_ref"));
+    assert!(err.to_string().contains("list_ref value must be an array"));
 }
 
-// tests for resolve_ref_value
+// ref resolution now flows through the shared engine helper via the local
+// `resolve_value_for_type` wrapper (the generic adapter no longer keeps its own
+// `resolve_ref_value`); these exercise the wrapper's encode closure for string
+// backend ids and the error / MissingRef paths surfaced by the shared helper.
 #[test]
-fn test_resolve_ref_value_int_backend_id() {
-    let mut resolved = BTreeMap::new();
-    let uid = Uid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
-    resolved.insert(uid, BackendId::Int(42));
-
-    let result = resolve_ref_value(
-        serde_json::json!("550e8400-e29b-41d4-a716-446655440000"),
-        &resolved,
-    )
-    .unwrap();
-    assert_eq!(result, serde_json::json!(42));
-}
-
-#[test]
-fn test_resolve_ref_value_string_backend_id() {
+fn test_resolve_value_for_type_ref_string_backend_id() {
     let mut resolved = BTreeMap::new();
     let uid = Uid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
     resolved.insert(uid, BackendId::String("abc-123".to_string()));
 
-    let result = resolve_ref_value(
+    let result = resolve_value_for_type(
+        &FieldType::Ref {
+            target: "site".to_string(),
+        },
         serde_json::json!("550e8400-e29b-41d4-a716-446655440000"),
         &resolved,
     )
@@ -304,23 +307,40 @@ fn test_resolve_ref_value_string_backend_id() {
 }
 
 #[test]
-fn test_resolve_ref_value_not_string() {
+fn test_resolve_value_for_type_ref_not_string() {
     let resolved = BTreeMap::new();
-    let err = resolve_ref_value(serde_json::json!(42), &resolved).unwrap_err();
-    assert!(err.to_string().contains("ref must be uuid string"));
+    let err = resolve_value_for_type(
+        &FieldType::Ref {
+            target: "site".to_string(),
+        },
+        serde_json::json!(42),
+        &resolved,
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("ref value must be a uuid string"));
 }
 
 #[test]
-fn test_resolve_ref_value_invalid_uuid() {
+fn test_resolve_value_for_type_ref_invalid_uuid() {
     let resolved = BTreeMap::new();
-    let err = resolve_ref_value(serde_json::json!("not-a-uuid"), &resolved).unwrap_err();
-    assert!(err.to_string().contains("invalid uuid"));
+    let err = resolve_value_for_type(
+        &FieldType::Ref {
+            target: "site".to_string(),
+        },
+        serde_json::json!("not-a-uuid"),
+        &resolved,
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("ref value is not a uuid"));
 }
 
 #[test]
-fn test_resolve_ref_value_missing_uid() {
+fn test_resolve_value_for_type_ref_missing_uid() {
     let resolved = BTreeMap::new();
-    let err = resolve_ref_value(
+    let err = resolve_value_for_type(
+        &FieldType::Ref {
+            target: "site".to_string(),
+        },
         serde_json::json!("550e8400-e29b-41d4-a716-446655440000"),
         &resolved,
     )
@@ -374,6 +394,106 @@ fn test_resolve_attrs_missing_schema() {
     let resolved = BTreeMap::new();
     let err = resolve_attrs(&attrs, type_schema, &resolved).unwrap_err();
     assert!(err.to_string().contains("missing schema for field"));
+}
+
+// regression tests: the shared `resolve_value_for_type` resolves refs nested
+// inside `List` and `Map` fields when building the request body. The old local
+// copy fell through to `_ => Ok(value)` and silently left the raw uid strings,
+// so these fail before the consolidation and pass after it, bringing the generic
+// adapter in line with netbox/nautobot.
+#[test]
+fn test_resolve_attrs_resolves_refs_nested_in_list() {
+    let type_schema = TypeSchema {
+        key: BTreeMap::new(),
+        fields: BTreeMap::from([(
+            "members".to_string(),
+            field_schema(FieldType::List {
+                item: Box::new(FieldType::Ref {
+                    target: "site".to_string(),
+                }),
+            }),
+        )]),
+    };
+    let uid = Uid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
+    let mut resolved = BTreeMap::new();
+    resolved.insert(uid, BackendId::Int(123));
+
+    let attrs: JsonMap = serde_json::json!({
+        "members": ["550e8400-e29b-41d4-a716-446655440000"]
+    })
+    .as_object()
+    .unwrap()
+    .clone()
+    .into_iter()
+    .collect::<BTreeMap<_, _>>()
+    .into();
+
+    let body = resolve_attrs(&attrs, &type_schema, &resolved).unwrap();
+    assert_eq!(body, serde_json::json!({"members": [123]}));
+}
+
+#[test]
+fn test_resolve_attrs_resolves_refs_nested_in_map() {
+    let type_schema = TypeSchema {
+        key: BTreeMap::new(),
+        fields: BTreeMap::from([(
+            "links".to_string(),
+            field_schema(FieldType::Map {
+                value: Box::new(FieldType::Ref {
+                    target: "site".to_string(),
+                }),
+            }),
+        )]),
+    };
+    let uid = Uid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
+    let mut resolved = BTreeMap::new();
+    resolved.insert(uid, BackendId::String("dev-9".to_string()));
+
+    let attrs: JsonMap = serde_json::json!({
+        "links": {"primary": "550e8400-e29b-41d4-a716-446655440000"}
+    })
+    .as_object()
+    .unwrap()
+    .clone()
+    .into_iter()
+    .collect::<BTreeMap<_, _>>()
+    .into();
+
+    let body = resolve_attrs(&attrs, &type_schema, &resolved).unwrap();
+    assert_eq!(body, serde_json::json!({"links": {"primary": "dev-9"}}));
+}
+
+#[test]
+fn test_resolve_attrs_unresolved_nested_ref_surfaces_missing_ref() {
+    let type_schema = TypeSchema {
+        key: BTreeMap::new(),
+        fields: BTreeMap::from([(
+            "members".to_string(),
+            field_schema(FieldType::List {
+                item: Box::new(FieldType::Ref {
+                    target: "site".to_string(),
+                }),
+            }),
+        )]),
+    };
+    // empty `resolved` -> the nested uid cannot be resolved.
+    let resolved = BTreeMap::new();
+
+    let attrs: JsonMap = serde_json::json!({
+        "members": ["550e8400-e29b-41d4-a716-446655440000"]
+    })
+    .as_object()
+    .unwrap()
+    .clone()
+    .into_iter()
+    .collect::<BTreeMap<_, _>>()
+    .into();
+
+    let err = resolve_attrs(&attrs, &type_schema, &resolved).unwrap_err();
+    assert!(
+        is_missing_ref_error(&err),
+        "nested unresolved ref must surface MissingRef for the retry loop, got: {err}"
+    );
 }
 
 // tests for default functions
