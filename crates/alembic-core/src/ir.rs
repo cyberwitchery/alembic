@@ -170,7 +170,7 @@ fn canonicalize_number(v: Value) -> Value {
                 Value::Number(i.into())
             } else if let Some(f) = n.as_f64() {
                 let i = f.round() as i64;
-                if f64::abs(i as f64 - f) < 1e-5 {
+                if f64::abs(i as f64 - f) < 1e-9 {
                     Value::Number(i.into())
                 } else {
                     Value::Number(serde_json::Number::from_f64(f).unwrap())
@@ -1296,14 +1296,27 @@ mod tests {
     #[test]
     fn key_string_canonical_form() {
         let mut k = BTreeMap::new();
-        k.insert("a".to_string(), serde_json::json!(1.0000001)); // becomes int
-        k.insert("b".to_string(), serde_json::json!(2.001)); // kept as float
+        // Within 1e-9 of 2 — should collapse to int
+        k.insert("a".to_string(), serde_json::json!(2.0000000001));
+        // Meaningfully distinct from any integer — should be kept as float
+        k.insert("b".to_string(), serde_json::json!(1.000001));
+        // Within 1e-9 of 3 in a nested object — should collapse
         k.insert(
             "c".to_string(),
-            serde_json::json!({"d".to_string(): 2.99999999999}), // becomes int
+            serde_json::json!({"d".to_string(): 2.99999999999}),
         );
         let key = Key::from(k);
         let s = key_string(&key);
-        assert_eq!(s, "{\"a\":1,\"b\":2.001,\"c\":{\"d\":3}}");
+        assert_eq!(s, "{\"a\":2,\"b\":1.000001,\"c\":{\"d\":3}}");
+    }
+
+    #[test]
+    fn key_string_canonical_does_not_collapse_distinct_floats() {
+        // 1.000001 is only ~1e-6 from 1, well above the 1e-9 threshold
+        let mut k = BTreeMap::new();
+        k.insert("x".to_string(), serde_json::json!(1.000001));
+        let key = Key::from(k);
+        let s = key_string(&key);
+        assert_eq!(s, "{\"x\":1.000001}");
     }
 }
