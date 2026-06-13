@@ -88,26 +88,8 @@ impl NetBoxClient {
     }
 
     pub(super) async fn fetch_tags(&self) -> Result<BTreeSet<String>> {
-        let mut tags = BTreeSet::new();
-        let mut offset = 0usize;
-        let limit = 200usize;
-        loop {
-            let page = self
-                .client
-                .extras()
-                .tags()
-                .list(Some(QueryBuilder::default().limit(limit).offset(offset)))
-                .await?;
-            let page_count = page.results.len();
-            for tag in page.results {
-                tags.insert(tag.name);
-            }
-            if tags.len() >= page.count || page_count == 0 {
-                break;
-            }
-            offset += limit;
-        }
-        Ok(tags)
+        let tags = self.list_all(&self.client.extras().tags(), None).await?;
+        Ok(tags.into_iter().map(|t| t.name).collect())
     }
 
     pub(super) async fn fetch_object_types(&self) -> Result<ObjectTypeRegistry> {
