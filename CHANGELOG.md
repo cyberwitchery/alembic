@@ -13,6 +13,7 @@
 - cli: `plan --report` now surfaces the `extra` category (objects present on the backend but not declared in intent) without requiring `--allow-delete`; previously `extra` was silently always empty
 - cli: `plan --report` and `--dry-run` are now mutually exclusive (passing both is rejected) instead of silently ignoring `--dry-run`
 - engine: add `DriftReport` (built from a `&Plan`, with `Display` + `Serialize`) surfacing the desired-vs-observed diff as a one-way, read-only report
+- nautobot: intern the leaked resource paths in the adapter client so each distinct endpoint is leaked at most once for the process lifetime, instead of leaking a fresh `&'static str` on every `resource()` call (called per object type and on every per-op path); bounds an otherwise-unbounded per-call leak that matters for the planned long-running reconcile loop (alembic-ops #10)
 - cli: explain the file formats each subcommand reads and writes (#89). every argument now carries help text: `--file` inventories are YAML or JSON chosen by extension (`.json` => JSON, else YAML), `plan`/`map`/`import --output` are always JSON regardless of extension, and `apply --plan` is a JSON plan as produced by `alembic plan`. `--help` gains a long description documenting the IR format model in one place, and writing an always-JSON `--output` to a `.yaml`/`.yml` path now prints a non-fatal warning instead of silently producing JSON under a yaml name
 
 ## [0.3.0] - 2026-05-20
