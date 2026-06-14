@@ -882,7 +882,7 @@ mod tests {
                 },
             )]),
         };
-        // Empty types list should observe all types from registry
+        // empty types list should observe all types from registry
         let observed = adapter.read(&schema, &[], &state).await.unwrap();
         assert!(observed.by_key.is_empty());
     }

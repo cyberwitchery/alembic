@@ -20,7 +20,7 @@ pub(crate) struct Predicate {
     pub(crate) value: String,
 }
 
-/// Parse one or more `[field op value]` predicates from the start of `rest`
+/// parse one or more `[field op value]` predicates from the start of `rest`
 /// (e.g. `[role=leaf][vendor=cisco]`). Chained predicates are ANDed by the caller.
 pub(crate) fn parse_predicates(mut rest: &str) -> Result<Vec<Predicate>> {
     let mut predicates = Vec::new();
@@ -37,14 +37,14 @@ pub(crate) fn parse_predicates(mut rest: &str) -> Result<Vec<Predicate>> {
     Ok(predicates)
 }
 
-/// Parse the inside of a predicate. With an `=`, it is a value predicate
+/// parse the inside of a predicate. With an `=`, it is a value predicate
 /// (`field=value`, or `field!=value` when `!` immediately precedes the `=`) and
 /// the value is the literal remainder up to the closing `]`. With no `=`, it is
 /// an existence predicate: a bare `field` is `Exists`, and a leading `!`
 /// (`!field`) is `NotExists`. An empty field name is an error in every form.
 fn parse_predicate(inner: &str) -> Result<Predicate> {
     let Some(eq) = inner.find('=') else {
-        // No `=`: an existence predicate. A leading `!` negates it.
+        // no `=`: an existence predicate. A leading `!` negates it.
         let (op, field) = match inner.strip_prefix('!') {
             Some(rest) => (PredicateOp::NotExists, rest.trim()),
             None => (PredicateOp::Exists, inner.trim()),

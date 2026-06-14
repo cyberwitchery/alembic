@@ -128,7 +128,7 @@ fn empty_schema() -> Schema {
     }
 }
 
-// Tests for resolve_path
+// tests for resolve_path
 #[test]
 fn test_resolve_path_simple() {
     let value = serde_json::json!({"id": 42, "name": "test"});
@@ -157,7 +157,7 @@ fn test_resolve_path_not_found() {
     assert!(err.to_string().contains("path segment not found"));
 }
 
-// Tests for build_key_from_schema
+// tests for build_key_from_schema
 #[test]
 fn test_build_key_from_schema_success() {
     let schema = test_schema();
@@ -188,7 +188,7 @@ fn test_build_key_from_schema_missing_field() {
     assert!(err.to_string().contains("missing key field"));
 }
 
-// Tests for resolved_from_state
+// tests for resolved_from_state
 #[test]
 fn test_resolved_from_state_empty() {
     let state = new_state_store();
@@ -205,7 +205,7 @@ fn test_resolved_from_state_with_mappings() {
     assert_eq!(resolved.get(&uid), Some(&BackendId::Int(42)));
 }
 
-// Tests for resolve_value_for_type
+// tests for resolve_value_for_type
 #[test]
 fn test_resolve_value_for_type_string() {
     let resolved = BTreeMap::new();
@@ -274,7 +274,7 @@ fn test_resolve_value_for_type_list_ref_not_array() {
     assert!(err.to_string().contains("expected array for list_ref"));
 }
 
-// Tests for resolve_ref_value
+// tests for resolve_ref_value
 #[test]
 fn test_resolve_ref_value_int_backend_id() {
     let mut resolved = BTreeMap::new();
@@ -328,7 +328,7 @@ fn test_resolve_ref_value_missing_uid() {
     assert!(err.to_string().contains("missing referenced uid"));
 }
 
-// Tests for is_missing_ref_error
+// tests for is_missing_ref_error
 #[test]
 fn test_is_missing_ref_error_true() {
     let err = anyhow::Error::from(alembic_engine::AdapterApplyError::MissingRef {
@@ -343,7 +343,7 @@ fn test_is_missing_ref_error_false() {
     assert!(!is_missing_ref_error(&err));
 }
 
-// Tests for resolve_attrs
+// tests for resolve_attrs
 #[test]
 fn test_resolve_attrs_success() {
     let schema = test_schema();
@@ -376,7 +376,7 @@ fn test_resolve_attrs_missing_schema() {
     assert!(err.to_string().contains("missing schema for field"));
 }
 
-// Tests for default functions
+// tests for default functions
 #[test]
 fn test_default_id_path() {
     assert_eq!(default_id_path(), "id");
@@ -387,7 +387,7 @@ fn test_default_update_method() {
     assert_eq!(default_update_method(), "PATCH");
 }
 
-// Tests for DeleteStrategy
+// tests for DeleteStrategy
 #[test]
 fn test_delete_strategy_default() {
     let strategy = DeleteStrategy::default();
@@ -403,7 +403,7 @@ fn test_delete_strategy_serde() {
     assert!(matches!(none, DeleteStrategy::None));
 }
 
-// Tests for GenericConfig serialization
+// tests for GenericConfig serialization
 #[test]
 fn test_generic_config_serde() {
     let config = test_config("http://example.com");
@@ -413,7 +413,7 @@ fn test_generic_config_serde() {
     assert!(parsed.types.contains_key("device"));
 }
 
-// Tests for GenericAdapter::new
+// tests for GenericAdapter::new
 #[test]
 fn test_generic_adapter_new_success() {
     let config = test_config("http://example.com");
@@ -444,7 +444,7 @@ fn test_generic_adapter_new_invalid_header_name() {
     assert!(adapter.is_err());
 }
 
-// Tests for backend_id_to_url
+// tests for backend_id_to_url
 #[test]
 fn test_backend_id_to_url_int() {
     let config = test_config("http://example.com/");
@@ -463,7 +463,7 @@ fn test_backend_id_to_url_string() {
     assert_eq!(url, "http://example.com/api/devices/abc-123");
 }
 
-// Tests for observe with mocked server
+// tests for observe with mocked server
 #[tokio::test]
 async fn test_observe_with_results_path() {
     let server = MockServer::start();
@@ -669,7 +669,7 @@ async fn test_observe_missing_schema() {
     assert!(err.to_string().contains("missing schema for"));
 }
 
-// Tests for apply with mocked server
+// tests for apply with mocked server
 #[tokio::test]
 async fn test_apply_create() {
     let server = MockServer::start();
@@ -745,7 +745,7 @@ async fn test_apply_create_retries_out_of_order_dependencies() {
     device_attrs.insert("name".to_string(), serde_json::json!("leaf01"));
     device_attrs.insert("site".to_string(), serde_json::json!(site_uid.to_string()));
 
-    // Intentionally place the dependent object first to assert retry behavior.
+    // intentionally place the dependent object first to assert retry behavior.
     let ops = vec![
         Op::Create {
             uid: device_uid,
@@ -792,7 +792,7 @@ async fn test_apply_update_patch() {
     let uid = Uid::new_v4();
     state.set_backend_id(TypeName::new("device".to_string()), uid, BackendId::Int(42));
 
-    // Add a site reference that will be resolved
+    // add a site reference that will be resolved
     let site_uid = Uid::new_v4();
     state.set_backend_id(
         TypeName::new("site".to_string()),
@@ -1093,7 +1093,7 @@ async fn test_observe_non_object_in_results() {
         .await
         .unwrap_err();
 
-    // The error could be about missing id path since strings don't have "id"
+    // the error could be about missing id path since strings don't have "id"
     let err_str = err.to_string();
     assert!(
         err_str.contains("expected object in results")

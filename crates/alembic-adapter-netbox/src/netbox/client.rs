@@ -38,7 +38,7 @@ pub(super) struct NetBoxClient {
 impl NetBoxClient {
     pub(super) fn new(url: &str, token: &str) -> Result<Self> {
         let config = ClientConfig::new(url, token).with_http_client_builder(|builder| {
-            // Avoid macOS SystemConfiguration proxy panics in CLI runs.
+            // avoid macOS SystemConfiguration proxy panics in CLI runs.
             builder.no_proxy()
         });
         let client = Client::new(config)?;

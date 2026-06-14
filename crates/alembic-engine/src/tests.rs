@@ -818,7 +818,7 @@ async fn state_store_postgres_prevent_race_condition_when_configured() {
         .unwrap();
     store_a.save_async().await.unwrap(); // ensures a "1" (or higher) in the version column
 
-    // Another client connects to the database
+    // another client connects to the database
     let mut store_b = StateStore::load_postgres(url.clone(), key.clone(), PostgresTlsMode::Disable)
         .await
         .unwrap();
@@ -833,14 +833,14 @@ async fn state_store_postgres_prevent_race_condition_when_configured() {
 #[tokio::test]
 async fn state_store_load_async_no_backend() {
     let mut store = StateStore::new(None, StateData::default());
-    // Should succeed without error even with no backend
+    // should succeed without error even with no backend
     store.load_async().await.unwrap();
 }
 
 #[tokio::test]
 async fn state_store_save_async_no_backend() {
     let store = StateStore::new(None, StateData::default());
-    // Should succeed without error even with no backend
+    // should succeed without error even with no backend
     store.save_async().await.unwrap();
 }
 

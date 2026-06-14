@@ -8,19 +8,19 @@ use std::ops::{Deref, DerefMut};
 use std::path::PathBuf;
 use uuid::Uuid;
 
-/// Source location for tracking where an object was defined.
+/// source location for tracking where an object was defined.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceLocation {
-    /// Path to the source file.
+    /// path to the source file.
     pub file: PathBuf,
-    /// Line number in the file (1-indexed), if known.
+    /// line number in the file (1-indexed), if known.
     pub line: Option<usize>,
-    /// Column number in the file (1-indexed), if known.
+    /// column number in the file (1-indexed), if known.
     pub column: Option<usize>,
 }
 
 impl SourceLocation {
-    /// Create a source location with just a file path.
+    /// create a source location with just a file path.
     pub fn file(path: impl Into<PathBuf>) -> Self {
         Self {
             file: path.into(),
@@ -29,7 +29,7 @@ impl SourceLocation {
         }
     }
 
-    /// Create a source location with file and line number.
+    /// create a source location with file and line number.
     pub fn file_line(path: impl Into<PathBuf>, line: usize) -> Self {
         Self {
             file: path.into(),
@@ -586,7 +586,7 @@ pub struct Object {
 
 impl PartialEq for Object {
     fn eq(&self, other: &Self) -> bool {
-        // Source location is intentionally excluded from equality
+        // source location is intentionally excluded from equality
         self.uid == other.uid
             && self.type_name == other.type_name
             && self.key == other.key
@@ -634,7 +634,7 @@ impl Object {
         })
     }
 
-    /// Set the source location for this object.
+    /// set the source location for this object.
     pub fn with_source(mut self, source: SourceLocation) -> Self {
         self.source = Some(source);
         self
@@ -750,12 +750,12 @@ mod tests {
 
     #[test]
     fn field_schema_deserialization() {
-        // Simple type
+        // simple type
         let json = serde_json::json!({ "type": "string" });
         let schema: FieldSchema = serde_json::from_value(json).unwrap();
         assert_eq!(schema.r#type, FieldType::String);
 
-        // Map type
+        // map type
         let json = serde_json::json!({
             "type": "map",
             "value": "int"
@@ -768,7 +768,7 @@ mod tests {
             }
         );
 
-        // Enum type
+        // enum type
         let json = serde_json::json!({
             "type": "enum",
             "values": ["a", "b"]
@@ -781,7 +781,7 @@ mod tests {
             }
         );
 
-        // Complex nested
+        // complex nested
         let json = serde_json::json!({
             "type": "list",
             "item": { "type": "ref", "target": "test" }

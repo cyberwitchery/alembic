@@ -1033,8 +1033,8 @@ objects: []
 
 #[tokio::test(flavor = "multi_thread")]
 async fn minimal_external_adapter() {
-    // This test depends on the example "minimal_external_adapter" in this crate.
-    // Note that `cargo test` will build all examples, so we can expect the binary to exist.
+    // this test depends on the example "minimal_external_adapter" in this crate.
+    // note that `cargo test` will build all examples, so we can expect the binary to exist.
 
     let example_binary = find_example_binary("minimal_external_adapter");
 

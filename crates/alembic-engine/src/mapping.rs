@@ -1,12 +1,12 @@
-//! Shared mapping helpers used by multiple adapters.
+//! shared mapping helpers used by multiple adapters.
 
 use alembic_core::{FieldSchema, FieldType};
 use anyhow::{anyhow, Result};
 use serde_json::Value;
 
-/// Convert a human-readable label into a URL-safe slug.
+/// convert a human-readable label into a URL-safe slug.
 ///
-/// Lowercases all characters, replaces runs of non-alphanumeric characters
+/// lowercases all characters, replaces runs of non-alphanumeric characters
 /// with a single dash, and strips leading/trailing dashes.
 pub fn slugify(input: &str) -> String {
     let mut out = String::new();
@@ -30,7 +30,7 @@ pub fn slugify(input: &str) -> String {
     out
 }
 
-/// Map an Alembic field type to the backend custom-field type string.
+/// map an Alembic field type to the backend custom-field type string.
 pub fn custom_field_type_for_schema(field: &FieldSchema) -> String {
     match field.r#type {
         FieldType::Int => "integer".to_string(),
@@ -43,9 +43,9 @@ pub fn custom_field_type_for_schema(field: &FieldSchema) -> String {
     }
 }
 
-/// Extract tag names from a JSON value returned by a backend.
+/// extract tag names from a JSON value returned by a backend.
 ///
-/// Accepts arrays of strings or objects with `"name"` / `"slug"` fields,
+/// accepts arrays of strings or objects with `"name"` / `"slug"` fields,
 /// and returns the collected tag names.
 pub fn tags_from_value(value: &Value) -> Result<Vec<String>> {
     let items = match value {

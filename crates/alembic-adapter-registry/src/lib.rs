@@ -469,7 +469,7 @@ impl InfrahubSchemaConfig {
     }
 }
 
-/// A plugin is an external backend that can be
+/// a plugin is an external backend that can be
 /// referred to using its name instead of passing
 /// `--backend external --backend-config <path>` manually.
 #[derive(Debug)]
