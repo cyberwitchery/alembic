@@ -14,6 +14,7 @@
 - cli: `plan --report` and `--dry-run` are now mutually exclusive (passing both is rejected) instead of silently ignoring `--dry-run`
 - engine: add `DriftReport` (built from a `&Plan`, with `Display` + `Serialize`) surfacing the desired-vs-observed diff as a one-way, read-only report
 - cli: explain the file formats each subcommand reads and writes (#89). every argument now carries help text: `--file` inventories are YAML or JSON chosen by extension (`.json` => JSON, else YAML), `plan`/`map`/`import --output` are always JSON regardless of extension, and `apply --plan` is a JSON plan as produced by `alembic plan`. `--help` gains a long description documenting the IR format model in one place, and writing an always-JSON `--output` to a `.yaml`/`.yml` path now prints a non-fatal warning instead of silently producing JSON under a yaml name
+- generic adapter: resolve refs nested inside `list` and `map` fields when building request bodies. the generic adapter now consolidates onto the shared `alembic-engine` reference-resolution helpers (`build_key_from_schema`, `resolve_value_for_type`) instead of a divergent local copy that silently left such refs unresolved (raw uid strings in the body), bringing it in line with the netbox and nautobot adapters
 
 ## [0.3.0] - 2026-05-20
 
