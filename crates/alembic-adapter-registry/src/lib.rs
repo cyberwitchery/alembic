@@ -1,6 +1,5 @@
 //! adapter registry and config loading for alembic.
 
-use alembic_adapter_django::cast_django::DjangoConfig;
 use alembic_engine::{
     Adapter, ApplyReport, BackendId, ObservedObject, ObservedState, Op, ProvisionReport, StateData,
     StateStore,
@@ -16,6 +15,9 @@ use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use tokio::time::timeout;
+
+#[cfg(feature = "django")]
+use alembic_adapter_django::cast_django::DjangoConfig;
 
 const SUPPORTED_BACKENDS: &[&str] = &[
     #[cfg(feature = "netbox")]
