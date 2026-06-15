@@ -5,7 +5,7 @@ fn build_filter() -> EnvFilter {
 }
 
 pub(crate) fn init_tracing() {
-    // Use init() to fail fast if tracing is already initialized
+    // use init() to fail fast if tracing is already initialized
     tracing_subscriber::fmt()
         .with_env_filter(build_filter())
         .with_ansi(false)
@@ -20,7 +20,7 @@ mod tests {
     use super::*;
     use std::sync::Mutex;
 
-    // Serialize tests that mutate the shared RUST_LOG env var.
+    // serialize tests that mutate the shared RUST_LOG env var.
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]

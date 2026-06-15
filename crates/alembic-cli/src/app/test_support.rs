@@ -2,7 +2,7 @@ use super::Runner;
 use anyhow::Result;
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Call {
@@ -119,10 +119,10 @@ impl Runner for FixtureRunner {
     }
 }
 
-pub(crate) fn write_minimal_brew(dir: &Path) -> PathBuf {
-    let brew = dir.join("brew.yaml");
-    std::fs::write(&brew, "schema:\n  types: {}\nobjects: []\n").unwrap();
-    brew
+pub(crate) fn write_minimal_inventory(dir: &Path) -> PathBuf {
+    let inventory = dir.join("inventory.yaml");
+    std::fs::write(&inventory, "schema:\n  types: {}\nobjects: []\n").unwrap();
+    inventory
 }
 
 pub(crate) fn write_settings(output_dir: &Path, project_name: &str) -> PathBuf {
@@ -142,10 +142,10 @@ pub(crate) fn write_settings(output_dir: &Path, project_name: &str) -> PathBuf {
     settings
 }
 
-pub(crate) fn write_site_brew(dir: &Path) -> PathBuf {
-    let brew = dir.join("brew.yaml");
+pub(crate) fn write_site_inventory(dir: &Path) -> PathBuf {
+    let inventory = dir.join("inventory.yaml");
     std::fs::write(
-        &brew,
+        &inventory,
         r#"
 schema:
   types:
@@ -169,15 +169,79 @@ objects:
 "#,
     )
     .unwrap();
-    brew
+    inventory
 }
 
-pub(crate) fn env_lock() -> &'static Mutex<()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
+/// Serializes tests that read or mutate the process environment. It is a
+/// `tokio::sync::Mutex` (acquired through [`EnvVarGuard`]) so the async
+/// full-path tests can hold the guard across `.await` without tripping
+/// `clippy::await_holding_lock`.
+pub(crate) fn env_lock() -> &'static tokio::sync::Mutex<()> {
+    static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
 }
 
 pub(crate) fn cwd_lock() -> &'static tokio::sync::Mutex<()> {
     static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
+/// RAII guard that pins a set of environment variables for the lifetime of a
+/// test, restoring their prior values on drop.
+///
+/// Construction takes [`env_lock`], so env-mutating tests (the synchronous
+/// `resolve_state_backend_*` tests) and env-reading tests (the async full-path
+/// tests that resolve a state backend) serialize on the same lock and never
+/// race on the process environment. Use [`EnvVarGuard::acquire`] from `#[test]`
+/// functions and [`EnvVarGuard::acquire_async`] from `#[tokio::test]` functions.
+///
+/// Each override is `(name, value)`: `Some(v)` sets the variable to `v` and
+/// `None` removes it. The prior value of every named variable is restored when
+/// the guard drops, even on panic.
+pub(crate) struct EnvVarGuard {
+    _lock: tokio::sync::MutexGuard<'static, ()>,
+    saved: Vec<(String, Option<String>)>,
+}
+
+impl EnvVarGuard {
+    /// Acquire the env lock synchronously (for non-async tests) and apply
+    /// `overrides`.
+    pub(crate) fn acquire(overrides: &[(&str, Option<&str>)]) -> Self {
+        Self::with_lock(env_lock().blocking_lock(), overrides)
+    }
+
+    /// Acquire the env lock from an async context (for `#[tokio::test]` tests)
+    /// and apply `overrides`. The async-aware guard is safe to hold across
+    /// `.await`, unlike a `std::sync::MutexGuard`.
+    pub(crate) async fn acquire_async(overrides: &[(&str, Option<&str>)]) -> Self {
+        Self::with_lock(env_lock().lock().await, overrides)
+    }
+
+    fn with_lock(
+        lock: tokio::sync::MutexGuard<'static, ()>,
+        overrides: &[(&str, Option<&str>)],
+    ) -> Self {
+        let mut saved = Vec::with_capacity(overrides.len());
+        for (name, value) in overrides {
+            saved.push(((*name).to_string(), std::env::var(name).ok()));
+            match value {
+                Some(value) => std::env::set_var(name, value),
+                None => std::env::remove_var(name),
+            }
+        }
+        Self { _lock: lock, saved }
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        // restore in reverse insertion order so a name listed twice still ends
+        // up with its original value.
+        for (name, value) in self.saved.iter().rev() {
+            match value {
+                Some(value) => std::env::set_var(name, value),
+                None => std::env::remove_var(name),
+            }
+        }
+    }
 }

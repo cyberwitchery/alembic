@@ -664,6 +664,55 @@ mod tests {
         assert_eq!(report.applied.len(), 1);
     }
 
+    #[tokio::test]
+    async fn fetch_tags_paginates_across_all_pages() {
+        let server = MockServer::start();
+        let client = NetBoxClient::new(&server.base_url(), "token").unwrap();
+
+        // 250 unique tags spread across two pages exceeds the per-request
+        // limit of 200, so fetch_tags must follow pagination to see them all.
+        let total = 250usize;
+        let limit = 200usize;
+        let tag = |i: usize| json!({ "id": i, "name": format!("tag-{i:04}"), "slug": format!("tag-{i:04}") });
+        let first: Vec<serde_json::Value> = (0..limit).map(tag).collect();
+        let second: Vec<serde_json::Value> = (limit..total).map(tag).collect();
+
+        let _page_one = server.mock(|when, then| {
+            when.method(GET)
+                .path("/api/extras/tags/")
+                .query_param("limit", "200")
+                .query_param("offset", "0");
+            then.status(200).json_body(json!({
+                "count": total,
+                "next": null,
+                "previous": null,
+                "results": first,
+            }));
+        });
+        let _page_two = server.mock(|when, then| {
+            when.method(GET)
+                .path("/api/extras/tags/")
+                .query_param("limit", "200")
+                .query_param("offset", "200");
+            then.status(200).json_body(json!({
+                "count": total,
+                "next": null,
+                "previous": null,
+                "results": second,
+            }));
+        });
+
+        let tags = client.fetch_tags().await.unwrap();
+
+        assert_eq!(tags.len(), total);
+        // first/last of each page, proving both requests were made rather than
+        // stopping after the first page.
+        assert!(tags.contains("tag-0000"));
+        assert!(tags.contains("tag-0199"));
+        assert!(tags.contains("tag-0200"));
+        assert!(tags.contains("tag-0249"));
+    }
+
     #[test]
     fn slugify_normalizes_value() {
         assert_eq!(slugify("EVPN Fabric"), "evpn-fabric");
@@ -882,7 +931,7 @@ mod tests {
                 },
             )]),
         };
-        // Empty types list should observe all types from registry
+        // empty types list should observe all types from registry
         let observed = adapter.read(&schema, &[], &state).await.unwrap();
         assert!(observed.by_key.is_empty());
     }

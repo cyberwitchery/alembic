@@ -8,19 +8,19 @@ use std::ops::{Deref, DerefMut};
 use std::path::PathBuf;
 use uuid::Uuid;
 
-/// Source location for tracking where an object was defined.
+/// source location for tracking where an object was defined.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceLocation {
-    /// Path to the source file.
+    /// path to the source file.
     pub file: PathBuf,
-    /// Line number in the file (1-indexed), if known.
+    /// line number in the file (1-indexed), if known.
     pub line: Option<usize>,
-    /// Column number in the file (1-indexed), if known.
+    /// column number in the file (1-indexed), if known.
     pub column: Option<usize>,
 }
 
 impl SourceLocation {
-    /// Create a source location with just a file path.
+    /// create a source location with just a file path.
     pub fn file(path: impl Into<PathBuf>) -> Self {
         Self {
             file: path.into(),
@@ -29,7 +29,7 @@ impl SourceLocation {
         }
     }
 
-    /// Create a source location with file and line number.
+    /// create a source location with file and line number.
     pub fn file_line(path: impl Into<PathBuf>, line: usize) -> Self {
         Self {
             file: path.into(),
@@ -154,7 +154,39 @@ impl From<Key> for BTreeMap<String, Value> {
 }
 
 pub fn key_string(key: &Key) -> String {
-    serde_json::to_string(&key.0).unwrap_or_default()
+    let new_key: Key = Key(key
+        .0
+        .iter()
+        .map(|(k, v)| (k.clone(), canonicalize_number(v.clone())))
+        .collect());
+    serde_json::to_string(&new_key).unwrap_or_default()
+}
+
+/// prefer integer representation if lossless
+fn canonicalize_number(v: Value) -> Value {
+    match v {
+        Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Value::Number(i.into())
+            } else if let Some(f) = n.as_f64() {
+                let i = f.round() as i64;
+                if f64::abs(i as f64 - f) < 1e-5 {
+                    Value::Number(i.into())
+                } else {
+                    Value::Number(serde_json::Number::from_f64(f).unwrap())
+                }
+            } else {
+                Value::Number(n)
+            }
+        }
+        Value::Object(map) => Value::Object(
+            map.into_iter()
+                .map(|(k, v)| (k, canonicalize_number(v)))
+                .collect(),
+        ),
+        Value::Array(arr) => Value::Array(arr.into_iter().map(canonicalize_number).collect()),
+        other => other,
+    }
 }
 
 pub const ALEMBIC_UID_NAMESPACE: Uuid = Uuid::from_bytes([
@@ -554,7 +586,7 @@ pub struct Object {
 
 impl PartialEq for Object {
     fn eq(&self, other: &Self) -> bool {
-        // Source location is intentionally excluded from equality
+        // source location is intentionally excluded from equality
         self.uid == other.uid
             && self.type_name == other.type_name
             && self.key == other.key
@@ -602,7 +634,7 @@ impl Object {
         })
     }
 
-    /// Set the source location for this object.
+    /// set the source location for this object.
     pub fn with_source(mut self, source: SourceLocation) -> Self {
         self.source = Some(source);
         self
@@ -718,12 +750,12 @@ mod tests {
 
     #[test]
     fn field_schema_deserialization() {
-        // Simple type
+        // simple type
         let json = serde_json::json!({ "type": "string" });
         let schema: FieldSchema = serde_json::from_value(json).unwrap();
         assert_eq!(schema.r#type, FieldType::String);
 
-        // Map type
+        // map type
         let json = serde_json::json!({
             "type": "map",
             "value": "int"
@@ -736,7 +768,7 @@ mod tests {
             }
         );
 
-        // Enum type
+        // enum type
         let json = serde_json::json!({
             "type": "enum",
             "values": ["a", "b"]
@@ -749,7 +781,7 @@ mod tests {
             }
         );
 
-        // Complex nested
+        // complex nested
         let json = serde_json::json!({
             "type": "list",
             "item": { "type": "ref", "target": "test" }
@@ -1259,5 +1291,19 @@ mod tests {
         let key = Key::default();
         let s = key_string(&key);
         assert_eq!(s, "{}");
+    }
+
+    #[test]
+    fn key_string_canonical_form() {
+        let mut k = BTreeMap::new();
+        k.insert("a".to_string(), serde_json::json!(1.0000001)); // becomes int
+        k.insert("b".to_string(), serde_json::json!(2.001)); // kept as float
+        k.insert(
+            "c".to_string(),
+            serde_json::json!({"d".to_string(): 2.99999999999}), // becomes int
+        );
+        let key = Key::from(k);
+        let s = key_string(&key);
+        assert_eq!(s, "{\"a\":1,\"b\":2.001,\"c\":{\"d\":3}}");
     }
 }

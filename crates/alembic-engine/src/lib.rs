@@ -2,6 +2,7 @@
 
 mod adapter_ops;
 mod apply_retry;
+mod drift;
 mod errors;
 pub mod external;
 mod extract;
@@ -9,8 +10,10 @@ mod loader;
 pub mod mapping;
 mod pipeline;
 mod planner;
-mod retort;
+mod predicate;
+mod render;
 mod state;
+mod transform;
 mod types;
 
 use alembic_core::{key_string, validate_inventory, Inventory, Object, ValidationReport};
@@ -23,16 +26,17 @@ pub use adapter_ops::{
     build_key_from_schema, build_request_body, query_filters_from_key, resolve_value_for_type,
 };
 pub use apply_retry::{apply_non_delete_with_retries, RetryApplyDriver, RetryApplyResult};
+pub use drift::{ChangedEntry, DriftEntry, DriftReport};
 pub use errors::AdapterApplyError;
 pub use external::{
     run_external_adapter, ExternalAdapter, ExternalEnvelope, ExternalObject, ExternalRequest,
     ExternalResponse, EXTERNAL_PROTOCOL_VERSION,
 };
 pub use extract::{import_inventory, ImportReport};
-pub use loader::load_brew;
+pub use loader::load_inventory;
 pub use planner::{plan, sort_ops_for_apply};
-pub use retort::{compile_retort, is_brew_format, load_raw_yaml, load_retort, Retort};
 pub use state::{PostgresTlsMode, StateData, StateStore};
+pub use transform::{compile_map, load_map_spec, MapSpec};
 pub use types::{
     Adapter, AppliedOp, ApplyReport, BackendId, FieldChange, ObservedObject, ObservedState, Op,
     Plan, PlanSummary, ProvisionReport,

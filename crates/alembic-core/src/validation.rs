@@ -96,7 +96,7 @@ impl ValidationError {
     }
 }
 
-/// A validation error with optional source location.
+/// a validation error with optional source location.
 #[derive(Debug, Clone)]
 pub struct LocatedError {
     pub error: ValidationError,
@@ -143,12 +143,12 @@ impl ValidationReport {
         !self.errors.is_empty()
     }
 
-    /// Enrich errors with source locations from objects.
+    /// enrich errors with source locations from objects.
     ///
-    /// This matches errors to objects based on UIDs, types, and keys,
+    /// this matches errors to objects based on UIDs, types, and keys,
     /// and attaches the object's source location to the error.
     pub fn with_sources(self, objects: &[Object]) -> Vec<LocatedError> {
-        // Build lookup maps
+        // build lookup maps
         let uid_to_source: BTreeMap<Uid, Option<SourceLocation>> =
             objects.iter().map(|o| (o.uid, o.source.clone())).collect();
         let key_to_source: BTreeMap<String, Option<SourceLocation>> = objects
@@ -171,7 +171,7 @@ impl ValidationReport {
                     .and_then(|uid| uid_to_source.get(&uid).cloned().flatten())
                     .or_else(|| {
                         error.key_hint().and_then(|_| {
-                            // For DuplicateKey errors, try to find source
+                            // for DuplicateKey errors, try to find source
                             if let ValidationError::DuplicateKey(key) = &error {
                                 key_to_source.get(key).cloned().flatten()
                             } else {
@@ -180,7 +180,7 @@ impl ValidationReport {
                         })
                     })
                     .or_else(|| {
-                        // Try to match by type name in the error
+                        // try to match by type name in the error
                         error
                             .type_hint()
                             .and_then(|t| type_to_source.get(&t).cloned().flatten())
@@ -616,7 +616,9 @@ fn value_type_label(value: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::{FieldSchema, FieldType, JsonMap, Key, Object, Schema, TypeName, TypeSchema};
+    use crate::ir::{
+        FieldFormat, FieldSchema, FieldType, JsonMap, Key, Object, Schema, TypeName, TypeSchema,
+    };
     use serde_json::json;
     use std::collections::BTreeMap;
     use uuid::Uuid;
@@ -801,7 +803,7 @@ mod tests {
         let uid_to_type = BTreeMap::from([(uid(1), TypeName::new("target"))]);
         let mut report = ValidationReport::default();
 
-        // Test Type Mismatch
+        // test Type Mismatch
         let schema = FieldSchema {
             r#type: FieldType::Int,
             required: true,
@@ -823,7 +825,7 @@ mod tests {
             .iter()
             .any(|e| matches!(e, ValidationError::InvalidValue { .. })));
 
-        // Test Enum
+        // test Enum
         let schema = FieldSchema {
             r#type: FieldType::Enum {
                 values: vec!["a".to_string(), "b".to_string()],
@@ -848,7 +850,7 @@ mod tests {
             .iter()
             .any(|e| matches!(e, ValidationError::InvalidValue { .. })));
 
-        // Test Reference Type Mismatch
+        // test Reference Type Mismatch
         let schema = FieldSchema {
             r#type: FieldType::Ref {
                 target: "wrong".to_string(),
@@ -873,7 +875,7 @@ mod tests {
             .iter()
             .any(|e| matches!(e, ValidationError::ReferenceTypeMismatch { .. })));
 
-        // Test ListRef
+        // test ListRef
         let schema = FieldSchema {
             r#type: FieldType::ListRef {
                 target: "target".to_string(),
@@ -895,7 +897,7 @@ mod tests {
         );
         assert!(report.errors.is_empty());
 
-        // Test Map
+        // test Map
         let schema = FieldSchema {
             r#type: FieldType::Map {
                 value: Box::new(FieldType::Int),
@@ -920,7 +922,7 @@ mod tests {
             .iter()
             .any(|e| matches!(e, ValidationError::InvalidValue { .. })));
 
-        // Test Uuid
+        // test Uuid
         let schema = FieldSchema {
             r#type: FieldType::Uuid,
             required: true,
@@ -943,7 +945,7 @@ mod tests {
             .iter()
             .any(|e| matches!(e, ValidationError::InvalidValue { .. })));
 
-        // Test List of Refs
+        // test List of Refs
         let schema = FieldSchema {
             r#type: FieldType::List {
                 item: Box::new(FieldType::Ref {
@@ -966,5 +968,170 @@ mod tests {
             &mut report,
         );
         assert!(report.errors.is_empty());
+    }
+
+    // ----- string constraint (format / pattern) tests -----
+
+    /// build a string-typed field carrying a `format` constraint.
+    fn fmt_field(format: FieldFormat) -> FieldSchema {
+        FieldSchema {
+            r#type: FieldType::String,
+            required: true,
+            nullable: false,
+            description: None,
+            format: Some(format),
+            pattern: None,
+        }
+    }
+
+    /// build a string-typed field carrying a `pattern` constraint.
+    fn pattern_field(pattern: &str) -> FieldSchema {
+        FieldSchema {
+            r#type: FieldType::String,
+            required: true,
+            nullable: false,
+            description: None,
+            format: None,
+            pattern: Some(pattern.to_string()),
+        }
+    }
+
+    /// run `validate_field_value` against a value and return the report.
+    fn check(schema: &FieldSchema, value: &serde_json::Value) -> ValidationReport {
+        let uid_to_type: BTreeMap<Uid, TypeName> = BTreeMap::new();
+        let mut report = ValidationReport::default();
+        validate_field_value(
+            &TypeName::new("test"),
+            "field",
+            schema,
+            value,
+            &uid_to_type,
+            &mut report,
+        );
+        report
+    }
+
+    fn has_invalid_value(report: &ValidationReport) -> bool {
+        report
+            .errors
+            .iter()
+            .any(|e| matches!(e, ValidationError::InvalidValue { .. }))
+    }
+
+    #[test]
+    fn format_slug_accepts_valid_and_rejects_invalid() {
+        assert!(check(&fmt_field(FieldFormat::Slug), &json!("leaf-01"))
+            .errors
+            .is_empty());
+        // trailing hyphen is not allowed by the slug regex.
+        assert!(has_invalid_value(&check(
+            &fmt_field(FieldFormat::Slug),
+            &json!("leaf01-")
+        )));
+        // uppercase is not allowed either.
+        assert!(has_invalid_value(&check(
+            &fmt_field(FieldFormat::Slug),
+            &json!("Leaf01")
+        )));
+    }
+
+    #[test]
+    fn format_ip_address_accepts_valid_and_rejects_invalid() {
+        assert!(
+            check(&fmt_field(FieldFormat::IpAddress), &json!("10.0.0.1"))
+                .errors
+                .is_empty()
+        );
+        assert!(has_invalid_value(&check(
+            &fmt_field(FieldFormat::IpAddress),
+            &json!("not-an-ip")
+        )));
+    }
+
+    #[test]
+    fn format_cidr_and_prefix_accept_valid_and_reject_invalid() {
+        assert!(check(&fmt_field(FieldFormat::Cidr), &json!("10.0.0.0/24"))
+            .errors
+            .is_empty());
+        assert!(
+            check(&fmt_field(FieldFormat::Prefix), &json!("10.0.0.0/24"))
+                .errors
+                .is_empty()
+        );
+        assert!(has_invalid_value(&check(
+            &fmt_field(FieldFormat::Cidr),
+            &json!("not-a-cidr")
+        )));
+    }
+
+    #[test]
+    fn format_mac_accepts_valid_and_rejects_invalid() {
+        assert!(
+            check(&fmt_field(FieldFormat::Mac), &json!("aa:bb:cc:dd:ee:ff"))
+                .errors
+                .is_empty()
+        );
+        // too short to be a full mac address.
+        assert!(has_invalid_value(&check(
+            &fmt_field(FieldFormat::Mac),
+            &json!("aa:bb")
+        )));
+    }
+
+    #[test]
+    fn format_uuid_accepts_valid_and_rejects_invalid() {
+        assert!(
+            check(&fmt_field(FieldFormat::Uuid), &json!(uid(1).to_string()))
+                .errors
+                .is_empty()
+        );
+        assert!(has_invalid_value(&check(
+            &fmt_field(FieldFormat::Uuid),
+            &json!("not-a-uuid")
+        )));
+    }
+
+    #[test]
+    fn pattern_matches_and_mismatches() {
+        assert!(check(&pattern_field(r"^[a-z]+$"), &json!("abc"))
+            .errors
+            .is_empty());
+        assert!(has_invalid_value(&check(
+            &pattern_field(r"^[a-z]+$"),
+            &json!("ABC")
+        )));
+    }
+
+    #[test]
+    fn invalid_pattern_reports_error_without_panicking() {
+        // an unparsable regex must surface a clean InvalidValue, not panic.
+        let report = check(&pattern_field("["), &json!("anything"));
+        assert!(report.errors.iter().any(|e| matches!(
+            e,
+            ValidationError::InvalidValue { actual, .. } if actual.contains("invalid pattern")
+        )));
+    }
+
+    #[test]
+    fn format_or_pattern_requires_string_value() {
+        // a json base type accepts the number through the type check, so the
+        // only error comes from the string-constraint `as_str` else-branch.
+        let mut schema = fmt_field(FieldFormat::Slug);
+        schema.r#type = FieldType::Json;
+        let report = check(&schema, &json!(42));
+        assert_eq!(report.errors.len(), 1);
+        assert!(report.errors.iter().any(|e| matches!(
+            e,
+            ValidationError::InvalidValue { expected, .. } if expected == "string"
+        )));
+
+        let mut schema = pattern_field(r"^\d+$");
+        schema.r#type = FieldType::Json;
+        let report = check(&schema, &json!(42));
+        assert_eq!(report.errors.len(), 1);
+        assert!(report.errors.iter().any(|e| matches!(
+            e,
+            ValidationError::InvalidValue { expected, .. } if expected == "string"
+        )));
     }
 }

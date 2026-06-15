@@ -1,16 +1,14 @@
 # cli
 
-alembic ships a single cli binary with validate, plan, apply, distill, import, and cast subcommands.
+alembic ships a single cli binary with validate, import, map, plan, apply, and cast subcommands.
 
 ## validate
 
 ```bash
-alembic validate -f examples/brew.yaml
-alembic validate -f examples/raw.yaml --retort examples/retort.yaml
+alembic validate -f examples/inventory.yaml
 ```
 
-- loads and validates a brew file (plus includes)
-- or compiles raw yaml with a retort before validation
+- loads and validates an inventory file (plus includes)
 - exits non-zero on validation errors
 
 ## backend config
@@ -77,18 +75,46 @@ $ alembic apply --backend my_adapter
 ## plan
 
 ```bash
-alembic plan -f examples/brew.yaml -o plan.json \
+alembic plan -f examples/inventory.yaml -o plan.json \
   --backend-config examples/backend-netbox.yaml
 
 NETBOX_URL=https://netbox.example.com NETBOX_TOKEN=$NETBOX_TOKEN \
-  alembic plan --backend netbox -f examples/brew.yaml -o plan.json
+  alembic plan --backend netbox -f examples/inventory.yaml -o plan.json
 ```
 
 - creates a deterministic plan
 - writes json plan to the output path
 - honors `--allow-delete` if you want delete ops
 - `--provision` runs adapter provisioning (`ensure_schema`) before observing backend state
+- `--dry-run` prints the raw plan json instead of writing it
+- `--report` prints a read-only drift report and exits without writing a plan file or saving state
+- `--report` and `--dry-run` are mutually exclusive (both exit without applying); passing both is rejected at parse time
 - accepts any type string and arbitrary attrs (schema validation is required)
+
+### drift report
+
+```bash
+NETBOX_URL=https://netbox.example.com NETBOX_TOKEN=$NETBOX_TOKEN \
+  alembic plan --backend netbox -f examples/inventory.yaml -o plan.json --report
+```
+
+`--report` surfaces the same desired-vs-observed diff that `plan` computes, as a
+standalone human-readable summary grouped into three categories:
+
+- **changed**: declared and present on the backend, but one or more fields diverge (lists the per-field `from -> to`)
+- **missing**: declared in intent but absent from the backend
+- **extra**: present on the backend but not declared in intent
+
+it is one-way by construction: it only ever describes how observed state diverges
+from intent and never writes observed state back into the inventory or state
+store. `--output` is still required (as with `--dry-run`) but nothing is written
+to it.
+
+note that combining `--report` with `--provision` is not fully read-only:
+`--provision` still runs adapter provisioning (`ensure_schema`) against the
+backend before the report is computed, which can issue schema writes (e.g.
+creating netbox custom fields/tags). the report itself remains read-only; the
+schema writes come from `--provision`, not from the report.
 
 ## apply
 
@@ -104,40 +130,44 @@ alembic apply -p plan.json \
 
 - applies a plan file
 - deletes are blocked unless `--allow-delete` is provided
-- `--interactive` prompts per operation and applies only approved ops through the same engine path used by non-interactive apply
+- `--interactive` prompts per operation and applies only approved ops
+  through the same engine path used by non-interactive apply
 - the `peeringdb` backend is read-only; apply will return an error
-- apply runs adapter provisioning (`ensure_schema`) before writes; for netbox this can create custom fields/tags and custom object types when supported
-- infrahub provisioning can generate and load a schema file when configured in the backend config
+- apply runs adapter provisioning (`ensure_schema`) before writes; for
+  netbox this can create custom fields/tags and custom object types
+  when supported
+- infrahub provisioning can generate and load a schema file when
+  configured in the backend config
 
-## distill
+note that apply has no transaction semantics. state is persisted after each successful write, so a crash partway through leaves backend objects with no corresponding cleanup and no rollback.
+
+## map
 
 ```bash
-alembic distill -f examples/raw.yaml --retort examples/retort.yaml -o ir.json
+alembic map -f examples/map-input.yaml --spec examples/map.yaml -o ir.json
 ```
 
-- compiles raw yaml into the canonical ir
-- outputs deterministic json for debugging
+- transforms an ir inventory into another ir inventory (ir to ir)
+- `--spec` declares the target schema and the rename/reshape rules
+- output is validated against the target schema; see `docs/map.md`
 
 ## import
 
-```bash
-alembic import -o inventory.yaml \
-  --backend-config examples/backend-nautobot.yaml \
-  --retort examples/retort.yaml
+observe a backend's live state into canonical ir.
 
-alembic import -o inventory.yaml \
-  --backend-config examples/backend-infrahub.yaml \
-  --retort examples/retort.yaml
+```bash
+alembic import -f examples/inventory.yaml -o observed.yaml \
+  --backend-config examples/backend-nautobot.yaml
 ```
 
-- observes backend state and emits a canonical inventory
-- `--retort` provides required schema metadata (retort inversion is not implemented; warning emitted)
+- `-f` is your inventory; its `schema` selects which types to observe.
+- `-o` receives the observed inventory (ir).
 - `peeringdb` uses `PEERINGDB_API_KEY` for authentication
 
 ## cast
 
 ```bash
-alembic cast django -f examples/brew.yaml -o ./out \
+alembic cast django -f examples/inventory.yaml -o ./out \
   --project alembic_project \
   --app alembic_app \
   --python python3

@@ -1,11 +1,10 @@
-# brew vs raw
+# inventory
 
-alembic consumes yaml or json files. yaml is recommended. there are two input modes:
+an inventory is a canonical ir file: a `schema` block plus `objects`. alembic
+consumes yaml or json (yaml recommended). this is the authored source of truth;
+it is also what `import` writes when it observes a backend.
 
-- brew: canonical ir objects at `objects:`.
-- raw + retort: arbitrary yaml compiled into ir.
-
-## brew format
+## inventory format
 
 ```yaml
 include:
@@ -37,7 +36,7 @@ objects:
 
 ## schema
 
-brew files must define schema metadata alongside objects.
+inventory files must define schema metadata alongside objects.
 
 ```yaml
 schema:
@@ -68,14 +67,3 @@ json is supported when the file extension is `.json`.
 - keep `key` human-readable and stable across renames where possible.
 - keys are canonicalized as JSON for matching and sorting.
 - never include backend ids in `attrs`.
-
-## raw + retort
-
-raw yaml uses any shape you want, and a retort mapping compiles it into the ir.
-
-```bash
-alembic distill -f examples/raw.yaml --retort examples/retort.yaml -o ir.json
-```
-
-- if the input has a top-level `objects` list, alembic treats it as brew and ignores retort.
-- otherwise, `--retort` is required for validate/plan.

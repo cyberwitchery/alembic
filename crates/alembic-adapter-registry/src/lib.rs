@@ -17,10 +17,15 @@ use tokio::process::Command;
 use tokio::time::timeout;
 
 const SUPPORTED_BACKENDS: &[&str] = &[
+    #[cfg(feature = "netbox")]
     "netbox",
+    #[cfg(feature = "nautobot")]
     "nautobot",
+    #[cfg(feature = "infrahub")]
     "infrahub",
+    #[cfg(feature = "generic")]
     "generic",
+    #[cfg(feature = "peeringdb")]
     "peeringdb",
     "external",
 ];
@@ -28,26 +33,34 @@ const SUPPORTED_BACKENDS: &[&str] = &[
 #[derive(Debug, Deserialize)]
 #[serde(tag = "backend", rename_all = "kebab-case")]
 pub enum AdapterConfig {
+    #[cfg(feature = "netbox")]
     Netbox(NetboxConfig),
+    #[cfg(feature = "nautobot")]
     Nautobot(NautobotConfig),
+    #[cfg(feature = "infrahub")]
     Infrahub(InfrahubConfig),
+    #[cfg(feature = "generic")]
     Generic(GenericConfig),
+    #[cfg(feature = "peeringdb")]
     Peeringdb,
     External(ExternalConfig),
 }
 
+#[cfg(feature = "netbox")]
 #[derive(Debug, Deserialize)]
 pub struct NetboxConfig {
     pub url: Option<String>,
     pub token: Option<String>,
 }
 
+#[cfg(feature = "nautobot")]
 #[derive(Debug, Deserialize)]
 pub struct NautobotConfig {
     pub url: Option<String>,
     pub token: Option<String>,
 }
 
+#[cfg(feature = "infrahub")]
 #[derive(Debug, Deserialize)]
 pub struct InfrahubConfig {
     pub url: Option<String>,
@@ -57,6 +70,7 @@ pub struct InfrahubConfig {
     pub schema: Option<InfrahubSchemaConfig>,
 }
 
+#[cfg(feature = "generic")]
 #[derive(Debug, Deserialize)]
 pub struct GenericConfig {
     pub config: Option<alembic_adapter_generic::GenericConfig>,
@@ -76,6 +90,7 @@ pub struct ExternalConfig {
     pub setup: serde_yaml::Value,
 }
 
+#[cfg(feature = "infrahub")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum InfrahubSchemaMode {
@@ -85,6 +100,7 @@ pub enum InfrahubSchemaMode {
     Repository,
 }
 
+#[cfg(feature = "infrahub")]
 #[derive(Debug, Deserialize)]
 pub struct InfrahubSchemaConfig {
     #[serde(default)]
@@ -100,10 +116,15 @@ pub struct InfrahubSchemaConfig {
 impl AdapterConfig {
     fn backend_name(&self) -> &'static str {
         match self {
+            #[cfg(feature = "netbox")]
             AdapterConfig::Netbox(_) => "netbox",
+            #[cfg(feature = "nautobot")]
             AdapterConfig::Nautobot(_) => "nautobot",
+            #[cfg(feature = "infrahub")]
             AdapterConfig::Infrahub(_) => "infrahub",
+            #[cfg(feature = "generic")]
             AdapterConfig::Generic(_) => "generic",
+            #[cfg(feature = "peeringdb")]
             AdapterConfig::Peeringdb => "peeringdb",
             AdapterConfig::External(_) => "external",
         }
@@ -111,24 +132,29 @@ impl AdapterConfig {
 
     fn from_env(plugins: &[Plugin], backend: &str) -> Result<Self> {
         match backend.to_lowercase().as_str() {
+            #[cfg(feature = "netbox")]
             "netbox" => Ok(AdapterConfig::Netbox(NetboxConfig {
                 url: None,
                 token: None,
             })),
+            #[cfg(feature = "nautobot")]
             "nautobot" => Ok(AdapterConfig::Nautobot(NautobotConfig {
                 url: None,
                 token: None,
             })),
+            #[cfg(feature = "infrahub")]
             "infrahub" => Ok(AdapterConfig::Infrahub(InfrahubConfig {
                 url: None,
                 token: None,
                 branch: None,
                 schema: None,
             })),
+            #[cfg(feature = "generic")]
             "generic" => Ok(AdapterConfig::Generic(GenericConfig {
                 config: None,
                 config_path: None,
             })),
+            #[cfg(feature = "peeringdb")]
             "peeringdb" => Ok(AdapterConfig::Peeringdb),
             "external" => Ok(AdapterConfig::External(ExternalConfig {
                 command: None,
@@ -159,18 +185,21 @@ impl AdapterConfig {
 
     pub fn build(self) -> Result<Box<dyn Adapter>> {
         match self {
+            #[cfg(feature = "netbox")]
             AdapterConfig::Netbox(cfg) => {
                 let (url, token) = resolve_credentials("NETBOX", cfg.url, cfg.token)?;
                 Ok(Box::new(alembic_adapter_netbox::NetBoxAdapter::new(
                     &url, &token,
                 )?))
             }
+            #[cfg(feature = "nautobot")]
             AdapterConfig::Nautobot(cfg) => {
                 let (url, token) = resolve_credentials("NAUTOBOT", cfg.url, cfg.token)?;
                 Ok(Box::new(alembic_adapter_nautobot::NautobotAdapter::new(
                     &url, &token,
                 )?))
             }
+            #[cfg(feature = "infrahub")]
             AdapterConfig::Infrahub(cfg) => {
                 let (url, token) = resolve_credentials("INFRAHUB", cfg.url, cfg.token)?;
                 let mut adapter = alembic_adapter_infrahub::InfrahubAdapter::new(
@@ -185,6 +214,7 @@ impl AdapterConfig {
                 }
                 Ok(Box::new(adapter))
             }
+            #[cfg(feature = "generic")]
             AdapterConfig::Generic(cfg) => {
                 if cfg.config.is_some() && cfg.config_path.is_some() {
                     return Err(anyhow!(
@@ -208,6 +238,7 @@ impl AdapterConfig {
                     config,
                 )?))
             }
+            #[cfg(feature = "peeringdb")]
             AdapterConfig::Peeringdb => {
                 Ok(Box::new(alembic_adapter_peeringdb::PeeringDBAdapter::new()))
             }
@@ -395,6 +426,7 @@ struct ObservedObjectData {
     backend_id: Option<BackendId>,
 }
 
+#[cfg(feature = "infrahub")]
 impl InfrahubSchemaConfig {
     fn build(self) -> Result<Option<alembic_adapter_infrahub::SchemaPushConfig>> {
         if self.mode == InfrahubSchemaMode::None {
@@ -437,7 +469,7 @@ impl InfrahubSchemaConfig {
     }
 }
 
-/// A plugin is an external backend that can be
+/// a plugin is an external backend that can be
 /// referred to using its name instead of passing
 /// `--backend external --backend-config <path>` manually.
 #[derive(Debug)]
@@ -507,8 +539,8 @@ mod tests {
     use super::resolve_credentials;
     use super::AdapterConfig;
     use super::ExternalConfig;
+    #[cfg(feature = "infrahub")]
     use super::InfrahubSchemaConfig;
-    use super::InfrahubSchemaMode;
     use alembic_core::{JsonMap, Key, Object, Schema, TypeName, Uid};
     use alembic_engine::{BackendId, Op, StateData, StateStore};
     use serde_json::json;
@@ -583,8 +615,10 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "infrahub")]
     #[test]
     fn infrahub_schema_none_is_noop() {
+        use crate::InfrahubSchemaMode;
         let config = InfrahubSchemaConfig {
             mode: InfrahubSchemaMode::None,
             schema_path: None,

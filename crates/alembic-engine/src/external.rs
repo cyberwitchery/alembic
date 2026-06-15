@@ -329,7 +329,7 @@ mod tests {
             assert!(run_external_adapter(adapter, (in_reader, out_writer)).is_ok());
         });
 
-        // The 'Write' request is booby trapped on TestExternalAdapter
+        // the 'Write' request is booby trapped on TestExternalAdapter
         let request = ExternalRequest::Write {
             schema: Default::default(),
             ops: vec![],
