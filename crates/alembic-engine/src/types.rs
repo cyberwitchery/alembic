@@ -173,6 +173,12 @@ impl ObservedState {
         }
 
         let key = (object.type_name.clone(), key_string(&object.key));
+        if self.by_key.contains_key(&key) {
+            return Err(anyhow!(
+                "ObservedState already contains an object with natural key {:?}",
+                key
+            ));
+        }
         self.by_key.insert(key, object);
 
         Ok(())
