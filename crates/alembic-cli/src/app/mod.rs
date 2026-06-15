@@ -311,14 +311,18 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                 args,
             }) => {
                 let spec = alembic_engine::load_map_spec(&spec)?;
-                let value: serde_json::Value = serde_json::from_str(&value)
-                    .map_err(|err| anyhow!("value is not valid json: {err}"))?;
+                let parse_json = |label: &str, raw: &str| -> Result<serde_json::Value> {
+                    serde_json::from_str(raw).map_err(|err| {
+                        anyhow!(
+                            "{label} is not valid json: {err}\n\
+                             hint: string values need json quoting, e.g. '\"{raw}\"'"
+                        )
+                    })
+                };
+                let value = parse_json("value", &value)?;
                 let args = args
                     .iter()
-                    .map(|arg| {
-                        serde_json::from_str(arg)
-                            .map_err(|err| anyhow!("argument {arg} is not valid json: {err}"))
-                    })
+                    .map(|arg| parse_json(&format!("argument {arg}"), arg))
                     .collect::<Result<Vec<serde_json::Value>>>()?;
                 let result = alembic_engine::eval_map_transform(&spec, &name, &value, &args)?;
                 println!("{}", serde_json::to_string(&result)?);

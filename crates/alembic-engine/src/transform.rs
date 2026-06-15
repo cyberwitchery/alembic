@@ -1064,8 +1064,8 @@ transforms:
     mod starlark {
         use super::*;
 
-        /// the issue's motivating example: a netbox-shaped address with a cidr
-        /// suffix denormalised into a connectable `ansible_host`.
+        /// the motivating example: a netbox-shaped address with a cidr suffix
+        /// denormalised into a connectable `ansible_host`.
         #[test]
         fn inline_transform_derives_attr_end_to_end() {
             let input = input_inventory(json!([
@@ -1119,8 +1119,8 @@ rules:
             );
         }
 
-        /// a transform returning a dict lands typed in a `json`-typed attr and
-        /// passes schema validation.
+        /// a transform returning a dict fills a `json`-typed attr with the dict
+        /// preserved, and passes schema validation.
         #[test]
         fn typed_dict_return_fills_a_json_attr() {
             let input = input_inventory(json!([
@@ -1211,9 +1211,10 @@ rules:
             }
         }
 
-        /// a file-based transforms block with a `load()` dependency, loaded the
-        /// way the cli does it: `load_map_spec` captures the spec directory and
-        /// both paths resolve against it.
+        /// a file-based transforms block whose script has a `load()` dependency,
+        /// loaded the way the cli does: `load_map_spec` captures the spec
+        /// directory, and both the transforms file and its `load()` target
+        /// resolve against it.
         #[test]
         fn file_transforms_with_load_resolve_against_the_spec_dir() {
             let dir = tempfile::tempdir().unwrap();
