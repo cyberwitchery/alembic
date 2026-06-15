@@ -165,13 +165,7 @@ impl AdapterConfig {
             "peeringdb" => Ok(AdapterConfig::Peeringdb),
             #[cfg(feature = "django")]
             "django" => Ok(AdapterConfig::Django(DjangoConfig {
-                file: Default::default(),
-                output: Default::default(),
-                project: None,
-                app: None,
-                python: "".to_string(),
-                no_migrate: false,
-                no_admin: false,
+                ..DjangoConfig::default()
             })),
             "external" => Ok(AdapterConfig::External(ExternalConfig {
                 command: None,

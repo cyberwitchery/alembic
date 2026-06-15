@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use crate::DjangoEmitOptions;
-use alembic_engine::load_inventory;
+use alembic_core::Inventory;
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -61,7 +61,6 @@ impl Default for CommandRunner {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct DjangoConfig {
-    pub file: PathBuf,
     pub output: PathBuf,
     #[serde(default)]
     pub project: Option<String>,
@@ -78,8 +77,7 @@ pub struct DjangoConfig {
 impl Default for DjangoConfig {
     fn default() -> Self {
         DjangoConfig {
-            file: Default::default(),
-            output: Default::default(),
+            output: "./out".into(),
             project: None,
             app: None,
             python: "python3".to_string(),
@@ -89,8 +87,11 @@ impl Default for DjangoConfig {
     }
 }
 
-pub fn run_cast_django(runner: &dyn Runner, config: &DjangoConfig) -> Result<()> {
-    let inventory = load_inventory(&config.file)?;
+pub fn run_cast_django(
+    runner: &dyn Runner,
+    inventory: &Inventory,
+    config: &DjangoConfig,
+) -> Result<()> {
     let project_name = config.project.as_deref().unwrap_or("alembic_project");
     let app_name = config.app.as_deref().unwrap_or("alembic_app");
     validate_python_identifier(project_name, "project")?;
@@ -107,7 +108,7 @@ pub fn run_cast_django(runner: &dyn Runner, config: &DjangoConfig) -> Result<()>
     let options = DjangoEmitOptions {
         emit_admin: !config.no_admin,
     };
-    crate::emit_django_app(&app_dir, &inventory, options)?;
+    crate::emit_django_app(&app_dir, inventory, options)?;
     ensure_installed_apps_entries(output_dir, project_name, &["rest_framework", app_name])?;
     ensure_project_urls(output_dir, project_name, app_name)?;
     run_manage_check(runner, output_dir, &config.python)?;
@@ -164,7 +165,7 @@ fn ensure_python_has_django(runner: &dyn Runner, python: &str) -> Result<()> {
     match runner.run(python, &["-c", "import django"], None) {
         Ok(()) => Ok(()),
         Err(_) => Err(anyhow!(
-            "django is not available for {}; install it (pip install django)",
+            "django is not available for python version '{}'; install it (pip install django)",
             python
         )),
     }

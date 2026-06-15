@@ -2,7 +2,7 @@ use super::test_support::*;
 use super::*;
 use alembic_adapter_django::cast_django::{run_cast_django, DjangoConfig};
 use alembic_adapter_registry::{AdapterConfig, ExternalConfig};
-use alembic_core::Schema;
+use alembic_core::{Inventory, Schema};
 use alembic_engine::{Op, StateData, StateStore};
 use std::collections::BTreeMap;
 use tempfile::tempdir;
@@ -270,13 +270,17 @@ fn cast_django_runs_migrations_by_default() {
     std::fs::create_dir_all(&output).unwrap();
     std::fs::write(output.join("manage.py"), "").unwrap();
     write_settings(&output, "alembic_project");
-    let inventory = write_minimal_inventory(dir.path());
+    let minimal_inventory = Inventory {
+        schema: Default::default(),
+        objects: vec![],
+    };
+    let _inventory = write_minimal_inventory(dir.path());
 
     let runner = MockRunner::new();
     run_cast_django(
         &runner,
+        &minimal_inventory,
         &DjangoConfig {
-            file: inventory,
             output: output.clone(),
             project: Some("alembic_project".to_string()),
             app: Some("alembic_app".to_string()),
@@ -334,13 +338,17 @@ fn cast_django_skips_migrate_with_flag() {
     std::fs::create_dir_all(&output).unwrap();
     std::fs::write(output.join("manage.py"), "").unwrap();
     write_settings(&output, "alembic_project");
-    let inventory = write_minimal_inventory(dir.path());
+    let minimal_inventory = Inventory {
+        schema: Default::default(),
+        objects: vec![],
+    };
+    let _inventory = write_minimal_inventory(dir.path());
 
     let runner = MockRunner::new();
     run_cast_django(
         &runner,
+        &minimal_inventory,
         &DjangoConfig {
-            file: inventory,
             output: output.clone(),
             project: Some("alembic_project".to_string()),
             app: Some("alembic_app".to_string()),
@@ -366,11 +374,12 @@ fn cast_django_integration_writes_generated_files() {
     let output = dir.path().join("out");
     let inventory = write_site_inventory(dir.path());
     let runner = FixtureRunner::new(output.clone());
+    let site_inventory = load_inventory(inventory).unwrap();
 
     run_cast_django(
         &runner,
+        &site_inventory,
         &DjangoConfig {
-            file: inventory,
             output: output.clone(),
             project: Some("alembic_project".to_string()),
             app: Some("alembic_app".to_string()),
