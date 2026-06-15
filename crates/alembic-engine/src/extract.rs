@@ -236,12 +236,14 @@ mod tests {
     fn observed_of(items: &[(&str, &str, serde_json::Value)]) -> ObservedState {
         let mut state = ObservedState::default();
         for (index, (type_name, key, attrs)) in items.iter().enumerate() {
-            state.insert(crate::ObservedObject {
-                type_name: TypeName::new(*type_name),
-                key: key_str(key),
-                attrs: attrs_map(attrs.clone()),
-                backend_id: Some(BackendId::Int((index + 1) as u64)),
-            });
+            state
+                .insert(crate::ObservedObject {
+                    type_name: TypeName::new(*type_name),
+                    key: key_str(key),
+                    attrs: attrs_map(attrs.clone()),
+                    backend_id: Some(BackendId::Int((index + 1) as u64)),
+                })
+                .unwrap();
         }
         state
     }
