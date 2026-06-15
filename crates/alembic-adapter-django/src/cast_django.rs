@@ -64,12 +64,16 @@ pub struct DjangoConfig {
     pub project: Option<String>,
     #[serde(default)]
     pub app: Option<String>,
-    #[serde(default)]
+    #[serde(default = "default_python")]
     pub python: String,
     #[serde(default)]
     pub no_migrate: bool,
     #[serde(default)]
     pub no_admin: bool,
+}
+
+fn default_python() -> String {
+    "python".to_string()
 }
 
 impl Default for DjangoConfig {
