@@ -73,7 +73,6 @@ pub fn run_apply_django(fixture: &str) {
 
     let data = format!(
         r"backend: django
-file: {}
 output: {}
 project: alembic_project
 app: alembic_app
