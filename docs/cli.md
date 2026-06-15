@@ -151,6 +151,18 @@ alembic map -f examples/map-input.yaml --spec examples/map.yaml -o ir.json
 - `--spec` declares the target schema and the rename/reshape rules
 - output is validated against the target schema; see `docs/map.md`
 
+### map transform
+
+```bash
+alembic map transform --spec examples/map.yaml site_code '"fra1"'
+```
+
+- evaluates a single transform (user-defined or built-in) against a
+  json-encoded value, without an inventory or backend — the iteration loop for
+  writing a spec's starlark transforms (see `docs/map.md`, transforms)
+- extra positional arguments are json-encoded transform arguments
+- prints the typed result as json; `fail()` exits non-zero with the message
+
 ## import
 
 observe a backend's live state into canonical ir.

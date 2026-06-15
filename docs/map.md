@@ -82,7 +82,73 @@ strings support `${var}` substitution and `${var|transform|...}` pipelines
 preserves the value's type; embedded or transformed vars are coerced to text
 (numbers and bools to their natural form), while nulls, arrays, and objects in a
 template are an error. `slug` lowercases and collapses non-`[a-z0-9]` runs to a
-single `-`.
+single `-`. the one exception to the coercion rule: in `attrs:` templates, a
+transformed lone placeholder keeps the transform's typed result (see transforms
+below).
+
+## transforms
+
+the built-in four cover renaming-shaped work; everything else is a user-defined
+transform, written in [starlark](https://github.com/bazelbuild/starlark) and
+loaded from the spec's `transforms:` block:
+
+```yaml
+transforms:
+  file: ./transforms.star   # or `inline: |` for short ones
+```
+
+```python
+# transforms.star
+ANSIBLE_OS = {
+    "ios":   "cisco.ios.ios",
+    "nxos":  "cisco.nxos.nxos",
+    "eos":   "arista.eos.eos",
+}
+
+def cidr_host(v):
+    return v.split("/")[0]
+
+def ansible_os(platform):
+    if platform not in ANSIBLE_OS:
+        fail("no ansible_network_os mapping for platform: " + platform)
+    return ANSIBLE_OS[platform]
+```
+
+every top-level `def` becomes a transform, used through the same pipeline
+syntax: `${attrs.primary_ip|cidr_host}`. semantics:
+
+- `${var|name}` resolves `name` against user transforms first, then the built-in
+  four, so a user transform may shadow a built-in.
+- `${var|name(arg, ...)}` passes literal arguments after the piped value;
+  chaining is unchanged, so `${x|f|g(2)}` is `g(f(x), 2)`. literals are quoted
+  strings (single or double, with `\\`, `\'`, `\"`, `\n`, `\t` escapes),
+  integers, floats, and `true`/`false` — no variable references, and `${` cannot
+  appear inside an argument.
+- typed returns: in `attrs:` templates a transformed value keeps its starlark
+  type (str/int/bool/list/dict mapped to json), so a transform returning a dict
+  lands in a `json`-typed attr as structured data. `key:` templates feed uid
+  derivation and stay strings: scalar returns are coerced, lists and dicts are
+  an error. embedded templates (`"a ${x|f} b"`) coerce to text as always.
+- `fail("message")` rejects a value; the error surfaces in the usual
+  `rule <name>: ... in <context>` shape with a starlark traceback.
+- transforms are hermetic: no i/o, no `while`, no recursion, so they terminate
+  and map runs stay deterministic. `load()` works but only with relative paths,
+  which all resolve against the spec file's directory (transitive loads too).
+
+requires the `starlark` cargo feature on `alembic-engine` (the cli binary ships
+with it enabled).
+
+to iterate on a transform without an inventory or backend, evaluate it directly:
+
+```bash
+$ alembic map transform --spec map.yaml ansible_os '"nxos"'
+"cisco.nxos.nxos"
+$ alembic map transform --spec map.yaml cidr_host '"10.0.0.1/24"'
+"10.0.0.1"
+```
+
+the value (and any extra arguments) are json-encoded; the typed result is
+printed as json, and `fail()` exits non-zero with the message.
 
 ## uid
 

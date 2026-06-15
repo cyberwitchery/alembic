@@ -12,7 +12,7 @@ readme = "../../README.md"
 
 [dependencies]
 alembic-core.workspace = true
-alembic-engine.workspace = true
+alembic-engine = { workspace = true, features = ["starlark"] }
 alembic-adapter-registry = { workspace = true, features = ["all"] }
 alembic-adapter-django.workspace = true
 anyhow.workspace = true

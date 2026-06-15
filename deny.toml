@@ -1,5 +1,20 @@
 [advisories]
-ignore = []
+ignore = [
+    # async-std is discontinued but only pulled in transitively by httpmock
+    # (a dev dependency). No runtime impact and no direct replacement available.
+    "RUSTSEC-2025-0052",
+    # atomic-polyfill is unmaintained; pulled in transitively by the starlark
+    # crate (via pagable -> postcard -> heapless). Unmaintained-only advisory,
+    # not a vulnerability; upstream's to fix.
+    "RUSTSEC-2023-0089",
+    # derivative is unmaintained; a direct dependency of the starlark crate.
+    # Same situation as atomic-polyfill above.
+    "RUSTSEC-2024-0388",
+    # fxhash and paste are unmaintained; both pulled in transitively by the
+    # starlark crate. Unmaintained-only advisories, not vulnerabilities.
+    "RUSTSEC-2025-0057",
+    "RUSTSEC-2024-0436",
+]
 
 [licenses]
 allow = [
@@ -14,6 +29,11 @@ allow = [
     "Unicode-3.0",
     "Unicode-DFS-2016",
     "CDLA-Permissive-2.0",
+    # BSL-1.0 (Boost) and Zlib entered with the starlark dependency tree
+    # (rustyline's windows clipboard crates; foldhash via hashbrown). Both are
+    # permissive, OSI-approved licenses.
+    "BSL-1.0",
+    "Zlib",
 ]
 exceptions = [
     # aws-lc-sys vendors AWS-LC (a BoringSSL fork), whose license expression

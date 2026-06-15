@@ -6,6 +6,10 @@
 # `schema` is the target schema; the output is validated against it. each rule
 # selects source objects by a type pattern (with optional predicates) and emits
 # target objects, reusing the mapping layer's template + transform syntax.
+# user-defined transforms (starlark) join the `${var|...}` pipeline alongside
+# the built-ins; `site_code` below comes from this file.
+transforms:
+  file: ./transforms.star
 schema:
   types:
     location.site:
@@ -14,6 +18,8 @@ schema:
           type: slug
       fields:
         label:
+          type: string
+        code:
           type: string
     infra.device:
       key:
@@ -38,6 +44,7 @@ rules:
         slug: "${key.slug}"
       attrs:
         label: "${attrs.name|upper}"
+        code: "${key.slug|site_code}"
 
   # a predicate keeps only leaf devices; the carried `site` ref is rewired to the
   # renamed site by the ref pass.
