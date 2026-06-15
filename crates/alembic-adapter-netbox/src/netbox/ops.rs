@@ -1755,6 +1755,27 @@ mod test_normalization {
     }
 
     #[test]
+    fn test_unwrap_generic_object_request() {
+        let mut map = Map::new();
+        map.insert(
+            "a_terminations".to_string(),
+            json!([{
+                    "object": "81c0681f-7147-5efb-a42a-68900b05c58d",
+                    "object_id": 1,
+                    "object_type": "dcim.interface",
+            }]),
+        );
+        let mut attrs: JsonMap = map.into_iter().collect::<BTreeMap<_, _>>().into();
+
+        let type_name = TypeName::new("dcim.cable".to_string());
+        unwrap_generic_object_request(&mut attrs, &type_name).unwrap();
+        assert_eq!(
+            attrs["a_terminations"],
+            json!(["81c0681f-7147-5efb-a42a-68900b05c58d"])
+        );
+    }
+
+    #[test]
     fn test_supports_feature() {
         let mut features = BTreeSet::new();
         features.insert("tags".to_string());
