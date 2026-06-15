@@ -537,14 +537,14 @@ fn unwrap_generic_object_request(attrs: &mut JsonMap, type_name: &TypeName) -> R
                 for a in attr_value.as_array().unwrap() {
                     let generic_object_request =
                         serde_json::from_value::<GenericObjectRequest>(a.clone())?;
-                    let json_uid = Uid::from_u128(generic_object_request.object_id).to_string();
+                    let json_uid = Uid::parse_str(&generic_object_request.object)?.to_string();
                     arr.push(Value::String(json_uid));
                 }
                 *attr_value = Value::Array(arr);
             } else {
                 let generic_object_request =
                     serde_json::from_value::<GenericObjectRequest>(attr_value.clone())?;
-                let json_uid = Uid::from_u128(generic_object_request.object_id).to_string();
+                let json_uid = Uid::parse_str(&generic_object_request.object)?.to_string();
                 *attr_value = Value::String(json_uid);
             }
         }
@@ -1523,7 +1523,7 @@ fn collect_missing_refs(value: &Value, resolved: &BTreeMap<Uid, u64>, missing: &
 
 #[derive(Debug, Serialize, Deserialize)]
 struct GenericObjectRequest {
-    object: u128,
+    object: String,
     object_id: u128,
     object_type: String,
 }
