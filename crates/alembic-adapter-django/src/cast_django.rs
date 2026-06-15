@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use crate::DjangoEmitOptions;
 use alembic_core::Inventory;
 use anyhow::{anyhow, Context, Result};
