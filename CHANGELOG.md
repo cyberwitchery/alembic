@@ -2,6 +2,10 @@
 
 ## [unreleased]
 
+- **breaking** removed the `cast` (django) command and turned it into
+  a django adapter that performs the django project generation as a part
+  of `write`
+
 - **breaking** — removed the raw-yaml→ir mapping engine and its surface (#41). the `distill` subcommand and the raw→ir compiler (formerly `retort`) are gone, and `import` is now backend-only: `import -f <inventory> -o <out>` observes a backend for the types in the inventory's schema. ir comes only from authored inventory files or backend observation; there is no "compile arbitrary yaml/csv into ir" path. the `brew` noun is retired for `inventory` (`docs/brew.md`→`docs/inventory.md`, `examples/brew.yaml`→`examples/inventory.yaml`). the command set is now `validate / import / map / plan / apply` (+ `cast`)
 
 - engine: add `map`, an ir to ir transformation layer (#43): a rule selects source objects by a type-name pattern with optional field predicates (`dcim.device[attrs.role=leaf]`, prefix globs like `dcim.*`, bare `*`) and emits one or more target objects via `${...}` templates with transforms (`upper`/`lower`/`trim`/`slug`) over a fixed `${uid}` / `${type}` / `${key.*}` / `${attrs.*}` var namespace (nested attrs addressable by path). uids default to `uid_v5(target_type, target_key)`; `ref`/`list_ref` attrs are rewired from source to target uids automatically for 1:1 renames, and a multi-emit wires cross-object refs explicitly through named `uids` (`${uids.name}`). output is validated against the target schema; the transform is pure so maps chain
