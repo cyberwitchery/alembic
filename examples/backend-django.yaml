@@ -1,5 +1,4 @@
 backend: django
-file: ./examples/inventory.yaml
 output: ./out
 project: alembic_project
 app: alembic_app
