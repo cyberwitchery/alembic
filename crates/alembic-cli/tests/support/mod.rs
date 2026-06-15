@@ -69,7 +69,6 @@ pub fn run_apply_django(fixture: &str) {
     let bin = bin_path();
     let out = tempdir().expect("create temp dir");
     let config_file_path = out.path().join("django.yaml");
-    println!("config file path: {:?}", config_file_path);
 
     let data = format!(
         r"backend: django
