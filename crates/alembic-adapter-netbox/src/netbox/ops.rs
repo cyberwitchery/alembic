@@ -14,6 +14,7 @@ use alembic_engine::{
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use netbox::{BulkDelete, QueryBuilder, Resource};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -60,6 +61,8 @@ impl Adapter for NetBoxAdapter {
             for object in objects {
                 let (backend_id, mut attrs) = extract_attrs(object)?;
                 normalize_attrs(&mut attrs, type_schema, schema, &registry, &mappings);
+                unwrap_generic_object_request(&mut attrs, &type_name)?;
+
                 let key = build_key_from_schema(type_schema, &attrs)
                     .with_context(|| format!("build key for {}", type_name))?;
                 state.insert(ObservedObject {
@@ -524,6 +527,30 @@ impl Adapter for NetBoxAdapter {
             deleted_object_fields,
         })
     }
+}
+
+fn unwrap_generic_object_request(attrs: &mut JsonMap, type_name: &TypeName) -> Result<()> {
+    for (attr_name, attr_value) in attrs.iter_mut() {
+        if netbox::is_generic_fk(type_name.as_str(), attr_name) {
+            if attr_value.is_array() {
+                let mut arr: Vec<Value> = Vec::new();
+                for a in attr_value.as_array().unwrap() {
+                    let generic_object_request =
+                        serde_json::from_value::<GenericObjectRequest>(a.clone())?;
+                    let json_uid = Uid::parse_str(&generic_object_request.object)?.to_string();
+                    arr.push(Value::String(json_uid));
+                }
+                *attr_value = Value::Array(arr);
+            } else {
+                let generic_object_request =
+                    serde_json::from_value::<GenericObjectRequest>(attr_value.clone())?;
+                let json_uid = Uid::parse_str(&generic_object_request.object)?.to_string();
+                *attr_value = Value::String(json_uid);
+            }
+        }
+    }
+
+    Ok(())
 }
 
 impl NetBoxAdapter {
@@ -1494,6 +1521,13 @@ fn collect_missing_refs(value: &Value, resolved: &BTreeMap<Uid, u64>, missing: &
     }
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+struct GenericObjectRequest {
+    object: String,
+    object_id: u128,
+    object_type: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::is_conflict_error;
@@ -1717,6 +1751,27 @@ mod test_normalization {
         assert_eq!(
             wrapped,
             json!([{"object_type": "dcim.interface", "object_id": 1000}, {"object_type": "dcim.interface", "object_id": 42}])
+        );
+    }
+
+    #[test]
+    fn test_unwrap_generic_object_request() {
+        let mut map = Map::new();
+        map.insert(
+            "a_terminations".to_string(),
+            json!([{
+                    "object": "81c0681f-7147-5efb-a42a-68900b05c58d",
+                    "object_id": 1,
+                    "object_type": "dcim.interface",
+            }]),
+        );
+        let mut attrs: JsonMap = map.into_iter().collect::<BTreeMap<_, _>>().into();
+
+        let type_name = TypeName::new("dcim.cable".to_string());
+        unwrap_generic_object_request(&mut attrs, &type_name).unwrap();
+        assert_eq!(
+            attrs["a_terminations"],
+            json!(["81c0681f-7147-5efb-a42a-68900b05c58d"])
         );
     }
 
