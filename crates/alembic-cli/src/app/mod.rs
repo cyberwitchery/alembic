@@ -13,7 +13,10 @@ use std::fs;
 use std::path::PathBuf;
 
 use self::diag::err;
-use self::io::{format_validation_errors, read_plan, write_inventory, write_plan};
+use self::io::{
+    format_validation_errors, read_plan, warn_misleading_output_extension, write_inventory,
+    write_plan,
+};
 use self::state::load_state;
 use crate::app::config::AppConfig;
 use alembic_core::TypeName;
@@ -30,7 +33,19 @@ use std::path::Path;
 /// top-level cli definition.
 #[derive(Parser)]
 #[command(name = "alembic")]
-#[command(about = "Data-model-first converger + loader for DCIM/IPAM")]
+#[command(
+    about = "Data-model-first converger + loader for DCIM/IPAM (YAML/JSON inventories in, JSON plans out)"
+)]
+#[command(long_about = "\
+Data-model-first converger + loader for DCIM/IPAM.
+
+File formats are chosen by file extension:
+  - inventories (IR) are authored as YAML or JSON: a .json extension is parsed as
+    JSON, anything else (.yaml, .yml, or no extension) is parsed as YAML. each
+    inventory carries a schema block plus optional include/imports.
+  - plans (plan --output) and observed or transformed IR (import --output and
+    map --output) are always written as JSON, regardless of the path extension.
+  - apply --plan consumes a JSON plan file as produced by alembic plan.")]
 pub(crate) struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -172,6 +187,9 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                 let raw = serde_json::to_string_pretty(&plan)?;
                 println!("{raw}");
             } else {
+                if let Some(msg) = warn_misleading_output_extension(&output) {
+                    eprintln!("{msg}");
+                }
                 write_plan(&output, &plan)?;
                 state.save_async().await?;
                 if let Some(s) = &plan.summary {
@@ -264,6 +282,9 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             let input = load_inventory(&file)?;
             let spec = alembic_engine::load_map_spec(&spec)?;
             let inventory = alembic_engine::compile_map(&input, &spec)?;
+            if let Some(msg) = warn_misleading_output_extension(&output) {
+                eprintln!("{msg}");
+            }
             write_inventory(&output, &inventory)?;
             println!("ir written to {}", output.display());
         }
@@ -287,6 +308,9 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                 &state,
             )
             .await?;
+            if let Some(msg) = warn_misleading_output_extension(&output) {
+                eprintln!("{msg}");
+            }
             write_inventory(&output, &report.inventory)?;
             println!("inventory written to {}", output.display());
         }

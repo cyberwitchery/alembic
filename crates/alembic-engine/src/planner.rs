@@ -686,7 +686,7 @@ mod tests {
             },
         ];
         let sorted = sort_ops_for_apply(&ops, &empty_schema());
-        // Both deletes come last, sorted alphabetically by type
+        // both deletes come last, sorted alphabetically by type
         assert!(
             matches!(&sorted[0], Op::Delete { type_name, .. } if type_name.as_str() == "a.type")
         );
