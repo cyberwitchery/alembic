@@ -79,7 +79,6 @@ python: python3
 no_migrate: false
 no_admin: false",
         fixture_path(fixture).display(),
-        out.path().to_str().unwrap(),
     );
     fs::write(&config_file_path, data).expect("write config file to temp dir");
 
