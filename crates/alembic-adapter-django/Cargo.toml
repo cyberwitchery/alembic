@@ -1,20 +1,22 @@
 [package]
-name = "alembic-django"
+name = "alembic-adapter-django"
 version = "0.3.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-documentation = "https://docs.rs/alembic-django"
+documentation = "https://docs.rs/alembic-adapter-django"
 description = "Django app scaffolding for Alembic."
 readme = "../../README.md"
 
 [dependencies]
+alembic-engine.workspace = true
 alembic-core.workspace = true
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+async-trait.workspace = true
 
 [dev-dependencies]
 tempfile = { workspace = true }

@@ -1,6 +1,7 @@
 //! core engine types and adapter contract.
 
 use alembic_core::{key_string, JsonMap, Key, Object, Schema, TypeName, Uid};
+use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -157,13 +158,30 @@ pub struct ObservedState {
 
 impl ObservedState {
     /// insert an observed object into both indexes.
-    pub fn insert(&mut self, object: ObservedObject) {
+    /// Disallows duplicate backend ids.
+    pub fn insert(&mut self, object: ObservedObject) -> Result<()> {
         if let Some(id) = &object.backend_id {
-            self.by_backend_id
-                .insert((object.type_name.clone(), id.clone()), object.clone());
+            let key = (object.type_name.clone(), id.clone());
+            if self.by_backend_id.contains_key(&key) {
+                return Err(anyhow!(
+                    "ObservedState already contains an object with backend id {} for type {}",
+                    id,
+                    object.type_name
+                ));
+            }
+            self.by_backend_id.insert(key, object.clone());
         }
-        self.by_key
-            .insert((object.type_name.clone(), key_string(&object.key)), object);
+
+        let key = (object.type_name.clone(), key_string(&object.key));
+        if self.by_key.contains_key(&key) {
+            return Err(anyhow!(
+                "ObservedState already contains an object with natural key {:?}",
+                key
+            ));
+        }
+        self.by_key.insert(key, object);
+
+        Ok(())
     }
 }
 

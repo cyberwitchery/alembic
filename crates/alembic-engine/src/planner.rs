@@ -446,12 +446,14 @@ mod tests {
             make_attrs(&[("name", json!("FRA2"))]),
         )];
         let mut observed = ObservedState::default();
-        observed.insert(ObservedObject {
-            type_name: TypeName::new("dcim.site"),
-            key: make_key("fra1"),
-            attrs: make_attrs(&[("name", json!("FRA1"))]),
-            backend_id: Some(BackendId::Int(100)),
-        });
+        observed
+            .insert(ObservedObject {
+                type_name: TypeName::new("dcim.site"),
+                key: make_key("fra1"),
+                attrs: make_attrs(&[("name", json!("FRA1"))]),
+                backend_id: Some(BackendId::Int(100)),
+            })
+            .unwrap();
         let result = plan(&desired, &observed, &empty_state(), &empty_schema(), false);
         assert_eq!(result.ops.len(), 1);
         match &result.ops[0] {
@@ -477,12 +479,14 @@ mod tests {
             make_attrs(&[("name", json!("FRA1"))]),
         )];
         let mut observed = ObservedState::default();
-        observed.insert(ObservedObject {
-            type_name: TypeName::new("dcim.site"),
-            key: make_key("fra1"),
-            attrs: make_attrs(&[("name", json!("FRA1"))]),
-            backend_id: Some(BackendId::Int(100)),
-        });
+        observed
+            .insert(ObservedObject {
+                type_name: TypeName::new("dcim.site"),
+                key: make_key("fra1"),
+                attrs: make_attrs(&[("name", json!("FRA1"))]),
+                backend_id: Some(BackendId::Int(100)),
+            })
+            .unwrap();
         let result = plan(&desired, &observed, &empty_state(), &empty_schema(), false);
         assert!(result.ops.is_empty());
     }
@@ -491,12 +495,14 @@ mod tests {
     fn plan_deletes_unmatched_when_allowed() {
         let desired = vec![];
         let mut observed = ObservedState::default();
-        observed.insert(ObservedObject {
-            type_name: TypeName::new("dcim.site"),
-            key: make_key("fra1"),
-            attrs: make_attrs(&[("name", json!("FRA1"))]),
-            backend_id: Some(BackendId::Int(100)),
-        });
+        observed
+            .insert(ObservedObject {
+                type_name: TypeName::new("dcim.site"),
+                key: make_key("fra1"),
+                attrs: make_attrs(&[("name", json!("FRA1"))]),
+                backend_id: Some(BackendId::Int(100)),
+            })
+            .unwrap();
         let result = plan(&desired, &observed, &empty_state(), &empty_schema(), true);
         assert_eq!(result.ops.len(), 1);
         assert!(matches!(
@@ -512,12 +518,14 @@ mod tests {
     fn plan_no_deletes_when_disallowed() {
         let desired = vec![];
         let mut observed = ObservedState::default();
-        observed.insert(ObservedObject {
-            type_name: TypeName::new("dcim.site"),
-            key: make_key("fra1"),
-            attrs: make_attrs(&[("name", json!("FRA1"))]),
-            backend_id: Some(BackendId::Int(100)),
-        });
+        observed
+            .insert(ObservedObject {
+                type_name: TypeName::new("dcim.site"),
+                key: make_key("fra1"),
+                attrs: make_attrs(&[("name", json!("FRA1"))]),
+                backend_id: Some(BackendId::Int(100)),
+            })
+            .unwrap();
         let result = plan(&desired, &observed, &empty_state(), &empty_schema(), false);
         assert!(result.ops.is_empty());
     }
@@ -531,12 +539,14 @@ mod tests {
             make_attrs(&[("name", json!("FRA1"))]),
         )];
         let mut observed = ObservedState::default();
-        observed.insert(ObservedObject {
-            type_name: TypeName::new("dcim.site"),
-            key: make_key("fra1"),
-            attrs: make_attrs(&[("name", json!("FRA1"))]),
-            backend_id: Some(BackendId::Int(100)),
-        });
+        observed
+            .insert(ObservedObject {
+                type_name: TypeName::new("dcim.site"),
+                key: make_key("fra1"),
+                attrs: make_attrs(&[("name", json!("FRA1"))]),
+                backend_id: Some(BackendId::Int(100)),
+            })
+            .unwrap();
         let result = plan(&desired, &observed, &empty_state(), &empty_schema(), true);
         assert!(result.ops.is_empty());
     }
@@ -558,18 +568,22 @@ mod tests {
             ),
         ];
         let mut observed = ObservedState::default();
-        observed.insert(ObservedObject {
-            type_name: TypeName::new("dcim.site"),
-            key: make_key("fra1"),
-            attrs: make_attrs(&[("name", json!("FRA1"))]),
-            backend_id: Some(BackendId::Int(100)),
-        });
-        observed.insert(ObservedObject {
-            type_name: TypeName::new("dcim.site"),
-            key: make_key("lhr1"),
-            attrs: make_attrs(&[("name", json!("LHR1"))]),
-            backend_id: Some(BackendId::Int(200)),
-        });
+        observed
+            .insert(ObservedObject {
+                type_name: TypeName::new("dcim.site"),
+                key: make_key("fra1"),
+                attrs: make_attrs(&[("name", json!("FRA1"))]),
+                backend_id: Some(BackendId::Int(100)),
+            })
+            .unwrap();
+        observed
+            .insert(ObservedObject {
+                type_name: TypeName::new("dcim.site"),
+                key: make_key("lhr1"),
+                attrs: make_attrs(&[("name", json!("LHR1"))]),
+                backend_id: Some(BackendId::Int(200)),
+            })
+            .unwrap();
         let result = plan(&desired, &observed, &empty_state(), &empty_schema(), true);
 
         let creates: Vec<_> = result
@@ -614,12 +628,14 @@ mod tests {
             make_attrs(&[("name", json!("FRA2"))]),
         )];
         let mut observed = ObservedState::default();
-        observed.insert(ObservedObject {
-            type_name: TypeName::new("dcim.site"),
-            key: make_key("fra1"),
-            attrs: make_attrs(&[("name", json!("FRA1"))]),
-            backend_id: Some(BackendId::Int(100)),
-        });
+        observed
+            .insert(ObservedObject {
+                type_name: TypeName::new("dcim.site"),
+                key: make_key("fra1"),
+                attrs: make_attrs(&[("name", json!("FRA1"))]),
+                backend_id: Some(BackendId::Int(100)),
+            })
+            .unwrap();
         let result = plan(&desired, &observed, &state, &empty_schema(), false);
         assert_eq!(result.ops.len(), 1);
         assert!(matches!(&result.ops[0], Op::Update { .. }));
@@ -686,7 +702,7 @@ mod tests {
             },
         ];
         let sorted = sort_ops_for_apply(&ops, &empty_schema());
-        // Both deletes come last, sorted alphabetically by type
+        // both deletes come last, sorted alphabetically by type
         assert!(
             matches!(&sorted[0], Op::Delete { type_name, .. } if type_name.as_str() == "a.type")
         );

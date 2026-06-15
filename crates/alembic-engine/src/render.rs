@@ -180,7 +180,7 @@ fn render_string_value(
         if value.is_null() && allow_missing {
             return Ok(None);
         }
-        // A lone `${var}` with no transforms preserves the raw typed value.
+        // a lone `${var}` with no transforms preserves the raw typed value.
         if placeholder.transforms.is_empty() {
             return Ok(Some(value.clone()));
         }
@@ -207,17 +207,17 @@ fn placeholder_only(input: &str) -> Option<&str> {
     Some(inner)
 }
 
-/// A parsed `${var|transform|...}` placeholder body: the variable name plus the
+/// a parsed `${var|transform|...}` placeholder body: the variable name plus the
 /// (possibly empty) ordered list of transforms to apply after coercion.
 struct Placeholder<'a> {
     name: &'a str,
     transforms: Vec<&'a str>,
 }
 
-/// Parse the inside of a `${...}` placeholder into a var name and transform
-/// pipeline. The single shared parser used by both the embedded-template path
+/// parse the inside of a `${...}` placeholder into a var name and transform
+/// pipeline. the single shared parser used by both the embedded-template path
 /// (`render_template_optional`) and the lone-placeholder path
-/// (`render_string_value`). Surrounding whitespace on the name and on each
+/// (`render_string_value`). surrounding whitespace on the name and on each
 /// transform is ignored, so `${ slug | upper }` and `${slug|upper}` are equal.
 fn parse_placeholder(inner: &str) -> Placeholder<'_> {
     let mut parts = inner.split('|');
@@ -226,7 +226,7 @@ fn parse_placeholder(inner: &str) -> Placeholder<'_> {
     Placeholder { name, transforms }
 }
 
-/// Coerce a looked-up var to its string form, then apply the transform pipeline.
+/// coerce a looked-up var to its string form, then apply the transform pipeline.
 fn apply_placeholder(
     value: &JsonValue,
     placeholder: &Placeholder,
@@ -237,8 +237,8 @@ fn apply_placeholder(
     apply_transforms(rendered, &placeholder.transforms, rule, context)
 }
 
-/// Render a scalar var as a string. Strings pass through; numbers and bools are
-/// coerced to their natural form (`42`, `true`). Nulls, arrays, and objects
+/// render a scalar var as a string. strings pass through; numbers and bools are
+/// coerced to their natural form (`42`, `true`). nulls, arrays, and objects
 /// have no template representation and are an error.
 fn coerce_to_string(value: &JsonValue, name: &str, rule: &str, context: &str) -> Result<String> {
     match value {
@@ -254,7 +254,7 @@ fn coerce_to_string(value: &JsonValue, name: &str, rule: &str, context: &str) ->
     }
 }
 
-/// Apply transforms left-to-right. An unknown transform name is an error rather
+/// apply transforms left-to-right. an unknown transform name is an error rather
 /// than being silently ignored.
 fn apply_transforms(
     mut value: String,
@@ -269,7 +269,7 @@ fn apply_transforms(
             "trim" => value.trim().to_string(),
             // `mapping::slugify` lowercases, collapses runs of non-`[a-z0-9]`
             // to a single `-`, and trims leading/trailing `-`, producing a valid
-            // `slug` value. An input with no ascii alphanumerics (e.g. `---`)
+            // `slug` value. an input with no ascii alphanumerics (e.g. `---`)
             // slugifies to an empty string, which is not a valid slug, so we
             // error rather than emit it.
             "slug" => {

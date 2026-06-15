@@ -96,7 +96,7 @@ impl ValidationError {
     }
 }
 
-/// A validation error with optional source location.
+/// a validation error with optional source location.
 #[derive(Debug, Clone)]
 pub struct LocatedError {
     pub error: ValidationError,
@@ -143,12 +143,12 @@ impl ValidationReport {
         !self.errors.is_empty()
     }
 
-    /// Enrich errors with source locations from objects.
+    /// enrich errors with source locations from objects.
     ///
-    /// This matches errors to objects based on UIDs, types, and keys,
+    /// this matches errors to objects based on UIDs, types, and keys,
     /// and attaches the object's source location to the error.
     pub fn with_sources(self, objects: &[Object]) -> Vec<LocatedError> {
-        // Build lookup maps
+        // build lookup maps
         let uid_to_source: BTreeMap<Uid, Option<SourceLocation>> =
             objects.iter().map(|o| (o.uid, o.source.clone())).collect();
         let key_to_source: BTreeMap<String, Option<SourceLocation>> = objects
@@ -171,7 +171,7 @@ impl ValidationReport {
                     .and_then(|uid| uid_to_source.get(&uid).cloned().flatten())
                     .or_else(|| {
                         error.key_hint().and_then(|_| {
-                            // For DuplicateKey errors, try to find source
+                            // for DuplicateKey errors, try to find source
                             if let ValidationError::DuplicateKey(key) = &error {
                                 key_to_source.get(key).cloned().flatten()
                             } else {
@@ -180,7 +180,7 @@ impl ValidationReport {
                         })
                     })
                     .or_else(|| {
-                        // Try to match by type name in the error
+                        // try to match by type name in the error
                         error
                             .type_hint()
                             .and_then(|t| type_to_source.get(&t).cloned().flatten())
@@ -803,7 +803,7 @@ mod tests {
         let uid_to_type = BTreeMap::from([(uid(1), TypeName::new("target"))]);
         let mut report = ValidationReport::default();
 
-        // Test Type Mismatch
+        // test Type Mismatch
         let schema = FieldSchema {
             r#type: FieldType::Int,
             required: true,
@@ -825,7 +825,7 @@ mod tests {
             .iter()
             .any(|e| matches!(e, ValidationError::InvalidValue { .. })));
 
-        // Test Enum
+        // test Enum
         let schema = FieldSchema {
             r#type: FieldType::Enum {
                 values: vec!["a".to_string(), "b".to_string()],
@@ -850,7 +850,7 @@ mod tests {
             .iter()
             .any(|e| matches!(e, ValidationError::InvalidValue { .. })));
 
-        // Test Reference Type Mismatch
+        // test Reference Type Mismatch
         let schema = FieldSchema {
             r#type: FieldType::Ref {
                 target: "wrong".to_string(),
@@ -875,7 +875,7 @@ mod tests {
             .iter()
             .any(|e| matches!(e, ValidationError::ReferenceTypeMismatch { .. })));
 
-        // Test ListRef
+        // test ListRef
         let schema = FieldSchema {
             r#type: FieldType::ListRef {
                 target: "target".to_string(),
@@ -897,7 +897,7 @@ mod tests {
         );
         assert!(report.errors.is_empty());
 
-        // Test Map
+        // test Map
         let schema = FieldSchema {
             r#type: FieldType::Map {
                 value: Box::new(FieldType::Int),
@@ -922,7 +922,7 @@ mod tests {
             .iter()
             .any(|e| matches!(e, ValidationError::InvalidValue { .. })));
 
-        // Test Uuid
+        // test Uuid
         let schema = FieldSchema {
             r#type: FieldType::Uuid,
             required: true,
@@ -945,7 +945,7 @@ mod tests {
             .iter()
             .any(|e| matches!(e, ValidationError::InvalidValue { .. })));
 
-        // Test List of Refs
+        // test List of Refs
         let schema = FieldSchema {
             r#type: FieldType::List {
                 item: Box::new(FieldType::Ref {

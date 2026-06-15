@@ -1,18 +1,19 @@
-use alembic_django::DjangoEmitOptions;
-use alembic_engine::load_inventory;
+use crate::DjangoEmitOptions;
+use alembic_core::Inventory;
 use anyhow::{anyhow, Context, Result};
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 
-pub(super) trait Runner {
+pub trait Runner {
     fn run(&self, program: &str, args: &[&str], cwd: Option<&Path>) -> Result<()>;
 }
 
-pub(super) struct CommandRunner;
+pub struct CommandRunner;
 
 impl CommandRunner {
-    pub(super) fn new() -> Self {
+    pub fn new() -> Self {
         Self
     }
 
@@ -50,18 +51,49 @@ impl Runner for CommandRunner {
     }
 }
 
-pub(super) struct CastDjangoConfig {
-    pub(super) file: PathBuf,
-    pub(super) output: PathBuf,
-    pub(super) project: Option<String>,
-    pub(super) app: Option<String>,
-    pub(super) python: String,
-    pub(super) no_migrate: bool,
-    pub(super) no_admin: bool,
+impl Default for CommandRunner {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
-pub(super) fn run_cast_django(runner: &dyn Runner, config: CastDjangoConfig) -> Result<()> {
-    let inventory = load_inventory(&config.file)?;
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DjangoConfig {
+    pub output: PathBuf,
+    #[serde(default)]
+    pub project: Option<String>,
+    #[serde(default)]
+    pub app: Option<String>,
+    #[serde(default = "default_python")]
+    pub python: String,
+    #[serde(default)]
+    pub no_migrate: bool,
+    #[serde(default)]
+    pub no_admin: bool,
+}
+
+fn default_python() -> String {
+    "python3".to_string()
+}
+
+impl Default for DjangoConfig {
+    fn default() -> Self {
+        DjangoConfig {
+            output: "./out".into(),
+            project: None,
+            app: None,
+            python: "python3".to_string(),
+            no_migrate: false,
+            no_admin: false,
+        }
+    }
+}
+
+pub fn run_cast_django(
+    runner: &dyn Runner,
+    inventory: &Inventory,
+    config: &DjangoConfig,
+) -> Result<()> {
     let project_name = config.project.as_deref().unwrap_or("alembic_project");
     let app_name = config.app.as_deref().unwrap_or("alembic_app");
     validate_python_identifier(project_name, "project")?;
@@ -78,7 +110,7 @@ pub(super) fn run_cast_django(runner: &dyn Runner, config: CastDjangoConfig) -> 
     let options = DjangoEmitOptions {
         emit_admin: !config.no_admin,
     };
-    alembic_django::emit_django_app(&app_dir, &inventory, options)?;
+    crate::emit_django_app(&app_dir, inventory, options)?;
     ensure_installed_apps_entries(output_dir, project_name, &["rest_framework", app_name])?;
     ensure_project_urls(output_dir, project_name, app_name)?;
     run_manage_check(runner, output_dir, &config.python)?;
@@ -135,7 +167,7 @@ fn ensure_python_has_django(runner: &dyn Runner, python: &str) -> Result<()> {
     match runner.run(python, &["-c", "import django"], None) {
         Ok(()) => Ok(()),
         Err(_) => Err(anyhow!(
-            "django is not available for {}; install it (pip install django)",
+            "django is not available for python version '{}'; install it (pip install django)",
             python
         )),
     }

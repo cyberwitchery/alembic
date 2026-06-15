@@ -75,7 +75,7 @@ impl Adapter for NautobotAdapter {
         for result in results {
             let objects = result??;
             for object in objects {
-                state.insert(object);
+                state.insert(object)?;
             }
         }
 
@@ -547,7 +547,7 @@ fn normalize_attrs(
     let keys: Vec<String> = attrs.keys().cloned().collect();
     for key in keys {
         if let Some(value) = attrs.get(&key).cloned() {
-            // Look up the field's target type from the schema
+            // look up the field's target type from the schema
             let target_hint = type_schema
                 .fields
                 .get(&key)
@@ -611,18 +611,18 @@ fn normalize_value(
         ),
         Value::Object(map) => {
             if let Some(id) = map.get("id").and_then(Value::as_str) {
-                // First, try existing approach: lookup via URL + mappings
+                // first, try existing approach: lookup via URL + mappings
                 if let Some(uid) = uid_for_nested_object(&map, registry, mappings) {
                     return Value::String(uid.to_string());
                 }
-                // If we know the target type from schema, try to generate UID from key fields
+                // if we know the target type from schema, try to generate UID from key fields
                 if let Some(target) = target_hint {
                     if let Some(uid) = uid_from_key_fields(&map, target, schema, registry, mappings)
                     {
                         return Value::String(uid.to_string());
                     }
                 }
-                // If it looks like a resource summary but isn't managed by us,
+                // if it looks like a resource summary but isn't managed by us,
                 // fall back to the ID string to match desired state UUIDs.
                 if map.contains_key("url") || map.contains_key("object_type") {
                     return Value::String(id.to_string());
@@ -634,7 +634,7 @@ fn normalize_value(
                     return Value::String(value.to_string());
                 }
             }
-            // Recurse into nested objects without a target hint
+            // recurse into nested objects without a target hint
             let mut normalized = Map::new();
             for (key, value) in map {
                 normalized.insert(
@@ -668,8 +668,8 @@ fn uid_for_nested_object(
     mappings.uid_for(endpoint, id)
 }
 
-/// Generate a UID from key fields when we know the target type but the object isn't in mappings.
-/// This handles the case where nested objects don't have URLs but we know the target type from schema.
+/// generate a UID from key fields when we know the target type but the object isn't in mappings.
+/// this handles the case where nested objects don't have URLs but we know the target type from schema.
 fn uid_from_key_fields(
     map: &Map<String, Value>,
     target: &str,
@@ -677,7 +677,7 @@ fn uid_from_key_fields(
     registry: &ObjectTypeRegistry,
     mappings: &super::state::StateMappings,
 ) -> Option<Uid> {
-    // First, try to determine type from URL if available and use mappings
+    // first, try to determine type from URL if available and use mappings
     if let Some(type_from_url) = map
         .get("url")
         .and_then(Value::as_str)
@@ -690,17 +690,17 @@ fn uid_from_key_fields(
         }
     }
 
-    // Get the target type's schema to find its key fields
+    // get the target type's schema to find its key fields
     let target_schema = schema.types.get(target)?;
 
-    // Build a key from available fields
+    // build a key from available fields
     let mut key_map = BTreeMap::new();
     for key_field in target_schema.key.keys() {
         let value = map.get(key_field)?;
         key_map.insert(key_field.clone(), value.clone());
     }
 
-    // Generate deterministic UID from type name and key
+    // generate deterministic UID from type name and key
     let key = Key::from(key_map);
     Some(uid_v5(target, &key_string(&key)))
 }
@@ -927,7 +927,7 @@ mod tests {
             types: BTreeMap::new(),
         };
 
-        // Test summary object to UUID string normalization
+        // test summary object to UUID string normalization
         let summary = json!({
             "id": "6f7f1c2c-2b9a-4f5b-a187-2d757fe48abd",
             "url": "http://localhost/api/extras/statuses/6f7f1c2c-2b9a-4f5b-a187-2d757fe48abd/",
@@ -936,7 +936,7 @@ mod tests {
         let normalized = normalize_value(summary, None, &schema, &registry, &mappings);
         assert_eq!(normalized, json!("6f7f1c2c-2b9a-4f5b-a187-2d757fe48abd"));
 
-        // Test simple value map normalization
+        // test simple value map normalization
         let choice = json!({
             "value": "active",
             "label": "Active"
@@ -969,7 +969,7 @@ mod tests {
         let registry = ObjectTypeRegistry::default();
         let mappings = super::super::state::StateMappings::default();
 
-        // Build a schema with a type that has "name" as the key field
+        // build a schema with a type that has "name" as the key field
         let mut schema = Schema {
             types: BTreeMap::new(),
         };
@@ -990,7 +990,7 @@ mod tests {
         );
         schema.types.insert("dcim.device".to_string(), type_schema);
 
-        // Nested object without URL but with key field
+        // nested object without URL but with key field
         let nested = serde_json::Map::from_iter([
             ("id".to_string(), json!("some-uuid")),
             ("name".to_string(), json!("router-01")),
@@ -999,11 +999,11 @@ mod tests {
         let uid = uid_from_key_fields(&nested, "dcim.device", &schema, &registry, &mappings);
         assert!(uid.is_some());
 
-        // The UID should be deterministic: same inputs = same output
+        // the UID should be deterministic: same inputs = same output
         let uid2 = uid_from_key_fields(&nested, "dcim.device", &schema, &registry, &mappings);
         assert_eq!(uid, uid2);
 
-        // Different key value should produce different UID
+        // different key value should produce different UID
         let nested2 = serde_json::Map::from_iter([
             ("id".to_string(), json!("other-uuid")),
             ("name".to_string(), json!("router-02")),
@@ -1056,7 +1056,7 @@ mod tests {
     fn test_resolve_value_for_type() {
         let resolved = BTreeMap::from([(Uid::from_u128(1), "uuid-1".to_string())]);
 
-        // Ref
+        // ref
         let val = resolve_value_for_type(
             &alembic_core::FieldType::Ref {
                 target: "t".to_string(),
@@ -1078,7 +1078,7 @@ mod tests {
         .unwrap();
         assert_eq!(val, json!(["uuid-1"]));
 
-        // List
+        // list
         let val = resolve_value_for_type(
             &alembic_core::FieldType::List {
                 item: Box::new(alembic_core::FieldType::String),
@@ -1157,7 +1157,7 @@ mod tests {
             types: BTreeMap::new(),
         };
 
-        // Test array of summary objects
+        // test array of summary objects
         let input = json!([
             {"id": "uuid-1", "url": "/api/t/1/", "display": "D1"},
             {"id": "uuid-2", "url": "/api/t/2/", "display": "D2"}

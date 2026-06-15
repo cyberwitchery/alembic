@@ -37,7 +37,7 @@ pub async fn apply_non_delete_with_retries(
             }
         }
 
-        // Only break if no progress was made (no items applied in this iteration)
+        // only break if no progress was made (no items applied in this iteration)
         if applied.len() == applied_before {
             break;
         }

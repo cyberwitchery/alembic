@@ -2,6 +2,10 @@
 
 ## [unreleased]
 
+- **breaking** removed the `cast` (django) command and turned it into
+  a django adapter that performs the django project generation as a part
+  of `write`
+
 - **breaking** — removed the raw-yaml→ir mapping engine and its surface (#41). the `distill` subcommand and the raw→ir compiler (formerly `retort`) are gone, and `import` is now backend-only: `import -f <inventory> -o <out>` observes a backend for the types in the inventory's schema. ir comes only from authored inventory files or backend observation; there is no "compile arbitrary yaml/csv into ir" path. the `brew` noun is retired for `inventory` (`docs/brew.md`→`docs/inventory.md`, `examples/brew.yaml`→`examples/inventory.yaml`). the command set is now `validate / import / map / plan / apply` (+ `cast`)
 
 - engine: add `map`, an ir to ir transformation layer (#43): a rule selects source objects by a type-name pattern with optional field predicates (`dcim.device[attrs.role=leaf]`, prefix globs like `dcim.*`, bare `*`) and emits one or more target objects via `${...}` templates with transforms (`upper`/`lower`/`trim`/`slug`) over a fixed `${uid}` / `${type}` / `${key.*}` / `${attrs.*}` var namespace (nested attrs addressable by path). uids default to `uid_v5(target_type, target_key)`; `ref`/`list_ref` attrs are rewired from source to target uids automatically for 1:1 renames, and a multi-emit wires cross-object refs explicitly through named `uids` (`${uids.name}`). output is validated against the target schema; the transform is pure so maps chain
@@ -14,7 +18,8 @@
 - cli: `plan --report` and `--dry-run` are now mutually exclusive (passing both is rejected) instead of silently ignoring `--dry-run`
 - engine: add `DriftReport` (built from a `&Plan`, with `Display` + `Serialize`) surfacing the desired-vs-observed diff as a one-way, read-only report
 - cli: explain the file formats each subcommand reads and writes (#89). every argument now carries help text: `--file` inventories are YAML or JSON chosen by extension (`.json` => JSON, else YAML), `plan`/`map`/`import --output` are always JSON regardless of extension, and `apply --plan` is a JSON plan as produced by `alembic plan`. `--help` gains a long description documenting the IR format model in one place, and writing an always-JSON `--output` to a `.yaml`/`.yml` path now prints a non-fatal warning instead of silently producing JSON under a yaml name
-- engine: `import` now projects observed state onto the schema, dropping any attr whose key is not declared in the type's `fields` (with a `warn` per dropped key) — server-computed fields like `dcim.cable.last_updated` are no longer carried into the imported inventory, so the result no longer fails validation with `extra attr field` (#45). an object whose type is absent from the schema is passed through unchanged
+- engine: `import` now projects observed state onto the schema, dropping any attr whose key is not declared in the type's `fields` (with a `warn` per dropped key) — server-computed fields like `dcim.cable.last_updated` are no longer carried into the imported inventory, so the result no longer fails validation with `extra attr field` (#45)
+- generic adapter: resolve refs nested inside `list` and `map` fields when building request bodies. the generic adapter now consolidates onto the shared `alembic-engine` reference-resolution helpers (`build_key_from_schema`, `resolve_value_for_type`) instead of a divergent local copy that silently left such refs unresolved (raw uid strings in the body), bringing it in line with the netbox and nautobot adapters
 
 ## [0.3.0] - 2026-05-20
 

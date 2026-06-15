@@ -1,7 +1,7 @@
 //! peeringdb adapter for alembic.
 //!
-//! Uses the peeringdb-rs crate to fetch data from PeeringDB.
-//! Set the `PEERINGDB_API_KEY` environment variable to authenticate.
+//! uses the peeringdb-rs crate to fetch data from PeeringDB.
+//! set the `PEERINGDB_API_KEY` environment variable to authenticate.
 
 use alembic_core::{JsonMap, Key, Schema, TypeName};
 use alembic_engine::{Adapter, ApplyReport, BackendId, ObservedObject, ObservedState, Op};
@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 
-/// Supported PeeringDB types.
+/// supported PeeringDB types.
 const SUPPORTED_TYPES: &[&str] = &[
     "peeringdb.ix",
     "peeringdb.net",
@@ -21,9 +21,9 @@ const SUPPORTED_TYPES: &[&str] = &[
 pub struct PeeringDBAdapter;
 
 impl PeeringDBAdapter {
-    /// Create a new PeeringDB adapter.
+    /// create a new PeeringDB adapter.
     ///
-    /// Authentication is handled via the `PEERINGDB_API_KEY` environment variable.
+    /// authentication is handled via the `PEERINGDB_API_KEY` environment variable.
     pub fn new() -> Self {
         Self
     }
@@ -83,11 +83,11 @@ impl Adapter for PeeringDBAdapter {
                         .map_err(|e| anyhow!("failed to load netixlan data: {}", e))?;
                     to_observed_objects(&type_name, &type_schema, data)?
                 }
-                _ => continue, // Skip unsupported types
+                _ => continue, // skip unsupported types
             };
 
             for object in objects {
-                state.insert(object);
+                state.insert(object)?;
             }
         }
 
@@ -104,7 +104,7 @@ impl Adapter for PeeringDBAdapter {
     }
 }
 
-/// Trait for PeeringDB objects that have an id field.
+/// trait for PeeringDB objects that have an id field.
 trait HasId {
     fn id(&self) -> u32;
 }

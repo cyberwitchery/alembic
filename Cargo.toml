@@ -1,16 +1,16 @@
 [workspace]
 resolver = "2"
 members = [
-  "crates/alembic-core",
-  "crates/alembic-engine",
-  "crates/alembic-adapter-registry",
-  "crates/alembic-adapter-netbox",
-  "crates/alembic-adapter-nautobot",
-  "crates/alembic-adapter-infrahub",
-  "crates/alembic-cli",
-  "crates/alembic-adapter-generic",
-  "crates/alembic-adapter-peeringdb",
-  "crates/alembic-django",
+    "crates/alembic-core",
+    "crates/alembic-engine",
+    "crates/alembic-adapter-registry",
+    "crates/alembic-adapter-netbox",
+    "crates/alembic-adapter-nautobot",
+    "crates/alembic-adapter-infrahub",
+    "crates/alembic-cli",
+    "crates/alembic-adapter-generic",
+    "crates/alembic-adapter-peeringdb",
+    "crates/alembic-adapter-django",
 ]
 
 [workspace.package]
@@ -29,7 +29,7 @@ alembic-adapter-nautobot = { version = "0.3.0", path = "crates/alembic-adapter-n
 alembic-adapter-infrahub = { version = "0.3.0", path = "crates/alembic-adapter-infrahub" }
 alembic-adapter-generic = { version = "0.3.0", path = "crates/alembic-adapter-generic" }
 alembic-adapter-peeringdb = { version = "0.3.0", path = "crates/alembic-adapter-peeringdb" }
-alembic-django = { version = "0.3.0", path = "crates/alembic-django" }
+alembic-adapter-django = { version = "0.3.0", path = "crates/alembic-adapter-django" }
 anyhow = "1"
 async-trait = "0.1"
 clap = { version = "4", features = ["derive"] }
@@ -41,7 +41,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 uuid = { version = "1", features = ["serde", "v4", "v5"] }
 netbox = "0.5.4"
 nautobot = "0.4.1"
-infrahub = "0.3.0"
+infrahub = "0.4.0"
 reqwest = { version = "0.13", features = ["json"] }
 regex = "1"
 ipnet = "2"

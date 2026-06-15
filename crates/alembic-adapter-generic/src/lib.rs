@@ -1,9 +1,9 @@
 //! generic rest adapter for alembic.
 
-use alembic_core::{JsonMap, Key, Schema, TypeName, Uid};
+use alembic_core::{JsonMap, Schema, TypeName, Uid};
 use alembic_engine::{
-    apply_non_delete_with_retries, Adapter, AdapterApplyError, AppliedOp, ApplyReport, BackendId,
-    ObservedObject, ObservedState, Op, RetryApplyDriver,
+    apply_non_delete_with_retries, build_key_from_schema, Adapter, AdapterApplyError, AppliedOp,
+    ApplyReport, BackendId, ObservedObject, ObservedState, Op, RetryApplyDriver,
 };
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
@@ -313,7 +313,7 @@ impl Adapter for GenericAdapter {
         for result in results {
             let objects = result??;
             for object in objects {
-                state.insert(object);
+                state.insert(object)?;
             }
         }
 
@@ -465,17 +465,6 @@ fn state_mappings(state: &alembic_engine::StateStore) -> StateMappings {
     StateMappings { by_type }
 }
 
-fn build_key_from_schema(type_schema: &alembic_core::TypeSchema, attrs: &JsonMap) -> Result<Key> {
-    let mut map = BTreeMap::new();
-    for field in type_schema.key.keys() {
-        let Some(value) = attrs.get(field) else {
-            return Err(anyhow!("missing key field {field}"));
-        };
-        map.insert(field.clone(), value.clone());
-    }
-    Ok(Key::from(map))
-}
-
 fn resolved_from_state(state: &alembic_engine::StateStore) -> BTreeMap<Uid, BackendId> {
     let mut resolved = BTreeMap::new();
     for mapping in state.all_mappings().values() {
@@ -573,39 +562,18 @@ fn resolve_attrs(
     Ok(serde_json::Value::Object(map))
 }
 
+/// resolves a single field value against the shared engine helper, encoding a
+/// resolved ref as the backend id (number or string) the generic api expects.
+///
+/// unlike the previous local copy, the shared helper recurses into refs nested
+/// inside `List` and `Map` fields, matching the netbox and nautobot adapters.
+/// the encode closure mirrors the old local `resolve_ref_value` output exactly.
 fn resolve_value_for_type(
     field_type: &alembic_core::FieldType,
     value: serde_json::Value,
     resolved: &BTreeMap<Uid, BackendId>,
 ) -> Result<serde_json::Value> {
-    match field_type {
-        alembic_core::FieldType::Ref { .. } => resolve_ref_value(value, resolved),
-        alembic_core::FieldType::ListRef { .. } => {
-            let serde_json::Value::Array(items) = value else {
-                return Err(anyhow!("expected array for list_ref"));
-            };
-            let mut out = Vec::new();
-            for item in items {
-                out.push(resolve_ref_value(item, resolved)?);
-            }
-            Ok(serde_json::Value::Array(out))
-        }
-        _ => Ok(value),
-    }
-}
-
-fn resolve_ref_value(
-    value: serde_json::Value,
-    resolved: &BTreeMap<Uid, BackendId>,
-) -> Result<serde_json::Value> {
-    let serde_json::Value::String(raw) = value else {
-        return Err(anyhow!("ref must be uuid string"));
-    };
-    let uid = Uid::parse_str(&raw).map_err(|_| anyhow!("invalid uuid: {}", raw))?;
-    let id = resolved
-        .get(&uid)
-        .ok_or(AdapterApplyError::MissingRef { uid })?;
-    Ok(match id {
+    alembic_engine::resolve_value_for_type(field_type, value, resolved, |id| match id {
         BackendId::Int(n) => serde_json::Value::Number((*n).into()),
         BackendId::String(s) => serde_json::Value::String(s.clone()),
     })

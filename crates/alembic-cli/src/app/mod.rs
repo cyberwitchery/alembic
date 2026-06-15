@@ -1,6 +1,5 @@
 //! cli entrypoint for alembic.
 
-mod cast_django;
 pub mod config;
 mod diag;
 mod io;
@@ -13,7 +12,6 @@ use clap::{Parser, Subcommand};
 use std::fs;
 use std::path::PathBuf;
 
-use self::cast_django::{run_cast_django, CastDjangoConfig, CommandRunner};
 use self::diag::err;
 use self::io::{
     format_validation_errors, read_plan, warn_misleading_output_extension, write_inventory,
@@ -24,9 +22,9 @@ use crate::app::config::AppConfig;
 use alembic_core::TypeName;
 
 #[cfg(test)]
-use self::cast_django::Runner;
-#[cfg(test)]
 use self::state::{resolve_state_backend_config, state_path, StateBackendConfig};
+#[cfg(test)]
+use alembic_adapter_django::cast_django::Runner;
 #[cfg(test)]
 use alembic_engine::PostgresTlsMode;
 #[cfg(test)]
@@ -114,31 +112,6 @@ enum Command {
         backend: Option<String>,
         #[arg(long)]
         backend_config: Option<PathBuf>,
-    },
-    Cast {
-        #[command(subcommand)]
-        target: CastTarget,
-    },
-}
-
-/// cast subcommands.
-#[derive(Subcommand)]
-enum CastTarget {
-    Django {
-        #[arg(short = 'f', long)]
-        file: PathBuf,
-        #[arg(short = 'o', long)]
-        output: PathBuf,
-        #[arg(long)]
-        project: Option<String>,
-        #[arg(long)]
-        app: Option<String>,
-        #[arg(long, default_value = "python3")]
-        python: String,
-        #[arg(long, default_value_t = false)]
-        no_migrate: bool,
-        #[arg(long, default_value_t = false)]
-        no_admin: bool,
     },
 }
 
@@ -341,31 +314,6 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             write_inventory(&output, &report.inventory)?;
             println!("inventory written to {}", output.display());
         }
-        Command::Cast { target } => match target {
-            CastTarget::Django {
-                file,
-                output,
-                project,
-                app,
-                python,
-                no_migrate,
-                no_admin,
-            } => {
-                let runner = CommandRunner::new();
-                run_cast_django(
-                    &runner,
-                    CastDjangoConfig {
-                        file,
-                        output,
-                        project,
-                        app,
-                        python,
-                        no_migrate,
-                        no_admin,
-                    },
-                )?;
-            }
-        },
     }
 
     Ok(())

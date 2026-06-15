@@ -16,8 +16,9 @@ nautobot = ["dep:alembic-adapter-nautobot"]
 infrahub = ["dep:alembic-adapter-infrahub"]
 generic = ["dep:alembic-adapter-generic"]
 peeringdb = ["dep:alembic-adapter-peeringdb"]
+django = ["dep:alembic-adapter-django"]
 default = []
-all = ["netbox", "nautobot", "infrahub", "generic", "peeringdb"]
+all = ["netbox", "nautobot", "infrahub", "generic", "peeringdb", "django"]
 
 [dependencies]
 alembic-core.workspace = true
@@ -27,6 +28,7 @@ alembic-adapter-nautobot = { workspace = true, optional = true }
 alembic-adapter-infrahub = { workspace = true, optional = true }
 alembic-adapter-generic = { workspace = true, optional = true }
 alembic-adapter-peeringdb = { workspace = true, optional = true }
+alembic-adapter-django = { workspace = true, optional = true }
 anyhow.workspace = true
 async-trait.workspace = true
 serde.workspace = true

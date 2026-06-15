@@ -16,6 +16,9 @@ use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use tokio::time::timeout;
 
+#[cfg(feature = "django")]
+use alembic_adapter_django::cast_django::DjangoConfig;
+
 const SUPPORTED_BACKENDS: &[&str] = &[
     #[cfg(feature = "netbox")]
     "netbox",
@@ -27,6 +30,8 @@ const SUPPORTED_BACKENDS: &[&str] = &[
     "generic",
     #[cfg(feature = "peeringdb")]
     "peeringdb",
+    #[cfg(feature = "django")]
+    "django",
     "external",
 ];
 
@@ -43,6 +48,8 @@ pub enum AdapterConfig {
     Generic(GenericConfig),
     #[cfg(feature = "peeringdb")]
     Peeringdb,
+    #[cfg(feature = "django")]
+    Django(DjangoConfig),
     External(ExternalConfig),
 }
 
@@ -126,6 +133,8 @@ impl AdapterConfig {
             AdapterConfig::Generic(_) => "generic",
             #[cfg(feature = "peeringdb")]
             AdapterConfig::Peeringdb => "peeringdb",
+            #[cfg(feature = "django")]
+            AdapterConfig::Django(_) => "django",
             AdapterConfig::External(_) => "external",
         }
     }
@@ -156,6 +165,10 @@ impl AdapterConfig {
             })),
             #[cfg(feature = "peeringdb")]
             "peeringdb" => Ok(AdapterConfig::Peeringdb),
+            #[cfg(feature = "django")]
+            "django" => Ok(AdapterConfig::Django(DjangoConfig {
+                ..DjangoConfig::default()
+            })),
             "external" => Ok(AdapterConfig::External(ExternalConfig {
                 command: None,
                 args: Vec::new(),
@@ -241,6 +254,10 @@ impl AdapterConfig {
             #[cfg(feature = "peeringdb")]
             AdapterConfig::Peeringdb => {
                 Ok(Box::new(alembic_adapter_peeringdb::PeeringDBAdapter::new()))
+            }
+            #[cfg(feature = "django")]
+            AdapterConfig::Django(cfg) => {
+                Ok(Box::new(alembic_adapter_django::DjangoAdapter::new(cfg)))
             }
             AdapterConfig::External(cfg) => Ok(Box::new(ProcessAdapter::new(cfg)?)),
         }
@@ -362,7 +379,7 @@ impl Adapter for ProcessAdapter {
                 key: object.key,
                 attrs: object.attrs,
                 backend_id: object.backend_id,
-            });
+            })?;
         }
         Ok(observed)
     }
@@ -469,7 +486,7 @@ impl InfrahubSchemaConfig {
     }
 }
 
-/// A plugin is an external backend that can be
+/// a plugin is an external backend that can be
 /// referred to using its name instead of passing
 /// `--backend external --backend-config <path>` manually.
 #[derive(Debug)]

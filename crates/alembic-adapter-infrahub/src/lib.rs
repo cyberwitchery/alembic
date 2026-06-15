@@ -517,7 +517,7 @@ impl Adapter for InfrahubAdapter {
                 .read_type_objects(&schema_info, &type_name, type_schema, &mappings)
                 .await?;
             for object in objects {
-                state.insert(object);
+                state.insert(object)?;
             }
         }
 
@@ -2094,7 +2094,7 @@ schema { query: Query }
         assert!(!attrs.contains_key("missing"));
     }
 
-    // Characterization tests for `extract_field_value`: they pin the current
+    // characterization tests for `extract_field_value`: they pin the current
     // mapping from each Infrahub GraphQL node shape to an IR value. The function
     // is otherwise only exercised indirectly through `extract_attrs`.
 
@@ -2188,7 +2188,7 @@ schema { query: Query }
 
     #[test]
     fn extract_field_value_missing_field_returns_none() {
-        // The field is absent from the node: the early return fires before the
+        // the field is absent from the node: the early return fires before the
         // `kind` match, so the result is `None` for any kind.
         let node = json!({ "present": { "value": "x" } });
         let value = extract_field_value(&node, "absent", &FieldKind::Attribute).unwrap();
@@ -2197,7 +2197,7 @@ schema { query: Query }
 
     #[test]
     fn extract_field_value_null_field_returns_none() {
-        // The field is present but JSON null: this also short-circuits to `None`
+        // the field is present but JSON null: this also short-circuits to `None`
         // ahead of the `kind` match.
         let node = json!({ "name": null });
         let value = extract_field_value(&node, "name", &FieldKind::Attribute).unwrap();
@@ -2834,7 +2834,7 @@ schema { query: Query }
         assert_eq!(id, "site-42");
     }
 
-    // Characterization tests pinning the empty-list vs absent-single asymmetry
+    // characterization tests pinning the empty-list vs absent-single asymmetry
     // in `extract_field_value`. The `RelationList` arms always build a
     // `Value::Array`, so an empty or missing inner array produces an empty array
     // rather than null, and the final `value.is_null()` guard then lets it
@@ -2844,7 +2844,7 @@ schema { query: Query }
 
     #[test]
     fn extract_field_value_relation_list_nested_paginated_empty_edges_returns_some_empty_array() {
-        // Edges array present but empty -> Some([]), not None.
+        // edges array present but empty -> Some([]), not None.
         let node = json!({ "peers": { "edges": [] } });
         let value = extract_field_value(
             &node,
@@ -2857,7 +2857,7 @@ schema { query: Query }
 
     #[test]
     fn extract_field_value_relation_list_nested_paginated_missing_edges_returns_some_empty_array() {
-        // Relation object present and non-null but with no `edges` key at all:
+        // relation object present and non-null but with no `edges` key at all:
         // `unwrap_or_default()` still yields an empty array -> Some([]).
         let node = json!({ "peers": {} });
         let value = extract_field_value(
@@ -2871,7 +2871,7 @@ schema { query: Query }
 
     #[test]
     fn extract_field_value_relation_list_nested_edged_empty_returns_some_empty_array() {
-        // Flat (node-edged) list shape, empty array -> Some([]).
+        // flat (node-edged) list shape, empty array -> Some([]).
         let node = json!({ "peers": [] });
         let value = extract_field_value(
             &node,
@@ -2884,7 +2884,7 @@ schema { query: Query }
 
     #[test]
     fn extract_field_value_relation_list_related_node_empty_returns_some_empty_array() {
-        // Flat (related-node) list shape, empty array -> Some([]).
+        // flat (related-node) list shape, empty array -> Some([]).
         let node = json!({ "children": [] });
         let value = extract_field_value(
             &node,
@@ -2897,7 +2897,7 @@ schema { query: Query }
 
     #[test]
     fn extract_field_value_relation_single_related_node_absent_id_returns_none() {
-        // Contrast with the list arms above: a single relation whose object is
+        // contrast with the list arms above: a single relation whose object is
         // present but carries no `id` falls back to `Value::Null` -> None.
         let node = json!({ "parent": { "kind": "DcimSite" } });
         let value = extract_field_value(
@@ -2911,7 +2911,7 @@ schema { query: Query }
 
     #[test]
     fn extract_field_value_relation_single_nested_edged_absent_id_returns_none() {
-        // Same contrast for the nested-edged single shape: `node` present but
+        // same contrast for the nested-edged single shape: `node` present but
         // without an `id` -> None.
         let node = json!({ "owner": { "node": {} } });
         let value = extract_field_value(

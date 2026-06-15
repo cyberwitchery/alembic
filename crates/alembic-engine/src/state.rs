@@ -48,8 +48,8 @@ impl StateStore {
     /// load state from a file path.
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
-        // Always create a backend so we can save to the same path later.
-        // The backend's load() method handles missing files gracefully.
+        // always create a backend so we can save to the same path later.
+        // the backend's load() method handles missing files gracefully.
         let backend: Option<Arc<Mutex<dyn StateBackend>>> =
             Some(Arc::new(Mutex::new(LocalBackend { path: path.clone() }))
                 as Arc<Mutex<dyn StateBackend>>);
@@ -248,7 +248,7 @@ impl PostgresBackend {
             .await
             .with_context(|| "ensure postgres alembic_state table exists")?;
 
-        // If the table already existed, CREATE TABLE IF NOT EXISTS won't add new columns.
+        // if the table already existed, CREATE TABLE IF NOT EXISTS won't add new columns.
         client
             .execute(
                 "ALTER TABLE alembic_state ADD COLUMN IF NOT EXISTS loaded_version INTEGER NOT NULL DEFAULT 1",
@@ -387,7 +387,7 @@ mod tests {
     fn remove_backend_id_noop_for_missing() {
         let mut store = StateStore::new(None, StateData::default());
         store.remove_backend_id(t("site"), uid(1));
-        // Should not panic
+        // should not panic
     }
 
     #[test]

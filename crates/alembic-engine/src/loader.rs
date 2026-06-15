@@ -72,7 +72,7 @@ fn load_recursive(
 
     merge_schema(schema, inventory.schema)?;
 
-    // Set source location on each object from this file, with line numbers
+    // set source location on each object from this file, with line numbers
     for object in inventory.objects {
         let line = find_uid_line(&content, &object.uid.to_string());
         let source = match line {
@@ -85,7 +85,7 @@ fn load_recursive(
     Ok(())
 }
 
-/// Find the line number (1-indexed) where a UID appears in the content.
+/// find the line number (1-indexed) where a UID appears in the content.
 fn find_uid_line(content: &str, uid: &str) -> Option<usize> {
     for (idx, line) in content.lines().enumerate() {
         if line.contains(uid) {
