@@ -1,3 +1,4 @@
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use tempfile::tempdir;
@@ -56,7 +57,7 @@ pub fn django_available(python: &str) -> bool {
     }
 }
 
-pub fn run_cast(fixture: &str) {
+pub fn run_apply_django(fixture: &str) {
     let python = python_path();
     if !django_available(&python) {
         eprintln!(
@@ -67,21 +68,27 @@ pub fn run_cast(fixture: &str) {
 
     let bin = bin_path();
     let out = tempdir().expect("create temp dir");
+    let config_file_path = out.path().join("django.yaml");
+
+    let data = format!(
+        r"backend: django
+output: {}
+project: alembic_project
+app: alembic_app
+python: python3
+no_migrate: false
+no_admin: false",
+        out.path().to_str().unwrap(),
+    );
+    fs::write(&config_file_path, data).expect("write config file to temp dir");
 
     let mut cmd = Command::new(&bin);
     cmd.args([
-        "cast",
-        "django",
-        "-f",
+        "apply",
+        "--backend-config",
+        config_file_path.to_str().unwrap(),
+        "--plan",
         fixture_path(fixture).to_str().unwrap(),
-        "-o",
-        out.path().to_str().unwrap(),
-        "--project",
-        "alembic_project",
-        "--app",
-        "alembic_app",
-        "--python",
-        &python,
     ]);
-    run_command(cmd, &format!("cast django ({fixture})"));
+    run_command(cmd, &format!("apply django ({fixture})"));
 }
