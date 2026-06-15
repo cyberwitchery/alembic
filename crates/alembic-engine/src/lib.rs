@@ -11,11 +11,11 @@ pub mod mapping;
 mod pipeline;
 mod planner;
 mod predicate;
+mod pretty_printing;
 mod render;
 mod state;
 mod transform;
 mod types;
-
 use alembic_core::{key_string, validate_inventory, Inventory, Object, ValidationReport};
 use anyhow::{anyhow, Result};
 

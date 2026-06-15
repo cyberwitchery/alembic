@@ -362,7 +362,7 @@ impl Adapter for ProcessAdapter {
                 key: object.key,
                 attrs: object.attrs,
                 backend_id: object.backend_id,
-            });
+            })?;
         }
         Ok(observed)
     }

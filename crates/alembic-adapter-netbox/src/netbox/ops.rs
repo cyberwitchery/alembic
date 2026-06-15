@@ -70,7 +70,7 @@ impl Adapter for NetBoxAdapter {
                     key,
                     attrs,
                     backend_id: Some(BackendId::Int(backend_id)),
-                });
+                })?;
             }
         }
 
