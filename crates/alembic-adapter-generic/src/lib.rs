@@ -313,7 +313,7 @@ impl Adapter for GenericAdapter {
         for result in results {
             let objects = result??;
             for object in objects {
-                state.insert(object);
+                state.insert(object)?;
             }
         }
 

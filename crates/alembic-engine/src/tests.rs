@@ -492,12 +492,14 @@ fn detects_attribute_diff() {
     )]);
 
     let mut observed = ObservedState::default();
-    observed.insert(ObservedObject {
-        type_name: t("dcim.site"),
-        key: key_str("site=fra1"),
-        attrs: attrs_map(json!({ "name": "OLD", "slug": "fra1" })),
-        backend_id: Some(BackendId::Int(100)),
-    });
+    observed
+        .insert(ObservedObject {
+            type_name: t("dcim.site"),
+            key: key_str("site=fra1"),
+            attrs: attrs_map(json!({ "name": "OLD", "slug": "fra1" })),
+            backend_id: Some(BackendId::Int(100)),
+        })
+        .unwrap();
 
     let state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
     let plan = plan(&desired.objects, &observed, &state, &desired.schema, false);
@@ -529,12 +531,14 @@ fn detects_generic_payload_diff() {
     .unwrap()]);
 
     let mut observed = ObservedState::default();
-    observed.insert(ObservedObject {
-        type_name: t("services.vpn"),
-        key: key_str("vpn=corp"),
-        attrs: from.into(),
-        backend_id: Some(BackendId::Int(10)),
-    });
+    observed
+        .insert(ObservedObject {
+            type_name: t("services.vpn"),
+            key: key_str("vpn=corp"),
+            attrs: from.into(),
+            backend_id: Some(BackendId::Int(10)),
+        })
+        .unwrap();
 
     let state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
     let plan = plan(&desired.objects, &observed, &state, &desired.schema, false);
@@ -563,17 +567,19 @@ fn planner_ignores_optional_nulls() {
     let schema = schema_for(std::slice::from_ref(&desired));
 
     let mut observed = ObservedState::default();
-    observed.insert(ObservedObject {
-        type_name: t("dcim.site"),
-        key: key_str("site=fra1"),
-        attrs: attrs_map(json!({
-            "name": "FRA1",
-            "slug": "fra1",
-            "status": "active",
-            "description": ""
-        })),
-        backend_id: Some(BackendId::Int(1)),
-    });
+    observed
+        .insert(ObservedObject {
+            type_name: t("dcim.site"),
+            key: key_str("site=fra1"),
+            attrs: attrs_map(json!({
+                "name": "FRA1",
+                "slug": "fra1",
+                "status": "active",
+                "description": ""
+            })),
+            backend_id: Some(BackendId::Int(1)),
+        })
+        .unwrap();
 
     let state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
     let plan = plan(
@@ -602,21 +608,25 @@ fn planner_matches_backend_id_by_kind() {
     let schema = schema_for(std::slice::from_ref(&desired));
 
     let mut observed = ObservedState::default();
-    observed.insert(ObservedObject {
-        type_name: t("dcim.device"),
-        key: key_str("site=fra1/device=leaf01"),
-        attrs: desired.attrs.clone(),
-        backend_id: Some(BackendId::Int(1)),
-    });
-    observed.insert(ObservedObject {
-        type_name: t("dcim.interface"),
-        key: key_str("device=leaf01;interface=eth0"),
-        attrs: attrs_map(json!({
-            "name": "eth0",
-            "device": uid(82).to_string()
-        })),
-        backend_id: Some(BackendId::Int(1)),
-    });
+    observed
+        .insert(ObservedObject {
+            type_name: t("dcim.device"),
+            key: key_str("site=fra1/device=leaf01"),
+            attrs: desired.attrs.clone(),
+            backend_id: Some(BackendId::Int(1)),
+        })
+        .unwrap();
+    observed
+        .insert(ObservedObject {
+            type_name: t("dcim.interface"),
+            key: key_str("device=leaf01;interface=eth0"),
+            attrs: attrs_map(json!({
+                "name": "eth0",
+                "device": uid(82).to_string()
+            })),
+            backend_id: Some(BackendId::Int(1)),
+        })
+        .unwrap();
 
     let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
     state.set_backend_id(t("dcim.device"), desired.uid, BackendId::Int(1));
@@ -644,12 +654,14 @@ fn planner_includes_prefix_site_diff() {
     let schema = schema_for(std::slice::from_ref(&desired));
 
     let mut observed = ObservedState::default();
-    observed.insert(ObservedObject {
-        type_name: t("ipam.prefix"),
-        key: key_str("prefix=10.0.0.0/24"),
-        attrs: attrs_map(json!({ "prefix": "10.0.0.0/24" })),
-        backend_id: Some(BackendId::Int(1)),
-    });
+    observed
+        .insert(ObservedObject {
+            type_name: t("ipam.prefix"),
+            key: key_str("prefix=10.0.0.0/24"),
+            attrs: attrs_map(json!({ "prefix": "10.0.0.0/24" })),
+            backend_id: Some(BackendId::Int(1)),
+        })
+        .unwrap();
 
     let state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
     let plan = plan(
@@ -857,12 +869,14 @@ fn state_store_new_without_backend() {
 fn plan_generates_deletes_when_enabled() {
     let desired = inv(vec![]);
     let mut observed = ObservedState::default();
-    observed.insert(ObservedObject {
-        type_name: t("dcim.site"),
-        key: key_str("site=orphan"),
-        attrs: attrs_map(json!({ "name": "orphan", "slug": "orphan" })),
-        backend_id: Some(BackendId::Int(10)),
-    });
+    observed
+        .insert(ObservedObject {
+            type_name: t("dcim.site"),
+            key: key_str("site=orphan"),
+            attrs: attrs_map(json!({ "name": "orphan", "slug": "orphan" })),
+            backend_id: Some(BackendId::Int(10)),
+        })
+        .unwrap();
 
     let state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
     let plan = plan(&desired.objects, &observed, &state, &desired.schema, true);
@@ -941,6 +955,56 @@ fn build_plan_creates_ops() {
 }
 
 #[test]
+fn build_plan_with_duplicated_uids() {
+    let inventory = inv(vec![
+        obj(
+            uid(1),
+            "dcim.site",
+            "site=fra1",
+            json!({ "name": "FRA1", "slug": "fra1" }),
+        ),
+        obj(
+            uid(1),
+            "dcim.site",
+            "site=fra2",
+            json!({ "name": "FRA2", "slug": "fra2" }),
+        ),
+    ]);
+    let adapter = TestAdapter {
+        observed: ObservedState::default(),
+        report: ApplyReport::default(),
+    };
+    let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
+    let plan = futures::executor::block_on(build_plan(&adapter, &inventory, &mut state, false));
+    plan.expect_err("failed to detect duplicated uid");
+}
+
+#[test]
+fn build_plan_with_duplicated_keys() {
+    let inventory = inv(vec![
+        obj(
+            uid(1),
+            "dcim.site",
+            "site=fra1",
+            json!({ "name": "FRA1", "slug": "fra1" }),
+        ),
+        obj(
+            uid(2),
+            "dcim.site",
+            "site=fra1",
+            json!({ "name": "FRA2", "slug": "fra2" }),
+        ),
+    ]);
+    let adapter = TestAdapter {
+        observed: ObservedState::default(),
+        report: ApplyReport::default(),
+    };
+    let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
+    let plan = futures::executor::block_on(build_plan(&adapter, &inventory, &mut state, false));
+    plan.expect_err("failed to detect duplicated keys");
+}
+
+#[test]
 fn build_plan_bootstraps_state_by_key() {
     let inventory = inv(vec![obj(
         uid(1),
@@ -949,12 +1013,14 @@ fn build_plan_bootstraps_state_by_key() {
         json!({ "name": "FRA1", "slug": "fra1" }),
     )]);
     let mut observed = ObservedState::default();
-    observed.insert(ObservedObject {
-        type_name: t("dcim.site"),
-        key: key_str("site=fra1"),
-        attrs: attrs_map(json!({ "name": "FRA1", "slug": "fra1" })),
-        backend_id: Some(BackendId::Int(10)),
-    });
+    observed
+        .insert(ObservedObject {
+            type_name: t("dcim.site"),
+            key: key_str("site=fra1"),
+            attrs: attrs_map(json!({ "name": "FRA1", "slug": "fra1" })),
+            backend_id: Some(BackendId::Int(10)),
+        })
+        .unwrap();
     let adapter = TestAdapter {
         observed,
         report: ApplyReport::default(),
@@ -967,6 +1033,29 @@ fn build_plan_bootstraps_state_by_key() {
         state.backend_id(t("dcim.site"), uid(1)),
         Some(BackendId::Int(10))
     );
+}
+
+#[test]
+fn insert_with_duplicate_backend_id() {
+    let id = 123;
+    let mut observed = ObservedState::default();
+    observed
+        .insert(ObservedObject {
+            type_name: t("dcim.site"),
+            key: key_str("site=fra1"),
+            attrs: attrs_map(json!({ "name": "FRA1", "slug": "fra1" })),
+            backend_id: Some(BackendId::Int(id)),
+        })
+        .unwrap();
+
+    observed
+        .insert(ObservedObject {
+            type_name: t("dcim.site"),
+            key: key_str("site=fra2"),
+            attrs: attrs_map(json!({ "name": "FRA2", "slug": "fra2" })),
+            backend_id: Some(BackendId::Int(id)),
+        })
+        .expect_err("duplicate backend id not detected");
 }
 
 #[test]
@@ -1005,12 +1094,14 @@ fn build_plan_reobserves_after_bootstrap() {
         json!({ "name": "FRA1", "slug": "fra1" }),
     )]);
     let mut first = ObservedState::default();
-    first.insert(ObservedObject {
-        type_name: t("dcim.site"),
-        key: key_str("site=fra1"),
-        attrs: attrs_map(json!({ "name": "FRA1", "slug": "fra1" })),
-        backend_id: Some(BackendId::Int(1)),
-    });
+    first
+        .insert(ObservedObject {
+            type_name: t("dcim.site"),
+            key: key_str("site=fra1"),
+            attrs: attrs_map(json!({ "name": "FRA1", "slug": "fra1" })),
+            backend_id: Some(BackendId::Int(1)),
+        })
+        .unwrap();
     let second = first.clone();
 
     let adapter = ReobserveAdapter {

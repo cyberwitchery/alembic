@@ -87,7 +87,7 @@ impl Adapter for PeeringDBAdapter {
             };
 
             for object in objects {
-                state.insert(object);
+                state.insert(object)?;
             }
         }
 

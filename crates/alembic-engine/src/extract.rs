@@ -82,7 +82,7 @@ mod tests {
         }
     }
 
-    fn observed_state() -> ObservedState {
+    fn observed_state() -> Result<ObservedState> {
         let mut state = ObservedState::default();
         state.insert(crate::ObservedObject {
             type_name: TypeName::new("dcim.site"),
@@ -93,8 +93,8 @@ mod tests {
                 "status": "active"
             })),
             backend_id: Some(BackendId::Int(1)),
-        });
-        state
+        })?;
+        Ok(state)
     }
 
     fn key_str(raw: &str) -> Key {
@@ -154,7 +154,7 @@ mod tests {
     #[test]
     fn import_inventory_uses_stable_uid() {
         let adapter = MockAdapter {
-            observed: observed_state(),
+            observed: observed_state().unwrap(),
         };
         let schema = schema_for_observed(&adapter.observed);
         let state = crate::state::StateStore::new(None, crate::state::StateData::default());
