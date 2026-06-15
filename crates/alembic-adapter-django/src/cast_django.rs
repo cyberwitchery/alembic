@@ -73,7 +73,7 @@ pub struct DjangoConfig {
 }
 
 fn default_python() -> String {
-    "python".to_string()
+    "python3".to_string()
 }
 
 impl Default for DjangoConfig {
