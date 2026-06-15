@@ -3,7 +3,7 @@
 use crate::DjangoEmitOptions;
 use alembic_engine::load_inventory;
 use anyhow::{anyhow, Context, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
@@ -53,7 +53,13 @@ impl Runner for CommandRunner {
     }
 }
 
-#[derive(Debug, Deserialize)]
+impl Default for CommandRunner {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct DjangoConfig {
     pub file: PathBuf,
     pub output: PathBuf,
