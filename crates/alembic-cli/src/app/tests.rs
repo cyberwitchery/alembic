@@ -1099,12 +1099,12 @@ objects: []
 
     let inventory = load_inventory(&inventory).unwrap();
     let mut state = load_state().await.unwrap();
-    let adapter = create_adapter(&[], None, Some(config)).unwrap();
+    let backend = create_backend(&[], None, Some(config)).unwrap();
 
     // the buggy threading (allow_delete alone) never emits deletes, so the
     // `extra` category is silently empty even though leaf01 is unmanaged.
     let buggy = build_plan(
-        adapter.as_ref(),
+        backend.observer().unwrap(),
         &inventory,
         &mut state,
         should_detect_deletes(false, false),
@@ -1119,7 +1119,7 @@ objects: []
     // report mode forces delete-detection, so the unmanaged backend object
     // surfaces as an `extra` even though --allow-delete was not passed.
     let plan = build_plan(
-        adapter.as_ref(),
+        backend.observer().unwrap(),
         &inventory,
         &mut state,
         should_detect_deletes(false, true),
@@ -1159,9 +1159,11 @@ async fn minimal_external_adapter() {
         setup: serde_yaml::Value::default(),
     });
 
-    let adapter = config.build().unwrap();
+    let backend = config.build().unwrap();
 
-    let response = adapter
+    let response = backend
+        .emitter()
+        .unwrap()
         .write(
             &Schema::default(),
             &[],

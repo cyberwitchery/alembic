@@ -133,9 +133,9 @@ alembic apply -p plan.json \
 - `--interactive` prompts per operation and applies only approved ops
   through the same engine path used by non-interactive apply
 - the `peeringdb` backend is read-only; apply will return an error
-- apply runs adapter provisioning (`ensure_schema`) before writes; for
-  netbox this can create custom fields/tags and custom object types
-  when supported
+- apply runs adapter provisioning (`ensure_schema`) before writes on read+write
+  backends; for netbox this can create custom fields/tags and custom object
+  types when supported. write-only emitter backends (django) skip provisioning
 - infrahub provisioning can generate and load a schema file when
   configured in the backend config
 

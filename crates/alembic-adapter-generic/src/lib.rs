@@ -3,7 +3,7 @@
 use alembic_core::{JsonMap, Schema, TypeName, Uid};
 use alembic_engine::{
     apply_non_delete_with_retries, build_key_from_schema, Adapter, AdapterApplyError, AppliedOp,
-    ApplyReport, BackendId, ObservedObject, ObservedState, Op, RetryApplyDriver,
+    ApplyReport, BackendId, Emitter, ObservedObject, ObservedState, Observer, Op, RetryApplyDriver,
 };
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
@@ -218,7 +218,7 @@ impl GenericAdapter {
 }
 
 #[async_trait]
-impl Adapter for GenericAdapter {
+impl Observer for GenericAdapter {
     async fn read(
         &self,
         schema: &Schema,
@@ -319,7 +319,10 @@ impl Adapter for GenericAdapter {
 
         Ok(state)
     }
+}
 
+#[async_trait]
+impl Emitter for GenericAdapter {
     async fn write(
         &self,
         schema: &Schema,
@@ -426,6 +429,9 @@ impl Adapter for GenericAdapter {
         })
     }
 }
+
+#[async_trait]
+impl Adapter for GenericAdapter {}
 
 fn resolve_path(value: &serde_json::Value, path: &str) -> Result<serde_json::Value> {
     let mut current = value;

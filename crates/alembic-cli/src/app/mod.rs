@@ -5,7 +5,7 @@ mod diag;
 mod io;
 mod state;
 
-use alembic_adapter_registry::{create_adapter, Plugin};
+use alembic_adapter_registry::{create_backend, Plugin};
 use alembic_engine::{apply_plan, build_plan, load_inventory, DriftReport, Plan};
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand};
@@ -184,16 +184,16 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             let inventory = load_inventory(&file)?;
             let mut state = load_state().await?;
             let plugins = search_for_plugins(&config);
-            let adapter = create_adapter(&plugins, backend.as_deref(), backend_config)?;
+            let backend = create_backend(&plugins, backend.as_deref(), backend_config)?;
             if provision {
-                let provision_report = adapter.ensure_schema(&inventory.schema).await?;
+                let provision_report = backend.adapter()?.ensure_schema(&inventory.schema).await?;
                 if !provision_report.is_empty() {
                     println!("provision: {provision_report}");
                 }
             }
 
             let plan = build_plan(
-                adapter.as_ref(),
+                backend.observer()?,
                 &inventory,
                 &mut state,
                 should_detect_deletes(allow_delete, report),
@@ -230,7 +230,7 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
         } => {
             let mut state = load_state().await?;
             let plugins = search_for_plugins(&config);
-            let adapter = create_adapter(&plugins, backend.as_deref(), backend_config)?;
+            let backend = create_backend(&plugins, backend.as_deref(), backend_config)?;
             let plan = read_plan(&plan)?;
 
             if interactive {
@@ -277,20 +277,15 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                     ops: approved,
                     summary: None,
                 };
-                let report = apply_plan(
-                    adapter.as_ref(),
-                    &interactive_plan,
-                    &mut state,
-                    allow_delete,
-                )
-                .await?;
+                let report =
+                    apply_plan(&backend, &interactive_plan, &mut state, allow_delete).await?;
                 state.save_async().await?;
                 if !report.provision.is_empty() {
                     println!("provision: {}", report.provision);
                 }
                 println!("applied {} operations", report.applied.len());
             } else {
-                let report = apply_plan(adapter.as_ref(), &plan, &mut state, allow_delete).await?;
+                let report = apply_plan(&backend, &plan, &mut state, allow_delete).await?;
                 state.save_async().await?;
                 if !report.provision.is_empty() {
                     println!("provision: {}", report.provision);
@@ -353,11 +348,11 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             // which types to observe.
             let inventory = load_inventory(&file)?;
             let plugins = search_for_plugins(&config);
-            let adapter = create_adapter(&plugins, backend.as_deref(), backend_config)?;
+            let backend = create_backend(&plugins, backend.as_deref(), backend_config)?;
             let state = load_state().await?;
             let types: Vec<TypeName> = inventory.schema.types.keys().map(TypeName::new).collect();
             let report = alembic_engine::import_inventory(
-                adapter.as_ref(),
+                backend.observer()?,
                 &inventory.schema,
                 &types,
                 &state,

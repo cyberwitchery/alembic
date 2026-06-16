@@ -280,23 +280,77 @@ impl fmt::Display for ProvisionReport {
     }
 }
 
-/// adapter contract for backend-specific io.
+/// read capability: observe backend state.
 #[async_trait]
-pub trait Adapter: Send + Sync {
+pub trait Observer: Send + Sync {
     async fn read(
         &self,
         schema: &Schema,
         types: &[TypeName],
         state: &crate::state::StateStore,
     ) -> anyhow::Result<ObservedState>;
+}
+
+/// write capability: apply a plan's operations.
+#[async_trait]
+pub trait Emitter: Send + Sync {
     async fn write(
         &self,
         schema: &Schema,
         ops: &[Op],
         state: &crate::state::StateStore,
     ) -> anyhow::Result<ApplyReport>;
+}
+
+/// full adapter contract for read+write backends; may also provision schema.
+#[async_trait]
+pub trait Adapter: Observer + Emitter {
     async fn ensure_schema(&self, _schema: &Schema) -> anyhow::Result<ProvisionReport> {
         Ok(ProvisionReport::default())
+    }
+}
+
+/// a constructed backend, tagged with its capability.
+pub enum Backend {
+    /// read-only backend (e.g. peeringdb).
+    Observer(Box<dyn Observer>),
+    /// write-only backend (e.g. django codegen).
+    Emitter(Box<dyn Emitter>),
+    /// read+write backend.
+    Adapter(Box<dyn Adapter>),
+}
+
+impl Backend {
+    pub fn observer(&self) -> anyhow::Result<&dyn Observer> {
+        match self {
+            Backend::Observer(observer) => Ok(observer.as_ref()),
+            Backend::Adapter(adapter) => Ok(adapter.as_ref()),
+            Backend::Emitter(_) => Err(anyhow::anyhow!(
+                "backend is write-only; it cannot observe state"
+            )),
+        }
+    }
+
+    pub fn emitter(&self) -> anyhow::Result<&dyn Emitter> {
+        match self {
+            Backend::Emitter(emitter) => Ok(emitter.as_ref()),
+            Backend::Adapter(adapter) => Ok(adapter.as_ref()),
+            Backend::Observer(_) => Err(anyhow::anyhow!(
+                "backend is read-only; it cannot apply changes"
+            )),
+        }
+    }
+
+    pub fn adapter(&self) -> anyhow::Result<&dyn Adapter> {
+        match self {
+            Backend::Adapter(adapter) => Ok(adapter.as_ref()),
+            Backend::Observer(_) => Err(anyhow::anyhow!(
+                "backend is read-only; it cannot provision schema"
+            )),
+            Backend::Emitter(_) => Err(anyhow::anyhow!(
+                "backend is write-only; it cannot provision schema"
+            )),
+        }
     }
 }
 

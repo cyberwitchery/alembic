@@ -19,7 +19,13 @@ alembic/
 - **netbox**: stable
 - **nautobot**: stable
 - **generic rest**: initial release (spec-driven)
-- **peeringdb**: read-only
+- **peeringdb**: read-only (observer)
+- **django**: write-only (emitter)
+
+backends implement one of three capability traits in `alembic-engine`:
+`Observer` (read-only), `Emitter` (write-only), or `Adapter: Observer + Emitter`
+(read+write, optional schema provisioning). commands that need a missing
+capability fail with a clear error (e.g. `apply` against peeringdb).
 
 ## core features
 
@@ -27,7 +33,7 @@ alembic/
 - schema-required ir with typed references
 - adapter-managed custom fields and tags
 - interactive apply mode (`--interactive`)
-- django scaffold generation via `alembic cast django`
+- django scaffold generation via the write-only `django` backend
 
 ## build
 

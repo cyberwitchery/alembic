@@ -8,8 +8,8 @@ use alembic_core::{
 };
 use alembic_engine::{
     apply_non_delete_with_retries, build_key_from_schema, query_filters_from_key, Adapter,
-    AdapterApplyError, AppliedOp, ApplyReport, BackendId, ObservedObject, ObservedState, Op,
-    ProvisionReport, RetryApplyDriver,
+    AdapterApplyError, AppliedOp, ApplyReport, BackendId, Emitter, ObservedObject, ObservedState,
+    Observer, Op, ProvisionReport, RetryApplyDriver,
 };
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
@@ -23,7 +23,7 @@ const CUSTOM_OBJECT_APP_LABEL: &str = "netbox_custom_objects";
 const ALEMBIC_CUSTOM_OBJECT_PREFIX: &str = "alembic custom object for ";
 
 #[async_trait]
-impl Adapter for NetBoxAdapter {
+impl Observer for NetBoxAdapter {
     async fn read(
         &self,
         schema: &Schema,
@@ -76,7 +76,10 @@ impl Adapter for NetBoxAdapter {
 
         Ok(state)
     }
+}
 
+#[async_trait]
+impl Emitter for NetBoxAdapter {
     async fn write(
         &self,
         schema: &Schema,
@@ -238,7 +241,10 @@ impl Adapter for NetBoxAdapter {
             ..Default::default()
         })
     }
+}
 
+#[async_trait]
+impl Adapter for NetBoxAdapter {
     async fn ensure_schema(&self, schema: &Schema) -> Result<ProvisionReport> {
         let mut registry: ObjectTypeRegistry = self.client.fetch_object_types().await?;
         let custom_fields_by_type = self.client.fetch_custom_fields().await?;

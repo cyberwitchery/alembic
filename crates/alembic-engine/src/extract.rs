@@ -1,7 +1,7 @@
 //! import of canonical inventory from backend state.
 
 use crate::state::StateStore;
-use crate::types::Adapter;
+use crate::types::Observer;
 use alembic_core::{key_string, uid_v5, Inventory, JsonMap, Object, Schema, TypeName};
 use anyhow::Result;
 
@@ -11,7 +11,7 @@ pub struct ImportReport {
 }
 
 pub async fn import_inventory(
-    adapter: &(dyn Adapter + '_),
+    adapter: &(dyn Observer + '_),
     schema: &Schema,
     types: &[TypeName],
     state: &StateStore,
@@ -83,7 +83,7 @@ fn project_attrs(schema: &Schema, type_name: &TypeName, attrs: &mut JsonMap) {
 mod tests {
     use super::*;
     use crate::types::{BackendId, ObservedState};
-    use crate::Adapter;
+    use crate::Observer;
     use alembic_core::{
         key_string, FieldSchema, FieldType, JsonMap, Key, Schema, TypeName, TypeSchema,
     };
@@ -97,7 +97,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl Adapter for MockAdapter {
+    impl Observer for MockAdapter {
         async fn read(
             &self,
             _schema: &Schema,
@@ -105,15 +105,6 @@ mod tests {
             _state: &crate::state::StateStore,
         ) -> anyhow::Result<ObservedState> {
             Ok(self.observed.clone())
-        }
-
-        async fn write(
-            &self,
-            _schema: &Schema,
-            _ops: &[crate::Op],
-            _state: &crate::state::StateStore,
-        ) -> anyhow::Result<crate::ApplyReport> {
-            panic!("write not used in import tests")
         }
     }
 
