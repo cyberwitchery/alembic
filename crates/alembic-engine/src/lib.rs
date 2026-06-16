@@ -25,7 +25,6 @@ use anyhow::{anyhow, Result};
 #[cfg(test)]
 mod tests;
 
-use crate::journal::Journal;
 pub use adapter_ops::{
     build_key_from_schema, build_request_body, query_filters_from_key, resolve_value_for_type,
 };
@@ -121,9 +120,8 @@ pub(crate) fn bootstrap_state_from_observed(
 pub async fn apply_plan(
     backend: &Backend,
     plan: &Plan,
-    journal: &mut Journal,
     state: &mut StateStore,
     allow_delete: bool,
 ) -> Result<ApplyReport> {
-    pipeline::apply(backend, plan, journal, state, allow_delete).await
+    pipeline::apply(backend, plan, state, allow_delete).await
 }

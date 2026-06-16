@@ -233,8 +233,6 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             let plugins = search_for_plugins(&config);
             let backend = create_backend(&plugins, backend.as_deref(), backend_config)?;
             let plan = read_plan(&plan)?;
-            let journal_filename = "journal.yaml".into();
-            let mut journal = Journal::load_or_create(journal_filename, &plan.ops);
 
             if interactive {
                 if !allow_delete
@@ -280,22 +278,15 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                     ops: approved,
                     summary: None,
                 };
-                let report = apply_plan(
-                    &backend,
-                    &interactive_plan,
-                    &mut journal,
-                    &mut state,
-                    allow_delete,
-                )
-                .await?;
+                let report =
+                    apply_plan(&backend, &interactive_plan, &mut state, allow_delete).await?;
                 state.save_async().await?;
                 if !report.provision.is_empty() {
                     println!("provision: {}", report.provision);
                 }
                 println!("applied {} operations", report.applied.len());
             } else {
-                let report =
-                    apply_plan(&backend, &plan, &mut journal, &mut state, allow_delete).await?;
+                let report = apply_plan(&backend, &plan, &mut state, allow_delete).await?;
                 state.save_async().await?;
                 if !report.provision.is_empty() {
                     println!("provision: {}", report.provision);

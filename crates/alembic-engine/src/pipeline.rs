@@ -1,4 +1,3 @@
-use crate::journal::Journal;
 use crate::pretty_printing::{bullet_list, comma_separated};
 use crate::types::{ApplyReport, Backend, Emitter, ObservedState, Observer, Plan, ProvisionReport};
 use crate::StateStore;
@@ -64,7 +63,6 @@ fn detect_key_collisions(observed: &ObservedState) -> Result<()> {
 pub(crate) async fn apply(
     backend: &Backend,
     plan: &Plan,
-    _journal: &mut Journal,
     state: &mut StateStore,
     allow_delete: bool,
 ) -> Result<ApplyReport> {
