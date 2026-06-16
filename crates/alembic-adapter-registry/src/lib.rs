@@ -18,6 +18,7 @@ use tokio::time::timeout;
 
 #[cfg(feature = "django")]
 use alembic_adapter_django::cast_django::DjangoConfig;
+use alembic_engine::journal::Journal;
 
 const SUPPORTED_BACKENDS: &[&str] = &[
     #[cfg(feature = "netbox")]
@@ -393,6 +394,7 @@ impl Emitter for ProcessAdapter {
         &self,
         schema: &alembic_core::Schema,
         ops: &[Op],
+        _journal: &mut Journal,
         state: &StateStore,
     ) -> Result<ApplyReport> {
         let state = StateData {
@@ -567,6 +569,7 @@ mod tests {
     #[cfg(feature = "infrahub")]
     use super::InfrahubSchemaConfig;
     use alembic_core::{JsonMap, Key, Object, Schema, TypeName, Uid};
+    use alembic_engine::journal::Journal;
     use alembic_engine::{BackendId, Op, StateData, StateStore};
     use serde_json::json;
     use std::collections::BTreeMap;
@@ -731,10 +734,11 @@ fi
             type_name: TypeName::new("dcim.site"),
             desired: obj,
         }];
+        let mut journal = Journal::new_ephemeral(&ops);
         let report = backend
             .emitter()
             .unwrap()
-            .write(&schema, &ops, &state)
+            .write(&schema, &ops, &mut journal, &state)
             .await
             .unwrap();
         assert_eq!(report.applied.len(), 1);

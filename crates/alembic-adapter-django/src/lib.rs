@@ -2,6 +2,7 @@
 
 use crate::cast_django::{CommandRunner, DjangoConfig};
 use alembic_core::{FieldFormat, FieldType, Inventory, Object, Schema, TypeName, TypeSchema};
+use alembic_engine::journal::Journal;
 use alembic_engine::{AppliedOp, ApplyReport, Emitter, Op, StateStore};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
@@ -23,7 +24,13 @@ impl DjangoAdapter {
 
 #[async_trait]
 impl Emitter for DjangoAdapter {
-    async fn write(&self, schema: &Schema, ops: &[Op], _state: &StateStore) -> Result<ApplyReport> {
+    async fn write(
+        &self,
+        schema: &Schema,
+        ops: &[Op],
+        _journal: &mut Journal,
+        _state: &StateStore,
+    ) -> Result<ApplyReport> {
         let mut inventory = Inventory {
             schema: schema.clone(),
             objects: Vec::new(),

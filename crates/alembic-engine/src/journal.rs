@@ -3,6 +3,7 @@
 //! a journal has to match the exact ops in the previous run, when attempting to resume.
 
 use crate::{BackendId, Op};
+use alembic_core::Uid;
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -13,26 +14,26 @@ use std::path::PathBuf;
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Journal {
     #[serde(skip)]
-    file: Option<File>,
-    next_op: usize,
+    file: Option<(File, PathBuf)>,
+    next_op_index: usize,
     ops: Vec<OpWithMeta>,
     completed: bool,
 }
 
 impl Journal {
-    /// tries to load a Journal from `filename`, otherwise creates a new one.
-    /// in either case, the new Journal instance will be backed by the file at `filename`.
-    pub fn load_or_create(filename: PathBuf, ops: &[Op]) -> Result<Self> {
-        if fs::metadata(&filename).is_ok() {
-            Self::new_from_file(filename, ops)
+    /// tries to load a Journal from `file_path`, otherwise creates a new one.
+    /// in either case, the new Journal instance will be backed by the file at `file_path`.
+    pub fn load_or_create(file_path: PathBuf, ops: &[Op]) -> Result<Self> {
+        if fs::metadata(&file_path).is_ok() {
+            Self::new_from_file(file_path, ops)
         } else {
-            Self::new_with_file(filename, ops)
+            Self::new_with_file(file_path, ops)
         }
     }
 
-    /// loads a journal from the file with `filename` and sets it backing file to that file
-    fn new_from_file(filename: PathBuf, expected_ops: &[Op]) -> Result<Self> {
-        let mut file = std::fs::File::open(&filename)?;
+    /// loads a journal from the file with `file_path` and sets it backing file to that file
+    fn new_from_file(file_path: PathBuf, expected_ops: &[Op]) -> Result<Self> {
+        let mut file = File::open(&file_path)?;
         let mut contents = String::new();
         file.read_to_string(&mut contents)?;
         let mut journal: Journal = serde_yaml::from_str(&contents)?;
@@ -42,74 +43,87 @@ impl Journal {
             .iter()
             .map(|op_with_meta| op_with_meta.op.clone())
             .collect::<Vec<Op>>();
+
         if loaded_raw_ops != expected_ops {
             return Err(anyhow!(
                 "the ops in the loaded journal file `{}` doesn't match the expected ops",
-                filename.display()
+                file_path.display()
             ));
         }
 
-        journal.file = Some(file);
+        journal.file = Some((file, file_path));
         Ok(journal)
     }
 
     /// creates a journal with a new backing file
-    fn new_with_file(filename: PathBuf, ops: &[Op]) -> Result<Self> {
-        let mut journal = Self::new(ops);
+    fn new_with_file(file_path: PathBuf, ops: &[Op]) -> Result<Self> {
+        let mut journal = Self::new_ephemeral(ops);
 
         // create and write to the file to check that it works before applying any ops
-        let mut file = std::fs::File::create(&filename)?;
+        let mut file = std::fs::File::create(&file_path)?;
         file.write(serde_yaml::to_string(&journal)?.as_bytes())?;
-        journal.file = Some(file);
+        journal.file = Some((file, file_path));
 
         Ok(journal)
     }
 
     /// creates a journal without a backing file (mainly usable for testing)
-    fn new(ops: &[Op]) -> Self {
+    pub fn new_ephemeral(ops: &[Op]) -> Self {
         Self {
             file: None,
-            next_op: 0,
+            next_op_index: 0,
             ops: ops.iter().map(|op| OpWithMeta::new(op.clone())).collect(),
             completed: ops.is_empty(),
         }
     }
 
     pub fn done_ops(&self) -> usize {
-        self.next_op
+        self.next_op_index
     }
 
     pub fn is_completed(&self) -> bool {
         self.completed
     }
 
-    /// in addition to marking the op as done, also writes the journal to disk if it has a backing file
-    pub fn mark_next_op_as_done(&mut self, op: &Op) -> Result<()> {
+    pub fn mark_next_op_as_done(&mut self, expected_uid: Uid) -> Result<()> {
         if self.completed {
             return Err(anyhow!(
                 "can't mark next op as done when journal was already completed"
             ));
         };
 
-        let Some(at_op) = self.ops.get_mut(self.next_op) else {
-            return Err(anyhow!("corrupt journal (next_op was out of bounds)"));
+        let Some(at_op) = self.ops.get_mut(self.next_op_index) else {
+            return Err(anyhow!("corrupt journal (index out of bounds)"));
         };
 
-        if at_op.op != *op {
+        if at_op.op.uid() != expected_uid {
             return Err(anyhow!(
-                "ops don't match, trying to mark another op as done"
+                "op uid in journal ({}) doesn't match expected uid {}, trying to mark another op as done",
+                at_op.op.uid(),
+                expected_uid,
             ));
         }
 
         at_op.done = true;
-        self.attempt_save()?;
+        self.next_op_index += 1;
 
         Ok(())
     }
 
-    fn attempt_save(&mut self) -> Result<()> {
-        if let Some(file) = self.file.as_mut() {
+    pub fn save(&mut self) -> Result<()> {
+        if let Some((file, _)) = self.file.as_mut() {
             file.sync_all()?;
+            Ok(())
+        } else {
+            Err(anyhow!(
+                "can't save journal because it's missing a backing file"
+            ))
+        }
+    }
+
+    pub fn delete_backing_file(&mut self) -> Result<()> {
+        if let Some((_, file_path)) = self.file.take() {
+            fs::remove_file(file_path)?;
         }
         Ok(())
     }
@@ -117,7 +131,7 @@ impl Journal {
 
 impl Drop for Journal {
     fn drop(&mut self) {
-        if let Some(file) = self.file.take() {
+        if let Some((file, _)) = self.file.take() {
             file.sync_all().unwrap();
         }
     }

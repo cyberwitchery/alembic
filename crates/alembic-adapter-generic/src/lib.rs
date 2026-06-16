@@ -1,6 +1,7 @@
 //! generic rest adapter for alembic.
 
 use alembic_core::{JsonMap, Schema, TypeName, Uid};
+use alembic_engine::journal::Journal;
 use alembic_engine::{
     apply_non_delete_with_retries, build_key_from_schema, Adapter, AdapterApplyError, AppliedOp,
     ApplyReport, BackendId, Emitter, ObservedObject, ObservedState, Observer, Op, RetryApplyDriver,
@@ -327,6 +328,7 @@ impl Emitter for GenericAdapter {
         &self,
         schema: &Schema,
         ops: &[Op],
+        journal: &mut Journal,
         state: &alembic_engine::StateStore,
     ) -> Result<ApplyReport> {
         let mut applied = Vec::new();
@@ -392,7 +394,8 @@ impl Emitter for GenericAdapter {
             resolved: &mut resolved,
             schema,
         };
-        let retry_result = apply_non_delete_with_retries(&creates_updates, &mut driver).await?;
+        let retry_result =
+            apply_non_delete_with_retries(&creates_updates, journal, &mut driver).await?;
         if !retry_result.pending.is_empty() {
             let missing = describe_missing_refs(&retry_result.pending, &resolved);
             return Err(anyhow!("unresolved references: {missing}"));

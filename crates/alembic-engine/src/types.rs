@@ -1,5 +1,6 @@
 //! core engine types and adapter contract.
 
+use crate::journal::Journal;
 use alembic_core::{key_string, JsonMap, Key, Object, Schema, TypeName, Uid};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
@@ -298,6 +299,7 @@ pub trait Emitter: Send + Sync {
         &self,
         schema: &Schema,
         ops: &[Op],
+        journal: &mut Journal,
         state: &crate::state::StateStore,
     ) -> anyhow::Result<ApplyReport>;
 }

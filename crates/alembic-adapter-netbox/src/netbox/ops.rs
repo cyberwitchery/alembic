@@ -6,6 +6,7 @@ use super::NetBoxAdapter;
 use alembic_core::{
     key_string, uid_v5, FieldSchema, FieldType, JsonMap, Key, Schema, TypeName, TypeSchema, Uid,
 };
+use alembic_engine::journal::Journal;
 use alembic_engine::{
     apply_non_delete_with_retries, build_key_from_schema, query_filters_from_key, Adapter,
     AdapterApplyError, AppliedOp, ApplyReport, BackendId, Emitter, ObservedObject, ObservedState,
@@ -84,6 +85,7 @@ impl Emitter for NetBoxAdapter {
         &self,
         schema: &Schema,
         ops: &[Op],
+        journal: &mut Journal,
         state: &alembic_engine::StateStore,
     ) -> Result<ApplyReport> {
         let registry: ObjectTypeRegistry = build_registry_for_schema(self, schema).await?;
@@ -176,7 +178,8 @@ impl Emitter for NetBoxAdapter {
             schema,
             custom_fields_by_type: &custom_fields_by_type,
         };
-        let retry_result = apply_non_delete_with_retries(&creates_updates, &mut driver).await?;
+        let retry_result =
+            apply_non_delete_with_retries(&creates_updates, journal, &mut driver).await?;
 
         if !retry_result.pending.is_empty() {
             let missing = describe_missing_refs(&retry_result.pending, &resolved);

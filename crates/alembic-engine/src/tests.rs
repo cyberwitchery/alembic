@@ -933,6 +933,7 @@ impl Emitter for TestAdapter {
         &self,
         _schema: &alembic_core::Schema,
         _ops: &[Op],
+        _journal: &mut Journal,
         _state: &StateStore,
     ) -> anyhow::Result<ApplyReport> {
         Ok(self.report.clone())
@@ -1175,7 +1176,9 @@ fn apply_plan_blocks_deletes_without_flag() {
         summary: None,
     };
     let backend = Backend::Adapter(Box::new(adapter));
-    let result = futures::executor::block_on(apply_plan(&backend, &plan, &mut state, false));
+    let mut journal = Journal::new_ephemeral(&plan.ops);
+    let result =
+        futures::executor::block_on(apply_plan(&backend, &plan, &mut journal, &mut state, false));
     assert!(result.is_err());
 }
 
@@ -1200,8 +1203,10 @@ fn apply_plan_updates_state() {
         ops: vec![],
         summary: None,
     };
+    let mut journal = Journal::new_ephemeral(&[]);
     let backend = Backend::Adapter(Box::new(adapter));
-    futures::executor::block_on(apply_plan(&backend, &plan, &mut state, true)).unwrap();
+    futures::executor::block_on(apply_plan(&backend, &plan, &mut journal, &mut state, true))
+        .unwrap();
     assert_eq!(
         state.backend_id(t("dcim.site"), uid(1)),
         Some(BackendId::Int(55))

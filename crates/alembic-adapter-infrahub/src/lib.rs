@@ -1,6 +1,7 @@
 //! infrahub graphql adapter for alembic.
 
 use alembic_core::{FieldType, JsonMap, Key, Schema, TypeName, Uid};
+use alembic_engine::journal::Journal;
 use alembic_engine::{
     apply_non_delete_with_retries, build_key_from_schema, resolve_value_for_type, Adapter,
     AdapterApplyError, AppliedOp, ApplyReport, BackendId, Emitter, ObservedObject, ObservedState,
@@ -527,7 +528,13 @@ impl Observer for InfrahubAdapter {
 
 #[async_trait]
 impl Emitter for InfrahubAdapter {
-    async fn write(&self, schema: &Schema, ops: &[Op], state: &StateStore) -> Result<ApplyReport> {
+    async fn write(
+        &self,
+        schema: &Schema,
+        ops: &[Op],
+        journal: &mut Journal,
+        state: &StateStore,
+    ) -> Result<ApplyReport> {
         let schema_info = self.load_schema_info().await?;
         validate_schema(schema, &schema_info)?;
 
@@ -576,7 +583,8 @@ impl Emitter for InfrahubAdapter {
             schema,
             resolved: &mut resolved,
         };
-        let retry_result = apply_non_delete_with_retries(&creates_updates, &mut driver).await?;
+        let retry_result =
+            apply_non_delete_with_retries(&creates_updates, journal, &mut driver).await?;
         if !retry_result.pending.is_empty() {
             let missing = describe_missing_refs(&retry_result.pending, &resolved);
             return Err(anyhow!("unresolved references: {missing}"));
@@ -2799,7 +2807,11 @@ schema { query: Query }
         ];
 
         let state = StateStore::new(None, StateData::default());
-        let report = adapter.write(&schema, &ops, &state).await.unwrap();
+        let mut journal = Journal::new_ephemeral(&ops);
+        let report = adapter
+            .write(&schema, &ops, &mut journal, &state)
+            .await
+            .unwrap();
         assert_eq!(report.applied.len(), 3);
     }
 
