@@ -7,7 +7,7 @@ mod io;
 mod state;
 
 use alembic_adapter_registry::{create_adapter, Plugin};
-use alembic_engine::{apply_plan, build_plan, load_inventory, DriftReport, Plan};
+use alembic_engine::{apply_plan, build_plan, load_inventory, DriftReport, Journal, Plan};
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand};
 use std::fs;
@@ -239,6 +239,7 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             let plugins = search_for_plugins(&config);
             let adapter = create_adapter(&plugins, backend.as_deref(), backend_config)?;
             let plan = read_plan(&plan)?;
+            let mut journal = Journal::new();
 
             if interactive {
                 if !allow_delete
@@ -287,6 +288,7 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                 let report = apply_plan(
                     adapter.as_ref(),
                     &interactive_plan,
+                    &mut journal,
                     &mut state,
                     allow_delete,
                 )
@@ -297,7 +299,14 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                 }
                 println!("applied {} operations", report.applied.len());
             } else {
-                let report = apply_plan(adapter.as_ref(), &plan, &mut state, allow_delete).await?;
+                let report = apply_plan(
+                    adapter.as_ref(),
+                    &plan,
+                    &mut journal,
+                    &mut state,
+                    allow_delete,
+                )
+                .await?;
                 state.save_async().await?;
                 if !report.provision.is_empty() {
                     println!("provision: {}", report.provision);
