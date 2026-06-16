@@ -234,7 +234,7 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             let backend = create_backend(&plugins, backend.as_deref(), backend_config)?;
             let plan = read_plan(&plan)?;
             let journal_filename = "journal.yaml".into();
-            let mut journal = Journal::load_or_create(journal_filename, &plan.ops)?;
+            let mut journal = Journal::load_or_create(journal_filename, &plan.ops);
 
             if interactive {
                 if !allow_delete
@@ -301,10 +301,6 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                     println!("provision: {}", report.provision);
                 }
                 println!("applied {} operations", report.applied.len());
-            }
-
-            if journal.is_completed() {
-                journal.delete_backing_file()?;
             }
         }
         Command::Map {

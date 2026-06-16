@@ -64,7 +64,7 @@ fn detect_key_collisions(observed: &ObservedState) -> Result<()> {
 pub(crate) async fn apply(
     backend: &Backend,
     plan: &Plan,
-    journal: &mut Journal,
+    _journal: &mut Journal,
     state: &mut StateStore,
     allow_delete: bool,
 ) -> Result<ApplyReport> {
@@ -89,9 +89,7 @@ pub(crate) async fn apply(
     };
 
     let ordered = sort_ops_for_apply(&plan.ops, &plan.schema);
-    let mut report = emitter
-        .write(&plan.schema, &ordered, journal, state)
-        .await?;
+    let mut report = emitter.write(&plan.schema, &ordered, state).await?;
     report.provision = provision;
 
     for applied in &report.applied {

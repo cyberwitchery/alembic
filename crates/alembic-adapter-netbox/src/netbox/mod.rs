@@ -32,7 +32,6 @@ mod tests {
     use super::*;
     use crate::netbox::mapping::{build_tag_inputs, slugify};
     use alembic_core::{key_string, JsonMap, Key, TypeName, Uid};
-    use alembic_engine::journal::Journal;
     use alembic_engine::Op;
     use httpmock::Method::{GET, POST};
     use httpmock::{Mock, MockServer};
@@ -367,11 +366,7 @@ mod tests {
                 ),
             ]),
         };
-        let mut journal = Journal::new_ephemeral(&ops);
-        let report = adapter
-            .write(&schema, &ops, &mut journal, &state)
-            .await
-            .unwrap();
+        let report = adapter.write(&schema, &ops, &state).await.unwrap();
         assert_eq!(report.applied.len(), 2);
     }
 
@@ -559,11 +554,7 @@ mod tests {
                 ),
             ]),
         };
-        let mut journal = Journal::new_ephemeral(&ops);
-        let report = adapter
-            .write(&schema, &ops, &mut journal, &state)
-            .await
-            .unwrap();
+        let report = adapter.write(&schema, &ops, &state).await.unwrap();
         assert_eq!(report.applied.len(), 3);
     }
 
@@ -669,11 +660,7 @@ mod tests {
             )]),
         };
 
-        let mut journal = Journal::new_ephemeral(&ops);
-        let report = adapter
-            .write(&schema, &ops, &mut journal, &state)
-            .await
-            .unwrap();
+        let report = adapter.write(&schema, &ops, &state).await.unwrap();
         assert_eq!(report.applied.len(), 1);
     }
 
@@ -828,11 +815,7 @@ mod tests {
                 },
             )]),
         };
-        let mut journal = Journal::new_ephemeral(&ops);
-        let report = adapter
-            .write(&schema, &ops, &mut journal, &state)
-            .await
-            .unwrap();
+        let report = adapter.write(&schema, &ops, &state).await.unwrap();
         assert_eq!(report.applied.len(), 1);
     }
 
@@ -895,11 +878,7 @@ mod tests {
                 },
             )]),
         };
-        let mut journal = Journal::new_ephemeral(&ops);
-        let report = adapter
-            .write(&schema, &ops, &mut journal, &state)
-            .await
-            .unwrap();
+        let report = adapter.write(&schema, &ops, &state).await.unwrap();
         assert_eq!(report.applied.len(), 1);
     }
 

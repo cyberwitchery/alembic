@@ -1160,7 +1160,6 @@ async fn minimal_external_adapter() {
     });
 
     let backend = config.build().unwrap();
-    let mut journal = Journal::new_ephemeral(&[]);
 
     let response = backend
         .emitter()
@@ -1168,7 +1167,6 @@ async fn minimal_external_adapter() {
         .write(
             &Schema::default(),
             &[],
-            &mut journal,
             &StateStore::new(Option::None, StateData::default()),
         )
         .await;

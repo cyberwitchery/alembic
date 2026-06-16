@@ -1,4 +1,3 @@
-use crate::journal::Journal;
 use crate::{AppliedOp, Op};
 use anyhow::Result;
 use async_trait::async_trait;
@@ -17,7 +16,6 @@ pub trait RetryApplyDriver {
 
 pub async fn apply_non_delete_with_retries(
     ops: &[Op],
-    _journal: &mut Journal,
     driver: &mut impl RetryApplyDriver,
 ) -> Result<RetryApplyResult> {
     let mut applied = Vec::new();
@@ -109,13 +107,12 @@ mod tests {
         let uid1 = Uid::from_u128(1);
         let uid2 = Uid::from_u128(2);
         let ops = vec![create_op(uid1), create_op(uid2)];
-        let mut journal = Journal::new_ephemeral(&ops);
         let mut driver = TestDriver {
             attempts: 0,
             mode: Mode::RetryThenOk,
         };
 
-        let result = apply_non_delete_with_retries(&ops, &mut journal, &mut driver)
+        let result = apply_non_delete_with_retries(&ops, &mut driver)
             .await
             .unwrap();
 
@@ -128,13 +125,12 @@ mod tests {
     async fn returns_pending_when_stuck() {
         let uid = Uid::from_u128(1);
         let ops = vec![create_op(uid)];
-        let mut journal = Journal::new_ephemeral(&ops);
         let mut driver = TestDriver {
             attempts: 0,
             mode: Mode::AlwaysRetry,
         };
 
-        let result = apply_non_delete_with_retries(&ops, &mut journal, &mut driver)
+        let result = apply_non_delete_with_retries(&ops, &mut driver)
             .await
             .unwrap();
 
@@ -146,13 +142,12 @@ mod tests {
     async fn returns_non_retryable_error() {
         let uid = Uid::from_u128(1);
         let ops = vec![create_op(uid)];
-        let mut journal = Journal::new_ephemeral(&ops);
         let mut driver = TestDriver {
             attempts: 0,
             mode: Mode::Fatal,
         };
 
-        let err = apply_non_delete_with_retries(&ops, &mut journal, &mut driver)
+        let err = apply_non_delete_with_retries(&ops, &mut driver)
             .await
             .unwrap_err();
 
@@ -168,13 +163,12 @@ mod tests {
             key: Key::default(),
             backend_id: None,
         }];
-        let mut journal = Journal::new_ephemeral(&ops);
         let mut driver = TestDriver {
             attempts: 0,
             mode: Mode::Fatal,
         };
 
-        let result = apply_non_delete_with_retries(&ops, &mut journal, &mut driver)
+        let result = apply_non_delete_with_retries(&ops, &mut driver)
             .await
             .unwrap();
 

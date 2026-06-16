@@ -823,11 +823,7 @@ async fn test_apply_create() {
     }];
 
     let state = new_state_store();
-    let mut journal = Journal::new_ephemeral(&ops);
-    let report = adapter
-        .write(&schema, &ops, &mut journal, &state)
-        .await
-        .unwrap();
+    let report = adapter.write(&schema, &ops, &state).await.unwrap();
     mock.assert();
     assert_eq!(report.applied.len(), 1);
     assert_eq!(report.applied[0].backend_id, Some(BackendId::Int(42)));
@@ -896,11 +892,7 @@ async fn test_apply_create_retries_out_of_order_dependencies() {
     ];
 
     let state = new_state_store();
-    let mut journal = Journal::new_ephemeral(&ops);
-    let report = adapter
-        .write(&schema, &ops, &mut journal, &state)
-        .await
-        .unwrap();
+    let report = adapter.write(&schema, &ops, &state).await.unwrap();
     create_site.assert();
     create_device.assert();
     assert_eq!(report.applied.len(), 2);
@@ -952,11 +944,7 @@ async fn test_apply_update_patch() {
         changes: vec![],
     }];
 
-    let mut journal = Journal::new_ephemeral(&ops);
-    let report = adapter
-        .write(&schema, &ops, &mut journal, &state)
-        .await
-        .unwrap();
+    let report = adapter.write(&schema, &ops, &state).await.unwrap();
     mock.assert();
     assert_eq!(report.applied.len(), 1);
 }
@@ -998,11 +986,7 @@ async fn test_apply_update_put() {
         changes: vec![],
     }];
 
-    let mut journal = Journal::new_ephemeral(&ops);
-    let report = adapter
-        .write(&schema, &ops, &mut journal, &state)
-        .await
-        .unwrap();
+    let report = adapter.write(&schema, &ops, &state).await.unwrap();
     mock.assert();
     assert_eq!(report.applied.len(), 1);
 }
@@ -1031,11 +1015,7 @@ async fn test_apply_delete_standard() {
     }];
 
     let state = new_state_store();
-    let mut journal = Journal::new_ephemeral(&ops);
-    let report = adapter
-        .write(&schema, &ops, &mut journal, &state)
-        .await
-        .unwrap();
+    let report = adapter.write(&schema, &ops, &state).await.unwrap();
     mock.assert();
     assert_eq!(report.applied.len(), 1);
     assert_eq!(report.applied[0].backend_id, None);
@@ -1060,11 +1040,7 @@ async fn test_apply_delete_none_strategy() {
     }];
 
     let state = new_state_store();
-    let mut journal = Journal::new_ephemeral(&ops);
-    let err = adapter
-        .write(&schema, &ops, &mut journal, &state)
-        .await
-        .unwrap_err();
+    let err = adapter.write(&schema, &ops, &state).await.unwrap_err();
     assert!(
         err.to_string().contains("delete not supported"),
         "unexpected error: {err}"
@@ -1089,11 +1065,7 @@ async fn test_apply_delete_missing_backend_id() {
     }];
 
     let state = new_state_store();
-    let mut journal = Journal::new_ephemeral(&ops);
-    let err = adapter
-        .write(&schema, &ops, &mut journal, &state)
-        .await
-        .unwrap_err();
+    let err = adapter.write(&schema, &ops, &state).await.unwrap_err();
     assert!(err.to_string().contains("delete requires backend id"));
 }
 
@@ -1124,11 +1096,7 @@ async fn test_apply_update_missing_backend_id() {
     }];
 
     let state = new_state_store();
-    let mut journal = Journal::new_ephemeral(&ops);
-    let err = adapter
-        .write(&schema, &ops, &mut journal, &state)
-        .await
-        .unwrap_err();
+    let err = adapter.write(&schema, &ops, &state).await.unwrap_err();
     assert!(err.to_string().contains("update requires backend id"));
 }
 
@@ -1165,11 +1133,7 @@ async fn test_apply_create_string_id() {
     }];
 
     let state = new_state_store();
-    let mut journal = Journal::new_ephemeral(&ops);
-    let report = adapter
-        .write(&schema, &ops, &mut journal, &state)
-        .await
-        .unwrap();
+    let report = adapter.write(&schema, &ops, &state).await.unwrap();
     mock.assert();
     assert_eq!(
         report.applied[0].backend_id,
@@ -1202,11 +1166,7 @@ async fn test_apply_unknown_type() {
     }];
 
     let state = new_state_store();
-    let mut journal = Journal::new_ephemeral(&ops);
-    let err = adapter
-        .write(&schema, &ops, &mut journal, &state)
-        .await
-        .unwrap_err();
+    let err = adapter.write(&schema, &ops, &state).await.unwrap_err();
     assert!(err.to_string().contains("no config for unknown"));
 }
 
