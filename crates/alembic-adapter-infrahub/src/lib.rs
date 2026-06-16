@@ -3,8 +3,8 @@
 use alembic_core::{FieldType, JsonMap, Key, Schema, TypeName, Uid};
 use alembic_engine::{
     apply_non_delete_with_retries, build_key_from_schema, resolve_value_for_type, Adapter,
-    AdapterApplyError, AppliedOp, ApplyReport, BackendId, ObservedObject, ObservedState, Op,
-    ProvisionReport, RetryApplyDriver, StateStore,
+    AdapterApplyError, AppliedOp, ApplyReport, BackendId, Emitter, ObservedObject, ObservedState,
+    Observer, Op, ProvisionReport, RetryApplyDriver, StateStore,
 };
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
@@ -486,7 +486,7 @@ impl InfrahubAdapter {
 }
 
 #[async_trait]
-impl Adapter for InfrahubAdapter {
+impl Observer for InfrahubAdapter {
     async fn read(
         &self,
         schema: &Schema,
@@ -523,7 +523,10 @@ impl Adapter for InfrahubAdapter {
 
         Ok(state)
     }
+}
 
+#[async_trait]
+impl Emitter for InfrahubAdapter {
     async fn write(&self, schema: &Schema, ops: &[Op], state: &StateStore) -> Result<ApplyReport> {
         let schema_info = self.load_schema_info().await?;
         validate_schema(schema, &schema_info)?;
@@ -595,7 +598,10 @@ impl Adapter for InfrahubAdapter {
             ..Default::default()
         })
     }
+}
 
+#[async_trait]
+impl Adapter for InfrahubAdapter {
     async fn ensure_schema(&self, schema: &Schema) -> Result<ProvisionReport> {
         let schema_info = self.load_schema_info().await?;
         let schema_snapshot = self.load_schema_snapshot().await?;

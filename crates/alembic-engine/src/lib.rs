@@ -6,7 +6,6 @@ mod drift;
 mod errors;
 pub mod external;
 mod extract;
-pub mod journal;
 mod loader;
 pub mod mapping;
 mod pipeline;
@@ -14,6 +13,8 @@ mod planner;
 mod predicate;
 mod pretty_printing;
 mod render;
+#[cfg(feature = "starlark")]
+mod starlark_transforms;
 mod state;
 mod transform;
 mod types;
@@ -23,7 +24,6 @@ use anyhow::{anyhow, Result};
 #[cfg(test)]
 mod tests;
 
-pub use crate::journal::Journal;
 pub use adapter_ops::{
     build_key_from_schema, build_request_body, query_filters_from_key, resolve_value_for_type,
 };
@@ -38,10 +38,10 @@ pub use extract::{import_inventory, ImportReport};
 pub use loader::load_inventory;
 pub use planner::{plan, sort_ops_for_apply};
 pub use state::{PostgresTlsMode, StateData, StateStore};
-pub use transform::{compile_map, load_map_spec, MapSpec};
+pub use transform::{compile_map, eval_map_transform, load_map_spec, MapSpec, TransformsSpec};
 pub use types::{
-    Adapter, AppliedOp, ApplyReport, BackendId, FieldChange, ObservedObject, ObservedState, Op,
-    Plan, PlanSummary, ProvisionReport,
+    Adapter, AppliedOp, ApplyReport, Backend, BackendId, Emitter, FieldChange, ObservedObject,
+    ObservedState, Observer, Op, Plan, PlanSummary, ProvisionReport,
 };
 
 /// validate an inventory and return the report.
@@ -70,7 +70,7 @@ pub fn report_to_result_with_sources(report: ValidationReport, objects: &[Object
 
 /// observe backend state and produce a deterministic plan.
 pub async fn build_plan(
-    adapter: &(dyn Adapter + '_),
+    adapter: &(dyn Observer + '_),
     inventory: &Inventory,
     state: &mut StateStore,
     allow_delete: bool,
@@ -114,13 +114,13 @@ pub(crate) fn bootstrap_state_from_observed(
     updated
 }
 
-/// apply a plan and update the state store.
+/// apply a plan and update the state store. full adapters provision schema
+/// before writing; emitters only write.
 pub async fn apply_plan(
-    adapter: &(dyn Adapter + '_),
+    backend: &Backend,
     plan: &Plan,
-    journal: &mut Journal,
     state: &mut StateStore,
     allow_delete: bool,
 ) -> Result<ApplyReport> {
-    pipeline::apply(adapter, plan, journal, state, allow_delete).await
+    pipeline::apply(backend, plan, state, allow_delete).await
 }

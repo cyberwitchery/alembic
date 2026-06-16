@@ -1,10 +1,69 @@
 //! django app generation from alembic ir.
 
-use alembic_core::{FieldFormat, FieldType, Inventory, Schema, TypeName, TypeSchema};
-use anyhow::Result;
+use crate::cast_django::{CommandRunner, DjangoConfig};
+use alembic_core::{FieldFormat, FieldType, Inventory, Object, Schema, TypeName, TypeSchema};
+use alembic_engine::{AppliedOp, ApplyReport, Emitter, Op, StateStore};
+use anyhow::{anyhow, Result};
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
+
+pub mod cast_django;
+
+pub struct DjangoAdapter {
+    config: DjangoConfig,
+}
+
+impl DjangoAdapter {
+    pub fn new(config: DjangoConfig) -> Self {
+        Self { config }
+    }
+}
+
+#[async_trait]
+impl Emitter for DjangoAdapter {
+    async fn write(&self, schema: &Schema, ops: &[Op], _state: &StateStore) -> Result<ApplyReport> {
+        let mut inventory = Inventory {
+            schema: schema.clone(),
+            objects: Vec::new(),
+        };
+        let mut apply_report = ApplyReport::default();
+
+        for op in ops {
+            match op {
+                Op::Create {
+                    uid,
+                    type_name,
+                    desired,
+                } => {
+                    inventory.objects.push(Object {
+                        uid: *uid,
+                        type_name: type_name.clone(),
+                        key: desired.key.clone(),
+                        attrs: desired.attrs.clone(),
+                        source: desired.source.clone(),
+                    });
+                    apply_report.applied.push(AppliedOp {
+                        uid: *uid,
+                        type_name: type_name.clone(),
+                        backend_id: None,
+                    })
+                }
+                Op::Update { .. } => {
+                    return Err(anyhow!("unsupported operation, cannot update object"))
+                }
+                Op::Delete { .. } => {
+                    return Err(anyhow!("unsupported operation, cannot delete object"))
+                }
+            }
+        }
+
+        let runner = CommandRunner::new();
+        cast_django::run_cast_django(&runner, &inventory, &self.config)?;
+        Ok(apply_report)
+    }
+}
 
 const GENERATED_MODELS: &str = "generated_models.py";
 const GENERATED_ADMIN: &str = "generated_admin.py";

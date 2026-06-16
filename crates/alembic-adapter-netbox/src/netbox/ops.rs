@@ -8,12 +8,13 @@ use alembic_core::{
 };
 use alembic_engine::{
     apply_non_delete_with_retries, build_key_from_schema, query_filters_from_key, Adapter,
-    AdapterApplyError, AppliedOp, ApplyReport, BackendId, ObservedObject, ObservedState, Op,
-    ProvisionReport, RetryApplyDriver,
+    AdapterApplyError, AppliedOp, ApplyReport, BackendId, Emitter, ObservedObject, ObservedState,
+    Observer, Op, ProvisionReport, RetryApplyDriver,
 };
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use netbox::{BulkDelete, QueryBuilder, Resource};
+use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -22,7 +23,7 @@ const CUSTOM_OBJECT_APP_LABEL: &str = "netbox_custom_objects";
 const ALEMBIC_CUSTOM_OBJECT_PREFIX: &str = "alembic custom object for ";
 
 #[async_trait]
-impl Adapter for NetBoxAdapter {
+impl Observer for NetBoxAdapter {
     async fn read(
         &self,
         schema: &Schema,
@@ -60,6 +61,8 @@ impl Adapter for NetBoxAdapter {
             for object in objects {
                 let (backend_id, mut attrs) = extract_attrs(object)?;
                 normalize_attrs(&mut attrs, type_schema, schema, &registry, &mappings);
+                unwrap_generic_object_request(&mut attrs, &type_name)?;
+
                 let key = build_key_from_schema(type_schema, &attrs)
                     .with_context(|| format!("build key for {}", type_name))?;
                 state.insert(ObservedObject {
@@ -73,7 +76,10 @@ impl Adapter for NetBoxAdapter {
 
         Ok(state)
     }
+}
 
+#[async_trait]
+impl Emitter for NetBoxAdapter {
     async fn write(
         &self,
         schema: &Schema,
@@ -235,7 +241,10 @@ impl Adapter for NetBoxAdapter {
             ..Default::default()
         })
     }
+}
 
+#[async_trait]
+impl Adapter for NetBoxAdapter {
     async fn ensure_schema(&self, schema: &Schema) -> Result<ProvisionReport> {
         let mut registry: ObjectTypeRegistry = self.client.fetch_object_types().await?;
         let custom_fields_by_type = self.client.fetch_custom_fields().await?;
@@ -524,6 +533,37 @@ impl Adapter for NetBoxAdapter {
             deleted_object_fields,
         })
     }
+}
+
+fn unwrap_generic_object_request(attrs: &mut JsonMap, type_name: &TypeName) -> Result<()> {
+    for (attr_name, attr_value) in attrs.iter_mut() {
+        if !netbox::is_generic_fk(type_name.as_str(), attr_name) {
+            continue;
+        }
+        if let Some(items) = attr_value.as_array() {
+            let uids = items
+                .iter()
+                .map(|item| {
+                    generic_object_uid(item)
+                        .with_context(|| format!("generic foreign key {attr_name} on {type_name}"))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            *attr_value = Value::Array(uids.into_iter().map(Value::String).collect());
+        } else {
+            let uid = generic_object_uid(attr_value)
+                .with_context(|| format!("generic foreign key {attr_name} on {type_name}"))?;
+            *attr_value = Value::String(uid);
+        }
+    }
+
+    Ok(())
+}
+
+/// resolves a netbox generic foreign key payload (`{object, object_id, object_type}`)
+/// down to the alembic uid carried in its `object` field.
+fn generic_object_uid(value: &Value) -> Result<String> {
+    let request: GenericObjectRequest = serde_json::from_value(value.clone())?;
+    Ok(Uid::parse_str(&request.object)?.to_string())
 }
 
 impl NetBoxAdapter {
@@ -1494,6 +1534,14 @@ fn collect_missing_refs(value: &Value, resolved: &BTreeMap<Uid, u64>, missing: &
     }
 }
 
+/// a netbox generic foreign key payload. netbox also sends `object_id` (the
+/// backend pk) and `object_type`, but only `object` (the alembic uid) is needed;
+/// serde ignores the rest.
+#[derive(Debug, Deserialize)]
+struct GenericObjectRequest {
+    object: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::is_conflict_error;
@@ -1717,6 +1765,48 @@ mod test_normalization {
         assert_eq!(
             wrapped,
             json!([{"object_type": "dcim.interface", "object_id": 1000}, {"object_type": "dcim.interface", "object_id": 42}])
+        );
+    }
+
+    #[test]
+    fn test_unwrap_generic_object_request() {
+        let mut map = Map::new();
+        map.insert(
+            "a_terminations".to_string(),
+            json!([{
+                    "object": "81c0681f-7147-5efb-a42a-68900b05c58d",
+                    "object_id": 1,
+                    "object_type": "dcim.interface",
+            }]),
+        );
+        let mut attrs: JsonMap = map.into_iter().collect::<BTreeMap<_, _>>().into();
+
+        let type_name = TypeName::new("dcim.cable".to_string());
+        unwrap_generic_object_request(&mut attrs, &type_name).unwrap();
+        assert_eq!(
+            attrs["a_terminations"],
+            json!(["81c0681f-7147-5efb-a42a-68900b05c58d"])
+        );
+    }
+
+    #[test]
+    fn test_unwrap_generic_object_request_scalar() {
+        let mut map = Map::new();
+        map.insert(
+            "a_terminations".to_string(),
+            json!({
+                "object": "81c0681f-7147-5efb-a42a-68900b05c58d",
+                "object_id": 1,
+                "object_type": "dcim.interface",
+            }),
+        );
+        let mut attrs: JsonMap = map.into_iter().collect::<BTreeMap<_, _>>().into();
+
+        let type_name = TypeName::new("dcim.cable".to_string());
+        unwrap_generic_object_request(&mut attrs, &type_name).unwrap();
+        assert_eq!(
+            attrs["a_terminations"],
+            json!("81c0681f-7147-5efb-a42a-68900b05c58d")
         );
     }
 

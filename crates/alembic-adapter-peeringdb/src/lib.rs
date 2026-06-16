@@ -4,7 +4,7 @@
 //! set the `PEERINGDB_API_KEY` environment variable to authenticate.
 
 use alembic_core::{JsonMap, Key, Schema, TypeName};
-use alembic_engine::{Adapter, ApplyReport, BackendId, ObservedObject, ObservedState, Op};
+use alembic_engine::{BackendId, ObservedObject, ObservedState, Observer};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use serde::Serialize;
@@ -36,7 +36,7 @@ impl Default for PeeringDBAdapter {
 }
 
 #[async_trait]
-impl Adapter for PeeringDBAdapter {
+impl Observer for PeeringDBAdapter {
     async fn read(
         &self,
         schema: &Schema,
@@ -92,15 +92,6 @@ impl Adapter for PeeringDBAdapter {
         }
 
         Ok(state)
-    }
-
-    async fn write(
-        &self,
-        _schema: &Schema,
-        _ops: &[Op],
-        _state: &alembic_engine::StateStore,
-    ) -> Result<ApplyReport> {
-        Err(anyhow!("PeeringDB adapter is read-only"))
     }
 }
 
@@ -194,12 +185,6 @@ mod tests {
         }
     }
 
-    fn test_schema() -> Schema {
-        Schema {
-            types: BTreeMap::from([("peeringdb.ix".to_string(), ix_schema())]),
-        }
-    }
-
     #[test]
     fn new_creates_adapter() {
         let _adapter = PeeringDBAdapter::new();
@@ -226,15 +211,6 @@ mod tests {
         let attrs: JsonMap = BTreeMap::from([("id".to_string(), serde_json::json!(1))]).into();
         let err = build_key_from_schema(&schema, &attrs).unwrap_err();
         assert!(err.to_string().contains("missing key field name"));
-    }
-
-    #[tokio::test]
-    async fn apply_returns_read_only_error() {
-        let adapter = PeeringDBAdapter::new();
-        let schema = test_schema();
-        let state = alembic_engine::StateStore::new(None, alembic_engine::StateData::default());
-        let err = adapter.write(&schema, &[], &state).await.unwrap_err();
-        assert!(err.to_string().contains("read-only"));
     }
 
     #[tokio::test]

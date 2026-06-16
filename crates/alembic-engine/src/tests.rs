@@ -916,7 +916,7 @@ struct TestAdapter {
 }
 
 #[async_trait::async_trait]
-impl Adapter for TestAdapter {
+impl Observer for TestAdapter {
     async fn read(
         &self,
         _schema: &alembic_core::Schema,
@@ -925,7 +925,10 @@ impl Adapter for TestAdapter {
     ) -> anyhow::Result<ObservedState> {
         Ok(self.observed.clone())
     }
+}
 
+#[async_trait::async_trait]
+impl Emitter for TestAdapter {
     async fn write(
         &self,
         _schema: &alembic_core::Schema,
@@ -935,6 +938,9 @@ impl Adapter for TestAdapter {
         Ok(self.report.clone())
     }
 }
+
+#[async_trait::async_trait]
+impl Adapter for TestAdapter {}
 
 #[test]
 fn build_plan_creates_ops() {
@@ -1066,7 +1072,7 @@ fn build_plan_reobserves_after_bootstrap() {
     }
 
     #[async_trait::async_trait]
-    impl Adapter for ReobserveAdapter {
+    impl Observer for ReobserveAdapter {
         async fn read(
             &self,
             _schema: &alembic_core::Schema,
@@ -1075,15 +1081,6 @@ fn build_plan_reobserves_after_bootstrap() {
         ) -> anyhow::Result<ObservedState> {
             let mut states = self.states.lock().unwrap();
             Ok(states.remove(0))
-        }
-
-        async fn write(
-            &self,
-            _schema: &alembic_core::Schema,
-            _ops: &[Op],
-            _state: &StateStore,
-        ) -> anyhow::Result<ApplyReport> {
-            Ok(ApplyReport::default())
         }
     }
 
@@ -1121,7 +1118,7 @@ fn build_plan_observes_all_schema_types() {
     }
 
     #[async_trait::async_trait]
-    impl Adapter for ScopeAdapter {
+    impl Observer for ScopeAdapter {
         async fn read(
             &self,
             _schema: &alembic_core::Schema,
@@ -1130,15 +1127,6 @@ fn build_plan_observes_all_schema_types() {
         ) -> anyhow::Result<ObservedState> {
             *self.seen.lock().unwrap() = types.to_vec();
             Ok(ObservedState::default())
-        }
-
-        async fn write(
-            &self,
-            _schema: &alembic_core::Schema,
-            _ops: &[Op],
-            _state: &StateStore,
-        ) -> anyhow::Result<ApplyReport> {
-            Ok(ApplyReport::default())
         }
     }
 
@@ -1186,7 +1174,8 @@ fn apply_plan_blocks_deletes_without_flag() {
         }],
         summary: None,
     };
-    let result = futures::executor::block_on(apply_plan(&adapter, &plan, &mut state, false));
+    let backend = Backend::Adapter(Box::new(adapter));
+    let result = futures::executor::block_on(apply_plan(&backend, &plan, &mut state, false));
     assert!(result.is_err());
 }
 
@@ -1211,7 +1200,8 @@ fn apply_plan_updates_state() {
         ops: vec![],
         summary: None,
     };
-    futures::executor::block_on(apply_plan(&adapter, &plan, &mut state, true)).unwrap();
+    let backend = Backend::Adapter(Box::new(adapter));
+    futures::executor::block_on(apply_plan(&backend, &plan, &mut state, true)).unwrap();
     assert_eq!(
         state.backend_id(t("dcim.site"), uid(1)),
         Some(BackendId::Int(55))

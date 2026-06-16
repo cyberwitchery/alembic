@@ -1,19 +1,17 @@
 //! cli entrypoint for alembic.
 
-mod cast_django;
 pub mod config;
 mod diag;
 mod io;
 mod state;
 
-use alembic_adapter_registry::{create_adapter, Plugin};
-use alembic_engine::{apply_plan, build_plan, load_inventory, DriftReport, Journal, Plan};
+use alembic_adapter_registry::{create_backend, Plugin};
+use alembic_engine::{apply_plan, build_plan, load_inventory, DriftReport, Plan};
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand};
 use std::fs;
 use std::path::PathBuf;
 
-use self::cast_django::{run_cast_django, CastDjangoConfig, CommandRunner};
 use self::diag::err;
 use self::io::{
     format_validation_errors, read_plan, warn_misleading_output_extension, write_inventory,
@@ -24,9 +22,9 @@ use crate::app::config::AppConfig;
 use alembic_core::TypeName;
 
 #[cfg(test)]
-use self::cast_django::Runner;
-#[cfg(test)]
 use self::state::{resolve_state_backend_config, state_path, StateBackendConfig};
+#[cfg(test)]
+use alembic_adapter_django::cast_django::Runner;
 #[cfg(test)]
 use alembic_engine::PostgresTlsMode;
 #[cfg(test)]
@@ -94,14 +92,16 @@ enum Command {
     },
     /// transform an ir inventory into another ir inventory (ir -> ir).
     Map {
+        #[command(subcommand)]
+        action: Option<MapAction>,
         /// input ir inventory file.
         #[arg(short = 'f', long)]
-        file: PathBuf,
+        file: Option<PathBuf>,
         /// map specification (target schema + rules).
         #[arg(long)]
-        spec: PathBuf,
+        spec: Option<PathBuf>,
         #[arg(short = 'o', long)]
-        output: PathBuf,
+        output: Option<PathBuf>,
     },
     /// observe a backend's live state into canonical ir.
     Import {
@@ -115,30 +115,23 @@ enum Command {
         #[arg(long)]
         backend_config: Option<PathBuf>,
     },
-    Cast {
-        #[command(subcommand)]
-        target: CastTarget,
-    },
 }
 
-/// cast subcommands.
+/// map subcommands.
 #[derive(Subcommand)]
-enum CastTarget {
-    Django {
-        #[arg(short = 'f', long)]
-        file: PathBuf,
-        #[arg(short = 'o', long)]
-        output: PathBuf,
+enum MapAction {
+    /// evaluate a single transform against a json value, for iterating on a
+    /// map spec's user-defined transforms without an inventory or backend.
+    Transform {
+        /// map specification carrying the transforms block.
         #[arg(long)]
-        project: Option<String>,
-        #[arg(long)]
-        app: Option<String>,
-        #[arg(long, default_value = "python3")]
-        python: String,
-        #[arg(long, default_value_t = false)]
-        no_migrate: bool,
-        #[arg(long, default_value_t = false)]
-        no_admin: bool,
+        spec: PathBuf,
+        /// transform name (user-defined or built-in).
+        name: String,
+        /// json-encoded input value, e.g. '"nxos"'.
+        value: String,
+        /// json-encoded extra literal arguments.
+        args: Vec<String>,
     },
 }
 
@@ -191,16 +184,16 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             let inventory = load_inventory(&file)?;
             let mut state = load_state().await?;
             let plugins = search_for_plugins(&config);
-            let adapter = create_adapter(&plugins, backend.as_deref(), backend_config)?;
+            let backend = create_backend(&plugins, backend.as_deref(), backend_config)?;
             if provision {
-                let provision_report = adapter.ensure_schema(&inventory.schema).await?;
+                let provision_report = backend.adapter()?.ensure_schema(&inventory.schema).await?;
                 if !provision_report.is_empty() {
                     println!("provision: {provision_report}");
                 }
             }
 
             let plan = build_plan(
-                adapter.as_ref(),
+                backend.observer()?,
                 &inventory,
                 &mut state,
                 should_detect_deletes(allow_delete, report),
@@ -237,9 +230,8 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
         } => {
             let mut state = load_state().await?;
             let plugins = search_for_plugins(&config);
-            let adapter = create_adapter(&plugins, backend.as_deref(), backend_config)?;
+            let backend = create_backend(&plugins, backend.as_deref(), backend_config)?;
             let plan = read_plan(&plan)?;
-            let mut journal = Journal::new();
 
             if interactive {
                 if !allow_delete
@@ -285,28 +277,15 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                     ops: approved,
                     summary: None,
                 };
-                let report = apply_plan(
-                    adapter.as_ref(),
-                    &interactive_plan,
-                    &mut journal,
-                    &mut state,
-                    allow_delete,
-                )
-                .await?;
+                let report =
+                    apply_plan(&backend, &interactive_plan, &mut state, allow_delete).await?;
                 state.save_async().await?;
                 if !report.provision.is_empty() {
                     println!("provision: {}", report.provision);
                 }
                 println!("applied {} operations", report.applied.len());
             } else {
-                let report = apply_plan(
-                    adapter.as_ref(),
-                    &plan,
-                    &mut journal,
-                    &mut state,
-                    allow_delete,
-                )
-                .await?;
+                let report = apply_plan(&backend, &plan, &mut state, allow_delete).await?;
                 state.save_async().await?;
                 if !report.provision.is_empty() {
                     println!("provision: {}", report.provision);
@@ -314,16 +293,51 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                 println!("applied {} operations", report.applied.len());
             }
         }
-        Command::Map { file, spec, output } => {
-            let input = load_inventory(&file)?;
-            let spec = alembic_engine::load_map_spec(&spec)?;
-            let inventory = alembic_engine::compile_map(&input, &spec)?;
-            if let Some(msg) = warn_misleading_output_extension(&output) {
-                eprintln!("{msg}");
+        Command::Map {
+            action,
+            file,
+            spec,
+            output,
+        } => match action {
+            Some(MapAction::Transform {
+                spec,
+                name,
+                value,
+                args,
+            }) => {
+                let spec = alembic_engine::load_map_spec(&spec)?;
+                let parse_json = |label: &str, raw: &str| -> Result<serde_json::Value> {
+                    serde_json::from_str(raw).map_err(|err| {
+                        anyhow!(
+                            "{label} is not valid json: {err}\n\
+                             hint: string values need json quoting, e.g. '\"{raw}\"'"
+                        )
+                    })
+                };
+                let value = parse_json("value", &value)?;
+                let args = args
+                    .iter()
+                    .map(|arg| parse_json(&format!("argument {arg}"), arg))
+                    .collect::<Result<Vec<serde_json::Value>>>()?;
+                let result = alembic_engine::eval_map_transform(&spec, &name, &value, &args)?;
+                println!("{}", serde_json::to_string(&result)?);
             }
-            write_inventory(&output, &inventory)?;
-            println!("ir written to {}", output.display());
-        }
+            None => {
+                let (Some(file), Some(spec), Some(output)) = (file, spec, output) else {
+                    return Err(anyhow!(
+                        "alembic map requires -f, --spec, and -o (or the transform subcommand)"
+                    ));
+                };
+                let input = load_inventory(&file)?;
+                let spec = alembic_engine::load_map_spec(&spec)?;
+                let inventory = alembic_engine::compile_map(&input, &spec)?;
+                if let Some(msg) = warn_misleading_output_extension(&output) {
+                    eprintln!("{msg}");
+                }
+                write_inventory(&output, &inventory)?;
+                println!("ir written to {}", output.display());
+            }
+        },
         Command::Import {
             output,
             file,
@@ -334,11 +348,11 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             // which types to observe.
             let inventory = load_inventory(&file)?;
             let plugins = search_for_plugins(&config);
-            let adapter = create_adapter(&plugins, backend.as_deref(), backend_config)?;
+            let backend = create_backend(&plugins, backend.as_deref(), backend_config)?;
             let state = load_state().await?;
             let types: Vec<TypeName> = inventory.schema.types.keys().map(TypeName::new).collect();
             let report = alembic_engine::import_inventory(
-                adapter.as_ref(),
+                backend.observer()?,
                 &inventory.schema,
                 &types,
                 &state,
@@ -350,31 +364,6 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             write_inventory(&output, &report.inventory)?;
             println!("inventory written to {}", output.display());
         }
-        Command::Cast { target } => match target {
-            CastTarget::Django {
-                file,
-                output,
-                project,
-                app,
-                python,
-                no_migrate,
-                no_admin,
-            } => {
-                let runner = CommandRunner::new();
-                run_cast_django(
-                    &runner,
-                    CastDjangoConfig {
-                        file,
-                        output,
-                        project,
-                        app,
-                        python,
-                        no_migrate,
-                        no_admin,
-                    },
-                )?;
-            }
-        },
     }
 
     Ok(())

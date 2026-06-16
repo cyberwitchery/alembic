@@ -9,9 +9,9 @@ mod state;
 use anyhow::Result;
 
 #[cfg(test)]
-use alembic_engine::Adapter;
-#[cfg(test)]
 use alembic_engine::StateStore;
+#[cfg(test)]
+use alembic_engine::{Adapter, Emitter, Observer};
 use client::NetBoxClient;
 
 /// netbox adapter that maps ir objects to netbox api calls.

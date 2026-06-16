@@ -133,9 +133,9 @@ alembic apply -p plan.json \
 - `--interactive` prompts per operation and applies only approved ops
   through the same engine path used by non-interactive apply
 - the `peeringdb` backend is read-only; apply will return an error
-- apply runs adapter provisioning (`ensure_schema`) before writes; for
-  netbox this can create custom fields/tags and custom object types
-  when supported
+- apply runs adapter provisioning (`ensure_schema`) before writes on read+write
+  backends; for netbox this can create custom fields/tags and custom object
+  types when supported. write-only emitter backends (django) skip provisioning
 - infrahub provisioning can generate and load a schema file when
   configured in the backend config
 
@@ -150,6 +150,18 @@ alembic map -f examples/map-input.yaml --spec examples/map.yaml -o ir.json
 - transforms an ir inventory into another ir inventory (ir to ir)
 - `--spec` declares the target schema and the rename/reshape rules
 - output is validated against the target schema; see `docs/map.md`
+
+### map transform
+
+```bash
+alembic map transform --spec examples/map.yaml site_code '"fra1"'
+```
+
+- evaluates a single transform (user-defined or built-in) against a
+  json-encoded value, without an inventory or backend — the iteration loop for
+  writing a spec's starlark transforms (see `docs/map.md`, transforms)
+- extra positional arguments are json-encoded transform arguments
+- prints the typed result as json; `fail()` exits non-zero with the message
 
 ## import
 

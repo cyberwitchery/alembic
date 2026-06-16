@@ -1,13 +1,13 @@
 mod support;
 
-use support::run_cast;
+use support::run_apply_django;
 
 #[test]
 fn cast_django_e2e_minimal() {
-    run_cast("minimal.yaml");
+    run_apply_django("minimal_plan.json");
 }
 
 #[test]
 fn cast_django_e2e_relations() {
-    run_cast("relations.yaml");
+    run_apply_django("relations_plan.json");
 }

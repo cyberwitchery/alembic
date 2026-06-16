@@ -1,6 +1,6 @@
 use crate::journal::Journal;
 use crate::pretty_printing::{bullet_list, comma_separated};
-use crate::types::{Adapter, ApplyReport, ObservedState, Plan};
+use crate::types::{ApplyReport, Backend, Emitter, ObservedState, Observer, Plan, ProvisionReport};
 use crate::StateStore;
 use crate::{sort_ops_for_apply, BackendId};
 use alembic_core::{key_string, Inventory, TypeName};
@@ -8,7 +8,7 @@ use anyhow::{anyhow, Result};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(crate) async fn observe(
-    adapter: &(dyn Adapter + '_),
+    adapter: &(dyn Observer + '_),
     inventory: &Inventory,
     state: &mut StateStore,
 ) -> Result<ObservedState> {
@@ -62,7 +62,7 @@ fn detect_key_collisions(observed: &ObservedState) -> Result<()> {
 }
 
 pub(crate) async fn apply(
-    adapter: &(dyn Adapter + '_),
+    backend: &Backend,
     plan: &Plan,
     journal: &mut Journal,
     state: &mut StateStore,
@@ -80,10 +80,16 @@ pub(crate) async fn apply(
         }
     }
 
-    let provision = adapter.ensure_schema(&plan.schema).await?;
+    let (emitter, provision): (&dyn Emitter, ProvisionReport) = match backend {
+        Backend::Adapter(adapter) => (adapter.as_ref(), adapter.ensure_schema(&plan.schema).await?),
+        Backend::Emitter(emitter) => (emitter.as_ref(), ProvisionReport::default()),
+        Backend::Observer(_) => {
+            return Err(anyhow!("backend is read-only; it cannot apply changes"))
+        }
+    };
 
     let ordered = sort_ops_for_apply(&plan.ops, &plan.schema);
-    let mut report = adapter.write(&plan.schema, &ordered, state).await?;
+    let mut report = emitter.write(&plan.schema, &ordered, state).await?;
     report.provision = provision;
 
     for applied in &report.applied {
