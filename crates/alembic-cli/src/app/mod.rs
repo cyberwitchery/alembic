@@ -233,7 +233,8 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             let plugins = search_for_plugins(&config);
             let backend = create_backend(&plugins, backend.as_deref(), backend_config)?;
             let plan = read_plan(&plan)?;
-            let mut journal = Journal::new(&plan.ops);
+            let journal_filename = "journal.yaml".into();
+            let mut journal = Journal::load_or_create(journal_filename, &plan.ops);
 
             if interactive {
                 if !allow_delete

@@ -5,6 +5,7 @@
 use crate::{BackendId, Op};
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
+use std::fs;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::PathBuf;
@@ -19,8 +20,41 @@ pub struct Journal {
 }
 
 impl Journal {
-    /// creates a journal with a backing file
-    pub fn new_with_file(filename: PathBuf, ops: &[Op]) -> Result<Self> {
+    /// tries to load a Journal from `filename`, otherwise creates a new one.
+    /// in either case, the new Journal instance will be backed by the file at `filename`.
+    pub fn load_or_create(filename: PathBuf, ops: &[Op]) -> Result<Self> {
+        if fs::metadata(&filename).is_ok() {
+            Self::new_from_file(filename, ops)
+        } else {
+            Self::new_with_file(filename, ops)
+        }
+    }
+
+    /// loads a journal from the file with `filename` and sets it backing file to that file
+    fn new_from_file(filename: PathBuf, expected_ops: &[Op]) -> Result<Self> {
+        let mut file = std::fs::File::open(&filename)?;
+        let mut contents = String::new();
+        file.read_to_string(&mut contents)?;
+        let mut journal: Journal = serde_yaml::from_str(&contents)?;
+
+        let loaded_raw_ops = journal
+            .ops
+            .iter()
+            .map(|op_with_meta| op_with_meta.op.clone())
+            .collect::<Vec<Op>>();
+        if loaded_raw_ops != expected_ops {
+            return Err(anyhow!(
+                "the ops in the loaded journal file `{}` doesn't match the expected ops",
+                filename.display()
+            ));
+        }
+
+        journal.file = Some(file);
+        Ok(journal)
+    }
+
+    /// creates a journal with a new backing file
+    fn new_with_file(filename: PathBuf, ops: &[Op]) -> Result<Self> {
         let mut journal = Self::new(ops);
 
         // create and write to the file to check that it works before applying any ops
@@ -28,16 +62,6 @@ impl Journal {
         file.write(serde_yaml::to_string(&journal)?.as_bytes())?;
         journal.file = Some(file);
 
-        Ok(journal)
-    }
-
-    /// loads a journal from the file with `filename` and sets it backing file to that file
-    pub fn new_from_file(filename: PathBuf) -> Result<Self> {
-        let mut file = std::fs::File::open(&filename)?;
-        let mut contents = String::new();
-        file.read_to_string(&mut contents)?;
-        let mut journal: Journal = serde_yaml::from_str(&contents)?;
-        journal.file = Some(file);
         Ok(journal)
     }
 
