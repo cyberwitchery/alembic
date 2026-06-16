@@ -1,3 +1,4 @@
+use crate::journal::Journal;
 use crate::{AppliedOp, Op};
 use anyhow::Result;
 use async_trait::async_trait;
@@ -16,6 +17,7 @@ pub trait RetryApplyDriver {
 
 pub async fn apply_non_delete_with_retries(
     ops: &[Op],
+    mut journal: Option<&mut Journal>,
     driver: &mut impl RetryApplyDriver,
 ) -> Result<RetryApplyResult> {
     let mut applied = Vec::new();
@@ -31,7 +33,13 @@ pub async fn apply_non_delete_with_retries(
 
         for op in current {
             match driver.apply_non_delete(&op).await {
-                Ok(applied_op) => applied.push(applied_op),
+                Ok(applied_op) => {
+                    if let Some(journal) = journal.as_mut() {
+                        journal.mark_next_op_as_done(applied_op.uid)?;
+                        journal.save()?;
+                    }
+                    applied.push(applied_op);
+                }
                 Err(err) if driver.is_retryable(&err) => pending.push(op),
                 Err(err) => return Err(err),
             }
@@ -112,7 +120,7 @@ mod tests {
             mode: Mode::RetryThenOk,
         };
 
-        let result = apply_non_delete_with_retries(&ops, &mut driver)
+        let result = apply_non_delete_with_retries(&ops, None, &mut driver)
             .await
             .unwrap();
 
@@ -130,7 +138,7 @@ mod tests {
             mode: Mode::AlwaysRetry,
         };
 
-        let result = apply_non_delete_with_retries(&ops, &mut driver)
+        let result = apply_non_delete_with_retries(&ops, None, &mut driver)
             .await
             .unwrap();
 
@@ -147,7 +155,7 @@ mod tests {
             mode: Mode::Fatal,
         };
 
-        let err = apply_non_delete_with_retries(&ops, &mut driver)
+        let err = apply_non_delete_with_retries(&ops, None, &mut driver)
             .await
             .unwrap_err();
 
@@ -168,7 +176,7 @@ mod tests {
             mode: Mode::Fatal,
         };
 
-        let result = apply_non_delete_with_retries(&ops, &mut driver)
+        let result = apply_non_delete_with_retries(&ops, None, &mut driver)
             .await
             .unwrap();
 

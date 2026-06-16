@@ -25,7 +25,6 @@ use alembic_core::TypeName;
 use self::state::{resolve_state_backend_config, state_path, StateBackendConfig};
 #[cfg(test)]
 use alembic_adapter_django::cast_django::Runner;
-use alembic_engine::journal::Journal;
 #[cfg(test)]
 use alembic_engine::PostgresTlsMode;
 #[cfg(test)]
