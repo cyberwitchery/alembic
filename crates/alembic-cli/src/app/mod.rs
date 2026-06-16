@@ -25,6 +25,7 @@ use alembic_core::TypeName;
 use self::state::{resolve_state_backend_config, state_path, StateBackendConfig};
 #[cfg(test)]
 use alembic_adapter_django::cast_django::Runner;
+use alembic_engine::journal::Journal;
 #[cfg(test)]
 use alembic_engine::PostgresTlsMode;
 #[cfg(test)]
@@ -232,6 +233,7 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             let plugins = search_for_plugins(&config);
             let backend = create_backend(&plugins, backend.as_deref(), backend_config)?;
             let plan = read_plan(&plan)?;
+            let mut journal = Journal::new();
 
             if interactive {
                 if !allow_delete
@@ -277,15 +279,22 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                     ops: approved,
                     summary: None,
                 };
-                let report =
-                    apply_plan(&backend, &interactive_plan, &mut state, allow_delete).await?;
+                let report = apply_plan(
+                    &backend,
+                    &interactive_plan,
+                    &mut journal,
+                    &mut state,
+                    allow_delete,
+                )
+                .await?;
                 state.save_async().await?;
                 if !report.provision.is_empty() {
                     println!("provision: {}", report.provision);
                 }
                 println!("applied {} operations", report.applied.len());
             } else {
-                let report = apply_plan(&backend, &plan, &mut state, allow_delete).await?;
+                let report =
+                    apply_plan(&backend, &plan, &mut journal, &mut state, allow_delete).await?;
                 state.save_async().await?;
                 if !report.provision.is_empty() {
                     println!("provision: {}", report.provision);

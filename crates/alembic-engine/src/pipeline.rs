@@ -64,7 +64,7 @@ fn detect_key_collisions(observed: &ObservedState) -> Result<()> {
 pub(crate) async fn apply(
     backend: &Backend,
     plan: &Plan,
-    journal: &mut Journal,
+    _journal: &mut Journal,
     state: &mut StateStore,
     allow_delete: bool,
 ) -> Result<ApplyReport> {
