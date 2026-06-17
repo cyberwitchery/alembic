@@ -27,6 +27,11 @@ pub async fn apply_non_delete_with_retries(
         .cloned()
         .collect();
 
+    if let Some(journal) = journal.as_mut() {
+        // the journal only contains ops that are create/update (not delete).
+        pending.drain(0..journal.done_ops());
+    }
+
     while !pending.is_empty() {
         let current = std::mem::take(&mut pending);
         let applied_before = applied.len();
@@ -48,6 +53,12 @@ pub async fn apply_non_delete_with_retries(
         // only break if no progress was made (no items applied in this iteration)
         if applied.len() == applied_before {
             break;
+        }
+    }
+
+    if let Some(journal) = journal.as_mut() {
+        if journal.is_completed() {
+            journal.delete_backing_file()?;
         }
     }
 

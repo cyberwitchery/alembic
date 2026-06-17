@@ -7,8 +7,8 @@ use alembic_core::Uid;
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::fs::File;
-use std::io::{Read, Write};
+use std::fs::{File, OpenOptions};
+use std::io::{Read, Seek, Write};
 use std::path::PathBuf;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -23,19 +23,26 @@ pub struct Journal {
 impl Journal {
     /// tries to load a Journal from `file_path`, otherwise creates a new one.
     /// in either case, the new Journal instance will be backed by the file at `file_path`.
+    /// delete ops will not be saved in the journal.
     pub fn load_or_create(file_path: PathBuf, ops: &[Op]) -> Result<Self> {
         if fs::metadata(&file_path).is_ok() {
-            Self::new_from_file(file_path, ops)
+            Self::new_from_existing_file(file_path, ops)
         } else {
             Self::new_with_file(file_path, ops)
         }
     }
 
     /// loads a journal from the file with `file_path` and sets it backing file to that file
-    fn new_from_file(file_path: PathBuf, expected_ops: &[Op]) -> Result<Self> {
-        let mut file = File::open(&file_path)?;
+    fn new_from_existing_file(file_path: PathBuf, expected_ops: &[Op]) -> Result<Self> {
+        let mut file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(false)
+            .append(false)
+            .open(&file_path)?;
         let mut contents = String::new();
         file.read_to_string(&mut contents)?;
+
         let mut journal: Journal = serde_yaml::from_str(&contents)?;
 
         let loaded_raw_ops = journal
@@ -60,9 +67,17 @@ impl Journal {
         let mut journal = Self::new_ephemeral(ops);
 
         // create and write to the file to check that it works before applying any ops
-        let mut file = std::fs::File::create(&file_path)?;
-        file.write(serde_yaml::to_string(&journal)?.as_bytes())?;
+        let mut file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .append(false)
+            .open(&file_path)?;
+        file.set_len(0)?;
+        file.rewind()?;
+
         journal.file = Some((file, file_path));
+        journal.save()?;
 
         Ok(journal)
     }
@@ -72,7 +87,12 @@ impl Journal {
         Self {
             file: None,
             next_op_index: 0,
-            ops: ops.iter().map(|op| OpWithMeta::new(op.clone())).collect(),
+            ops: ops
+                .iter()
+                .filter(|op| !matches!(op, Op::Delete { .. }))
+                .enumerate()
+                .map(|(index, op)| OpWithMeta::new(index, op.clone()))
+                .collect(),
             completed: ops.is_empty(),
         }
     }
@@ -107,13 +127,19 @@ impl Journal {
         at_op.done = true;
         self.next_op_index += 1;
 
+        if self.next_op_index >= self.ops.len() {
+            self.completed = true;
+        }
+
         Ok(())
     }
 
     pub fn save(&mut self) -> Result<()> {
         let str = serde_yaml::to_string(self)?;
         if let Some((file, _)) = self.file.as_mut() {
-            file.write(str.as_bytes())?;
+            file.rewind()?;
+            file.set_len(0)?;
+            file.write_all(str.as_bytes())?;
             file.sync_all()?;
             Ok(())
         } else {
@@ -141,17 +167,80 @@ impl Drop for Journal {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct OpWithMeta {
+    /// the full Op is stored, for checking that it matches
     op: Op,
+    /// this is the index of the op in the journal (so sans deletes)
+    index: usize,
     done: bool,
-    backend_id: Option<BackendId>, // not sure if this should be optional
+    backend_id: Option<BackendId>, // FIXME: not sure if/when this is needed
 }
 
 impl OpWithMeta {
-    fn new(op: Op) -> Self {
+    fn new(index: usize, op: Op) -> Self {
         OpWithMeta {
             op,
+            index,
             done: false,
             backend_id: None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alembic_core::{Object, TypeName};
+    use tempfile::tempdir;
+
+    fn test_ops() -> Vec<Op> {
+        vec![Op::Create {
+            uid: Uid::from_u128(1),
+            type_name: TypeName::new("dcim.cable"),
+            desired: Object {
+                uid: Uid::from_u128(1),
+                type_name: TypeName::new("dcim.cable"),
+                key: Default::default(),
+                attrs: Default::default(),
+                source: None,
+            },
+        }]
+    }
+
+    #[test]
+    fn save_and_load_journal() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("temp_journal.yaml");
+        let ops = test_ops();
+        {
+            let mut journal = Journal::new_with_file(file_path.clone(), &ops).unwrap();
+            journal.save().unwrap();
+        }
+        {
+            let journal = Journal::new_from_existing_file(file_path, &ops).unwrap();
+            assert_eq!(
+                journal
+                    .ops
+                    .iter()
+                    .map(|owm| owm.op.clone())
+                    .collect::<Vec<Op>>(),
+                ops
+            );
+        }
+    }
+
+    #[test]
+    fn load_and_save_existing_journal() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("temp_journal.yaml");
+        let mut ops = test_ops();
+        {
+            let mut journal = Journal::new_with_file(file_path.clone(), &ops).unwrap();
+            journal.save().unwrap();
+        }
+        {
+            let mut journal = Journal::new_from_existing_file(file_path, &ops).unwrap();
+            journal.save().unwrap();
+            assert_eq!(journal.ops.len(), 1);
         }
     }
 }
