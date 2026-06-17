@@ -3,7 +3,7 @@
 //! a journal has to match the exact ops in the previous run, when attempting to resume.
 
 use crate::{BackendId, Op};
-use alembic_core::Uid;
+use alembic_core::{TypeName, Uid};
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -45,13 +45,18 @@ impl Journal {
 
         let mut journal: Journal = serde_yaml::from_str(&contents)?;
 
-        let loaded_raw_ops = journal
+        let journal_keys = journal
             .ops
             .iter()
-            .map(|op_with_meta| op_with_meta.op.clone())
-            .collect::<Vec<Op>>();
+            .map(|op_with_meta| (op_with_meta.op_uid, &op_with_meta.op_typename))
+            .collect::<Vec<(Uid, &TypeName)>>();
 
-        if loaded_raw_ops != expected_ops {
+        let expected_keys = expected_ops
+            .iter()
+            .map(|op| (op.uid(), op.type_name()))
+            .collect::<Vec<(Uid, &TypeName)>>();
+
+        if journal_keys != expected_keys {
             return Err(anyhow!(
                 "the ops in the loaded journal file `{}` doesn't match the expected ops",
                 file_path.display()
@@ -117,10 +122,10 @@ impl Journal {
             return Err(anyhow!("corrupt journal (index out of bounds)"));
         };
 
-        if at_op.op.uid() != expected_uid {
+        if at_op.op_uid != expected_uid {
             return Err(anyhow!(
                 "op uid in journal ({}) doesn't match expected uid {}, trying to mark another op as done",
-                at_op.op.uid(),
+                at_op.op_uid,
                 expected_uid,
             ));
         }
@@ -166,10 +171,11 @@ impl Drop for Journal {
     }
 }
 
+// we're only storing the uid and typename for the Op to keep this struct small and readable
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct OpWithMeta {
-    /// the full Op is stored, for checking that it matches
-    op: Op,
+    op_uid: Uid,
+    op_typename: TypeName,
     /// this is the index of the op in the journal (so sans deletes)
     index: usize,
     done: bool,
@@ -179,7 +185,8 @@ struct OpWithMeta {
 impl OpWithMeta {
     fn new(index: usize, op: Op) -> Self {
         OpWithMeta {
-            op,
+            op_uid: op.uid(),
+            op_typename: op.type_name().clone(),
             index,
             done: false,
             backend_id: None,
@@ -235,9 +242,11 @@ mod tests {
                 journal
                     .ops
                     .iter()
-                    .map(|owm| owm.op.clone())
-                    .collect::<Vec<Op>>(),
-                ops
+                    .map(|owm| (owm.op_uid, &owm.op_typename))
+                    .collect::<Vec<(Uid, &TypeName)>>(),
+                ops.iter()
+                    .map(|op| (op.uid(), op.type_name()))
+                    .collect::<Vec<(Uid, &TypeName)>>()
             );
         }
     }
