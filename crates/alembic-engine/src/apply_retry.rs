@@ -27,14 +27,16 @@ pub async fn apply_non_delete_with_retries(
         .cloned()
         .collect();
 
-    if pending.iter().any(|op| matches!(op, Op::Delete { .. })) {
-        return Err(anyhow!(
-            "found Delete op in `apply_non_delete_with_retries`"
-        ));
-    }
-
     if let Some(journal) = journal.as_mut() {
-        pending.drain(0..journal.done_ops());
+        let done = journal.done_ops();
+        if done > pending.len() {
+            return Err(anyhow!(
+                "corrupt journal (done ops {} exceeds pending ops {})",
+                done,
+                pending.len()
+            ));
+        }
+        pending.drain(0..done);
     }
 
     while !pending.is_empty() {
