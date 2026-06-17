@@ -284,4 +284,16 @@ mod tests {
         journal.mark_next_op_as_done(Uid::from_u128(2)).unwrap();
         assert!(journal.is_completed());
     }
+
+    #[test]
+    fn delete_backing_file() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("temp_journal.yaml");
+        let ops = test_ops();
+        let mut journal = Journal::new_with_file(file_path.clone(), &ops).unwrap();
+        journal.save().unwrap();
+        assert!(file_path.exists());
+        journal.delete_backing_file().unwrap();
+        assert!(!file_path.exists());
+    }
 }
