@@ -194,17 +194,30 @@ mod tests {
     use tempfile::tempdir;
 
     fn test_ops() -> Vec<Op> {
-        vec![Op::Create {
-            uid: Uid::from_u128(1),
-            type_name: TypeName::new("dcim.cable"),
-            desired: Object {
+        vec![
+            Op::Create {
                 uid: Uid::from_u128(1),
-                type_name: TypeName::new("dcim.cable"),
-                key: Default::default(),
-                attrs: Default::default(),
-                source: None,
+                type_name: TypeName::new("dcim.device"),
+                desired: Object {
+                    uid: Uid::from_u128(1),
+                    type_name: TypeName::new("dcim.device"),
+                    key: Default::default(),
+                    attrs: Default::default(),
+                    source: None,
+                },
             },
-        }]
+            Op::Create {
+                uid: Uid::from_u128(2),
+                type_name: TypeName::new("dcim.device"),
+                desired: Object {
+                    uid: Uid::from_u128(2),
+                    type_name: TypeName::new("dcim.device"),
+                    key: Default::default(),
+                    attrs: Default::default(),
+                    source: None,
+                },
+            },
+        ]
     }
 
     #[test]
@@ -241,7 +254,34 @@ mod tests {
         {
             let mut journal = Journal::new_from_existing_file(file_path, &ops).unwrap();
             journal.save().unwrap();
-            assert_eq!(journal.ops.len(), 1);
+            assert_eq!(journal.ops.len(), 2);
         }
+    }
+
+    #[test]
+    fn mark_ops_as_done() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("temp_journal.yaml");
+        let ops = test_ops();
+        let mut journal = Journal::new_with_file(file_path.clone(), &ops).unwrap();
+        journal.mark_next_op_as_done(Uid::from_u128(1)).unwrap();
+        assert!(!journal.is_completed());
+        journal.mark_next_op_as_done(Uid::from_u128(2)).unwrap();
+        assert!(journal.is_completed());
+    }
+
+    #[test]
+    fn mark_invalid_op_as_done() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("temp_journal.yaml");
+        let ops = test_ops();
+        let mut journal = Journal::new_with_file(file_path.clone(), &ops).unwrap();
+        journal
+            .mark_next_op_as_done(Uid::from_u128(2))
+            .expect_err("should fail");
+        assert!(!journal.is_completed());
+        journal.mark_next_op_as_done(Uid::from_u128(1)).unwrap();
+        journal.mark_next_op_as_done(Uid::from_u128(2)).unwrap();
+        assert!(journal.is_completed());
     }
 }
