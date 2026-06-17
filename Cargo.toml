@@ -55,4 +55,3 @@ httpmock = "0.8"
 tempfile = "3"
 futures = "0.3"
 figment = { version = "0.10", features = ["yaml", "env"] }
-rand = { version = "0.10.1", features = ["thread_rng"] }
