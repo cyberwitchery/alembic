@@ -1,6 +1,6 @@
-//! keep track of successfully applied ops, to enable resume after error.
+//! Keep track of successfully applied ops to enable resume after an error.
 //!
-//! a journal has to match the exact ops in the previous run, when attempting to resume.
+//! When resuming, the journal must match the previous run's non-delete op sequence by (uid, type_name).
 
 use crate::{BackendId, Op};
 use alembic_core::{TypeName, Uid};
