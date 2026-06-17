@@ -71,6 +71,7 @@ impl Journal {
             .read(true)
             .write(true)
             .create(true)
+            .truncate(true)
             .append(false)
             .open(&file_path)?;
         file.set_len(0)?;
@@ -232,7 +233,7 @@ mod tests {
     fn load_and_save_existing_journal() {
         let dir = tempdir().unwrap();
         let file_path = dir.path().join("temp_journal.yaml");
-        let mut ops = test_ops();
+        let ops = test_ops();
         {
             let mut journal = Journal::new_with_file(file_path.clone(), &ops).unwrap();
             journal.save().unwrap();
