@@ -99,7 +99,7 @@ impl Journal {
                 .enumerate()
                 .map(|(index, op)| OpWithMeta::new(index, op.clone()))
                 .collect(),
-            completed: ops.iter().all(|op| matches!(op, Op::Delete { .. })), 
+            completed: ops.iter().all(|op| matches!(op, Op::Delete { .. })),
         }
     }
 
