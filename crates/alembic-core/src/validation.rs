@@ -94,6 +94,16 @@ impl ValidationError {
             _ => None,
         }
     }
+
+    /// return the dotted field path for this error, if any.
+    pub fn field(&self) -> Option<&str> {
+        match self {
+            ValidationError::InvalidValue { field, .. }
+            | ValidationError::MissingReference { field, .. }
+            | ValidationError::ReferenceTypeMismatch { field, .. } => Some(field),
+            _ => None,
+        }
+    }
 }
 
 /// a validation error with optional source location.
@@ -162,6 +172,7 @@ impl ValidationReport {
             .iter()
             .filter_map(|o| o.source.clone().map(|s| (o.type_name.to_string(), Some(s))))
             .collect();
+        let known_types: BTreeSet<&str> = objects.iter().map(|o| o.type_name.as_str()).collect();
 
         self.errors
             .into_iter()
@@ -180,10 +191,22 @@ impl ValidationReport {
                         })
                     })
                     .or_else(|| {
-                        // try to match by type name in the error
-                        error
-                            .type_hint()
-                            .and_then(|t| type_to_source.get(&t).cloned().flatten())
+                        // type names contain dots, so match the longest known type that prefixes `field`.
+                        if let Some(field) = error.field() {
+                            known_types
+                                .iter()
+                                .filter(|t| {
+                                    field.strip_prefix(**t).is_some_and(|rest| {
+                                        rest.is_empty() || rest.starts_with('.')
+                                    })
+                                })
+                                .max_by_key(|t| t.len())
+                                .and_then(|t| type_to_source.get(*t).cloned().flatten())
+                        } else {
+                            error
+                                .type_hint()
+                                .and_then(|t| type_to_source.get(&t).cloned().flatten())
+                        }
                     });
                 LocatedError::with_source(error, source)
             })
@@ -796,6 +819,35 @@ mod tests {
             .errors
             .iter()
             .any(|err| matches!(err, ValidationError::MissingReference { .. })));
+    }
+
+    #[test]
+    fn with_sources_attaches_location_for_dotted_type() {
+        let mut key = BTreeMap::new();
+        key.insert("slug".to_string(), serde_json::json!("fra1"));
+        let object = Object::new(
+            uid(50),
+            TypeName::new("dcim.site"),
+            Key::from(key),
+            JsonMap::default(),
+        )
+        .unwrap()
+        .with_source(SourceLocation::file_line("inventory.yaml", 42));
+
+        let report = ValidationReport {
+            errors: vec![ValidationError::InvalidValue {
+                field: "dcim.site.key.slug".to_string(),
+                expected: "slug".to_string(),
+                actual: "FRA1".to_string(),
+            }],
+        };
+
+        let located = report.with_sources(&[object]);
+        assert_eq!(located.len(), 1);
+        assert_eq!(
+            located[0].source,
+            Some(SourceLocation::file_line("inventory.yaml", 42))
+        );
     }
 
     #[test]
