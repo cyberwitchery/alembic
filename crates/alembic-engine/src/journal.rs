@@ -167,7 +167,7 @@ impl Journal {
 impl Drop for Journal {
     fn drop(&mut self) {
         if let Some((file, _)) = self.file.take() {
-            file.sync_all().unwrap();
+            let _ = file.sync_all();
         }
     }
 }
