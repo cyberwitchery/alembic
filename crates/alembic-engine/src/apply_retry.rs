@@ -76,6 +76,7 @@ mod tests {
     use crate::BackendId;
     use alembic_core::{JsonMap, Key, Object, TypeName, Uid};
     use anyhow::anyhow;
+    use tempfile::tempdir;
 
     fn create_op(uid: Uid) -> Op {
         Op::Create {
@@ -199,5 +200,63 @@ mod tests {
         assert_eq!(driver.attempts, 0);
         assert!(result.pending.is_empty());
         assert!(result.applied.is_empty());
+    }
+
+    struct ErraticDriver {
+        countdown_to_crash: u32,
+        applied_ops: Vec<AppliedOp>,
+    }
+
+    #[async_trait]
+    impl RetryApplyDriver for ErraticDriver {
+        async fn apply_non_delete(&mut self, op: &Op) -> Result<AppliedOp> {
+            self.countdown_to_crash -= 1;
+
+            if self.countdown_to_crash == 0 {
+                return Err(anyhow!("planned error"));
+            }
+
+            let applied_op = AppliedOp {
+                uid: op.uid(),
+                type_name: op.type_name().clone(),
+                backend_id: None,
+            };
+            self.applied_ops.push(applied_op.clone());
+
+            Ok(applied_op)
+        }
+
+        fn is_retryable(&self, _err: &anyhow::Error) -> bool {
+            false
+        }
+    }
+    #[tokio::test]
+    async fn erratic_driver_first_fails_then_succeeds() {
+        let uid1 = Uid::from_u128(1);
+        let uid2 = Uid::from_u128(2);
+        let ops = vec![create_op(uid1), create_op(uid2)];
+        let mut driver = ErraticDriver {
+            countdown_to_crash: 2,
+            applied_ops: vec![],
+        };
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("temp_journal.yaml");
+        let mut journal = Journal::load_or_create(file_path, &ops).unwrap();
+
+        apply_non_delete_with_retries(&ops, Some(&mut journal), &mut driver)
+            .await
+            .expect_err("should fail (on second op applied this run)");
+        assert_eq!(driver.applied_ops.len(), 1);
+        assert!(!journal.is_completed());
+
+        driver.countdown_to_crash = 100;
+        _ = apply_non_delete_with_retries(&ops, Some(&mut journal), &mut driver)
+            .await
+            .unwrap();
+        assert_eq!(
+            driver.applied_ops.iter().map(|a| a.uid).collect::<Vec<_>>(),
+            vec![uid1, uid2]
+        );
+        assert!(journal.is_completed());
     }
 }
