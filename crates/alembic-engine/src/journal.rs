@@ -53,9 +53,9 @@ impl Journal {
 
         let expected_keys = expected_ops
             .iter()
+            .filter(|op| !matches!(op, Op::Delete { .. }))
             .map(|op| (op.uid(), op.type_name()))
             .collect::<Vec<(Uid, &TypeName)>>();
-
         if journal_keys != expected_keys {
             return Err(anyhow!(
                 "the ops in the loaded journal file `{}` doesn't match the expected ops",
