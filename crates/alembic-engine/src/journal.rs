@@ -156,7 +156,8 @@ impl Journal {
     }
 
     pub fn delete_backing_file(&mut self) -> Result<()> {
-        if let Some((_, file_path)) = self.file.take() {
+        if let Some((file, file_path)) = self.file.take() {
+            drop(file);
             fs::remove_file(file_path)?;
         }
         Ok(())
