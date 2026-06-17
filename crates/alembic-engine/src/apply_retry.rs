@@ -1,6 +1,6 @@
 use crate::journal::Journal;
 use crate::{AppliedOp, Op};
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 
 #[derive(Debug)]
@@ -27,8 +27,13 @@ pub async fn apply_non_delete_with_retries(
         .cloned()
         .collect();
 
+    if pending.iter().any(|op| matches!(op, Op::Delete { .. })) {
+        return Err(anyhow!(
+            "found Delete op in `apply_non_delete_with_retries`"
+        ));
+    }
+
     if let Some(journal) = journal.as_mut() {
-        // the journal only contains ops that are create/update (not delete).
         pending.drain(0..journal.done_ops());
     }
 

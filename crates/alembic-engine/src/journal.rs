@@ -32,7 +32,7 @@ impl Journal {
         }
     }
 
-    /// loads a journal from the file with `file_path` and sets it backing file to that file
+    /// loads a journal from the file with `file_path` and sets its backing file to that file
     fn new_from_existing_file(file_path: PathBuf, expected_ops: &[Op]) -> Result<Self> {
         let mut file = OpenOptions::new()
             .read(true)
