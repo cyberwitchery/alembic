@@ -202,6 +202,8 @@ pub struct AppliedOp {
 pub struct ApplyReport {
     /// list of operations applied by the adapter.
     pub applied: Vec<AppliedOp>,
+    /// number of previously applied operations, only set when apply is accompanied by a journal
+    pub previously_applied_count: Option<usize>,
     /// schema provisioning report (populated when ensure_schema runs).
     #[serde(default)]
     pub provision: ProvisionReport,
