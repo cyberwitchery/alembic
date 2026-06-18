@@ -104,7 +104,7 @@ impl Journal {
         Ok(journal)
     }
 
-    /// creates a journal without a backing file (mainly usable for testing)
+    /// creates a journal without a backing file set
     pub fn new_ephemeral(ops: &[Op]) -> Self {
         Self {
             file: None,
