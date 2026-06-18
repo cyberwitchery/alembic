@@ -34,3 +34,4 @@ tempfile = { workspace = true }
 
 [dev-dependencies]
 futures = { workspace = true }
+rand = "0.10.1"

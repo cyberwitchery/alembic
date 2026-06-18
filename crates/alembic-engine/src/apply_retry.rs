@@ -28,15 +28,20 @@ pub async fn apply_non_delete_with_retries(
         .collect();
 
     if let Some(journal) = journal.as_mut() {
-        let done = journal.done_ops();
-        if done > pending.len() {
-            return Err(anyhow!(
-                "corrupt journal (done ops {} exceeds pending ops {})",
-                done,
-                pending.len()
-            ));
+        // remove done ops from `pending` one by one (potentially slow)
+        for (done_uid, done_typename, done_hash) in journal.done_ops() {
+            if let Some(index) = pending.iter().position(|op| {
+                op.uid() == done_uid && op.type_name() == &done_typename && op.hashed() == done_hash
+            }) {
+                pending.remove(index);
+            } else {
+                return Err(anyhow!(
+                    "can't remove done op with uid `{}` and typename `{}`",
+                    done_uid,
+                    done_typename
+                ));
+            }
         }
-        pending.drain(0..done);
     }
 
     while !pending.is_empty() {
@@ -78,6 +83,8 @@ mod tests {
     use crate::BackendId;
     use alembic_core::{JsonMap, Key, Object, TypeName, Uid};
     use anyhow::anyhow;
+    use rand::rng;
+    use rand::seq::SliceRandom;
     use tempfile::tempdir;
 
     fn create_op(uid: Uid) -> Op {
@@ -250,7 +257,8 @@ mod tests {
         assert_eq!(driver.applied_ops.len(), 1);
         assert!(!journal.is_completed());
 
-        driver.countdown_to_crash = 100;
+        // turn off crashing
+        driver.countdown_to_crash = 99999;
         _ = apply_non_delete_with_retries(&ops, Some(&mut journal), &mut driver)
             .await
             .unwrap();
@@ -258,6 +266,45 @@ mod tests {
             driver.applied_ops.iter().map(|a| a.uid).collect::<Vec<_>>(),
             vec![uid1, uid2]
         );
+        assert!(journal.is_completed());
+    }
+
+    #[tokio::test]
+    async fn erratic_driver_with_shuffled_ops() {
+        let mut ops = Vec::new();
+        for i in 1..10 {
+            ops.push(create_op(Uid::from_u128(i)));
+        }
+
+        let mut rng = rng();
+        ops.shuffle(&mut rng);
+
+        let mut driver = ErraticDriver {
+            countdown_to_crash: 5,
+            applied_ops: vec![],
+        };
+        let dir = tempdir().unwrap();
+        let mut journal = Journal::load_or_create(dir.path(), "erratic_driver", &ops).unwrap();
+
+        apply_non_delete_with_retries(&ops, Some(&mut journal), &mut driver)
+            .await
+            .expect_err("should fail (on fifth op applied this run)");
+        assert_eq!(driver.applied_ops.len(), 4);
+        assert!(!journal.is_completed());
+
+        ops.shuffle(&mut rng);
+
+        // turn off crashing
+        driver.countdown_to_crash = 99999;
+        _ = apply_non_delete_with_retries(&ops, Some(&mut journal), &mut driver)
+            .await
+            .unwrap();
+
+        let mut applied_uids = driver.applied_ops.iter().map(|a| a.uid).collect::<Vec<_>>();
+        applied_uids.sort();
+        let mut op_uids = ops.iter().map(|op| op.uid()).collect::<Vec<_>>();
+        op_uids.sort();
+        assert_eq!(applied_uids, op_uids,);
         assert!(journal.is_completed());
     }
 }

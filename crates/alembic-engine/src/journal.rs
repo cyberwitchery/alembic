@@ -116,8 +116,12 @@ impl Journal {
         }
     }
 
-    pub fn done_ops(&self) -> usize {
-        self.ops.iter().filter(|op| op.done).count()
+    pub fn done_ops(&self) -> Vec<(Uid, TypeName, u64)> {
+        self.ops
+            .iter()
+            .filter(|owm| owm.done)
+            .map(|owm| (owm.op_uid, owm.op_typename.clone(), owm.op_hash))
+            .collect()
     }
 
     pub fn is_completed(&self) -> bool {
