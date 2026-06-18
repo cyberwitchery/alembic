@@ -241,6 +241,19 @@ mod tests {
                     source: None,
                 },
             },
+            Op::Update {
+                uid: Uid::from_u128(3),
+                type_name: TypeName::new("dcim.site"),
+                desired: Object {
+                    uid: Uid::from_u128(3),
+                    type_name: TypeName::new("dcim.site"),
+                    key: Default::default(),
+                    attrs: Default::default(),
+                    source: None,
+                },
+                changes: vec![],
+                backend_id: None,
+            },
         ]
     }
 
@@ -251,6 +264,7 @@ mod tests {
         {
             let mut journal = Journal::new_with_file(dir.path(), "test", &ops).unwrap();
             journal.save().unwrap();
+            drop(journal);
         }
         {
             let journal = Journal::new_from_existing_file(dir.path(), "test", &ops).unwrap();
@@ -278,37 +292,38 @@ mod tests {
         {
             let mut journal = Journal::new_from_existing_file(dir.path(), "test", &ops).unwrap();
             journal.save().unwrap();
-            assert_eq!(journal.ops.len(), 2);
+            assert_eq!(journal.ops.len(), 3);
         }
     }
 
     #[test]
     fn mark_ops_as_done() {
-        let dir = tempdir().unwrap();
         let ops = test_ops();
-        let mut journal = Journal::new_with_file(dir.path(), "test", &ops).unwrap();
+        let mut journal = Journal::new_with_file(tempdir().unwrap().path(), "test", &ops).unwrap();
         journal.mark_op_as_done(&ops[0]).unwrap();
         assert!(!journal.is_completed());
         journal.mark_op_as_done(&ops[1]).unwrap();
+        assert!(!journal.is_completed());
+        journal.mark_op_as_done(&ops[2]).unwrap();
         assert!(journal.is_completed());
     }
 
     #[test]
     fn mark_ops_as_done_backwards() {
-        let dir = tempdir().unwrap();
         let ops = test_ops();
-        let mut journal = Journal::new_with_file(dir.path(), "test", &ops).unwrap();
-        journal.mark_op_as_done(&ops[1]).unwrap(); // first the last one
+        let mut journal = Journal::new_with_file(tempdir().unwrap().path(), "test", &ops).unwrap();
+        journal.mark_op_as_done(&ops[2]).unwrap();
         assert!(!journal.is_completed());
-        journal.mark_op_as_done(&ops[0]).unwrap(); // then the first one
+        journal.mark_op_as_done(&ops[1]).unwrap();
+        assert!(!journal.is_completed());
+        journal.mark_op_as_done(&ops[0]).unwrap();
         assert!(journal.is_completed());
     }
 
     #[test]
     fn mark_invalid_op_as_done() {
-        let dir = tempdir().unwrap();
         let ops = test_ops();
-        let mut journal = Journal::new_with_file(dir.path(), "test", &ops).unwrap();
+        let mut journal = Journal::new_with_file(tempdir().unwrap().path(), "test", &ops).unwrap();
         journal
             .mark_op_as_done(&Op::Create {
                 uid: Uid::from_u128(999),
@@ -323,9 +338,14 @@ mod tests {
             })
             .expect_err("should fail");
         assert!(!journal.is_completed());
-        journal.mark_op_as_done(&ops[0]).unwrap();
+    }
+
+    #[test]
+    fn mark_same_op_as_done_twice() {
+        let ops = test_ops();
+        let mut journal = Journal::new_with_file(tempdir().unwrap().path(), "test", &ops).unwrap();
         journal.mark_op_as_done(&ops[1]).unwrap();
-        assert!(journal.is_completed());
+        journal.mark_op_as_done(&ops[1]).expect_err("should fail");
     }
 
     #[test]
