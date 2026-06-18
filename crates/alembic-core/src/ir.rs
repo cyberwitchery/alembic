@@ -4,12 +4,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fmt;
+use std::hash::{Hash, Hasher};
 use std::ops::{Deref, DerefMut};
 use std::path::PathBuf;
 use uuid::Uuid;
 
 /// source location for tracking where an object was defined.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceLocation {
     /// path to the source file.
     pub file: PathBuf,
@@ -567,7 +568,7 @@ pub struct Schema {
 }
 
 /// object envelope for the ir.
-#[derive(Debug, Clone, Serialize, Deserialize, Eq, Hash)]
+#[derive(Debug, Clone, Serialize, Deserialize, Eq)]
 pub struct Object {
     /// stable identifier for the object.
     pub uid: Uid,
@@ -591,6 +592,15 @@ impl PartialEq for Object {
             && self.type_name == other.type_name
             && self.key == other.key
             && self.attrs == other.attrs
+    }
+}
+
+impl Hash for Object {
+    fn hash<H: Hasher>(&self, hasher: &mut H) {
+        self.uid.hash(hasher);
+        self.type_name.hash(hasher);
+        self.key.hash(hasher);
+        self.attrs.hash(hasher);
     }
 }
 
