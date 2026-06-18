@@ -124,6 +124,10 @@ impl Journal {
             .collect()
     }
 
+    pub fn done_ops_count(&self) -> usize {
+        self.ops.iter().filter(|op| op.done).count()
+    }
+
     pub fn is_completed(&self) -> bool {
         self.ops.iter().all(|op| op.done)
     }
