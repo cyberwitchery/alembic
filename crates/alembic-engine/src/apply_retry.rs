@@ -47,7 +47,7 @@ pub async fn apply_non_delete_with_retries(
             match driver.apply_non_delete(&op).await {
                 Ok(applied_op) => {
                     if let Some(journal) = journal.as_mut() {
-                        journal.mark_next_op_as_done(applied_op.uid)?;
+                        journal.mark_op_as_done(&op)?;
                         journal.save()?;
                     }
                     applied.push(applied_op);

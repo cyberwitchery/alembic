@@ -17,9 +17,7 @@ use tempfile::NamedTempFile;
 pub struct Journal {
     #[serde(skip)]
     file: Option<(File, PathBuf)>,
-    next_op_index: usize,
     ops: Vec<OpWithMeta>,
-    completed: bool,
 }
 
 impl Journal {
@@ -110,50 +108,42 @@ impl Journal {
     pub fn new_ephemeral(ops: &[Op]) -> Self {
         Self {
             file: None,
-            next_op_index: 0,
             ops: ops
                 .iter()
                 .filter(|op| !matches!(op, Op::Delete { .. }))
-                .enumerate()
-                .map(|(index, op)| OpWithMeta::new(index, op.clone()))
+                .map(OpWithMeta::new)
                 .collect(),
-            completed: ops.iter().all(|op| matches!(op, Op::Delete { .. })),
         }
     }
 
     pub fn done_ops(&self) -> usize {
-        self.next_op_index
+        self.ops.iter().filter(|op| op.done).count()
     }
 
     pub fn is_completed(&self) -> bool {
-        self.completed
+        self.ops.iter().all(|op| op.done)
     }
 
-    pub fn mark_next_op_as_done(&mut self, expected_uid: Uid) -> Result<()> {
-        if self.completed {
+    /// will mark the first op that is not done (will fail if there's no such op).
+    /// uses a linear search from the start.
+    pub fn mark_op_as_done(&mut self, op: &Op) -> Result<()> {
+        let op_hash = op.hashed();
+        let op_uid = op.uid();
+        let op_typename = op.type_name();
+
+        let Some(op_index) = self.ops.iter().position(|op| {
+            !op.done
+                && op.op_hash == op_hash
+                && op.op_uid == op_uid
+                && &op.op_typename == op_typename
+        }) else {
             return Err(anyhow!(
-                "can't mark next op as done when journal was already completed"
+                "no matching op found in journal, can't mark any as done"
             ));
         };
 
-        let Some(at_op) = self.ops.get_mut(self.next_op_index) else {
-            return Err(anyhow!("corrupt journal (index out of bounds)"));
-        };
-
-        if at_op.op_uid != expected_uid {
-            return Err(anyhow!(
-                "op uid in journal ({}) doesn't match expected uid {}, trying to mark another op as done",
-                at_op.op_uid,
-                expected_uid,
-            ));
-        }
-
-        at_op.done = true;
-        self.next_op_index += 1;
-
-        if self.next_op_index >= self.ops.len() {
-            self.completed = true;
-        }
+        // index comes from call to `position` above, so it must be in range
+        self.ops[op_index].done = true;
 
         Ok(())
     }
@@ -204,18 +194,17 @@ impl Drop for Journal {
 struct OpWithMeta {
     op_uid: Uid,
     op_typename: TypeName,
-    /// this is the index of the op in the journal (so sans deletes)
-    index: usize,
+    op_hash: u64,
     done: bool,
     backend_id: Option<BackendId>, // FIXME: not sure if/when this is needed
 }
 
 impl OpWithMeta {
-    fn new(index: usize, op: Op) -> Self {
+    fn new(op: &Op) -> Self {
         OpWithMeta {
             op_uid: op.uid(),
             op_typename: op.type_name().clone(),
-            index,
+            op_hash: op.hashed(),
             done: false,
             backend_id: None,
         }
@@ -298,9 +287,20 @@ mod tests {
         let dir = tempdir().unwrap();
         let ops = test_ops();
         let mut journal = Journal::new_with_file(dir.path(), "test", &ops).unwrap();
-        journal.mark_next_op_as_done(Uid::from_u128(1)).unwrap();
+        journal.mark_op_as_done(&ops[0]).unwrap();
         assert!(!journal.is_completed());
-        journal.mark_next_op_as_done(Uid::from_u128(2)).unwrap();
+        journal.mark_op_as_done(&ops[1]).unwrap();
+        assert!(journal.is_completed());
+    }
+
+    #[test]
+    fn mark_ops_as_done_backwards() {
+        let dir = tempdir().unwrap();
+        let ops = test_ops();
+        let mut journal = Journal::new_with_file(dir.path(), "test", &ops).unwrap();
+        journal.mark_op_as_done(&ops[1]).unwrap(); // first the last one
+        assert!(!journal.is_completed());
+        journal.mark_op_as_done(&ops[0]).unwrap(); // then the first one
         assert!(journal.is_completed());
     }
 
@@ -310,11 +310,21 @@ mod tests {
         let ops = test_ops();
         let mut journal = Journal::new_with_file(dir.path(), "test", &ops).unwrap();
         journal
-            .mark_next_op_as_done(Uid::from_u128(2))
+            .mark_op_as_done(&Op::Create {
+                uid: Uid::from_u128(999),
+                type_name: TypeName::new("dcim.site"),
+                desired: Object {
+                    uid: Uid::from_u128(999),
+                    type_name: TypeName::new("dcim.site"),
+                    key: Default::default(),
+                    attrs: Default::default(),
+                    source: None,
+                },
+            })
             .expect_err("should fail");
         assert!(!journal.is_completed());
-        journal.mark_next_op_as_done(Uid::from_u128(1)).unwrap();
-        journal.mark_next_op_as_done(Uid::from_u128(2)).unwrap();
+        journal.mark_op_as_done(&ops[0]).unwrap();
+        journal.mark_op_as_done(&ops[1]).unwrap();
         assert!(journal.is_completed());
     }
 
