@@ -83,6 +83,9 @@ no_admin: false",
     fs::write(&config_file_path, data).expect("write config file to temp dir");
 
     let mut cmd = Command::new(&bin);
+    // isolate state per test: the default `./.alembic/state.json` is cwd-relative,
+    // so parallel runs race on a shared path (and pollute the source tree).
+    cmd.env("ALEMBIC_STATE_PATH", out.path().join("state.json"));
     cmd.args([
         "apply",
         "--backend-config",

@@ -213,6 +213,66 @@ mod tests {
         assert!(err.to_string().contains("missing key field name"));
     }
 
+    fn sample_ix(id: u32, name: &str) -> peeringdb_rs::PeeringdbIx {
+        peeringdb_rs::PeeringdbIx {
+            id,
+            org_id_id: None,
+            name: Some(name.to_string()),
+            aka: None,
+            name_long: None,
+            city: None,
+            country: None,
+            region_continent: None,
+            media: None,
+            notes: None,
+            proto_unicast: None,
+            proto_multicast: None,
+            proto_ipv6: None,
+            website: None,
+            url_stats: None,
+            status_dashboard: None,
+            tech_email: None,
+            tech_phone: None,
+            policy_email: None,
+            policy_phone: None,
+            sales_email: None,
+            sales_phone: None,
+            ixf_net_count: None,
+            ixf_last_import: None,
+            ixf_import_request: None,
+            ixf_import_request_status: None,
+            net_count: None,
+            fac_count: None,
+            service_level: None,
+            terms: None,
+            created: None,
+            updated: None,
+            status: None,
+        }
+    }
+
+    #[test]
+    fn to_observed_objects_maps_id_key_and_attrs() {
+        let type_name = TypeName::new("peeringdb.ix");
+        let schema = ix_schema();
+        let objects =
+            to_observed_objects(&type_name, &schema, vec![sample_ix(42, "DE-CIX Frankfurt")])
+                .unwrap();
+
+        assert_eq!(objects.len(), 1);
+        let object = &objects[0];
+        assert_eq!(object.type_name, type_name);
+        assert_eq!(object.backend_id, Some(BackendId::Int(42)));
+        assert_eq!(
+            object.key.get("name"),
+            Some(&serde_json::json!("DE-CIX Frankfurt"))
+        );
+        assert_eq!(
+            object.attrs.get("name"),
+            Some(&serde_json::json!("DE-CIX Frankfurt"))
+        );
+    }
+
     #[tokio::test]
     async fn observe_errors_on_missing_schema() {
         let adapter = PeeringDBAdapter::new();
