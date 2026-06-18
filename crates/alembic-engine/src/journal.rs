@@ -63,17 +63,23 @@ impl Journal {
         let journal_keys = journal
             .ops
             .iter()
-            .map(|op_with_meta| (op_with_meta.op_uid, &op_with_meta.op_typename))
-            .collect::<Vec<(Uid, &TypeName)>>();
+            .map(|op_with_meta| {
+                (
+                    op_with_meta.op_uid,
+                    &op_with_meta.op_typename,
+                    op_with_meta.op_hash,
+                )
+            })
+            .collect::<Vec<(Uid, &TypeName, u64)>>();
 
         let expected_keys = expected_ops
             .iter()
             .filter(|op| !matches!(op, Op::Delete { .. }))
-            .map(|op| (op.uid(), op.type_name()))
-            .collect::<Vec<(Uid, &TypeName)>>();
+            .map(|op| (op.uid(), op.type_name(), op.hashed()))
+            .collect::<Vec<(Uid, &TypeName, u64)>>();
         if journal_keys != expected_keys {
             return Err(anyhow!(
-                "the ops in the loaded journal file `{}` doesn't match the expected ops",
+                "the ops in the loaded journal file `{}` don't match the expected ops",
                 file_name.display()
             ));
         }
