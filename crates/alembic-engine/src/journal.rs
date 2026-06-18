@@ -11,6 +11,7 @@ use std::fs::{File, OpenOptions};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::{Read, Seek, Write};
 use std::path::{Path, PathBuf};
+use tempfile::NamedTempFile;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Journal {
@@ -159,17 +160,26 @@ impl Journal {
 
     pub fn save(&mut self) -> Result<()> {
         let str = serde_yaml::to_string(self)?;
-        if let Some((file, _)) = self.file.as_mut() {
-            file.rewind()?;
-            file.set_len(0)?;
-            file.write_all(str.as_bytes())?;
-            file.sync_all()?;
-            Ok(())
-        } else {
-            Err(anyhow!(
-                "can't save journal because it's missing a backing file"
-            ))
-        }
+
+        let (_, path) = self
+            .file
+            .as_ref()
+            .ok_or_else(|| anyhow!("can't save journal because it's missing a backing file"))?;
+
+        let path = path.clone();
+        let dir = path
+            .parent()
+            .ok_or_else(|| anyhow!("file path has no parent directory"))?;
+
+        let mut temp_file = NamedTempFile::new_in(dir)?;
+        temp_file.write_all(str.as_bytes())?;
+        temp_file.as_file().sync_all()?; // fsync data + metadata before it can become visible
+        temp_file.persist(&path)?;
+        File::open(dir)?.sync_all()?;
+        let new_file = OpenOptions::new().read(true).write(true).open(&path)?;
+        self.file = Some((new_file, path));
+
+        Ok(())
     }
 
     pub fn delete_backing_file(&mut self) -> Result<()> {
