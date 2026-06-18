@@ -238,8 +238,16 @@ fn render_string_value(
         if value.is_null() && allow_missing {
             return Ok(None);
         }
-        // a lone `${var}` with no transforms preserves the raw typed value.
+        // a lone `${var}` with no transforms preserves its raw typed value; a
+        // null has no string form, so reject it in string (key/uid) output.
         if placeholder.transforms.is_empty() {
+            if value.is_null() && matches!(output, TransformedOutput::String) {
+                return Err(anyhow!(
+                    "rule {}: var {} in {context} is null and cannot be rendered as a string",
+                    ctx.rule,
+                    placeholder.name
+                ));
+            }
             return Ok(Some(value.clone()));
         }
         return match output {
@@ -841,6 +849,43 @@ uid:
         .unwrap()
         .unwrap();
         assert_eq!(rendered, JsonValue::String("65001".to_string()));
+    }
+
+    #[test]
+    fn render_key_rejects_null_lone_placeholder() {
+        let mut vars = BTreeMap::new();
+        vars.insert("x".to_string(), JsonValue::Null);
+        let mut key = BTreeMap::new();
+        key.insert("slug".to_string(), YamlValue::String("${x}".to_string()));
+        let err = render_key(&key, &ctx(&vars)).unwrap_err();
+        assert!(err.to_string().contains("is null"), "{err:#}");
+    }
+
+    #[test]
+    fn lone_placeholder_null_preserved_in_typed_mode() {
+        let mut vars = BTreeMap::new();
+        vars.insert("x".to_string(), JsonValue::Null);
+        let rendered = render_string_value(
+            "${x}",
+            &ctx(&vars),
+            "attrs",
+            false,
+            TransformedOutput::Typed,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(rendered, JsonValue::Null);
+    }
+
+    #[test]
+    fn lone_placeholder_non_null_string_mode_returns_value() {
+        let mut vars = BTreeMap::new();
+        vars.insert("x".to_string(), JsonValue::String("leaf01".to_string()));
+        let rendered =
+            render_string_value("${x}", &ctx(&vars), "key", false, TransformedOutput::String)
+                .unwrap()
+                .unwrap();
+        assert_eq!(rendered, JsonValue::String("leaf01".to_string()));
     }
 
     /// render `${name|slug}` over a single string var.
