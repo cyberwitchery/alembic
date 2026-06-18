@@ -59,14 +59,28 @@ pub async fn apply_non_delete_with_retries(
         for op in current {
             match driver.apply_non_delete(&op).await {
                 Ok(applied_op) => {
+                    // marked in memory only; the journal is flushed to disk at the exit
+                    // points below, not once per op (per-op saving was a ~100x regression).
                     if let Some(journal) = journal.as_mut() {
                         journal.mark_op_as_done(&op)?;
-                        journal.save()?;
                     }
                     applied.push(applied_op);
                 }
                 Err(err) if driver.is_retryable(&err) => pending.push(op),
-                Err(err) => return Err(err),
+                Err(err) => {
+                    // a fatal error is a clean unwind: persist progress before surfacing it
+                    // so the next run can resume from here. don't mask the original error if
+                    // the save itself fails.
+                    if let Some(journal) = journal.as_mut() {
+                        if let Err(save_err) = journal.save() {
+                            tracing::warn!(
+                                error = %save_err,
+                                "failed to persist journal after apply error"
+                            );
+                        }
+                    }
+                    return Err(err);
+                }
             }
         }
 
@@ -79,6 +93,9 @@ pub async fn apply_non_delete_with_retries(
     if let Some(journal) = journal.as_mut() {
         if journal.is_completed() {
             journal.delete_backing_file()?;
+        } else {
+            // ops remain pending (stuck with no progress): persist so a re-run can resume
+            journal.save()?;
         }
     }
 
@@ -275,6 +292,48 @@ mod tests {
             vec![uid1, uid2]
         );
         assert!(journal.is_completed());
+    }
+
+    #[tokio::test]
+    async fn resumes_from_disk_after_error() {
+        let uid1 = Uid::from_u128(1);
+        let uid2 = Uid::from_u128(2);
+        let uid3 = Uid::from_u128(3);
+        let ops = vec![create_op(uid1), create_op(uid2), create_op(uid3)];
+        let dir = tempdir().unwrap();
+
+        // first run crashes after applying the first op; the journal is dropped to
+        // simulate the process exiting, so resume must rely on what was flushed to disk.
+        {
+            let mut driver = ErraticDriver {
+                countdown_to_crash: 2,
+                applied_ops: vec![],
+            };
+            let mut journal = Journal::load_or_create(dir.path(), "resume_test", &ops).unwrap();
+            apply_non_delete_with_retries(&ops, Some(&mut journal), &mut driver)
+                .await
+                .expect_err("should fail on the second op");
+            assert_eq!(driver.applied_ops.len(), 1);
+        }
+
+        // second run reloads the journal from disk and applies only the remaining ops.
+        {
+            let mut driver = ErraticDriver {
+                countdown_to_crash: 99999,
+                applied_ops: vec![],
+            };
+            let mut journal = Journal::load_or_create(dir.path(), "resume_test", &ops).unwrap();
+            let result = apply_non_delete_with_retries(&ops, Some(&mut journal), &mut driver)
+                .await
+                .unwrap();
+            assert_eq!(
+                driver.applied_ops.iter().map(|a| a.uid).collect::<Vec<_>>(),
+                vec![uid2, uid3]
+            );
+            assert_eq!(result.applied.len(), 2);
+            assert!(result.pending.is_empty());
+            assert!(journal.is_completed());
+        }
     }
 
     #[tokio::test]
