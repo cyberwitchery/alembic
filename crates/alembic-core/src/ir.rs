@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fmt;
+use std::hash::{Hash, Hasher};
 use std::ops::{Deref, DerefMut};
 use std::path::PathBuf;
 use uuid::Uuid;
@@ -56,7 +57,7 @@ impl fmt::Display for SourceLocation {
 pub type Uid = Uuid;
 
 /// json object wrapper for typed access and stricter boundaries.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, Eq, Hash)]
 #[serde(transparent)]
 pub struct JsonMap(pub BTreeMap<String, Value>);
 
@@ -113,7 +114,7 @@ impl From<JsonMap> for BTreeMap<String, Value> {
 }
 
 /// structured key for object identity.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, Eq, Hash)]
 #[serde(transparent)]
 pub struct Key(pub BTreeMap<String, Value>);
 
@@ -567,7 +568,7 @@ pub struct Schema {
 }
 
 /// object envelope for the ir.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Eq)]
 pub struct Object {
     /// stable identifier for the object.
     pub uid: Uid,
@@ -591,6 +592,15 @@ impl PartialEq for Object {
             && self.type_name == other.type_name
             && self.key == other.key
             && self.attrs == other.attrs
+    }
+}
+
+impl Hash for Object {
+    fn hash<H: Hasher>(&self, hasher: &mut H) {
+        self.uid.hash(hasher);
+        self.type_name.hash(hasher);
+        self.key.hash(hasher);
+        self.attrs.hash(hasher);
     }
 }
 

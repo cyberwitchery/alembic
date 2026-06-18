@@ -6,6 +6,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
+use std::hash::{DefaultHasher, Hash, Hasher};
 
 /// generic backend identifier (integer or string/uuid).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -37,7 +38,7 @@ impl From<String> for BackendId {
 }
 
 /// field-level change for an update op.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Hash, Eq)]
 pub struct FieldChange {
     /// field name within attrs.
     pub field: String,
@@ -48,7 +49,7 @@ pub struct FieldChange {
 }
 
 /// plan operation.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Hash, Eq)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Op {
     /// create a new backend object.
@@ -93,6 +94,12 @@ impl Op {
             Op::Update { type_name, .. } => type_name,
             Op::Delete { type_name, .. } => type_name,
         }
+    }
+
+    pub fn hashed(&self) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        self.hash(&mut hasher);
+        hasher.finish()
     }
 }
 
@@ -202,6 +209,9 @@ pub struct AppliedOp {
 pub struct ApplyReport {
     /// list of operations applied by the adapter.
     pub applied: Vec<AppliedOp>,
+    /// number of previously applied operations, only set when apply is accompanied by a journal
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previously_applied_count: Option<usize>,
     /// schema provisioning report (populated when ensure_schema runs).
     #[serde(default)]
     pub provision: ProvisionReport,

@@ -6,6 +6,7 @@ mod drift;
 mod errors;
 pub mod external;
 mod extract;
+pub mod journal;
 mod loader;
 pub mod mapping;
 mod pipeline;

@@ -176,7 +176,8 @@ impl Emitter for NetBoxAdapter {
             schema,
             custom_fields_by_type: &custom_fields_by_type,
         };
-        let retry_result = apply_non_delete_with_retries(&creates_updates, &mut driver).await?;
+        let retry_result =
+            apply_non_delete_with_retries(&creates_updates, None, &mut driver).await?;
 
         if !retry_result.pending.is_empty() {
             let missing = describe_missing_refs(&retry_result.pending, &resolved);

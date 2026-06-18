@@ -6,7 +6,7 @@ mod io;
 mod state;
 
 use alembic_adapter_registry::{create_backend, Plugin};
-use alembic_engine::{apply_plan, build_plan, load_inventory, DriftReport, Plan};
+use alembic_engine::{apply_plan, build_plan, load_inventory, ApplyReport, DriftReport, Plan};
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand};
 use std::fs;
@@ -280,17 +280,11 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                 let report =
                     apply_plan(&backend, &interactive_plan, &mut state, allow_delete).await?;
                 state.save_async().await?;
-                if !report.provision.is_empty() {
-                    println!("provision: {}", report.provision);
-                }
-                println!("applied {} operations", report.applied.len());
+                print_apply_report(report);
             } else {
                 let report = apply_plan(&backend, &plan, &mut state, allow_delete).await?;
                 state.save_async().await?;
-                if !report.provision.is_empty() {
-                    println!("provision: {}", report.provision);
-                }
-                println!("applied {} operations", report.applied.len());
+                print_apply_report(report);
             }
         }
         Command::Map {
@@ -367,6 +361,21 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn print_apply_report(report: ApplyReport) {
+    if !report.provision.is_empty() {
+        println!("provision: {}", report.provision);
+    }
+    if let Some(previously_applied_count) = report.previously_applied_count {
+        println!(
+            "applied {} operations (after resuming, had previously applied {} operations)",
+            report.applied.len(),
+            previously_applied_count
+        );
+    } else {
+        println!("applied {} operations", report.applied.len());
+    }
 }
 
 fn search_for_plugins(config: &AppConfig) -> Vec<Plugin> {
