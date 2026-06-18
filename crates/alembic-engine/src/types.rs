@@ -210,6 +210,7 @@ pub struct ApplyReport {
     /// list of operations applied by the adapter.
     pub applied: Vec<AppliedOp>,
     /// number of previously applied operations, only set when apply is accompanied by a journal
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub previously_applied_count: Option<usize>,
     /// schema provisioning report (populated when ensure_schema runs).
     #[serde(default)]
