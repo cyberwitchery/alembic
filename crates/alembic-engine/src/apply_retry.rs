@@ -28,19 +28,17 @@ pub async fn apply_non_delete_with_retries(
         .collect();
 
     if let Some(journal) = journal.as_mut() {
-        // remove done ops from `pending` one by one (potentially slow)
-        for (done_uid, done_typename, done_hash) in journal.done_ops() {
-            if let Some(index) = pending.iter().position(|op| {
-                op.uid() == done_uid && op.type_name() == &done_typename && op.hashed() == done_hash
-            }) {
-                pending.remove(index);
-            } else {
-                return Err(anyhow!(
-                    "can't remove done op with uid `{}` and typename `{}`",
-                    done_uid,
-                    done_typename
-                ));
-            }
+        let mut done = journal
+            .done_ops()
+            .into_iter()
+            .collect::<std::collections::HashSet<_>>();
+
+        pending.retain(|op| !done.remove(&(op.uid(), op.type_name().clone(), op.hashed())));
+
+        if !done.is_empty() {
+            return Err(anyhow!(
+                "journal contains done ops that are not present in the provided ops"
+            ));
         }
     }
 
