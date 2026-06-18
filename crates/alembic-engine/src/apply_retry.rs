@@ -28,10 +28,20 @@ pub async fn apply_non_delete_with_retries(
         .collect();
 
     if let Some(journal) = journal.as_mut() {
-        let mut done = journal
-            .done_ops()
+        let done_ops = journal.done_ops();
+        let done_ops_len = done_ops.len();
+
+        let mut done = done_ops
             .into_iter()
             .collect::<std::collections::HashSet<_>>();
+
+        if done.len() != done_ops_len {
+            // the use of a hash set here is an optimization, but it rules out ops with
+            // exactly the same uid, typename and hash.
+            // if there's a need to support such a thing in the future, it can be done by
+            // switching the container for `done` into a type that supports duplicates.
+            return Err(anyhow!("journal contained duplicated ops (same uid, typename and hash) which is not supported"));
+        }
 
         pending.retain(|op| !done.remove(&(op.uid(), op.type_name().clone(), op.hashed())));
 
