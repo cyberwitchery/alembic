@@ -242,8 +242,8 @@ mod tests {
             applied_ops: vec![],
         };
         let dir = tempdir().unwrap();
-        let file_path = dir.path().join("temp_journal.yaml");
-        let mut journal = Journal::load_or_create(file_path, &ops).unwrap();
+        let mut journal =
+            Journal::load_or_create(&dir.path().into(), "erratic_driver", &ops).unwrap();
 
         apply_non_delete_with_retries(&ops, Some(&mut journal), &mut driver)
             .await

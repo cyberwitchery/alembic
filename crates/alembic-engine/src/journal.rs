@@ -8,6 +8,7 @@ use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::fs::{File, OpenOptions};
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::{Read, Seek, Write};
 use std::path::PathBuf;
 
@@ -21,25 +22,40 @@ pub struct Journal {
 }
 
 impl Journal {
+    pub fn stable_file_name(directory: &PathBuf, adapter_name: &str, ops: &[Op]) -> PathBuf {
+        let mut hasher = DefaultHasher::new();
+        ops.hash(&mut hasher);
+        let hash = hasher.finish();
+        let file_name: PathBuf = format!("{}_journal_{}.yaml", adapter_name, hash).into();
+        directory.join(file_name)
+    }
+
     /// tries to load a Journal from `file_path`, otherwise creates a new one.
     /// in either case, the new Journal instance will be backed by the file at `file_path`.
     /// delete ops will not be saved in the journal.
-    pub fn load_or_create(file_path: PathBuf, ops: &[Op]) -> Result<Self> {
-        if fs::metadata(&file_path).is_ok() {
-            Self::new_from_existing_file(file_path, ops)
+    pub fn load_or_create(directory: &PathBuf, adapter_name: &str, ops: &[Op]) -> Result<Self> {
+        let file_name = Self::stable_file_name(&directory, adapter_name, ops);
+        if fs::metadata(&file_name).is_ok() {
+            Self::new_from_existing_file(directory, adapter_name, ops)
         } else {
-            Self::new_with_file(file_path, ops)
+            Self::new_with_file(directory, adapter_name, ops)
         }
     }
 
     /// loads a journal from the file with `file_path` and sets its backing file to that file
-    fn new_from_existing_file(file_path: PathBuf, expected_ops: &[Op]) -> Result<Self> {
+    fn new_from_existing_file(
+        directory: &PathBuf,
+        adapter_name: &str,
+        expected_ops: &[Op],
+    ) -> Result<Self> {
+        let file_name = Self::stable_file_name(directory, adapter_name, expected_ops);
+
         let mut file = OpenOptions::new()
             .read(true)
             .write(true)
             .create(false)
             .append(false)
-            .open(&file_path)?;
+            .open(&file_name)?;
         let mut contents = String::new();
         file.read_to_string(&mut contents)?;
 
@@ -59,16 +75,17 @@ impl Journal {
         if journal_keys != expected_keys {
             return Err(anyhow!(
                 "the ops in the loaded journal file `{}` doesn't match the expected ops",
-                file_path.display()
+                file_name.display()
             ));
         }
 
-        journal.file = Some((file, file_path));
+        journal.file = Some((file, file_name));
         Ok(journal)
     }
 
     /// creates a journal with a new backing file
-    fn new_with_file(file_path: PathBuf, ops: &[Op]) -> Result<Self> {
+    fn new_with_file(directory: &PathBuf, adapter_name: &str, ops: &[Op]) -> Result<Self> {
+        let file_name = Self::stable_file_name(directory, adapter_name, ops);
         let mut journal = Self::new_ephemeral(ops);
 
         // create and write to the file to check that it works before applying any ops
@@ -78,11 +95,11 @@ impl Journal {
             .create(true)
             .truncate(true)
             .append(false)
-            .open(&file_path)?;
+            .open(&file_name)?;
         file.set_len(0)?;
         file.rewind()?;
 
-        journal.file = Some((file, file_path));
+        journal.file = Some((file, file_name));
         journal.save()?;
 
         Ok(journal)
@@ -231,14 +248,14 @@ mod tests {
     #[test]
     fn save_and_load_journal() {
         let dir = tempdir().unwrap();
-        let file_path = dir.path().join("temp_journal.yaml");
         let ops = test_ops();
         {
-            let mut journal = Journal::new_with_file(file_path.clone(), &ops).unwrap();
+            let mut journal = Journal::new_with_file(&dir.path().into(), "test", &ops).unwrap();
             journal.save().unwrap();
         }
         {
-            let journal = Journal::new_from_existing_file(file_path, &ops).unwrap();
+            let journal =
+                Journal::new_from_existing_file(&dir.path().into(), "test", &ops).unwrap();
             assert_eq!(
                 journal
                     .ops
@@ -255,14 +272,14 @@ mod tests {
     #[test]
     fn load_and_save_existing_journal() {
         let dir = tempdir().unwrap();
-        let file_path = dir.path().join("temp_journal.yaml");
         let ops = test_ops();
         {
-            let mut journal = Journal::new_with_file(file_path.clone(), &ops).unwrap();
+            let mut journal = Journal::new_with_file(&dir.path().into(), "test", &ops).unwrap();
             journal.save().unwrap();
         }
         {
-            let mut journal = Journal::new_from_existing_file(file_path, &ops).unwrap();
+            let mut journal =
+                Journal::new_from_existing_file(&dir.path().into(), "test", &ops).unwrap();
             journal.save().unwrap();
             assert_eq!(journal.ops.len(), 2);
         }
@@ -271,9 +288,8 @@ mod tests {
     #[test]
     fn mark_ops_as_done() {
         let dir = tempdir().unwrap();
-        let file_path = dir.path().join("temp_journal.yaml");
         let ops = test_ops();
-        let mut journal = Journal::new_with_file(file_path.clone(), &ops).unwrap();
+        let mut journal = Journal::new_with_file(&dir.path().into(), "test", &ops).unwrap();
         journal.mark_next_op_as_done(Uid::from_u128(1)).unwrap();
         assert!(!journal.is_completed());
         journal.mark_next_op_as_done(Uid::from_u128(2)).unwrap();
@@ -283,9 +299,8 @@ mod tests {
     #[test]
     fn mark_invalid_op_as_done() {
         let dir = tempdir().unwrap();
-        let file_path = dir.path().join("temp_journal.yaml");
         let ops = test_ops();
-        let mut journal = Journal::new_with_file(file_path.clone(), &ops).unwrap();
+        let mut journal = Journal::new_with_file(&dir.path().into(), "test", &ops).unwrap();
         journal
             .mark_next_op_as_done(Uid::from_u128(2))
             .expect_err("should fail");
@@ -298,10 +313,10 @@ mod tests {
     #[test]
     fn delete_backing_file() {
         let dir = tempdir().unwrap();
-        let file_path = dir.path().join("temp_journal.yaml");
         let ops = test_ops();
-        let mut journal = Journal::new_with_file(file_path.clone(), &ops).unwrap();
+        let mut journal = Journal::new_with_file(&dir.path().into(), "test", &ops).unwrap();
         journal.save().unwrap();
+        let file_path = Journal::stable_file_name(&dir.path().into(), "test", &ops);
         assert!(file_path.exists());
         journal.delete_backing_file().unwrap();
         assert!(!file_path.exists());

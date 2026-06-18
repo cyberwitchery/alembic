@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use uuid::Uuid;
 
 /// source location for tracking where an object was defined.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SourceLocation {
     /// path to the source file.
     pub file: PathBuf,
@@ -56,7 +56,7 @@ impl fmt::Display for SourceLocation {
 pub type Uid = Uuid;
 
 /// json object wrapper for typed access and stricter boundaries.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, Eq, Hash)]
 #[serde(transparent)]
 pub struct JsonMap(pub BTreeMap<String, Value>);
 
@@ -113,7 +113,7 @@ impl From<JsonMap> for BTreeMap<String, Value> {
 }
 
 /// structured key for object identity.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, Eq, Hash)]
 #[serde(transparent)]
 pub struct Key(pub BTreeMap<String, Value>);
 
@@ -567,7 +567,7 @@ pub struct Schema {
 }
 
 /// object envelope for the ir.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, Hash)]
 pub struct Object {
     /// stable identifier for the object.
     pub uid: Uid,
