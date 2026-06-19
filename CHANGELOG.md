@@ -3,6 +3,7 @@
 ## [unreleased]
 
 - core: keep source locations on validation errors for dotted type names
+- engine: reject lists, dicts, and null as key and uid components
 
 ## [0.4.0] - 2026-06-18
 
