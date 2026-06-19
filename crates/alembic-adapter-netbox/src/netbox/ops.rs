@@ -668,7 +668,6 @@ impl NetBoxAdapter {
             resolved,
             &custom_fields,
             &info.features,
-            &format!("{}.{}", info.app_label, info.model),
             registry,
         )?;
         let response: Value = match resource.create(&body).await {
@@ -751,7 +750,6 @@ impl NetBoxAdapter {
             resolved,
             &custom_fields,
             &info.features,
-            &format!("{}.{}", info.app_label, info.model),
             registry,
         )?;
         let _response = resource.patch(id, &body).await?;
@@ -1041,9 +1039,10 @@ fn build_request_body(
     resolved: &BTreeMap<Uid, u64>,
     custom_fields: &BTreeSet<String>,
     features: &BTreeSet<String>,
-    content_type: &str,
     registry: &ObjectTypeRegistry,
 ) -> Result<Value> {
+    let content_type = content_type_of(registry, type_name.as_str());
+    let content_type = content_type.as_str();
     let mut body = Map::new();
     let mut custom = Map::new();
 
@@ -1799,7 +1798,6 @@ mod test_normalization {
             &resolved,
             &BTreeSet::new(),
             &BTreeSet::new(),
-            "dcim.device",
             &ObjectTypeRegistry::default(),
         )
         .unwrap();
