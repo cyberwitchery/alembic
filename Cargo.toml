@@ -55,3 +55,6 @@ httpmock = "0.8"
 tempfile = "3"
 futures = "0.3"
 figment = { version = "0.10", features = ["yaml", "env"] }
+# local development against the in-progress netbox.rs generic-FK work; drop on release
+[patch.crates-io]
+netbox = { path = "../netbox.rs/crates/netbox" }
