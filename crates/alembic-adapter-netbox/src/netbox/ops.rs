@@ -1129,7 +1129,11 @@ fn encode_generic_fk(
 ) -> Result<()> {
     let target = match field_type {
         FieldType::Ref { target } | FieldType::ListRef { target } => target.as_str(),
-        other => return Err(anyhow!("generic foreign key {key} must be a ref, got {other:?}")),
+        other => {
+            return Err(anyhow!(
+                "generic foreign key {key} must be a ref, got {other:?}"
+            ))
+        }
     };
     let object_type = content_type_of(registry, target);
     let id = resolve_value_for_type(field_type, value, resolved)?;
@@ -1854,7 +1858,10 @@ mod test_normalization {
             &registry,
         )
         .unwrap();
-        assert_eq!(body.get("assigned_object_type").unwrap(), &json!("dcim.interface"));
+        assert_eq!(
+            body.get("assigned_object_type").unwrap(),
+            &json!("dcim.interface")
+        );
         assert_eq!(body.get("assigned_object_id").unwrap(), &json!(42));
     }
 
