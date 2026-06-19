@@ -33,8 +33,10 @@ jobs:
           CARGO_PROFILE_DEV_DEBUG: 0
         run: cargo doc --workspace --all-features --no-deps
 
-      - name: run tests
-        run: cargo test --workspace --all-features
+      # tests run on every push via ci.yml's coverage job (cargo llvm-cov
+      # --workspace), and the release tag points at a tested commit; the release
+      # job does not recompile them in test mode (which OOMs the runner building
+      # the large generated netbox-openapi dependency).
 
       - name: install sbom tool
         uses: taiki-e/install-action@v2

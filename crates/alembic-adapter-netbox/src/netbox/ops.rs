@@ -14,7 +14,6 @@ use alembic_engine::{
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use netbox::{BulkDelete, QueryBuilder, Resource};
-use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -60,8 +59,10 @@ impl Observer for NetBoxAdapter {
             };
             for object in objects {
                 let (backend_id, mut attrs) = extract_attrs(object)?;
+                // decode generic FKs first: they carry a nested object brief that
+                // `normalize_attrs` would otherwise mangle as an ordinary ref.
+                decode_generic_fks(&mut attrs, &type_name, schema, &registry, &mappings);
                 normalize_attrs(&mut attrs, type_schema, schema, &registry, &mappings);
-                unwrap_generic_object_request(&mut attrs, &type_name)?;
 
                 let key = build_key_from_schema(type_schema, &attrs)
                     .with_context(|| format!("build key for {}", type_name))?;
@@ -536,35 +537,99 @@ impl Adapter for NetBoxAdapter {
     }
 }
 
-fn unwrap_generic_object_request(attrs: &mut JsonMap, type_name: &TypeName) -> Result<()> {
-    for (attr_name, attr_value) in attrs.iter_mut() {
-        if !netbox::is_generic_fk(type_name.as_str(), attr_name) {
-            continue;
-        }
-        if let Some(items) = attr_value.as_array() {
-            let uids = items
-                .iter()
-                .map(|item| {
-                    generic_object_uid(item)
-                        .with_context(|| format!("generic foreign key {attr_name} on {type_name}"))
-                })
-                .collect::<Result<Vec<_>>>()?;
-            *attr_value = Value::Array(uids.into_iter().map(Value::String).collect());
-        } else {
-            let uid = generic_object_uid(attr_value)
-                .with_context(|| format!("generic foreign key {attr_name} on {type_name}"))?;
-            *attr_value = Value::String(uid);
+/// decodes every generic foreign key on `type_name` from its NetBox read shape
+/// into the alembic uid(s) it references. both wire forms expose a content type
+/// and a backend id — a nested `{ object_type, object_id }` (single or array) or
+/// a split `<field>_type` / `<field>_id` pair — which the recorded id->uid
+/// mappings turn back into uids. a reference to an object alembic does not manage
+/// (no mapping) is dropped rather than surfaced as an opaque id.
+fn decode_generic_fks(
+    attrs: &mut JsonMap,
+    type_name: &TypeName,
+    schema: &Schema,
+    registry: &ObjectTypeRegistry,
+    mappings: &super::state::StateMappings,
+) {
+    let content_type = content_type_of(registry, type_name.as_str());
+    for (_, field, encoding) in netbox::GENERIC_FK_FIELDS
+        .iter()
+        .filter(|(model, _, _)| *model == content_type)
+    {
+        match encoding {
+            netbox::GenericFkEncoding::Split => {
+                let kind = attrs.remove(&format!("{field}_type"));
+                let id = attrs.remove(&format!("{field}_id"));
+                if let (Some(Value::String(kind)), Some(id)) = (kind, id) {
+                    if let Some(uid) = resolve_generic_uid(&kind, &id, registry, mappings) {
+                        attrs.insert((*field).to_string(), Value::String(uid));
+                    }
+                }
+            }
+            netbox::GenericFkEncoding::Nested => {
+                if let Some(value) = attrs.get(*field).cloned() {
+                    match decode_nested_generic_ref(&value, schema, registry, mappings) {
+                        Some(uid) => {
+                            attrs.insert((*field).to_string(), Value::String(uid));
+                        }
+                        None => {
+                            attrs.remove(*field);
+                        }
+                    }
+                }
+            }
+            netbox::GenericFkEncoding::NestedList => {
+                if let Some(Value::Array(items)) = attrs.get(*field).cloned() {
+                    let uids = items
+                        .iter()
+                        .filter_map(|item| {
+                            decode_nested_generic_ref(item, schema, registry, mappings)
+                        })
+                        .map(Value::String)
+                        .collect();
+                    attrs.insert((*field).to_string(), Value::Array(uids));
+                }
+            }
         }
     }
-
-    Ok(())
 }
 
-/// resolves a netbox generic foreign key payload (`{object, object_id, object_type}`)
-/// down to the alembic uid carried in its `object` field.
-fn generic_object_uid(value: &Value) -> Result<String> {
-    let request: GenericObjectRequest = serde_json::from_value(value.clone())?;
-    Ok(Uid::parse_str(&request.object)?.to_string())
+/// resolves a `(content_type, backend_id)` pair to the alembic uid it maps to,
+/// using the recorded id->uid mappings.
+fn resolve_generic_uid(
+    content_type: &str,
+    id: &Value,
+    registry: &ObjectTypeRegistry,
+    mappings: &super::state::StateMappings,
+) -> Option<String> {
+    let id = as_u64(id)?;
+    let type_name = registry
+        .info_for(&TypeName::new(content_type))
+        .map(|info| info.type_name.as_str().to_string())
+        .unwrap_or_else(|| content_type.to_string());
+    mappings.uid_for(&type_name, id).map(|uid| uid.to_string())
+}
+
+/// resolves a nested generic FK payload (`{ object_type, object_id, object }`)
+/// to a uid. like a normal reference, it recomputes the uid from the embedded
+/// `object` brief's key fields when present (so it round-trips without prior
+/// state), falling back to the recorded id->uid mappings.
+fn decode_nested_generic_ref(
+    value: &Value,
+    schema: &Schema,
+    registry: &ObjectTypeRegistry,
+    mappings: &super::state::StateMappings,
+) -> Option<String> {
+    let content_type = value.get("object_type")?.as_str()?;
+    let type_name = registry
+        .info_for(&TypeName::new(content_type))
+        .map(|info| info.type_name.as_str().to_string())
+        .unwrap_or_else(|| content_type.to_string());
+    if let Some(Value::Object(brief)) = value.get("object") {
+        if let Some(uid) = uid_from_key_fields(brief, &type_name, schema, registry, mappings) {
+            return Some(uid.to_string());
+        }
+    }
+    resolve_generic_uid(content_type, value.get("object_id")?, registry, mappings)
 }
 
 impl NetBoxAdapter {
@@ -603,6 +668,8 @@ impl NetBoxAdapter {
             resolved,
             &custom_fields,
             &info.features,
+            &format!("{}.{}", info.app_label, info.model),
+            registry,
         )?;
         let response: Value = match resource.create(&body).await {
             Ok(response) => response,
@@ -684,6 +751,8 @@ impl NetBoxAdapter {
             resolved,
             &custom_fields,
             &info.features,
+            &format!("{}.{}", info.app_label, info.model),
+            registry,
         )?;
         let _response = resource.patch(id, &body).await?;
         Ok(id)
@@ -835,32 +904,8 @@ fn normalize_attrs(
             attrs.insert("if_type".to_string(), value);
         }
     }
-    if let (Some(Value::String(kind)), Some(id_value)) = (
-        attrs.remove("assigned_object_type"),
-        attrs.remove("assigned_object_id"),
-    ) {
-        if kind == "dcim.interface" {
-            if let Some(id) = as_u64(&id_value) {
-                if let Some(uid) = mappings.uid_for("dcim.interface", id) {
-                    attrs.insert(
-                        "assigned_interface".to_string(),
-                        Value::String(uid.to_string()),
-                    );
-                }
-            }
-        }
-    }
-    if let (Some(Value::String(scope)), Some(id_value)) =
-        (attrs.remove("scope_type"), attrs.remove("scope_id"))
-    {
-        if scope == "dcim.site" {
-            if let Some(id) = as_u64(&id_value) {
-                if let Some(uid) = mappings.uid_for("dcim.site", id) {
-                    attrs.insert("site".to_string(), Value::String(uid.to_string()));
-                }
-            }
-        }
-    }
+    // generic foreign keys (`assigned_object`, `scope`, terminations, ...) are
+    // decoded uniformly from the schema-derived metadata in `decode_generic_fks`.
 }
 
 fn normalize_value(
@@ -962,11 +1007,26 @@ fn uid_from_key_fields(
     // get the target type's schema to find its key fields
     let target_schema = schema.types.get(target)?;
 
-    // build a key from available fields
+    // build a key from available fields. a ref-typed key field (e.g. a NetBox
+    // interface keyed by `(device, name)`) arrives as a nested brief, so resolve
+    // it to the referent's uid first, mirroring how the referent itself is keyed.
     let mut key_map = BTreeMap::new();
-    for key_field in target_schema.key.keys() {
+    for (key_field, field_schema) in &target_schema.key {
         let value = map.get(key_field)?;
-        key_map.insert(key_field.clone(), value.clone());
+        let resolved = match &field_schema.r#type {
+            FieldType::Ref { target: ref_target } | FieldType::ListRef { target: ref_target } => {
+                match value {
+                    Value::Object(brief) => {
+                        uid_from_key_fields(brief, ref_target, schema, registry, mappings)
+                            .map(|uid| Value::String(uid.to_string()))
+                            .unwrap_or_else(|| value.clone())
+                    }
+                    _ => value.clone(),
+                }
+            }
+            _ => value.clone(),
+        };
+        key_map.insert(key_field.clone(), resolved);
     }
 
     // generate deterministic UID from type name and key
@@ -981,6 +1041,8 @@ fn build_request_body(
     resolved: &BTreeMap<Uid, u64>,
     custom_fields: &BTreeSet<String>,
     features: &BTreeSet<String>,
+    content_type: &str,
+    registry: &ObjectTypeRegistry,
 ) -> Result<Value> {
     let mut body = Map::new();
     let mut custom = Map::new();
@@ -1005,20 +1067,32 @@ fn build_request_body(
             .fields
             .get(key)
             .ok_or_else(|| anyhow!("missing schema for field {key}"))?;
+
+        // generic foreign keys are encoded from the schema-derived metadata: a
+        // nested `{ object_type, object_id }` (single or array) or a split
+        // `<field>_type` / `<field>_id` pair, depending on how NetBox models it.
+        if let Some(encoding) = netbox::generic_fk_encoding(content_type, key) {
+            encode_generic_fk(
+                &mut body,
+                api_key,
+                encoding,
+                &field_schema.r#type,
+                value.clone(),
+                resolved,
+                registry,
+            )?;
+            continue;
+        }
+
         let encoded = resolve_value_for_type(&field_schema.r#type, value.clone(), resolved)?;
-        let wrapped = if netbox::is_generic_fk(type_name.as_str(), key) {
-            wrap_as_generic_foreign_key(&field_schema.r#type, encoded)?
-        } else {
-            encoded
-        };
 
         if custom_fields.contains(key) {
             if !supports_feature(features, &["custom-fields"]) {
                 return Err(anyhow!("{} does not support custom fields", type_name));
             }
-            custom.insert(key.clone(), wrapped);
+            custom.insert(key.clone(), encoded);
         } else {
-            body.insert(api_key.to_string(), wrapped);
+            body.insert(api_key.to_string(), encoded);
         }
     }
 
@@ -1029,6 +1103,61 @@ fn build_request_body(
     Ok(Value::Object(body))
 }
 
+/// the NetBox content type (`app_label.model`, e.g. `ipam.ipaddress`) for an
+/// alembic `type_name` (`ipam.ip_address`), used to key generic-FK metadata and
+/// to fill a generic FK's `object_type`. falls back to the input when the type
+/// is not in the registry (it is then already a content type, e.g.
+/// `dcim.interface`).
+fn content_type_of(registry: &ObjectTypeRegistry, type_name: &str) -> String {
+    registry
+        .info_for(&TypeName::new(type_name))
+        .map(|info| format!("{}.{}", info.app_label, info.model))
+        .unwrap_or_else(|| type_name.to_string())
+}
+
+/// encodes a generic foreign key into `body` per its [`GenericFkEncoding`]. the
+/// referenced object's content type comes from the schema field's target; its id
+/// from the resolved uid->id map.
+fn encode_generic_fk(
+    body: &mut Map<String, Value>,
+    key: &str,
+    encoding: netbox::GenericFkEncoding,
+    field_type: &FieldType,
+    value: Value,
+    resolved: &BTreeMap<Uid, u64>,
+    registry: &ObjectTypeRegistry,
+) -> Result<()> {
+    let target = match field_type {
+        FieldType::Ref { target } | FieldType::ListRef { target } => target.as_str(),
+        other => return Err(anyhow!("generic foreign key {key} must be a ref, got {other:?}")),
+    };
+    let object_type = content_type_of(registry, target);
+    let id = resolve_value_for_type(field_type, value, resolved)?;
+    match encoding {
+        netbox::GenericFkEncoding::Split => {
+            body.insert(format!("{key}_type"), Value::String(object_type));
+            body.insert(format!("{key}_id"), id);
+        }
+        netbox::GenericFkEncoding::Nested => {
+            body.insert(
+                key.to_string(),
+                json!({ "object_type": object_type, "object_id": id }),
+            );
+        }
+        netbox::GenericFkEncoding::NestedList => {
+            let ids = id
+                .as_array()
+                .ok_or_else(|| anyhow!("generic foreign key {key} expected an array of ids"))?;
+            let wrapped = ids
+                .iter()
+                .map(|id| json!({ "object_type": object_type, "object_id": id }))
+                .collect();
+            body.insert(key.to_string(), Value::Array(wrapped));
+        }
+    }
+    Ok(())
+}
+
 fn resolve_value_for_type(
     field_type: &alembic_core::FieldType,
     value: Value,
@@ -1037,33 +1166,6 @@ fn resolve_value_for_type(
     alembic_engine::resolve_value_for_type(field_type, value, resolved, |id| {
         Value::Number((*id).into())
     })
-}
-
-/// adds a generic foreign key wrapper around types that require it
-fn wrap_as_generic_foreign_key(field_type: &FieldType, value: Value) -> Result<Value> {
-    match field_type {
-        FieldType::Ref { target } => {
-            Ok(json!({"object_type": target.to_string(), "object_id": value}))
-        }
-        FieldType::ListRef { target } => {
-            if let Some(array) = value.as_array() {
-                array
-                    .iter()
-                    .map(|element| {
-                        wrap_as_generic_foreign_key(
-                            &FieldType::Ref {
-                                target: target.clone(),
-                            },
-                            element.clone(),
-                        )
-                    })
-                    .collect()
-            } else {
-                Err(anyhow!("value has type {:?} (expected array)", field_type))
-            }
-        }
-        _ => Err(anyhow!("can't wrap unsupported type {:?}", field_type)),
-    }
 }
 
 fn query_from_key(
@@ -1535,14 +1637,6 @@ fn collect_missing_refs(value: &Value, resolved: &BTreeMap<Uid, u64>, missing: &
     }
 }
 
-/// a netbox generic foreign key payload. netbox also sends `object_id` (the
-/// backend pk) and `object_type`, but only `object` (the alembic uid) is needed;
-/// serde ignores the rest.
-#[derive(Debug, Deserialize)]
-struct GenericObjectRequest {
-    object: String,
-}
-
 #[cfg(test)]
 mod tests {
     use super::is_conflict_error;
@@ -1701,6 +1795,8 @@ mod test_normalization {
             &resolved,
             &BTreeSet::new(),
             &BTreeSet::new(),
+            "dcim.device",
+            &ObjectTypeRegistry::default(),
         )
         .unwrap();
         assert_eq!(body.get("site").unwrap(), &json!(5));
@@ -1733,82 +1829,113 @@ mod test_normalization {
         assert_eq!(val, json!([5]));
     }
 
+    fn mappings_with(type_name: &str, id: u64, uid: Uid) -> super::super::state::StateMappings {
+        let mut by_type = BTreeMap::new();
+        by_type.insert(type_name.to_string(), BTreeMap::from([(id, uid)]));
+        super::super::state::StateMappings { by_type }
+    }
+
     #[test]
-    fn test_resolve_value_for_generic_fk_type() {
-        let resolved = BTreeMap::from([(Uid::from_u128(1), 42u64), (Uid::from_u128(2), 1000u64)]);
-
-        // ref
-        let field_type = FieldType::Ref {
-            target: "dcim.interface".to_string(),
-        };
-        let val =
-            resolve_value_for_type(&field_type, json!(Uid::from_u128(1).to_string()), &resolved)
-                .unwrap();
-        let wrapped = wrap_as_generic_foreign_key(&field_type, val).unwrap();
-
-        assert_eq!(
-            wrapped,
-            json!({"object_type": "dcim.interface", "object_id": 42})
-        );
-
-        // ListRef
-        let field_type = alembic_core::FieldType::ListRef {
-            target: "dcim.interface".to_string(),
-        };
-        let val = resolve_value_for_type(
-            &field_type,
-            json!([Uid::from_u128(2).to_string(), Uid::from_u128(1).to_string()]),
+    fn test_encode_generic_fk_split() {
+        // an ip address's `assigned_object` is written as a split
+        // `assigned_object_type` / `assigned_object_id` pair.
+        let registry = ObjectTypeRegistry::default();
+        let resolved = BTreeMap::from([(Uid::from_u128(1), 42u64)]);
+        let mut body = Map::new();
+        encode_generic_fk(
+            &mut body,
+            "assigned_object",
+            netbox::GenericFkEncoding::Split,
+            &FieldType::Ref {
+                target: "dcim.interface".to_string(),
+            },
+            json!(Uid::from_u128(1).to_string()),
             &resolved,
+            &registry,
         )
         .unwrap();
-        let wrapped = wrap_as_generic_foreign_key(&field_type, val).unwrap();
+        assert_eq!(body.get("assigned_object_type").unwrap(), &json!("dcim.interface"));
+        assert_eq!(body.get("assigned_object_id").unwrap(), &json!(42));
+    }
 
+    #[test]
+    fn test_encode_generic_fk_nested_list() {
+        // a cable's terminations are written as an array of nested
+        // `{ object_type, object_id }`.
+        let registry = ObjectTypeRegistry::default();
+        let resolved = BTreeMap::from([(Uid::from_u128(1), 42u64), (Uid::from_u128(2), 1000u64)]);
+        let mut body = Map::new();
+        encode_generic_fk(
+            &mut body,
+            "a_terminations",
+            netbox::GenericFkEncoding::NestedList,
+            &FieldType::ListRef {
+                target: "dcim.interface".to_string(),
+            },
+            json!([Uid::from_u128(2).to_string(), Uid::from_u128(1).to_string()]),
+            &resolved,
+            &registry,
+        )
+        .unwrap();
         assert_eq!(
-            wrapped,
-            json!([{"object_type": "dcim.interface", "object_id": 1000}, {"object_type": "dcim.interface", "object_id": 42}])
+            body.get("a_terminations").unwrap(),
+            &json!([
+                {"object_type": "dcim.interface", "object_id": 1000},
+                {"object_type": "dcim.interface", "object_id": 42}
+            ])
         );
     }
 
     #[test]
-    fn test_unwrap_generic_object_request() {
+    fn test_decode_generic_fks_nested_list() {
+        // a cable termination read back as `{ object_type, object_id }` resolves
+        // to the interface uid via the recorded mappings.
+        let registry = ObjectTypeRegistry::default();
+        let uid = Uid::from_u128(7);
+        let mappings = mappings_with("dcim.interface", 1, uid);
         let mut map = Map::new();
         map.insert(
             "a_terminations".to_string(),
-            json!([{
-                    "object": "81c0681f-7147-5efb-a42a-68900b05c58d",
-                    "object_id": 1,
-                    "object_type": "dcim.interface",
-            }]),
+            json!([{ "object_type": "dcim.interface", "object_id": 1 }]),
         );
         let mut attrs: JsonMap = map.into_iter().collect::<BTreeMap<_, _>>().into();
-
-        let type_name = TypeName::new("dcim.cable".to_string());
-        unwrap_generic_object_request(&mut attrs, &type_name).unwrap();
-        assert_eq!(
-            attrs["a_terminations"],
-            json!(["81c0681f-7147-5efb-a42a-68900b05c58d"])
+        let schema = Schema {
+            types: BTreeMap::new(),
+        };
+        decode_generic_fks(
+            &mut attrs,
+            &TypeName::new("dcim.cable"),
+            &schema,
+            &registry,
+            &mappings,
         );
+        assert_eq!(attrs["a_terminations"], json!([uid.to_string()]));
     }
 
     #[test]
-    fn test_unwrap_generic_object_request_scalar() {
+    fn test_decode_generic_fks_split() {
+        // a prefix's split `scope_type` / `scope_id` resolves to the site uid and
+        // the wire fields are removed in favor of the `scope` ref.
+        let registry = ObjectTypeRegistry::default();
+        let uid = Uid::from_u128(9);
+        let mappings = mappings_with("dcim.site", 3, uid);
         let mut map = Map::new();
-        map.insert(
-            "a_terminations".to_string(),
-            json!({
-                "object": "81c0681f-7147-5efb-a42a-68900b05c58d",
-                "object_id": 1,
-                "object_type": "dcim.interface",
-            }),
-        );
+        map.insert("scope_type".to_string(), json!("dcim.site"));
+        map.insert("scope_id".to_string(), json!(3));
         let mut attrs: JsonMap = map.into_iter().collect::<BTreeMap<_, _>>().into();
-
-        let type_name = TypeName::new("dcim.cable".to_string());
-        unwrap_generic_object_request(&mut attrs, &type_name).unwrap();
-        assert_eq!(
-            attrs["a_terminations"],
-            json!("81c0681f-7147-5efb-a42a-68900b05c58d")
+        let schema = Schema {
+            types: BTreeMap::new(),
+        };
+        decode_generic_fks(
+            &mut attrs,
+            &TypeName::new("ipam.prefix"),
+            &schema,
+            &registry,
+            &mappings,
         );
+        assert_eq!(attrs["scope"], json!(uid.to_string()));
+        assert!(attrs.get("scope_type").is_none());
+        assert!(attrs.get("scope_id").is_none());
     }
 
     #[test]
