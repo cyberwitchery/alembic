@@ -59,8 +59,10 @@ impl Observer for NetBoxAdapter {
             };
             for object in objects {
                 let (backend_id, mut attrs) = extract_attrs(object)?;
+                // decode generic FKs first: they carry a nested object brief that
+                // `normalize_attrs` would otherwise mangle as an ordinary ref.
+                decode_generic_fks(&mut attrs, &type_name, schema, &registry, &mappings);
                 normalize_attrs(&mut attrs, type_schema, schema, &registry, &mappings);
-                decode_generic_fks(&mut attrs, &type_name, &registry, &mappings);
 
                 let key = build_key_from_schema(type_schema, &attrs)
                     .with_context(|| format!("build key for {}", type_name))?;
@@ -544,6 +546,7 @@ impl Adapter for NetBoxAdapter {
 fn decode_generic_fks(
     attrs: &mut JsonMap,
     type_name: &TypeName,
+    schema: &Schema,
     registry: &ObjectTypeRegistry,
     mappings: &super::state::StateMappings,
 ) {
@@ -564,7 +567,7 @@ fn decode_generic_fks(
             }
             netbox::GenericFkEncoding::Nested => {
                 if let Some(value) = attrs.get(*field).cloned() {
-                    match decode_nested_generic_ref(&value, registry, mappings) {
+                    match decode_nested_generic_ref(&value, schema, registry, mappings) {
                         Some(uid) => {
                             attrs.insert((*field).to_string(), Value::String(uid));
                         }
@@ -578,7 +581,9 @@ fn decode_generic_fks(
                 if let Some(Value::Array(items)) = attrs.get(*field).cloned() {
                     let uids = items
                         .iter()
-                        .filter_map(|item| decode_nested_generic_ref(item, registry, mappings))
+                        .filter_map(|item| {
+                            decode_nested_generic_ref(item, schema, registry, mappings)
+                        })
                         .map(Value::String)
                         .collect();
                     attrs.insert((*field).to_string(), Value::Array(uids));
@@ -588,7 +593,8 @@ fn decode_generic_fks(
     }
 }
 
-/// resolves a `(content_type, backend_id)` pair to the alembic uid it maps to.
+/// resolves a `(content_type, backend_id)` pair to the alembic uid it maps to,
+/// using the recorded id->uid mappings.
 fn resolve_generic_uid(
     content_type: &str,
     id: &Value,
@@ -603,15 +609,27 @@ fn resolve_generic_uid(
     mappings.uid_for(&type_name, id).map(|uid| uid.to_string())
 }
 
-/// resolves a nested `{ object_type, object_id }` generic FK payload to a uid.
+/// resolves a nested generic FK payload (`{ object_type, object_id, object }`)
+/// to a uid. like a normal reference, it recomputes the uid from the embedded
+/// `object` brief's key fields when present (so it round-trips without prior
+/// state), falling back to the recorded id->uid mappings.
 fn decode_nested_generic_ref(
     value: &Value,
+    schema: &Schema,
     registry: &ObjectTypeRegistry,
     mappings: &super::state::StateMappings,
 ) -> Option<String> {
     let content_type = value.get("object_type")?.as_str()?;
-    let id = value.get("object_id")?;
-    resolve_generic_uid(content_type, id, registry, mappings)
+    let type_name = registry
+        .info_for(&TypeName::new(content_type))
+        .map(|info| info.type_name.as_str().to_string())
+        .unwrap_or_else(|| content_type.to_string());
+    if let Some(Value::Object(brief)) = value.get("object") {
+        if let Some(uid) = uid_from_key_fields(brief, &type_name, schema, registry, mappings) {
+            return Some(uid.to_string());
+        }
+    }
+    resolve_generic_uid(content_type, value.get("object_id")?, registry, mappings)
 }
 
 impl NetBoxAdapter {
@@ -989,11 +1007,26 @@ fn uid_from_key_fields(
     // get the target type's schema to find its key fields
     let target_schema = schema.types.get(target)?;
 
-    // build a key from available fields
+    // build a key from available fields. a ref-typed key field (e.g. a NetBox
+    // interface keyed by `(device, name)`) arrives as a nested brief, so resolve
+    // it to the referent's uid first, mirroring how the referent itself is keyed.
     let mut key_map = BTreeMap::new();
-    for key_field in target_schema.key.keys() {
+    for (key_field, field_schema) in &target_schema.key {
         let value = map.get(key_field)?;
-        key_map.insert(key_field.clone(), value.clone());
+        let resolved = match &field_schema.r#type {
+            FieldType::Ref { target: ref_target } | FieldType::ListRef { target: ref_target } => {
+                match value {
+                    Value::Object(brief) => {
+                        uid_from_key_fields(brief, ref_target, schema, registry, mappings)
+                            .map(|uid| Value::String(uid.to_string()))
+                            .unwrap_or_else(|| value.clone())
+                    }
+                    _ => value.clone(),
+                }
+            }
+            _ => value.clone(),
+        };
+        key_map.insert(key_field.clone(), resolved);
     }
 
     // generate deterministic UID from type name and key
@@ -1866,7 +1899,16 @@ mod test_normalization {
             json!([{ "object_type": "dcim.interface", "object_id": 1 }]),
         );
         let mut attrs: JsonMap = map.into_iter().collect::<BTreeMap<_, _>>().into();
-        decode_generic_fks(&mut attrs, &TypeName::new("dcim.cable"), &registry, &mappings);
+        let schema = Schema {
+            types: BTreeMap::new(),
+        };
+        decode_generic_fks(
+            &mut attrs,
+            &TypeName::new("dcim.cable"),
+            &schema,
+            &registry,
+            &mappings,
+        );
         assert_eq!(attrs["a_terminations"], json!([uid.to_string()]));
     }
 
@@ -1881,7 +1923,16 @@ mod test_normalization {
         map.insert("scope_type".to_string(), json!("dcim.site"));
         map.insert("scope_id".to_string(), json!(3));
         let mut attrs: JsonMap = map.into_iter().collect::<BTreeMap<_, _>>().into();
-        decode_generic_fks(&mut attrs, &TypeName::new("ipam.prefix"), &registry, &mappings);
+        let schema = Schema {
+            types: BTreeMap::new(),
+        };
+        decode_generic_fks(
+            &mut attrs,
+            &TypeName::new("ipam.prefix"),
+            &schema,
+            &registry,
+            &mappings,
+        );
         assert_eq!(attrs["scope"], json!(uid.to_string()));
         assert!(attrs.get("scope_type").is_none());
         assert!(attrs.get("scope_id").is_none());
