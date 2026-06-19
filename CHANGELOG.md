@@ -2,6 +2,8 @@
 
 ## [unreleased]
 
+- core: keep source locations on validation errors for dotted type names
+
 ## [0.4.0] - 2026-06-18
 
 - **breaking** removed the raw-yaml→ir mapping engine (#41). the `distill` subcommand and the raw→ir compiler (`retort`) are gone; ir now comes only from authored inventory files or backend observation. `import` is backend-only (`import -f <inventory> -o <out>` observes a backend for the inventory's schema types), the `brew` noun is renamed `inventory`, and the command set is `validate / import / map / plan / apply`
