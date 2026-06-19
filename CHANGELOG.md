@@ -2,6 +2,10 @@
 
 ## [unreleased]
 
+## [0.5.0] - 2026-06-19
+
+- netbox adapter: handle NetBox generic foreign keys uniformly in both directions, driven by the metadata in `netbox` 0.6.0. previously the adapter hand-mapped a couple of them and silently dropped the rest on write — an ip's interface assignment, a prefix's scope, and so on — so `apply` could not establish those relationships; now it writes and `import` reads every generic FK, both the split `<field>_type`/`<field>_id` form and the nested `GenericObjectRequest` form. import also round-trips NetBox's composite `(device, name)` interface identity and resolves generic FKs statelessly. **breaking**: the IR field names are now NetBox-faithful — `assigned_object` / `scope` instead of the typed aliases `assigned_interface` / `site`, and a device's primary IP is the native `primary_ip4` rather than a unified `primary_ip`.
+
 ## [0.4.0] - 2026-06-18
 
 - **breaking** removed the raw-yaml→ir mapping engine (#41). the `distill` subcommand and the raw→ir compiler (`retort`) are gone; ir now comes only from authored inventory files or backend observation. `import` is backend-only (`import -f <inventory> -o <out>` observes a backend for the inventory's schema types), the `brew` noun is renamed `inventory`, and the command set is `validate / import / map / plan / apply`
