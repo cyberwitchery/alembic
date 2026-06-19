@@ -52,7 +52,7 @@ pub fn plan(
                 });
             }
             if let Some(backend_id) = &obs.backend_id {
-                matched.insert(backend_id.clone());
+                matched.insert((object.type_name.clone(), backend_id.clone()));
             }
         } else {
             ops.push(Op::Create {
@@ -65,7 +65,7 @@ pub fn plan(
 
     if allow_delete {
         for ((type_name, backend_id), obs) in &observed.by_backend_id {
-            if matched.contains(backend_id) {
+            if matched.contains(&(type_name.clone(), backend_id.clone())) {
                 continue;
             }
             let uid = backend_to_uid
@@ -549,6 +549,46 @@ mod tests {
             .unwrap();
         let result = plan(&desired, &observed, &empty_state(), &empty_schema(), true);
         assert!(result.ops.is_empty());
+    }
+
+    #[test]
+    fn plan_deletes_cross_type_id_collision() {
+        // both types carry backend id 100; declaring only the site must not
+        // suppress the undeclared device's delete.
+        let desired = vec![make_object(
+            1,
+            "dcim.site",
+            "fra1",
+            make_attrs(&[("name", json!("FRA1"))]),
+        )];
+        let mut observed = ObservedState::default();
+        observed
+            .insert(ObservedObject {
+                type_name: TypeName::new("dcim.site"),
+                key: make_key("fra1"),
+                attrs: make_attrs(&[("name", json!("FRA1"))]),
+                backend_id: Some(BackendId::Int(100)),
+            })
+            .unwrap();
+        observed
+            .insert(ObservedObject {
+                type_name: TypeName::new("dcim.device"),
+                key: make_key("leaf01"),
+                attrs: make_attrs(&[]),
+                backend_id: Some(BackendId::Int(100)),
+            })
+            .unwrap();
+        let result = plan(&desired, &observed, &empty_state(), &empty_schema(), true);
+        let deletes: Vec<&Op> = result
+            .ops
+            .iter()
+            .filter(|op| matches!(op, Op::Delete { .. }))
+            .collect();
+        assert_eq!(deletes.len(), 1);
+        assert!(matches!(
+            deletes[0],
+            Op::Delete { type_name, .. } if type_name.as_str() == "dcim.device"
+        ));
     }
 
     #[test]
