@@ -3,6 +3,7 @@
 ## [unreleased]
 
 - core: keep source locations on validation errors for dotted type names
+- engine: don't suppress a delete when an undeclared object's backend id collides with a matched object of another type
 
 ## [0.4.0] - 2026-06-18
 
