@@ -143,3 +143,59 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: cargo publish -p alembic-cli --no-verify
+
+  binaries:
+    name: binaries (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    env:
+      RUSTFLAGS: "-C debuginfo=0"
+      CARGO_TARGET_DIR: target/ci
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+          - target: x86_64-apple-darwin
+            os: macos-13
+          - target: aarch64-apple-darwin
+            os: macos-14
+    steps:
+      - name: checkout
+        uses: actions/checkout@v6
+
+      - name: set up rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v0-rust-binaries
+          key: ${{ matrix.target }}
+          cache-targets: true
+
+      - name: build alembic-cli
+        run: cargo build --release --locked -p alembic-cli --target ${{ matrix.target }}
+
+      - name: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          dir="alembic-cli-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          mkdir "$dir"
+          cp "target/ci/${{ matrix.target }}/release/alembic-cli" "$dir/"
+          cp README.md "$dir/"
+          tar czf "${dir}.tar.gz" "$dir"
+          echo "ASSET=${dir}.tar.gz" >> "$GITHUB_ENV"
+
+      - name: attach binary to release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: ${{ env.ASSET }}
