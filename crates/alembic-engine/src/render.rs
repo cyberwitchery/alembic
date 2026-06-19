@@ -111,6 +111,21 @@ pub(crate) fn render_yaml_value(
     allow_missing: bool,
     output: TransformedOutput,
 ) -> Result<Option<JsonValue>> {
+    let rendered = render_yaml_value_inner(value, ctx, context, allow_missing, output)?;
+    // key/uid components feed uid derivation and must stay scalar (docs/map.md)
+    if let (TransformedOutput::String, Some(value)) = (output, &rendered) {
+        ensure_scalar(value, ctx.rule, context)?;
+    }
+    Ok(rendered)
+}
+
+fn render_yaml_value_inner(
+    value: &YamlValue,
+    ctx: &RenderCtx,
+    context: &str,
+    allow_missing: bool,
+    output: TransformedOutput,
+) -> Result<Option<JsonValue>> {
     match value {
         YamlValue::String(raw) => render_string_value(raw, ctx, context, allow_missing, output),
         YamlValue::Sequence(items) => {
@@ -238,16 +253,9 @@ fn render_string_value(
         if value.is_null() && allow_missing {
             return Ok(None);
         }
-        // a lone `${var}` with no transforms preserves its raw typed value; a
-        // null has no string form, so reject it in string (key/uid) output.
+        // a lone `${var}` with no transforms preserves its raw typed value;
+        // render_yaml_value gates scalar-ness for key/uid output.
         if placeholder.transforms.is_empty() {
-            if value.is_null() && matches!(output, TransformedOutput::String) {
-                return Err(anyhow!(
-                    "rule {}: var {} in {context} is null and cannot be rendered as a string",
-                    ctx.rule,
-                    placeholder.name
-                ));
-            }
             return Ok(Some(value.clone()));
         }
         return match output {
@@ -610,6 +618,20 @@ fn coerce_to_string(value: &JsonValue, name: &str, rule: &str, context: &str) ->
     }
 }
 
+/// a key or uid component must be scalar; null, arrays, and objects have no
+/// identity form (docs/map.md).
+fn ensure_scalar(value: &JsonValue, rule: &str, context: &str) -> Result<()> {
+    match value {
+        JsonValue::String(_) | JsonValue::Number(_) | JsonValue::Bool(_) => Ok(()),
+        JsonValue::Null => Err(anyhow!(
+            "rule {rule}: {context} is null and cannot be rendered as a string"
+        )),
+        JsonValue::Array(_) | JsonValue::Object(_) => Err(anyhow!(
+            "rule {rule}: {context} must be a scalar (string, number, or bool)"
+        )),
+    }
+}
+
 pub(crate) fn render_template(template: &str, ctx: &RenderCtx, context: &str) -> Result<String> {
     render_template_optional(template, ctx, context, false)?
         .ok_or_else(|| anyhow!("rule {}: missing vars for template {template}", ctx.rule))
@@ -886,6 +908,60 @@ uid:
                 .unwrap()
                 .unwrap();
         assert_eq!(rendered, JsonValue::String("leaf01".to_string()));
+    }
+
+    #[test]
+    fn render_key_rejects_array_lone_placeholder() {
+        let mut vars = BTreeMap::new();
+        vars.insert("tags".to_string(), serde_json::json!(["a", "b"]));
+        let mut key = BTreeMap::new();
+        key.insert("k".to_string(), YamlValue::String("${tags}".to_string()));
+        let err = render_key(&key, &ctx(&vars)).unwrap_err();
+        assert!(err.to_string().contains("must be a scalar"), "{err:#}");
+    }
+
+    #[test]
+    fn render_key_rejects_object_lone_placeholder() {
+        let mut vars = BTreeMap::new();
+        vars.insert("obj".to_string(), serde_json::json!({"a": 1}));
+        let mut key = BTreeMap::new();
+        key.insert("k".to_string(), YamlValue::String("${obj}".to_string()));
+        let err = render_key(&key, &ctx(&vars)).unwrap_err();
+        assert!(err.to_string().contains("must be a scalar"), "{err:#}");
+    }
+
+    #[test]
+    fn render_key_rejects_literal_sequence() {
+        let vars = BTreeMap::new();
+        let mut key = BTreeMap::new();
+        key.insert(
+            "k".to_string(),
+            YamlValue::Sequence(vec![YamlValue::String("a".to_string())]),
+        );
+        let err = render_key(&key, &ctx(&vars)).unwrap_err();
+        assert!(err.to_string().contains("must be a scalar"), "{err:#}");
+    }
+
+    #[test]
+    fn render_key_rejects_literal_null() {
+        let vars = BTreeMap::new();
+        let mut key = BTreeMap::new();
+        key.insert("k".to_string(), YamlValue::Null);
+        let err = render_key(&key, &ctx(&vars)).unwrap_err();
+        assert!(err.to_string().contains("is null"), "{err:#}");
+    }
+
+    #[test]
+    fn render_attrs_keeps_composite() {
+        let mut vars = BTreeMap::new();
+        vars.insert("tags".to_string(), serde_json::json!(["a", "b"]));
+        let mut attrs = BTreeMap::new();
+        attrs.insert("tags".to_string(), YamlValue::String("${tags}".to_string()));
+        let rendered = render_attrs(&attrs, &ctx(&vars), "attrs").unwrap();
+        assert_eq!(
+            rendered.get("tags").unwrap(),
+            &serde_json::json!(["a", "b"])
+        );
     }
 
     /// render `${name|slug}` over a single string var.
