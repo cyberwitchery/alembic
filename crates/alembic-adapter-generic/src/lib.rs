@@ -489,34 +489,53 @@ fn normalize_attrs_refs(
 ) -> JsonMap {
     let mut normalized = attrs.clone();
     for (field, schema) in &type_schema.fields {
-        match &schema.r#type {
-            alembic_core::FieldType::Ref { target } => {
-                if let Some(value) = attrs.get(field) {
-                    normalized.insert(
-                        field.clone(),
-                        normalize_ref_value(value.clone(), target, mappings),
-                    );
-                }
-            }
-            alembic_core::FieldType::ListRef { target } => {
-                if let Some(value) = attrs.get(field) {
-                    let updated = if let serde_json::Value::Array(items) = value {
-                        let mapped = items
-                            .iter()
-                            .cloned()
-                            .map(|item| normalize_ref_value(item, target, mappings))
-                            .collect::<Vec<_>>();
-                        serde_json::Value::Array(mapped)
-                    } else {
-                        value.clone()
-                    };
-                    normalized.insert(field.clone(), updated);
-                }
-            }
-            _ => {}
+        if let Some(value) = attrs.get(field) {
+            normalized.insert(
+                field.clone(),
+                normalize_value_for_type(&schema.r#type, value.clone(), mappings),
+            );
         }
     }
     normalized
+}
+
+/// read-side mirror of `resolve_value_for_type`: maps backend ids back to uids
+/// at each ref leaf, recursing into `list` and `map` like netbox/nautobot.
+fn normalize_value_for_type(
+    field_type: &alembic_core::FieldType,
+    value: serde_json::Value,
+    mappings: &StateMappings,
+) -> serde_json::Value {
+    match field_type {
+        alembic_core::FieldType::Ref { target } => normalize_ref_value(value, target, mappings),
+        alembic_core::FieldType::ListRef { target } => match value {
+            serde_json::Value::Array(items) => serde_json::Value::Array(
+                items
+                    .into_iter()
+                    .map(|item| normalize_ref_value(item, target, mappings))
+                    .collect(),
+            ),
+            other => other,
+        },
+        alembic_core::FieldType::List { item } => match value {
+            serde_json::Value::Array(items) => serde_json::Value::Array(
+                items
+                    .into_iter()
+                    .map(|elem| normalize_value_for_type(item, elem, mappings))
+                    .collect(),
+            ),
+            other => other,
+        },
+        alembic_core::FieldType::Map { value: inner } => match value {
+            serde_json::Value::Object(obj) => serde_json::Value::Object(
+                obj.into_iter()
+                    .map(|(k, v)| (k, normalize_value_for_type(inner, v, mappings)))
+                    .collect(),
+            ),
+            other => other,
+        },
+        _ => value,
+    }
 }
 
 fn normalize_ref_value(

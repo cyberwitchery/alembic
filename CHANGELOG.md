@@ -2,6 +2,8 @@
 
 ## [unreleased]
 
+- generic adapter: resolve refs nested in `list` and `map` fields on read, matching the write path and the netbox/nautobot adapters
+
 ## [0.5.0] - 2026-06-19
 
 - core: keep source locations on validation errors for dotted type names

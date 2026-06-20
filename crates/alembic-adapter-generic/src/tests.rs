@@ -496,6 +496,80 @@ fn test_resolve_attrs_unresolved_nested_ref_surfaces_missing_ref() {
     );
 }
 
+#[test]
+fn test_normalize_attrs_refs_resolves_refs_nested_in_list() {
+    let type_schema = TypeSchema {
+        key: BTreeMap::new(),
+        fields: BTreeMap::from([(
+            "members".to_string(),
+            field_schema(FieldType::List {
+                item: Box::new(FieldType::Ref {
+                    target: "site".to_string(),
+                }),
+            }),
+        )]),
+    };
+    let site_uid = Uid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
+    let mut state = new_state_store();
+    state.set_backend_id(
+        TypeName::new("site".to_string()),
+        site_uid,
+        BackendId::Int(7),
+    );
+    let mappings = state_mappings(&state);
+
+    let attrs: JsonMap = serde_json::json!({ "members": [7] })
+        .as_object()
+        .unwrap()
+        .clone()
+        .into_iter()
+        .collect::<BTreeMap<_, _>>()
+        .into();
+
+    let normalized = normalize_attrs_refs(&attrs, &type_schema, &mappings);
+    assert_eq!(
+        normalized.get("members"),
+        Some(&serde_json::json!([site_uid.to_string()]))
+    );
+}
+
+#[test]
+fn test_normalize_attrs_refs_resolves_refs_nested_in_map() {
+    let type_schema = TypeSchema {
+        key: BTreeMap::new(),
+        fields: BTreeMap::from([(
+            "links".to_string(),
+            field_schema(FieldType::Map {
+                value: Box::new(FieldType::Ref {
+                    target: "site".to_string(),
+                }),
+            }),
+        )]),
+    };
+    let site_uid = Uid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
+    let mut state = new_state_store();
+    state.set_backend_id(
+        TypeName::new("site".to_string()),
+        site_uid,
+        BackendId::Int(7),
+    );
+    let mappings = state_mappings(&state);
+
+    let attrs: JsonMap = serde_json::json!({ "links": {"primary": 7} })
+        .as_object()
+        .unwrap()
+        .clone()
+        .into_iter()
+        .collect::<BTreeMap<_, _>>()
+        .into();
+
+    let normalized = normalize_attrs_refs(&attrs, &type_schema, &mappings);
+    assert_eq!(
+        normalized.get("links"),
+        Some(&serde_json::json!({"primary": site_uid.to_string()}))
+    );
+}
+
 // tests for default functions
 #[test]
 fn test_default_id_path() {
