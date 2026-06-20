@@ -2,6 +2,8 @@
 
 ## [unreleased]
 
+- core: attribute reference-type-mismatch errors to the referencing object, not the referent
+
 ## [0.5.0] - 2026-06-19
 
 - core: keep source locations on validation errors for dotted type names

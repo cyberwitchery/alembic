@@ -179,6 +179,8 @@ impl ValidationReport {
             .map(|error| {
                 let source = error
                     .uid()
+                    // only DuplicateUid's uid is the offending object; ref errors' uid is the referent.
+                    .filter(|_| matches!(error, ValidationError::DuplicateUid(_)))
                     .and_then(|uid| uid_to_source.get(&uid).cloned().flatten())
                     .or_else(|| {
                         error.key_hint().and_then(|_| {
@@ -847,6 +849,47 @@ mod tests {
         assert_eq!(
             located[0].source,
             Some(SourceLocation::file_line("inventory.yaml", 42))
+        );
+    }
+
+    #[test]
+    fn with_sources_attributes_ref_mismatch_to_referencing_object() {
+        let mut dkey = BTreeMap::new();
+        dkey.insert("name".to_string(), serde_json::json!("leaf1"));
+        let device = Object::new(
+            uid(1),
+            TypeName::new("dcim.device"),
+            Key::from(dkey),
+            JsonMap::default(),
+        )
+        .unwrap()
+        .with_source(SourceLocation::file_line("inventory.yaml", 20));
+
+        let mut skey = BTreeMap::new();
+        skey.insert("slug".to_string(), serde_json::json!("fra1"));
+        let site = Object::new(
+            uid(2),
+            TypeName::new("dcim.site"),
+            Key::from(skey),
+            JsonMap::default(),
+        )
+        .unwrap()
+        .with_source(SourceLocation::file_line("inventory.yaml", 5));
+
+        let report = ValidationReport {
+            errors: vec![ValidationError::ReferenceTypeMismatch {
+                field: "dcim.device.owner".to_string(),
+                target: uid(2),
+                expected: "tenancy.tenant".to_string(),
+                actual: "dcim.site".to_string(),
+            }],
+        };
+
+        let located = report.with_sources(&[device, site]);
+        assert_eq!(located.len(), 1);
+        assert_eq!(
+            located[0].source,
+            Some(SourceLocation::file_line("inventory.yaml", 20))
         );
     }
 
