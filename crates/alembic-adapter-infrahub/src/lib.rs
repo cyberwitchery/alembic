@@ -1,6 +1,6 @@
 //! infrahub graphql adapter for alembic.
 
-use alembic_core::{FieldType, JsonMap, Key, Schema, TypeName, Uid};
+use alembic_core::{key_string, uid_v5, FieldType, JsonMap, Key, Schema, TypeName, Uid};
 use alembic_engine::{
     apply_non_delete_with_retries, build_key_from_schema, resolve_value_for_type, Adapter,
     AdapterApplyError, AppliedOp, ApplyReport, BackendId, Emitter, ObservedObject, ObservedState,
@@ -142,13 +142,16 @@ impl InfrahubAdapter {
         serde_json::from_str(&text).context("parse infrahub schema snapshot")
     }
 
+    /// fetch every node of `type_name` as a `(backend id, raw attrs)` pair.
+    /// relationship attrs are still backend ids here; canonical-uid resolution
+    /// happens in `read` once every type has been observed, so refs can be
+    /// resolved statelessly (without relying on a prior apply's saved state).
     async fn read_type_objects(
         &self,
         schema_info: &SchemaInfo,
         type_name: &TypeName,
         type_schema: &alembic_core::TypeSchema,
-        mappings: &StateMappings,
-    ) -> Result<Vec<ObservedObject>> {
+    ) -> Result<Vec<(BackendId, JsonMap)>> {
         let gql_type = gql_type_name(type_name);
         let fields = field_names_for_schema(type_schema);
         let field_kinds = schema_info.field_kinds(&gql_type, type_schema, &fields)?;
@@ -201,15 +204,7 @@ impl InfrahubAdapter {
                     .to_string();
 
                 let attrs = extract_attrs(node, &field_kinds)?;
-                let attrs = normalize_attrs_refs(&attrs, type_schema, mappings);
-                let key = build_key_from_schema(type_schema, &attrs)?;
-
-                observed.push(ObservedObject {
-                    type_name: type_name.clone(),
-                    key,
-                    attrs,
-                    backend_id: Some(BackendId::String(backend_id)),
-                });
+                observed.push((BackendId::String(backend_id), attrs));
             }
 
             let count = connection.get("count").and_then(Value::as_u64).unwrap_or(0) as usize;
@@ -381,19 +376,19 @@ impl InfrahubAdapter {
         key: &Key,
     ) -> Result<String> {
         let schema_info = self.load_schema_info().await?;
-        let mappings = StateMappings::default();
         let objects = self
-            .read_type_objects(&schema_info, type_name, type_schema, &mappings)
+            .read_type_objects(&schema_info, type_name, type_schema)
             .await?;
-        let key_string = serde_json::to_string(key).unwrap_or_default();
-        for object in objects {
-            if object.key == *key {
-                if let Some(BackendId::String(id)) = object.backend_id {
+        let key_repr = serde_json::to_string(key).unwrap_or_default();
+        for (backend_id, attrs) in objects {
+            let obj_key = build_key_from_schema(type_schema, &attrs)?;
+            if obj_key == *key {
+                if let BackendId::String(id) = backend_id {
                     return Ok(id);
                 }
             }
         }
-        Err(anyhow!("missing infrahub object with key {key_string}"))
+        Err(anyhow!("missing infrahub object with key {key_repr}"))
     }
 
     async fn apply_schema_infrahubctl(&self, config: &SchemaPushConfig) -> Result<()> {
@@ -506,19 +501,76 @@ impl Observer for InfrahubAdapter {
             types.to_vec()
         };
 
-        let mappings = state_mappings(state_store);
-        let mut state = ObservedState::default();
+        // phase 1: fetch every node of every requested type as raw
+        // `(backend id, attrs)` pairs, refs still pointing at backend ids.
+        let mut raw: Vec<RawNode> = Vec::new();
         for type_name in requested {
             let type_schema = schema
                 .types
                 .get(type_name.as_str())
                 .ok_or_else(|| anyhow!("missing schema for {}", type_name))?;
-            let objects = self
-                .read_type_objects(&schema_info, &type_name, type_schema, &mappings)
+            let nodes = self
+                .read_type_objects(&schema_info, &type_name, type_schema)
                 .await?;
-            for object in objects {
-                state.insert(object)?;
+            for (backend_id, attrs) in nodes {
+                raw.push(RawNode {
+                    type_name: type_name.clone(),
+                    backend_id,
+                    attrs,
+                });
             }
+        }
+
+        // phase 2: resolve each node's canonical uid statelessly. an object's
+        // uid derives from its key, which may itself contain references (an
+        // interface keyed by (device, name)), so resolve to a fixpoint: each
+        // round settles the objects whose key references are already known,
+        // seeding the next round, until nothing new resolves. (saved state, if
+        // any, is folded in up front; a reference cycle leaves the stragglers
+        // pointing at backend ids, still internally consistent.)
+        let mut mappings = state_mappings(state_store);
+        let mut resolved = vec![false; raw.len()];
+        loop {
+            let mut progressed = false;
+            for (i, node) in raw.iter().enumerate() {
+                if resolved[i] {
+                    continue;
+                }
+                let type_schema = schema
+                    .types
+                    .get(node.type_name.as_str())
+                    .ok_or_else(|| anyhow!("missing schema for {}", node.type_name))?;
+                if !key_refs_resolved(type_schema, &node.attrs, &mappings) {
+                    continue;
+                }
+                let norm = normalize_attrs_refs(&node.attrs, type_schema, &mappings);
+                let key = build_key_from_schema(type_schema, &norm)?;
+                let uid = uid_v5(node.type_name.as_str(), &key_string(&key));
+                mappings.insert(node.type_name.as_str(), node.backend_id.clone(), uid);
+                resolved[i] = true;
+                progressed = true;
+            }
+            if !progressed {
+                break;
+            }
+        }
+
+        // phase 3: materialize every node with refs resolved against the full
+        // mapping (key refs in an unresolved cycle stay as backend ids).
+        let mut state = ObservedState::default();
+        for node in &raw {
+            let type_schema = schema
+                .types
+                .get(node.type_name.as_str())
+                .ok_or_else(|| anyhow!("missing schema for {}", node.type_name))?;
+            let attrs = normalize_attrs_refs(&node.attrs, type_schema, &mappings);
+            let key = build_key_from_schema(type_schema, &attrs)?;
+            state.insert(ObservedObject {
+                type_name: node.type_name.clone(),
+                key,
+                attrs,
+                backend_id: Some(node.backend_id.clone()),
+            })?;
         }
 
         Ok(state)
@@ -1018,12 +1070,16 @@ fn build_provision_plan(
         };
 
         let Some(existing_fields) = schema_info.type_fields.get(&gql_type) else {
-            let (attributes, relationships, key_attrs) =
-                collect_field_defs(type_name, type_schema, None)?;
-            let mut human_friendly_id = Vec::new();
-            if !key_attrs.is_empty() {
-                human_friendly_id.extend(key_attrs.iter().map(|key| format!("{key}__value")));
-            }
+            let FieldDefs {
+                attributes,
+                relationships,
+                key_attrs,
+                key_rels,
+            } = collect_field_defs(type_name, type_schema, None)?;
+            // the human-friendly id doubles as Infrahub's uniqueness constraint;
+            // include key relationships so a composite key like `(device, name)`
+            // is unique over the combination, not over `name` alone.
+            let human_friendly_id = key_hfid_paths(schema, &key_attrs, &key_rels);
             let (display_label, default_filter) = display_label_for_keys(&key_attrs);
             let name = parts.name.clone();
             let namespace = parts.namespace.clone();
@@ -1062,8 +1118,11 @@ fn build_provision_plan(
         if missing_fields.is_empty() {
             continue;
         }
-        let (attributes, relationships, _key_attrs) =
-            collect_field_defs(type_name, type_schema, Some(&missing_fields))?;
+        let FieldDefs {
+            attributes,
+            relationships,
+            ..
+        } = collect_field_defs(type_name, type_schema, Some(&missing_fields))?;
         if attributes.is_empty() && relationships.is_empty() {
             continue;
         }
@@ -1347,12 +1406,17 @@ fn collect_field_defs(
     type_name: &str,
     type_schema: &alembic_core::TypeSchema,
     include_fields: Option<&BTreeSet<String>>,
-) -> Result<(Vec<AttributeDef>, Vec<RelationshipDef>, Vec<String>)> {
+) -> Result<FieldDefs> {
     let mut attributes = Vec::new();
     let mut relationships = Vec::new();
     let mut key_attrs = Vec::new();
+    let mut key_rels: Vec<(String, String)> = Vec::new();
     let mut seen = BTreeSet::new();
     let source_kind = identifier_part(&gql_type_name_str(type_name));
+    // a composite key (more than one key field) is enforced by a uniqueness
+    // constraint over the combination, so the individual key attributes must not
+    // each be marked unique (the same `name` can repeat across e.g. devices).
+    let composite_key = type_schema.key.len() > 1;
 
     let mut handle_field =
         |field: &str, schema: &alembic_core::FieldSchema, is_key: bool| -> Result<()> {
@@ -1366,13 +1430,15 @@ fn collect_field_defs(
             }
             match &schema.r#type {
                 FieldType::Ref { target } => {
-                    relationships.push(relationship_def(
-                        field,
-                        target,
-                        schema,
-                        "one",
-                        &source_kind,
-                    )?);
+                    let mut rel = relationship_def(field, target, schema, "one", &source_kind)?;
+                    if is_key {
+                        // a key component is part of the identity, so it must be
+                        // present; Infrahub also requires any relationship in a
+                        // uniqueness constraint to be mandatory.
+                        rel.optional = Some(false);
+                        key_rels.push((field.to_string(), target.clone()));
+                    }
+                    relationships.push(rel);
                 }
                 FieldType::ListRef { target } => {
                     relationships.push(relationship_def(
@@ -1384,7 +1450,7 @@ fn collect_field_defs(
                     )?);
                 }
                 _ => {
-                    attributes.push(attribute_def(field, schema, is_key)?);
+                    attributes.push(attribute_def(field, schema, is_key && !composite_key)?);
                     if is_key {
                         key_attrs.push(field.to_string());
                     }
@@ -1400,7 +1466,52 @@ fn collect_field_defs(
         handle_field(field, schema, false)?;
     }
 
-    Ok((attributes, relationships, key_attrs))
+    Ok(FieldDefs {
+        attributes,
+        relationships,
+        key_attrs,
+        key_rels,
+    })
+}
+
+/// the attribute/relationship definitions for a type, plus which of them form
+/// its key (attributes by name, relationships as `(field, target_type)`).
+struct FieldDefs {
+    attributes: Vec<AttributeDef>,
+    relationships: Vec<RelationshipDef>,
+    key_attrs: Vec<String>,
+    key_rels: Vec<(String, String)>,
+}
+
+/// the human-friendly-id / uniqueness paths for a type's key: each key
+/// attribute as `<attr>__value`, and each key relationship as
+/// `<rel>__<peer key attribute>__value`, so a `(device, name)` key reads as
+/// `["device__name__value", "name__value"]`.
+fn key_hfid_paths(
+    schema: &Schema,
+    key_attrs: &[String],
+    key_rels: &[(String, String)],
+) -> Vec<String> {
+    let mut paths: Vec<String> = key_attrs.iter().map(|a| format!("{a}__value")).collect();
+    for (rel, target) in key_rels {
+        match peer_key_attr(schema, target) {
+            Some(peer) => paths.push(format!("{rel}__{peer}__value")),
+            None => paths.push(rel.clone()),
+        }
+    }
+    paths
+}
+
+/// the first non-reference key attribute of `target`, used as the peer
+/// component when a relationship participates in a human-friendly id.
+fn peer_key_attr(schema: &Schema, target: &str) -> Option<String> {
+    schema
+        .types
+        .get(target)?
+        .key
+        .iter()
+        .find(|(_, fs)| !matches!(fs.r#type, FieldType::Ref { .. } | FieldType::ListRef { .. }))
+        .map(|(name, _)| name.clone())
 }
 
 fn attribute_def(
@@ -1738,6 +1849,52 @@ impl StateMappings {
             .get(type_name)
             .and_then(|mapping| mapping.get(backend_id).copied())
     }
+
+    fn insert(&mut self, type_name: &str, backend_id: BackendId, uid: Uid) {
+        self.by_type
+            .entry(type_name.to_string())
+            .or_default()
+            .insert(backend_id, uid);
+    }
+}
+
+/// a node observed from Infrahub before its references are resolved: the
+/// relationship attrs still hold backend ids.
+struct RawNode {
+    type_name: TypeName,
+    backend_id: BackendId,
+    attrs: JsonMap,
+}
+
+/// whether every reference-typed *key* field of `attrs` already resolves to a
+/// canonical uid in `mappings` (so the object's own uid can be derived). a key
+/// field that is absent or not a reference imposes no constraint.
+fn key_refs_resolved(
+    type_schema: &alembic_core::TypeSchema,
+    attrs: &JsonMap,
+    mappings: &StateMappings,
+) -> bool {
+    for (field, schema) in &type_schema.key {
+        let target = match &schema.r#type {
+            FieldType::Ref { target } | FieldType::ListRef { target } => target,
+            _ => continue,
+        };
+        let Some(value) = attrs.get(field) else {
+            continue;
+        };
+        let items = match value {
+            Value::Array(items) => items.clone(),
+            other => vec![other.clone()],
+        };
+        for item in items {
+            if let Some(bid) = backend_id_from_value(&item) {
+                if mappings.uid_for(target, &bid).is_none() {
+                    return false;
+                }
+            }
+        }
+    }
+    true
 }
 
 fn state_mappings(state: &StateStore) -> StateMappings {
