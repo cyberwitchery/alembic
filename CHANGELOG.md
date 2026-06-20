@@ -3,6 +3,7 @@
 ## [unreleased]
 
 - generic adapter: resolve refs nested in `list` and `map` fields on read, matching the write path and the netbox/nautobot adapters
+- core: attribute reference-type-mismatch errors to the referencing object, not the referent
 
 ## [0.5.0] - 2026-06-19
 
