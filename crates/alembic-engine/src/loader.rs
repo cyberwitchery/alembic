@@ -89,7 +89,7 @@ fn load_recursive(
 fn find_uid_line(content: &str, uid: &str) -> Option<usize> {
     for (idx, line) in content.lines().enumerate() {
         if line.contains(uid) {
-            return Some(idx + 1); // 1-indexed line numbers
+            return Some(idx + 1);
         }
     }
     None

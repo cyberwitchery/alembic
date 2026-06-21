@@ -554,7 +554,6 @@ fn normalize_attrs(
     let keys: Vec<String> = attrs.keys().cloned().collect();
     for key in keys {
         if let Some(value) = attrs.get(&key).cloned() {
-            // look up the field's target type from the schema
             let target_hint = type_schema
                 .fields
                 .get(&key)
@@ -618,7 +617,7 @@ fn normalize_value(
         ),
         Value::Object(map) => {
             if let Some(id) = map.get("id").and_then(Value::as_str) {
-                // first, try existing approach: lookup via URL + mappings
+                // lookup via URL + mappings
                 if let Some(uid) = uid_for_nested_object(&map, registry, mappings) {
                     return Value::String(uid.to_string());
                 }
@@ -684,7 +683,6 @@ fn uid_from_key_fields(
     registry: &ObjectTypeRegistry,
     mappings: &super::state::StateMappings,
 ) -> Option<Uid> {
-    // first, try to determine type from URL if available and use mappings
     if let Some(type_from_url) = map
         .get("url")
         .and_then(Value::as_str)
@@ -697,17 +695,14 @@ fn uid_from_key_fields(
         }
     }
 
-    // get the target type's schema to find its key fields
     let target_schema = schema.types.get(target)?;
 
-    // build a key from available fields
     let mut key_map = BTreeMap::new();
     for key_field in target_schema.key.keys() {
         let value = map.get(key_field)?;
         key_map.insert(key_field.clone(), value.clone());
     }
 
-    // generate deterministic UID from type name and key
     let key = Key::from(key_map);
     Some(uid_v5(target, &key_string(&key)))
 }

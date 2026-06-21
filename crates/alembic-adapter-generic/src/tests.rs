@@ -285,9 +285,7 @@ fn test_resolve_value_for_type_list_ref_not_array() {
     assert!(err.to_string().contains("list_ref value must be an array"));
 }
 
-// ref resolution now flows through the shared engine helper via the local
-// `resolve_value_for_type` wrapper (the generic adapter no longer keeps its own
-// `resolve_ref_value`); these exercise the wrapper's encode closure for string
+// these exercise the resolve_value_for_type wrapper's encode closure for string
 // backend ids and the error / MissingRef paths surfaced by the shared helper.
 #[test]
 fn test_resolve_value_for_type_ref_string_backend_id() {
@@ -396,11 +394,8 @@ fn test_resolve_attrs_missing_schema() {
     assert!(err.to_string().contains("missing schema for field"));
 }
 
-// regression tests: the shared `resolve_value_for_type` resolves refs nested
-// inside `List` and `Map` fields when building the request body. The old local
-// copy fell through to `_ => Ok(value)` and silently left the raw uid strings,
-// so these fail before the consolidation and pass after it, bringing the generic
-// adapter in line with netbox/nautobot.
+// the shared `resolve_value_for_type` resolves refs nested inside `List` and
+// `Map` fields when building the request body, matching netbox/nautobot.
 #[test]
 fn test_resolve_attrs_resolves_refs_nested_in_list() {
     let type_schema = TypeSchema {

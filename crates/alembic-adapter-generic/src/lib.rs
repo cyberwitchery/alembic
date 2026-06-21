@@ -591,9 +591,8 @@ fn resolve_attrs(
 /// resolves a single field value against the shared engine helper, encoding a
 /// resolved ref as the backend id (number or string) the generic api expects.
 ///
-/// unlike the previous local copy, the shared helper recurses into refs nested
-/// inside `List` and `Map` fields, matching the netbox and nautobot adapters.
-/// the encode closure mirrors the old local `resolve_ref_value` output exactly.
+/// the shared helper recurses into refs nested inside `List` and `Map` fields,
+/// matching the netbox and nautobot adapters.
 fn resolve_value_for_type(
     field_type: &alembic_core::FieldType,
     value: serde_json::Value,

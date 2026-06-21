@@ -590,7 +590,7 @@ pub(crate) fn apply_single_transform(
 }
 
 /// String-context pipeline: run typed, then coerce the result with the scalar
-/// rules. Identical to the historical behavior for built-in-only pipelines.
+/// rules.
 fn apply_placeholder(
     value: &JsonValue,
     placeholder: &Placeholder,
@@ -683,7 +683,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     /// a render context over `vars` with no user transforms and a fixed rule
-    /// name, matching the historical test call shape.
+    /// name.
     fn ctx(vars: &BTreeMap<String, JsonValue>) -> RenderCtx<'_> {
         static EMPTY: TransformRegistry = TransformRegistry::EMPTY;
         RenderCtx {
@@ -1050,8 +1050,6 @@ uid:
         assert!(!is_valid_slug("Frankfurt DC1"));
     }
 
-    // --- transform-call grammar ---
-
     /// one parsed transform call: name plus literal args.
     type ParsedCall = (String, Vec<JsonValue>);
 
@@ -1177,8 +1175,6 @@ uid:
         let rendered = render_template("a ${x|trim} b", &ctx(&vars), "key").unwrap();
         assert_eq!(rendered, "a v b");
     }
-
-    // --- user-defined starlark transforms in the pipeline ---
 
     #[cfg(feature = "starlark")]
     mod starlark {

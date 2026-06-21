@@ -105,7 +105,7 @@ pub struct Lookup {
     pub get: String,
 }
 
-/// either a single emit (backward-compatible mapping) or a list of emits.
+/// either a single emit (a mapping) or a list of emits.
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 pub enum EmitSpec {
@@ -302,7 +302,6 @@ pub fn compile_map(input: &Inventory, spec: &MapSpec) -> Result<Inventory> {
             EmitSpec::Multi(emits) => emits.as_slice(),
         };
         match &rule.group_by {
-            // per-object: emit once per matched source.
             None => {
                 // a rule emitting exactly one object per source is a 1:1 rename,
                 // so we record source->target for automatic ref-rewiring. a
@@ -1035,8 +1034,6 @@ rules:
             &json!("Active")
         );
     }
-
-    // --- user-defined starlark transforms ---
 
     #[cfg(not(feature = "starlark"))]
     #[test]

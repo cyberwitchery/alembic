@@ -1,7 +1,5 @@
 //! field predicates for `map` selectors, e.g. the `[attrs.role=leaf]` tail of a
-//! `match` pattern. (the raw-yaml path traversal that used to live here went away
-//! with the raw->ir mapping engine; only the predicate parser remains, consumed
-//! by `transform`.)
+//! `match` pattern. The predicate parser is consumed by `transform`.
 
 use anyhow::{anyhow, Result};
 
