@@ -1044,8 +1044,10 @@ fn build_provision_plan(
     let mut deprecated_object_types = Vec::new();
 
     let mut desired_node_keys = BTreeSet::new();
+    let mut desired_namespaces = BTreeSet::new();
     for type_name in schema.types.keys() {
         let parts = type_name_parts(type_name)?;
+        desired_namespaces.insert(parts.namespace.clone());
         desired_node_keys.insert(NodeKey::new(parts.namespace, parts.name));
     }
 
@@ -1135,6 +1137,11 @@ fn build_provision_plan(
 
     for node in &schema_snapshot.nodes {
         if !node.include_in_menu {
+            continue;
+        }
+        // only manage menu placement within namespaces we provision: Infrahub
+        // reserves Builtin/Core/etc. and rejects edits to nodes in them.
+        if !desired_namespaces.contains(&node.namespace) {
             continue;
         }
         let key = node.key();
