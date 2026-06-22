@@ -85,14 +85,22 @@ fn load_recursive(
     Ok(())
 }
 
-/// find the line number (1-indexed) where a UID appears in the content.
+/// the 1-indexed line where `uid` is defined (its own `uid:` key), not a line
+/// that merely references it as an attr value.
 fn find_uid_line(content: &str, uid: &str) -> Option<usize> {
-    for (idx, line) in content.lines().enumerate() {
-        if line.contains(uid) {
-            return Some(idx + 1);
-        }
-    }
-    None
+    content
+        .lines()
+        .position(|line| line.contains(uid) && is_uid_key_line(line))
+        .map(|idx| idx + 1)
+}
+
+/// whether `line`'s key is `uid` (yaml `uid:` / `- uid:`, json `"uid":`).
+fn is_uid_key_line(line: &str) -> bool {
+    let rest = line.trim_start();
+    let rest = rest.strip_prefix('-').map_or(rest, str::trim_start);
+    let rest = rest.strip_prefix('"').unwrap_or(rest);
+    rest.strip_prefix("uid")
+        .is_some_and(|after| after.starts_with([':', '"', ' ']))
 }
 
 fn merge_schema(current: &mut Option<Schema>, incoming: Option<Schema>) -> Result<()> {
@@ -113,4 +121,37 @@ fn merge_schema(current: &mut Option<Schema>, incoming: Option<Schema>) -> Resul
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::find_uid_line;
+
+    #[test]
+    fn locates_uid_definition_not_an_earlier_reference() {
+        let content = r#"objects:
+  - uid: "dev-1"
+    attrs:
+      site: "site-1"
+  - uid: "site-1"
+"#;
+        assert_eq!(find_uid_line(content, "site-1"), Some(5));
+    }
+
+    #[test]
+    fn locates_uid_key_in_json() {
+        let content = r#"{
+  "objects": [
+    {
+      "uid": "dev-1",
+      "attrs": { "site": "site-1" }
+    },
+    {
+      "uid": "site-1"
+    }
+  ]
+}
+"#;
+        assert_eq!(find_uid_line(content, "site-1"), Some(8));
+    }
 }
