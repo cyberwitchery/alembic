@@ -563,30 +563,52 @@ fn resolve_uid_spec(spec: &EmitUid, ctx: &RenderCtx, context: &str) -> Result<Ui
     }
 }
 
-/// rewrite `ref` / `list_ref` attr values through the source→target uid remap,
-/// using the target schema to find which fields are references.
+/// rewrite the references in each object's attrs through the source→target uid
+/// remap, using the target schema to find which fields hold them.
 fn rewrite_refs(objects: &mut [Object], schema: &Schema, remap: &BTreeMap<Uid, Uid>) {
     for obj in objects.iter_mut() {
         let Some(type_schema) = schema.types.get(obj.type_name.as_str()) else {
             continue;
         };
         for (field, field_schema) in &type_schema.fields {
-            match field_schema.r#type {
-                FieldType::Ref { .. } => {
-                    if let Some(value) = obj.attrs.get_mut(field) {
-                        rewrite_ref_value(value, remap);
-                    }
-                }
-                FieldType::ListRef { .. } => {
-                    if let Some(JsonValue::Array(items)) = obj.attrs.get_mut(field) {
-                        for item in items {
-                            rewrite_ref_value(item, remap);
-                        }
-                    }
-                }
-                _ => {}
+            if let Some(value) = obj.attrs.get_mut(field) {
+                rewrite_refs_in_value(&field_schema.r#type, value, remap);
             }
         }
+    }
+}
+
+/// rewrite the ref uids a value carries, recursing through list and map
+/// containers so nested refs are remapped too.
+fn rewrite_refs_in_value(
+    field_type: &FieldType,
+    value: &mut JsonValue,
+    remap: &BTreeMap<Uid, Uid>,
+) {
+    match field_type {
+        FieldType::Ref { .. } => rewrite_ref_value(value, remap),
+        FieldType::ListRef { .. } => {
+            if let JsonValue::Array(items) = value {
+                for item in items {
+                    rewrite_ref_value(item, remap);
+                }
+            }
+        }
+        FieldType::List { item } => {
+            if let JsonValue::Array(items) = value {
+                for item_value in items {
+                    rewrite_refs_in_value(item, item_value, remap);
+                }
+            }
+        }
+        FieldType::Map { value: inner } => {
+            if let JsonValue::Object(map) = value {
+                for entry in map.values_mut() {
+                    rewrite_refs_in_value(inner, entry, remap);
+                }
+            }
+        }
+        _ => {}
     }
 }
 
@@ -756,6 +778,116 @@ rules:
             &json!(site.uid.to_string())
         );
         assert_ne!(device.attrs.get("site").unwrap(), &json!(site_src));
+    }
+
+    #[test]
+    fn rewires_refs_nested_in_a_list_field() {
+        let a_src = Uuid::from_u128(1).to_string();
+        let b_src = Uuid::from_u128(2).to_string();
+        let input = input_inventory(json!([
+            { "uid": a_src, "type": "dcim.device",
+              "key": { "device": "leaf01" },
+              "attrs": { "name": "leaf01", "peers": [b_src] } },
+            { "uid": b_src, "type": "dcim.device",
+              "key": { "device": "leaf02" },
+              "attrs": { "name": "leaf02", "peers": [a_src] } }
+        ]));
+        let out = compile_map(
+            &input,
+            &spec(
+                r#"
+schema:
+  types:
+    net.node:
+      key:
+        name: { type: slug }
+      fields:
+        name: { type: string }
+        peers: { type: list, item: { type: ref, target: net.node } }
+rules:
+  - name: nodes
+    match: "dcim.device"
+    emit:
+      type: net.node
+      key:
+        name: "${key.device}"
+      attrs:
+        name: "${attrs.name}"
+        peers: "${attrs.peers}"
+"#,
+            ),
+        )
+        .unwrap();
+
+        let node = |name: &str| {
+            out.objects
+                .iter()
+                .find(|o| o.key.get("name").unwrap() == &json!(name))
+                .unwrap()
+        };
+        let a = node("leaf01");
+        let b = node("leaf02");
+        // the peer refs nested in the `list` field now point at the new uids.
+        assert_eq!(a.attrs.get("peers").unwrap(), &json!([b.uid.to_string()]));
+        assert_eq!(b.attrs.get("peers").unwrap(), &json!([a.uid.to_string()]));
+    }
+
+    #[test]
+    fn rewires_refs_nested_in_a_map_field() {
+        let a_src = Uuid::from_u128(1).to_string();
+        let b_src = Uuid::from_u128(2).to_string();
+        let input = input_inventory(json!([
+            { "uid": a_src, "type": "dcim.device",
+              "key": { "device": "leaf01" },
+              "attrs": { "name": "leaf01", "peers": { "primary": b_src } } },
+            { "uid": b_src, "type": "dcim.device",
+              "key": { "device": "leaf02" },
+              "attrs": { "name": "leaf02", "peers": { "primary": a_src } } }
+        ]));
+        let out = compile_map(
+            &input,
+            &spec(
+                r#"
+schema:
+  types:
+    net.node:
+      key:
+        name: { type: slug }
+      fields:
+        name: { type: string }
+        peers: { type: map, value: { type: ref, target: net.node } }
+rules:
+  - name: nodes
+    match: "dcim.device"
+    emit:
+      type: net.node
+      key:
+        name: "${key.device}"
+      attrs:
+        name: "${attrs.name}"
+        peers: "${attrs.peers}"
+"#,
+            ),
+        )
+        .unwrap();
+
+        let node = |name: &str| {
+            out.objects
+                .iter()
+                .find(|o| o.key.get("name").unwrap() == &json!(name))
+                .unwrap()
+        };
+        let a = node("leaf01");
+        let b = node("leaf02");
+        // the peer refs nested in the `map` field now point at the new uids.
+        assert_eq!(
+            a.attrs.get("peers").unwrap(),
+            &json!({ "primary": b.uid.to_string() })
+        );
+        assert_eq!(
+            b.attrs.get("peers").unwrap(),
+            &json!({ "primary": a.uid.to_string() })
+        );
     }
 
     #[test]
