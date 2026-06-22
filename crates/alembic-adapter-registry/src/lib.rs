@@ -2,7 +2,7 @@
 
 use alembic_engine::{
     Adapter, ApplyReport, Backend, BackendId, Emitter, ObservedObject, ObservedState, Observer, Op,
-    ProvisionReport, StateData, StateStore,
+    ProvisionReport, StateData, StateStore, EXTERNAL_PROTOCOL_VERSION,
 };
 use anyhow::{anyhow, Context, Result};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -295,7 +295,7 @@ impl ProcessAdapter {
 
     async fn call<R: DeserializeOwned>(&self, request: ExternalRequest<'_>) -> Result<R> {
         let envelope = ExternalEnvelope {
-            version: 1,
+            version: EXTERNAL_PROTOCOL_VERSION,
             request,
             setup: self.setup.clone(),
         };
