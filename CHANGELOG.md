@@ -2,6 +2,7 @@
 
 ## [unreleased]
 
+- engine: map rewrites refs nested in `list` and `map` fields across a rename, not just top-level `ref`/`list_ref` attrs
 - generic adapter: resolve refs nested in `list` and `map` fields on read, matching the write path and the netbox/nautobot adapters
 - core: attribute reference-type-mismatch errors to the referencing object, not the referent
 
