@@ -833,6 +833,64 @@ rules:
     }
 
     #[test]
+    fn rewires_refs_nested_in_a_map_field() {
+        let a_src = Uuid::from_u128(1).to_string();
+        let b_src = Uuid::from_u128(2).to_string();
+        let input = input_inventory(json!([
+            { "uid": a_src, "type": "dcim.device",
+              "key": { "device": "leaf01" },
+              "attrs": { "name": "leaf01", "peers": { "primary": b_src } } },
+            { "uid": b_src, "type": "dcim.device",
+              "key": { "device": "leaf02" },
+              "attrs": { "name": "leaf02", "peers": { "primary": a_src } } }
+        ]));
+        let out = compile_map(
+            &input,
+            &spec(
+                r#"
+schema:
+  types:
+    net.node:
+      key:
+        name: { type: slug }
+      fields:
+        name: { type: string }
+        peers: { type: map, value: { type: ref, target: net.node } }
+rules:
+  - name: nodes
+    match: "dcim.device"
+    emit:
+      type: net.node
+      key:
+        name: "${key.device}"
+      attrs:
+        name: "${attrs.name}"
+        peers: "${attrs.peers}"
+"#,
+            ),
+        )
+        .unwrap();
+
+        let node = |name: &str| {
+            out.objects
+                .iter()
+                .find(|o| o.key.get("name").unwrap() == &json!(name))
+                .unwrap()
+        };
+        let a = node("leaf01");
+        let b = node("leaf02");
+        // the peer refs nested in the `map` field now point at the new uids.
+        assert_eq!(
+            a.attrs.get("peers").unwrap(),
+            &json!({ "primary": b.uid.to_string() })
+        );
+        assert_eq!(
+            b.attrs.get("peers").unwrap(),
+            &json!({ "primary": a.uid.to_string() })
+        );
+    }
+
+    #[test]
     fn is_deterministic_across_runs() {
         let input = input_inventory(json!([
             { "uid": Uuid::from_u128(1).to_string(), "type": "dcim.site",
