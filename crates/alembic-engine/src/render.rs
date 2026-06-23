@@ -382,6 +382,11 @@ struct TransformCall<'a> {
 fn parse_placeholder<'a>(inner: &'a str, rule: &str, context: &str) -> Result<Placeholder<'a>> {
     let mut parts = split_top_level(inner, '|').into_iter();
     let name = parts.next().unwrap_or("").trim();
+    if name.is_empty() {
+        return Err(anyhow!(
+            "rule {rule}: placeholder has no variable name in {context}"
+        ));
+    }
     let mut transforms = Vec::new();
     for segment in parts {
         transforms.push(parse_transform_call(segment, rule, context)?);
@@ -1182,6 +1187,23 @@ uid:
                 "input {bad}: unexpected error {message}"
             );
         }
+    }
+
+    #[test]
+    fn rejects_empty_variable_name() {
+        // an empty name before the pipe must fail at parse, not later with a
+        // misleading `missing var ''`, mirroring the empty-segment rejection.
+        for bad in ["|upper", " | upper "] {
+            let err = parse(bad).unwrap_err();
+            assert!(
+                err.to_string().contains("placeholder has no variable name"),
+                "input {bad:?}: unexpected error {err}"
+            );
+        }
+        // valid names (with and without transforms / whitespace) still parse.
+        assert_eq!(parse("slug").unwrap().0, "slug");
+        assert_eq!(parse("slug|upper").unwrap().0, "slug");
+        assert_eq!(parse(" slug | upper ").unwrap().0, "slug");
     }
 
     #[test]
