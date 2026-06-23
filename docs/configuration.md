@@ -18,7 +18,7 @@ To set a path where to look for plugins, you can use an `alembic.yaml`
 config file in your working directory:
 
 ```yaml
-plugins_dir="/home/user/alembic_plugins"
+plugins_dir: "/home/user/alembic_plugins"
 ```
 
 Same setting but using an environment variable:
