@@ -1002,6 +1002,44 @@ rules:
     }
 
     #[test]
+    fn multi_predicate_selector_ands_predicates() {
+        let input = input_inventory(json!([
+            { "uid": Uuid::from_u128(1).to_string(), "type": "dcim.device",
+              "key": { "device": "leaf-cisco" }, "attrs": { "role": "leaf", "vendor": "cisco" } },
+            { "uid": Uuid::from_u128(2).to_string(), "type": "dcim.device",
+              "key": { "device": "leaf-arista" }, "attrs": { "role": "leaf", "vendor": "arista" } },
+            { "uid": Uuid::from_u128(3).to_string(), "type": "dcim.device",
+              "key": { "device": "spine-cisco" }, "attrs": { "role": "spine", "vendor": "cisco" } }
+        ]));
+        let out = compile_map(
+            &input,
+            &spec(
+                r#"
+schema:
+  types:
+    fabric.leaf:
+      key:
+        name: { type: slug }
+rules:
+  - name: cisco-leaves
+    match: "dcim.device[attrs.role=leaf][attrs.vendor=cisco]"
+    emit:
+      type: fabric.leaf
+      key:
+        name: "${key.device}"
+"#,
+            ),
+        )
+        .unwrap();
+        let names: Vec<&str> = out
+            .objects
+            .iter()
+            .map(|o| o.key.get("name").unwrap().as_str().unwrap())
+            .collect();
+        assert_eq!(names, vec!["leaf-cisco"]);
+    }
+
+    #[test]
     fn multi_emit_fans_out_with_named_uid_reference() {
         // one source fabric fans out into a site and a vrf; the vrf references
         // the site via a named uid (auto ref-rewiring does not apply to
