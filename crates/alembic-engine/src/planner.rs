@@ -681,6 +681,42 @@ mod tests {
         assert!(matches!(&result.ops[0], Op::Update { .. }));
     }
 
+    #[test]
+    fn plan_matches_renamed_object_by_backend_id() {
+        let mut state_data = StateData::default();
+        state_data
+            .mappings
+            .entry(TypeName::new("dcim.site"))
+            .or_default()
+            .insert(Uid::from_u128(1), BackendId::Int(100));
+        let state = StateStore::new(None, state_data);
+
+        let desired = vec![make_object(
+            1,
+            "dcim.site",
+            "fra1-renamed",
+            make_attrs(&[("name", json!("FRA2"))]),
+        )];
+        let mut observed = ObservedState::default();
+        observed
+            .insert(ObservedObject {
+                type_name: TypeName::new("dcim.site"),
+                key: make_key("fra1-old"),
+                attrs: make_attrs(&[("name", json!("FRA1"))]),
+                backend_id: Some(BackendId::Int(100)),
+            })
+            .unwrap();
+        let result = plan(&desired, &observed, &state, &empty_schema(), true);
+        assert_eq!(result.ops.len(), 1);
+        assert!(matches!(
+            &result.ops[0],
+            Op::Update {
+                backend_id: Some(BackendId::Int(100)),
+                ..
+            }
+        ));
+    }
+
     // --- sort_ops_for_apply ---
 
     #[test]

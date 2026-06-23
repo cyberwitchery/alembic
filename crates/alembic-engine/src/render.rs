@@ -738,6 +738,33 @@ uid:
     }
 
     #[test]
+    fn render_uid_mapping_derives_uid_from_type_and_stable() {
+        let mut vars = BTreeMap::new();
+        vars.insert("slug".to_string(), JsonValue::String("fra1".to_string()));
+        let mapping: YamlValue = serde_yaml::from_str(
+            r#"
+uid:
+  type: "dcim.site"
+  stable: "site=${slug}"
+"#,
+        )
+        .unwrap();
+        let rendered = render_yaml_value(
+            &mapping,
+            &ctx(&vars),
+            "attrs",
+            false,
+            TransformedOutput::Typed,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            rendered,
+            JsonValue::String(uid_v5("dcim.site", "site=fra1").to_string())
+        );
+    }
+
+    #[test]
     fn templates_substitute_and_error_on_missing() {
         let mut vars = BTreeMap::new();
         vars.insert("name".to_string(), JsonValue::String("leaf01".to_string()));
