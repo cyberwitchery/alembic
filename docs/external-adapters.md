@@ -60,7 +60,7 @@ impl ExternalAdapter for MyAdapter {
         _ops: &[alembic_engine::Op],
         _state: &alembic_engine::StateData,
     ) -> anyhow::Result<alembic_engine::ApplyReport> {
-        Ok(alembic_engine::ApplyReport { applied: Vec::new() })
+        Ok(alembic_engine::ApplyReport::default())
     }
 }
 
