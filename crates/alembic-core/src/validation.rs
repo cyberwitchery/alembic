@@ -1065,6 +1065,35 @@ mod tests {
         assert!(report.errors.is_empty());
     }
 
+    #[test]
+    fn validate_field_value_null_tristate() {
+        let nullable = FieldSchema {
+            r#type: FieldType::String,
+            required: false,
+            nullable: true,
+            description: None,
+            format: None,
+            pattern: None,
+        };
+        assert!(check(&nullable, &json!(null)).errors.is_empty());
+
+        let non_nullable = FieldSchema {
+            r#type: FieldType::String,
+            required: true,
+            nullable: false,
+            description: None,
+            format: None,
+            pattern: None,
+        };
+        assert!(check(&non_nullable, &json!(null))
+            .errors
+            .iter()
+            .any(|e| matches!(
+                e,
+                ValidationError::InvalidValue { actual, .. } if actual == "null"
+            )));
+    }
+
     // ----- string constraint (format / pattern) tests -----
 
     /// build a string-typed field carrying a `format` constraint.
