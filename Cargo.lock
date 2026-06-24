@@ -2408,12 +2408,12 @@ dependencies = [
 
 [[package]]
 name = "nautobot"
-version = "0.4.1"
+version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7073704fcc2584878e3cef65ebdeb8626b30b43aec59e10f1eae81c675354958"
+checksum = "2860ff210ab6898b3ac17b7ec3c977e8d574503a7624d86a17c6a83f1d326f81"
 dependencies = [
  "nautobot-openapi",
- "reqwest 0.12.28",
+ "reqwest 0.13.4",
  "serde",
  "serde_json",
  "serde_urlencoded",
@@ -2424,11 +2424,11 @@ dependencies = [
 
 [[package]]
 name = "nautobot-openapi"
-version = "0.4.1"
+version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a74fc99251cc25982bf950feeb61044c39f1cf1ea40a8534dc419d975fe34e3a"
+checksum = "30dab68e1e4f065352ff185f101fc0972e311f8702d2e714e853b65b7125c399"
 dependencies = [
- "reqwest 0.12.28",
+ "reqwest 0.13.4",
  "serde",
  "serde_derive",
  "serde_json",
@@ -3195,6 +3195,7 @@ dependencies = [
  "rustls-platform-verifier",
  "serde",
  "serde_json",
+ "serde_urlencoded",
  "sync_wrapper",
  "tokio",
  "tokio-rustls",
