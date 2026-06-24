@@ -65,6 +65,13 @@ jobs:
           --health-timeout=5s
           --health-retries=5
     steps:
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          sudo docker image prune --all --force
+          df -h /
+
       - uses: actions/checkout@v7
 
       - name: Setup Rust
