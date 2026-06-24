@@ -833,6 +833,58 @@ rules:
     }
 
     #[test]
+    fn rewires_refs_in_a_list_ref_field() {
+        let a_src = Uuid::from_u128(1).to_string();
+        let b_src = Uuid::from_u128(2).to_string();
+        let input = input_inventory(json!([
+            { "uid": a_src, "type": "dcim.device",
+              "key": { "device": "leaf01" },
+              "attrs": { "name": "leaf01", "peers": [b_src] } },
+            { "uid": b_src, "type": "dcim.device",
+              "key": { "device": "leaf02" },
+              "attrs": { "name": "leaf02", "peers": [a_src] } }
+        ]));
+        let out = compile_map(
+            &input,
+            &spec(
+                r#"
+schema:
+  types:
+    net.node:
+      key:
+        name: { type: slug }
+      fields:
+        name: { type: string }
+        peers: { type: list_ref, target: net.node }
+rules:
+  - name: nodes
+    match: "dcim.device"
+    emit:
+      type: net.node
+      key:
+        name: "${key.device}"
+      attrs:
+        name: "${attrs.name}"
+        peers: "${attrs.peers}"
+"#,
+            ),
+        )
+        .unwrap();
+
+        let node = |name: &str| {
+            out.objects
+                .iter()
+                .find(|o| o.key.get("name").unwrap() == &json!(name))
+                .unwrap()
+        };
+        let a = node("leaf01");
+        let b = node("leaf02");
+        // the peer refs in the `list_ref` field now point at the new uids.
+        assert_eq!(a.attrs.get("peers").unwrap(), &json!([b.uid.to_string()]));
+        assert_eq!(b.attrs.get("peers").unwrap(), &json!([a.uid.to_string()]));
+    }
+
+    #[test]
     fn rewires_refs_nested_in_a_map_field() {
         let a_src = Uuid::from_u128(1).to_string();
         let b_src = Uuid::from_u128(2).to_string();
