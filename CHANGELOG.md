@@ -3,6 +3,7 @@
 ## [unreleased]
 
 - core: format-typed fields (`cidr`, `prefix`, `mac`, `slug`) now validate their value's format instead of silently accepting any string, matching how `uuid` already validated and the `format:` constraint
+- core: validate that schema `ref`/`list_ref` targets name a declared type, including refs nested in `list`/`map` fields, so a misspelled target fails schema validation with one clear error instead of confusing per-object reference errors
 - engine: map rewrites refs nested in `list` and `map` fields across a rename, not just top-level `ref`/`list_ref` attrs
 - generic adapter: resolve refs nested in `list` and `map` fields on read, matching the write path and the netbox/nautobot adapters
 - core: attribute reference-type-mismatch errors to the referencing object, not the referent
