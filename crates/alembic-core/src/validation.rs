@@ -48,6 +48,12 @@ pub enum ValidationError {
         expected: String,
         actual: String,
     },
+    #[error("unknown ref target {type_name}.{field} -> {target}")]
+    UnknownRefTarget {
+        type_name: String,
+        field: String,
+        target: String,
+    },
 }
 
 impl ValidationError {
@@ -242,12 +248,81 @@ pub fn validate_inventory(inventory: &Inventory) -> ValidationReport {
         uid_to_type.insert(object.uid, object.type_name.clone());
     }
 
+    validate_schema_ref_targets(&inventory.schema, &mut report);
     validate_schema_types(&inventory.schema, &inventory.objects, &mut report);
     for object in &inventory.objects {
         validate_object(object, &inventory.schema, &uid_to_type, &mut report);
     }
 
     report
+}
+
+/// validate that every `ref`/`list_ref` target declared in the schema names a
+/// declared type.
+///
+/// targets are free-form strings, so a typo (`tenant` for `tenancy.tenant`)
+/// would otherwise pass schema validation and only surface later as misleading
+/// per-object reference errors. this catches the mistake at the schema level,
+/// attributed to the declaring type and field.
+fn validate_schema_ref_targets(schema: &Schema, report: &mut ValidationReport) {
+    for (type_name, type_schema) in &schema.types {
+        for (field, field_schema) in &type_schema.key {
+            validate_field_ref_targets(
+                schema,
+                type_name,
+                &format!("key.{field}"),
+                &field_schema.r#type,
+                report,
+            );
+        }
+        for (field, field_schema) in &type_schema.fields {
+            validate_field_ref_targets(schema, type_name, field, &field_schema.r#type, report);
+        }
+    }
+}
+
+/// recursively check ref targets within a field type, descending into `list`
+/// and `map` item types so refs nested inside them are validated too.
+fn validate_field_ref_targets(
+    schema: &Schema,
+    type_name: &str,
+    field: &str,
+    field_type: &FieldType,
+    report: &mut ValidationReport,
+) {
+    match field_type {
+        FieldType::Ref { target } | FieldType::ListRef { target } => {
+            if !schema.types.contains_key(target) {
+                report.errors.push(ValidationError::UnknownRefTarget {
+                    type_name: type_name.to_string(),
+                    field: field.to_string(),
+                    target: target.to_string(),
+                });
+            }
+        }
+        FieldType::List { item } => {
+            validate_field_ref_targets(schema, type_name, field, item, report);
+        }
+        FieldType::Map { value } => {
+            validate_field_ref_targets(schema, type_name, field, value, report);
+        }
+        FieldType::String
+        | FieldType::Text
+        | FieldType::Int
+        | FieldType::Float
+        | FieldType::Bool
+        | FieldType::Uuid
+        | FieldType::Date
+        | FieldType::Datetime
+        | FieldType::Time
+        | FieldType::Json
+        | FieldType::IpAddress
+        | FieldType::Cidr
+        | FieldType::Prefix
+        | FieldType::Mac
+        | FieldType::Slug
+        | FieldType::Enum { .. } => {}
+    }
 }
 
 fn validate_schema_types(schema: &Schema, objects: &[Object], report: &mut ValidationReport) {
@@ -821,6 +896,133 @@ mod tests {
             .errors
             .iter()
             .any(|err| matches!(err, ValidationError::MissingReference { .. })));
+    }
+
+    /// build a non-required field of the given type, for schema-shape tests.
+    fn schema_field(r#type: FieldType) -> FieldSchema {
+        FieldSchema {
+            r#type,
+            required: false,
+            nullable: false,
+            description: None,
+            format: None,
+            pattern: None,
+        }
+    }
+
+    /// run schema-only validation (no objects) and return the report.
+    fn validate_schema(types: BTreeMap<String, TypeSchema>) -> ValidationReport {
+        validate_inventory(&Inventory {
+            schema: Schema { types },
+            objects: vec![],
+        })
+    }
+
+    #[test]
+    fn detects_unknown_ref_target_in_attr_field() {
+        let device = TypeSchema {
+            key: BTreeMap::new(),
+            fields: BTreeMap::from([(
+                "owner".to_string(),
+                schema_field(FieldType::Ref {
+                    target: "person".to_string(),
+                }),
+            )]),
+        };
+        let report = validate_schema(BTreeMap::from([("device".to_string(), device)]));
+        assert!(report.errors.iter().any(|e| matches!(
+            e,
+            ValidationError::UnknownRefTarget { type_name, field, target }
+                if type_name == "device" && field == "owner" && target == "person"
+        )));
+    }
+
+    #[test]
+    fn detects_unknown_ref_target_in_key_field() {
+        let device = TypeSchema {
+            key: BTreeMap::from([(
+                "site".to_string(),
+                schema_field(FieldType::Ref {
+                    target: "place".to_string(),
+                }),
+            )]),
+            fields: BTreeMap::new(),
+        };
+        let report = validate_schema(BTreeMap::from([("device".to_string(), device)]));
+        assert!(report.errors.iter().any(|e| matches!(
+            e,
+            ValidationError::UnknownRefTarget { field, target, .. }
+                if field == "key.site" && target == "place"
+        )));
+    }
+
+    #[test]
+    fn detects_unknown_ref_target_nested_in_list_and_map() {
+        let group = TypeSchema {
+            key: BTreeMap::new(),
+            fields: BTreeMap::from([
+                (
+                    "members".to_string(),
+                    schema_field(FieldType::List {
+                        item: Box::new(FieldType::Ref {
+                            target: "ghost".to_string(),
+                        }),
+                    }),
+                ),
+                (
+                    "roles".to_string(),
+                    schema_field(FieldType::Map {
+                        value: Box::new(FieldType::ListRef {
+                            target: "phantom".to_string(),
+                        }),
+                    }),
+                ),
+            ]),
+        };
+        let report = validate_schema(BTreeMap::from([("group".to_string(), group)]));
+        assert!(report.errors.iter().any(|e| matches!(
+            e,
+            ValidationError::UnknownRefTarget { target, .. } if target == "ghost"
+        )));
+        assert!(report.errors.iter().any(|e| matches!(
+            e,
+            ValidationError::UnknownRefTarget { target, .. } if target == "phantom"
+        )));
+    }
+
+    #[test]
+    fn valid_ref_targets_pass_schema_validation() {
+        let device = TypeSchema {
+            key: BTreeMap::new(),
+            fields: BTreeMap::from([
+                (
+                    "owner".to_string(),
+                    schema_field(FieldType::Ref {
+                        target: "person".to_string(),
+                    }),
+                ),
+                (
+                    "watchers".to_string(),
+                    schema_field(FieldType::List {
+                        item: Box::new(FieldType::ListRef {
+                            target: "person".to_string(),
+                        }),
+                    }),
+                ),
+            ]),
+        };
+        let person = TypeSchema {
+            key: BTreeMap::new(),
+            fields: BTreeMap::new(),
+        };
+        let report = validate_schema(BTreeMap::from([
+            ("device".to_string(), device),
+            ("person".to_string(), person),
+        ]));
+        assert!(!report
+            .errors
+            .iter()
+            .any(|e| matches!(e, ValidationError::UnknownRefTarget { .. })));
     }
 
     #[test]
