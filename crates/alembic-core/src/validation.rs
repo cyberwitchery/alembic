@@ -582,15 +582,18 @@ fn value_matches_type(value: &Value, field_type: &FieldType) -> bool {
         | FieldType::Date
         | FieldType::Datetime
         | FieldType::Time
-        | FieldType::IpAddress
-        | FieldType::Cidr
-        | FieldType::Prefix
-        | FieldType::Mac
-        | FieldType::Slug => value.is_string(),
-        FieldType::Uuid => value
-            .as_str()
-            .map(|raw| Uid::parse_str(raw).is_ok())
-            .unwrap_or(false),
+        // `ip_address` stays a plain string check: the canonical IPAM examples
+        // carry NetBox-style masked addresses (`10.0.0.10/24`) that the strict
+        // `IpAddr` format rejects, so whether it should accept a mask is a
+        // convention decision left to the maintainer rather than guessed here.
+        | FieldType::IpAddress => value.is_string(),
+        // format-typed fields with an unambiguous textual format must hold a
+        // string that matches it, mirroring how the `format:` constraint validates.
+        FieldType::Uuid => value_matches_format(value, &FieldFormat::Uuid),
+        FieldType::Cidr => value_matches_format(value, &FieldFormat::Cidr),
+        FieldType::Prefix => value_matches_format(value, &FieldFormat::Prefix),
+        FieldType::Mac => value_matches_format(value, &FieldFormat::Mac),
+        FieldType::Slug => value_matches_format(value, &FieldFormat::Slug),
         FieldType::Int => value.is_i64() || value.is_u64(),
         FieldType::Float => value.as_f64().is_some() || value.is_i64() || value.is_u64(),
         FieldType::Bool => value.is_boolean(),
@@ -600,6 +603,14 @@ fn value_matches_type(value: &Value, field_type: &FieldType) -> bool {
         FieldType::Map { .. } => value.is_object(),
         FieldType::Ref { .. } | FieldType::ListRef { .. } => true,
     }
+}
+
+/// a value satisfies a format-typed field when it is a string matching that format.
+fn value_matches_format(value: &Value, format: &FieldFormat) -> bool {
+    value
+        .as_str()
+        .map(|raw| matches_format(format, raw))
+        .unwrap_or(false)
 }
 
 fn field_type_label(field_type: &FieldType) -> String {
@@ -1163,6 +1174,19 @@ mod tests {
         }
     }
 
+    /// build a field whose `FieldType` carries an implicit format and no
+    /// separate `format:` constraint, so validation comes solely from the type.
+    fn typed_field(field_type: FieldType) -> FieldSchema {
+        FieldSchema {
+            r#type: field_type,
+            required: true,
+            nullable: false,
+            description: None,
+            format: None,
+            pattern: None,
+        }
+    }
+
     /// run `validate_field_value` against a value and return the report.
     fn check(schema: &FieldSchema, value: &serde_json::Value) -> ValidationReport {
         let uid_to_type: BTreeMap<Uid, TypeName> = BTreeMap::new();
@@ -1255,6 +1279,81 @@ mod tests {
         assert!(has_invalid_value(&check(
             &fmt_field(FieldFormat::Uuid),
             &json!("not-a-uuid")
+        )));
+    }
+
+    #[test]
+    fn type_uuid_enforces_format() {
+        assert!(
+            check(&typed_field(FieldType::Uuid), &json!(uid(1).to_string()))
+                .errors
+                .is_empty()
+        );
+        assert!(has_invalid_value(&check(
+            &typed_field(FieldType::Uuid),
+            &json!("not-a-uuid")
+        )));
+    }
+
+    #[test]
+    fn type_ip_address_accepts_any_string_including_masked() {
+        // `ip_address` is intentionally not format-validated yet: NetBox-style
+        // masked addresses (as in examples/e2e.yaml) must keep passing until the
+        // mask convention is decided. both bare and masked strings are accepted.
+        assert!(
+            check(&typed_field(FieldType::IpAddress), &json!("10.0.0.10/24"))
+                .errors
+                .is_empty()
+        );
+        assert!(
+            check(&typed_field(FieldType::IpAddress), &json!("10.0.0.1"))
+                .errors
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn type_cidr_and_prefix_enforce_format() {
+        assert!(check(&typed_field(FieldType::Cidr), &json!("10.0.0.0/24"))
+            .errors
+            .is_empty());
+        assert!(
+            check(&typed_field(FieldType::Prefix), &json!("10.0.0.0/24"))
+                .errors
+                .is_empty()
+        );
+        assert!(has_invalid_value(&check(
+            &typed_field(FieldType::Cidr),
+            &json!("not-a-cidr")
+        )));
+        assert!(has_invalid_value(&check(
+            &typed_field(FieldType::Prefix),
+            &json!("10.0.0.1")
+        )));
+    }
+
+    #[test]
+    fn type_mac_enforces_format() {
+        assert!(
+            check(&typed_field(FieldType::Mac), &json!("aa:bb:cc:dd:ee:ff"))
+                .errors
+                .is_empty()
+        );
+        assert!(has_invalid_value(&check(
+            &typed_field(FieldType::Mac),
+            &json!("aa:bb")
+        )));
+    }
+
+    #[test]
+    fn type_slug_enforces_format() {
+        assert!(check(&typed_field(FieldType::Slug), &json!("leaf-01"))
+            .errors
+            .is_empty());
+        // uppercase is rejected by the slug regex.
+        assert!(has_invalid_value(&check(
+            &typed_field(FieldType::Slug),
+            &json!("Leaf01")
         )));
     }
 
