@@ -16,7 +16,7 @@ jobs:
       CARGO_TARGET_DIR: target/ci
     steps:
       - name: checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: set up rust
         uses: dtolnay/rust-toolchain@stable
@@ -167,7 +167,7 @@ jobs:
             os: macos-14
     steps:
       - name: checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: set up rust
         uses: dtolnay/rust-toolchain@stable
