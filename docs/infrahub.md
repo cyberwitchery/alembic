@@ -18,7 +18,7 @@ schema provisioning is configured in the backend config file, for example:
 ```yaml
 backend: infrahub
 url: https://infrahub.example.com
-token: $INFRAHUB_TOKEN
+token: infrahub_xxx_replace_me
 schema:
   mode: infrahubctl
   schema_path: ./schema/alembic.generated.yaml

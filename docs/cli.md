@@ -20,7 +20,7 @@ netbox:
 ```yaml
 backend: netbox
 url: https://netbox.example.com
-token: $NETBOX_TOKEN
+token: nbt_xxx_replace_me
 ```
 
 infrahub with schema provisioning:
@@ -28,7 +28,7 @@ infrahub with schema provisioning:
 ```yaml
 backend: infrahub
 url: https://infrahub.example.com
-token: $INFRAHUB_TOKEN
+token: infrahub_xxx_replace_me
 schema:
   mode: infrahubctl
   schema_path: ./schema/alembic.generated.yaml

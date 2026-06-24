@@ -21,7 +21,7 @@ these can be provided via environment variables or a backend config file, for ex
 ```yaml
 backend: nautobot
 url: https://nautobot.example.com
-token: $NAUTOBOT_TOKEN
+token: nautobot_xxx_replace_me
 ```
 
 ## attrs mapping
