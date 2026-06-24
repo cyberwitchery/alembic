@@ -824,6 +824,49 @@ mod tests {
     }
 
     #[test]
+    fn accumulates_errors_for_multiple_invalid_fields() {
+        let field = |r#type| FieldSchema {
+            r#type,
+            required: true,
+            nullable: false,
+            description: None,
+            format: None,
+            pattern: None,
+        };
+        let type_schema = TypeSchema {
+            key: BTreeMap::from([("slug".to_string(), field(FieldType::Slug))]),
+            fields: BTreeMap::from([
+                ("count".to_string(), field(FieldType::Int)),
+                ("enabled".to_string(), field(FieldType::Bool)),
+            ]),
+        };
+        let mut key = BTreeMap::new();
+        key.insert("slug".to_string(), json!("leaf01"));
+        let mut attrs = BTreeMap::new();
+        attrs.insert("count".to_string(), json!("not-an-int"));
+        attrs.insert("enabled".to_string(), json!("not-a-bool"));
+        let objects = vec![Object::new(
+            uid(1),
+            TypeName::new("device"),
+            Key::from(key),
+            attrs.into(),
+        )
+        .unwrap()];
+        let report = validate_inventory(&Inventory {
+            schema: Schema {
+                types: BTreeMap::from([("device".to_string(), type_schema)]),
+            },
+            objects,
+        });
+        let invalid = report
+            .errors
+            .iter()
+            .filter(|e| matches!(e, ValidationError::InvalidValue { .. }))
+            .count();
+        assert_eq!(invalid, 2);
+    }
+
+    #[test]
     fn with_sources_attaches_location_for_dotted_type() {
         let mut key = BTreeMap::new();
         key.insert("slug".to_string(), serde_json::json!("fra1"));
