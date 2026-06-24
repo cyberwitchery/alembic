@@ -125,7 +125,9 @@ fn merge_schema(current: &mut Option<Schema>, incoming: Option<Schema>) -> Resul
 
 #[cfg(test)]
 mod tests {
-    use super::find_uid_line;
+    use super::{find_uid_line, merge_schema};
+    use alembic_core::{Schema, TypeSchema};
+    use std::collections::BTreeMap;
 
     #[test]
     fn locates_uid_definition_not_an_earlier_reference() {
@@ -153,5 +155,33 @@ mod tests {
 }
 "#;
         assert_eq!(find_uid_line(content, "site-1"), Some(8));
+    }
+
+    fn schema_with_type(name: &str) -> Schema {
+        let mut schema = Schema::default();
+        schema.types.insert(
+            name.to_string(),
+            TypeSchema {
+                key: BTreeMap::new(),
+                fields: BTreeMap::new(),
+            },
+        );
+        schema
+    }
+
+    #[test]
+    fn merge_schema_combines_disjoint_types() {
+        let mut current = Some(schema_with_type("dcim.site"));
+        merge_schema(&mut current, Some(schema_with_type("dcim.device"))).unwrap();
+        let types = current.unwrap().types;
+        assert!(types.contains_key("dcim.site"));
+        assert!(types.contains_key("dcim.device"));
+    }
+
+    #[test]
+    fn merge_schema_rejects_duplicate_type() {
+        let mut current = Some(schema_with_type("dcim.site"));
+        let err = merge_schema(&mut current, Some(schema_with_type("dcim.site"))).unwrap_err();
+        assert_eq!(err.to_string(), "duplicate schema type dcim.site");
     }
 }
