@@ -1081,6 +1081,80 @@ rules:
     }
 
     #[test]
+    fn ne_predicate_excludes_matching_objects() {
+        let input = input_inventory(json!([
+            { "uid": Uuid::from_u128(1).to_string(), "type": "dcim.device",
+              "key": { "device": "leaf01" }, "attrs": { "role": "leaf" } },
+            { "uid": Uuid::from_u128(2).to_string(), "type": "dcim.device",
+              "key": { "device": "spine01" }, "attrs": { "role": "spine" } },
+            { "uid": Uuid::from_u128(3).to_string(), "type": "dcim.device",
+              "key": { "device": "leaf02" }, "attrs": { "role": "leaf" } }
+        ]));
+        let out = compile_map(
+            &input,
+            &spec(
+                r#"
+schema:
+  types:
+    fabric.node:
+      key:
+        name: { type: slug }
+rules:
+  - name: non-leaves
+    match: "dcim.device[attrs.role!=leaf]"
+    emit:
+      type: fabric.node
+      key:
+        name: "${key.device}"
+"#,
+            ),
+        )
+        .unwrap();
+        let names: Vec<&str> = out
+            .objects
+            .iter()
+            .map(|o| o.key.get("name").unwrap().as_str().unwrap())
+            .collect();
+        assert_eq!(names, vec!["spine01"]);
+    }
+
+    #[test]
+    fn predicate_coerces_numeric_and_bool_values() {
+        let input = input_inventory(json!([
+            { "uid": Uuid::from_u128(1).to_string(), "type": "ipam.vlan",
+              "key": { "vid": 10 }, "attrs": { "enabled": true, "label": "v10" } },
+            { "uid": Uuid::from_u128(2).to_string(), "type": "ipam.vlan",
+              "key": { "vid": 20 }, "attrs": { "enabled": false, "label": "v20" } },
+            { "uid": Uuid::from_u128(3).to_string(), "type": "ipam.vlan",
+              "key": { "vid": 30 }, "attrs": { "enabled": true, "label": "v30" } }
+        ]));
+        let template = r#"
+schema:
+  types:
+    fabric.vlan:
+      key:
+        name: { type: slug }
+rules:
+  - name: vlans
+    match: "SELECTOR"
+    emit:
+      type: fabric.vlan
+      key:
+        name: "${attrs.label}"
+"#;
+        let names = |selector: &str| -> Vec<String> {
+            compile_map(&input, &spec(&template.replace("SELECTOR", selector)))
+                .unwrap()
+                .objects
+                .iter()
+                .map(|o| o.key.get("name").unwrap().as_str().unwrap().to_string())
+                .collect()
+        };
+        assert_eq!(names("ipam.vlan[key.vid=10]"), vec!["v10"]);
+        assert_eq!(names("ipam.vlan[attrs.enabled=true]"), vec!["v10", "v30"]);
+    }
+
+    #[test]
     fn multi_emit_fans_out_with_named_uid_reference() {
         // one source fabric fans out into a site and a vrf; the vrf references
         // the site via a named uid (auto ref-rewiring does not apply to
