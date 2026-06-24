@@ -62,9 +62,13 @@ pub fn tags_from_value(value: &Value) -> Result<Vec<String>> {
                     tags.push(name.clone());
                 } else if let Some(Value::String(slug)) = map.get("slug") {
                     tags.push(slug.clone());
+                } else {
+                    return Err(anyhow!(
+                        "tag object must have a string name or slug: {item}"
+                    ));
                 }
             }
-            _ => {}
+            _ => return Err(anyhow!("tag item must be a string or object: {item}")),
         }
     }
     Ok(tags)
@@ -136,5 +140,16 @@ mod tests {
     fn test_tags_from_value_invalid() {
         let val = json!("not an array");
         assert!(tags_from_value(&val).is_err());
+    }
+
+    #[test]
+    fn test_tags_from_value_non_string_non_object_item() {
+        assert!(tags_from_value(&json!([1, 2])).is_err());
+        assert!(tags_from_value(&json!(["ok", 5])).is_err());
+    }
+
+    #[test]
+    fn test_tags_from_value_object_without_name_or_slug() {
+        assert!(tags_from_value(&json!([{"id": 5}])).is_err());
     }
 }

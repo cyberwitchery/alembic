@@ -6,6 +6,7 @@
 - generic adapter: resolve refs nested in `list` and `map` fields on read, matching the write path and the netbox/nautobot adapters
 - core: attribute reference-type-mismatch errors to the referencing object, not the referent
 - engine: locate an object at its own `uid:` line, not an earlier line that references its uid, so validation errors point at the right object
+- engine: import errors on a malformed tag item instead of silently dropping it
 
 ## [0.5.0] - 2026-06-19
 
