@@ -1040,6 +1040,47 @@ rules:
     }
 
     #[test]
+    fn existence_predicates_filter_on_presence() {
+        let input = input_inventory(json!([
+            { "uid": Uuid::from_u128(1).to_string(), "type": "dcim.device",
+              "key": { "device": "leaf01" }, "attrs": { "primary_ip": "10.0.0.1" } },
+            { "uid": Uuid::from_u128(2).to_string(), "type": "dcim.device",
+              "key": { "device": "leaf02" }, "attrs": {} },
+            { "uid": Uuid::from_u128(3).to_string(), "type": "dcim.device",
+              "key": { "device": "leaf03" }, "attrs": { "primary_ip": null } }
+        ]));
+        let template = r#"
+schema:
+  types:
+    fabric.leaf:
+      key:
+        name: { type: slug }
+rules:
+  - name: leaves
+    match: "SELECTOR"
+    emit:
+      type: fabric.leaf
+      key:
+        name: "${key.device}"
+"#;
+        let names = |selector: &str| -> Vec<String> {
+            compile_map(&input, &spec(&template.replace("SELECTOR", selector)))
+                .unwrap()
+                .objects
+                .iter()
+                .map(|o| o.key.get("name").unwrap().as_str().unwrap().to_string())
+                .collect()
+        };
+        // `[field]` keeps present, non-null values; `[!field]` is its complement,
+        // with both absent and null counting as missing.
+        assert_eq!(names("dcim.device[attrs.primary_ip]"), vec!["leaf01"]);
+        assert_eq!(
+            names("dcim.device[!attrs.primary_ip]"),
+            vec!["leaf02", "leaf03"]
+        );
+    }
+
+    #[test]
     fn multi_emit_fans_out_with_named_uid_reference() {
         // one source fabric fans out into a site and a vrf; the vrf references
         // the site via a named uid (auto ref-rewiring does not apply to
