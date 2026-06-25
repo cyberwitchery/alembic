@@ -116,6 +116,14 @@ mod tests {
             custom_field_type_for_schema(&schema(FieldType::Json)),
             "json"
         );
+        assert_eq!(
+            custom_field_type_for_schema(&schema(FieldType::Date)),
+            "date"
+        );
+        assert_eq!(
+            custom_field_type_for_schema(&schema(FieldType::Datetime)),
+            "datetime"
+        );
     }
 
     #[test]
