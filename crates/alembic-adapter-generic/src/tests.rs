@@ -565,6 +565,76 @@ fn test_normalize_attrs_refs_resolves_refs_nested_in_map() {
     );
 }
 
+#[test]
+fn test_normalize_attrs_refs_resolves_list_ref() {
+    let type_schema = TypeSchema {
+        key: BTreeMap::new(),
+        fields: BTreeMap::from([(
+            "peers".to_string(),
+            field_schema(FieldType::ListRef {
+                target: "site".to_string(),
+            }),
+        )]),
+    };
+    let site_uid = Uid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
+    let mut state = new_state_store();
+    state.set_backend_id(
+        TypeName::new("site".to_string()),
+        site_uid,
+        BackendId::Int(7),
+    );
+    let mappings = state_mappings(&state);
+
+    let attrs: JsonMap = serde_json::json!({ "peers": [7] })
+        .as_object()
+        .unwrap()
+        .clone()
+        .into_iter()
+        .collect::<BTreeMap<_, _>>()
+        .into();
+
+    let normalized = normalize_attrs_refs(&attrs, &type_schema, &mappings);
+    assert_eq!(
+        normalized.get("peers"),
+        Some(&serde_json::json!([site_uid.to_string()]))
+    );
+}
+
+#[test]
+fn test_normalize_attrs_refs_resolves_object_shaped_ref() {
+    let type_schema = TypeSchema {
+        key: BTreeMap::new(),
+        fields: BTreeMap::from([(
+            "site".to_string(),
+            field_schema(FieldType::Ref {
+                target: "site".to_string(),
+            }),
+        )]),
+    };
+    let site_uid = Uid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
+    let mut state = new_state_store();
+    state.set_backend_id(
+        TypeName::new("site".to_string()),
+        site_uid,
+        BackendId::Int(7),
+    );
+    let mappings = state_mappings(&state);
+
+    let attrs: JsonMap = serde_json::json!({ "site": {"id": 7} })
+        .as_object()
+        .unwrap()
+        .clone()
+        .into_iter()
+        .collect::<BTreeMap<_, _>>()
+        .into();
+
+    let normalized = normalize_attrs_refs(&attrs, &type_schema, &mappings);
+    assert_eq!(
+        normalized.get("site"),
+        Some(&serde_json::json!(site_uid.to_string()))
+    );
+}
+
 // tests for default functions
 #[test]
 fn test_default_id_path() {
