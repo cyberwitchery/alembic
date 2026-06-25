@@ -23,7 +23,7 @@ pub fn plan(
 
     for (type_name, mapping) in state.all_mappings() {
         for (uid, backend_id) in mapping {
-            backend_to_uid.insert((backend_id.clone(), type_name.clone()), *uid);
+            backend_to_uid.insert((type_name.clone(), backend_id.clone()), *uid);
         }
     }
 
@@ -69,7 +69,7 @@ pub fn plan(
                 continue;
             }
             let uid = backend_to_uid
-                .get(&(backend_id.clone(), type_name.clone()))
+                .get(&(type_name.clone(), backend_id.clone()))
                 .copied()
                 .unwrap_or_else(|| uid_v5(type_name.as_str(), &key_string(&obs.key)));
             ops.push(Op::Delete {
