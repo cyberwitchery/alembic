@@ -1,6 +1,6 @@
 # cli
 
-alembic ships a single cli binary with validate, import, map, plan, apply, and cast subcommands.
+alembic ships a single cli binary with validate, import, map, plan, and apply subcommands.
 
 ## validate
 
@@ -175,22 +175,6 @@ alembic import -f examples/inventory.yaml -o observed.yaml \
 - `-f` is your inventory; its `schema` selects which types to observe.
 - `-o` receives the observed inventory (ir).
 - `peeringdb` uses `PEERINGDB_API_KEY` for authentication
-
-## cast
-
-```bash
-alembic cast django -f examples/inventory.yaml -o ./out \
-  --project alembic_project \
-  --app alembic_app \
-  --python python3
-```
-
-- scaffolds a django project/app and runs `manage.py check`
-- runs `manage.py makemigrations` and `manage.py migrate` by default
-- generates `generated_models.py` and `generated_admin.py` in the app
-- only creates user-owned `models.py`/`admin.py`/`extensions.py` if they are missing
-- `--no-admin` skips admin generation
-- `--no-migrate` skips `migrate` but still runs `makemigrations`
 
 ## environment variables
 
