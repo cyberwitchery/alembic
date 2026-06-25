@@ -54,6 +54,13 @@ pub enum ValidationError {
         field: String,
         target: String,
     },
+    #[error("invalid pattern for {type_name}.{field}: {error} (pattern: {pattern})")]
+    InvalidSchemaPattern {
+        type_name: String,
+        field: String,
+        pattern: String,
+        error: String,
+    },
 }
 
 impl ValidationError {
@@ -249,6 +256,7 @@ pub fn validate_inventory(inventory: &Inventory) -> ValidationReport {
     }
 
     validate_schema_ref_targets(&inventory.schema, &mut report);
+    validate_schema_patterns(&inventory.schema, &mut report);
     validate_schema_types(&inventory.schema, &inventory.objects, &mut report);
     for object in &inventory.objects {
         validate_object(object, &inventory.schema, &uid_to_type, &mut report);
@@ -322,6 +330,47 @@ fn validate_field_ref_targets(
         | FieldType::Mac
         | FieldType::Slug
         | FieldType::Enum { .. } => {}
+    }
+}
+
+/// validate that every `pattern:` regex declared in the schema compiles.
+///
+/// a typo'd pattern would otherwise only surface when some object happens to
+/// use the field (and never at all for a type that has no objects yet), as a
+/// confusing per-object error. this catches the mistake at the schema level,
+/// attributed to the declaring type and field.
+///
+/// `pattern` lives only on the top-level `FieldSchema` of each key/attr field;
+/// it is never nested inside `list`/`map` item types, so a flat iteration over
+/// key and attr fields is complete.
+fn validate_schema_patterns(schema: &Schema, report: &mut ValidationReport) {
+    for (type_name, type_schema) in &schema.types {
+        for (field, field_schema) in &type_schema.key {
+            validate_field_pattern(type_name, &format!("key.{field}"), field_schema, report);
+        }
+        for (field, field_schema) in &type_schema.fields {
+            validate_field_pattern(type_name, field, field_schema, report);
+        }
+    }
+}
+
+/// compile a single field's `pattern:`, recording an error if it is malformed.
+fn validate_field_pattern(
+    type_name: &str,
+    field: &str,
+    field_schema: &crate::ir::FieldSchema,
+    report: &mut ValidationReport,
+) {
+    let Some(pattern) = &field_schema.pattern else {
+        return;
+    };
+    if let Err(err) = Regex::new(pattern) {
+        report.errors.push(ValidationError::InvalidSchemaPattern {
+            type_name: type_name.to_string(),
+            field: field.to_string(),
+            pattern: pattern.to_string(),
+            error: err.to_string(),
+        });
     }
 }
 
@@ -1034,6 +1083,100 @@ mod tests {
             .errors
             .iter()
             .any(|e| matches!(e, ValidationError::UnknownRefTarget { .. })));
+    }
+
+    #[test]
+    fn detects_invalid_pattern_in_attr_field() {
+        let device = TypeSchema {
+            key: BTreeMap::new(),
+            fields: BTreeMap::from([("name".to_string(), pattern_field("[unclosed"))]),
+        };
+        let report = validate_schema(BTreeMap::from([("device".to_string(), device)]));
+        let count = report
+            .errors
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e,
+                    ValidationError::InvalidSchemaPattern { type_name, field, .. }
+                        if type_name == "device" && field == "name"
+                )
+            })
+            .count();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn detects_invalid_pattern_in_key_field() {
+        let device = TypeSchema {
+            key: BTreeMap::from([("slug".to_string(), pattern_field("(unbalanced"))]),
+            fields: BTreeMap::new(),
+        };
+        let report = validate_schema(BTreeMap::from([("device".to_string(), device)]));
+        assert!(report.errors.iter().any(|e| matches!(
+            e,
+            ValidationError::InvalidSchemaPattern { type_name, field, .. }
+                if type_name == "device" && field == "key.slug"
+        )));
+    }
+
+    #[test]
+    fn detects_invalid_pattern_for_type_with_no_objects() {
+        // the headline win: a bad pattern on a type with NO objects is never
+        // reached by per-object validation, but schema-load validation catches it.
+        let ghost = TypeSchema {
+            key: BTreeMap::new(),
+            fields: BTreeMap::from([("name".to_string(), pattern_field("[bad"))]),
+        };
+        let report = validate_inventory(&Inventory {
+            schema: Schema {
+                types: BTreeMap::from([("ghost".to_string(), ghost)]),
+            },
+            objects: vec![],
+        });
+        assert!(report.errors.iter().any(|e| matches!(
+            e,
+            ValidationError::InvalidSchemaPattern { type_name, field, .. }
+                if type_name == "ghost" && field == "name"
+        )));
+    }
+
+    #[test]
+    fn accumulates_invalid_patterns_across_fields_and_types() {
+        let device = TypeSchema {
+            key: BTreeMap::from([("slug".to_string(), pattern_field("(bad"))]),
+            fields: BTreeMap::from([("name".to_string(), pattern_field("[bad"))]),
+        };
+        let site = TypeSchema {
+            key: BTreeMap::new(),
+            fields: BTreeMap::from([("code".to_string(), pattern_field("*bad"))]),
+        };
+        let report = validate_schema(BTreeMap::from([
+            ("device".to_string(), device),
+            ("site".to_string(), site),
+        ]));
+        let count = report
+            .errors
+            .iter()
+            .filter(|e| matches!(e, ValidationError::InvalidSchemaPattern { .. }))
+            .count();
+        assert_eq!(count, 3);
+    }
+
+    #[test]
+    fn valid_and_absent_patterns_pass_schema_validation() {
+        let device = TypeSchema {
+            key: BTreeMap::from([("slug".to_string(), pattern_field("^[a-z0-9-]+$"))]),
+            fields: BTreeMap::from([
+                ("name".to_string(), pattern_field("^[A-Za-z ]+$")),
+                ("count".to_string(), schema_field(FieldType::Int)),
+            ]),
+        };
+        let report = validate_schema(BTreeMap::from([("device".to_string(), device)]));
+        assert!(!report
+            .errors
+            .iter()
+            .any(|e| matches!(e, ValidationError::InvalidSchemaPattern { .. })));
     }
 
     #[test]
