@@ -62,13 +62,6 @@ NETBOX_URL=https://netbox.example.com NETBOX_TOKEN=... \
   cargo run -p alembic-cli -- apply --backend netbox -p plan.json --allow-delete
 ```
 
-5) optional: generate a django app from an inventory:
-
-```bash
-cargo run -p alembic-cli -- cast django -f examples/inventory.yaml -o ./out \
-  --project alembic_project --app alembic_app
-```
-
 ## adapter coverage
 
 netbox and nautobot adapters are schema-driven and resolve types dynamically via their content type/object type APIs.
@@ -115,7 +108,6 @@ the dcim/ipam and generic-rest adapters here are the open core. the same ir driv
 - `docs/plan.md`
 - `docs/state.md`
 - `docs/cli.md`
-- `docs/cast.md`
 - `docs/netbox.md`
 - `docs/nautobot.md`
 - `docs/infrahub.md`

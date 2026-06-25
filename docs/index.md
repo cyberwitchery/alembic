@@ -12,7 +12,6 @@ this directory contains the canonical documentation for alembic.
 - `docs/state.md` - state store format and behavior
 - `docs/cli.md` - cli usage and examples
 - `docs/configuration.md` - cli configuration
-- `docs/cast.md` - django app generation from an inventory
 - `docs/netbox.md` - netbox adapter mapping and constraints
 - `docs/nautobot.md` - nautobot adapter mapping and constraints
 - `docs/infrahub.md` - infrahub adapter mapping and constraints
