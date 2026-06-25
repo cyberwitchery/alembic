@@ -1,8 +1,8 @@
 //! adapter registry and config loading for alembic.
 
 use alembic_engine::{
-    Adapter, ApplyReport, Backend, BackendId, Emitter, ObservedObject, ObservedState, Observer, Op,
-    ProvisionReport, StateData, StateStore, EXTERNAL_PROTOCOL_VERSION,
+    Adapter, ApplyReport, Backend, Emitter, ExternalObject, ExternalResponse, ObservedObject,
+    ObservedState, Observer, Op, ProvisionReport, StateData, StateStore, EXTERNAL_PROTOCOL_VERSION,
 };
 use anyhow::{anyhow, Context, Result};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -367,7 +367,7 @@ impl Observer for ProcessAdapter {
         let state = StateData {
             mappings: state.all_mappings().clone(),
         };
-        let objects: Vec<ObservedObjectData> = self
+        let objects: Vec<ExternalObject> = self
             .call(ExternalRequest::Read {
                 schema,
                 types,
@@ -434,21 +434,6 @@ enum ExternalRequest<'a> {
     EnsureSchema {
         schema: &'a alembic_core::Schema,
     },
-}
-
-#[derive(Debug, Deserialize)]
-struct ExternalResponse<T> {
-    ok: bool,
-    result: Option<T>,
-    error: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ObservedObjectData {
-    type_name: alembic_core::TypeName,
-    key: alembic_core::Key,
-    attrs: alembic_core::JsonMap,
-    backend_id: Option<BackendId>,
 }
 
 #[cfg(feature = "infrahub")]
