@@ -27,10 +27,10 @@ pub fn plan(
         }
     }
 
-    let mut desired_sorted = desired.to_vec();
+    let mut desired_sorted: Vec<&Object> = desired.iter().collect();
     desired_sorted.sort_by_key(|a| op_sort_key(&a.type_name, &a.key));
 
-    for object in desired_sorted.iter() {
+    for object in desired_sorted {
         let observed_object = state
             .backend_id(object.type_name.clone(), object.uid)
             .and_then(|id| observed.by_backend_id.get(&(object.type_name.clone(), id)))
