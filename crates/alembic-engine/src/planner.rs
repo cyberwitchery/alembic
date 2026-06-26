@@ -717,6 +717,37 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn plan_delete_uses_tracked_uid() {
+        let mut state_data = StateData::default();
+        state_data
+            .mappings
+            .entry(TypeName::new("dcim.site"))
+            .or_default()
+            .insert(Uid::from_u128(42), BackendId::Int(100));
+        let state = StateStore::new(None, state_data);
+
+        let mut observed = ObservedState::default();
+        observed
+            .insert(ObservedObject {
+                type_name: TypeName::new("dcim.site"),
+                key: make_key("fra1"),
+                attrs: make_attrs(&[]),
+                backend_id: Some(BackendId::Int(100)),
+            })
+            .unwrap();
+
+        let result = plan(&[], &observed, &state, &empty_schema(), true);
+        assert_eq!(result.ops.len(), 1);
+        match &result.ops[0] {
+            Op::Delete { uid, .. } => {
+                assert_eq!(*uid, Uid::from_u128(42));
+                assert_ne!(*uid, uid_v5("dcim.site", &key_string(&make_key("fra1"))));
+            }
+            other => panic!("expected delete, got {other:?}"),
+        }
+    }
+
     // --- sort_ops_for_apply ---
 
     #[test]
