@@ -10,6 +10,7 @@
 - core: attribute reference-type-mismatch errors to the referencing object, not the referent
 - engine: locate an object at its own `uid:` line, not an earlier line that references its uid, so validation errors point at the right object
 - engine: import errors on a malformed tag item instead of silently dropping it
+- netbox adapter: singularize `x`/`z`/`ch`/`sh`-stemmed endpoints correctly (`ipam/prefixes/` → `ipam.prefix`, not `ipam.prefixe`), so reading prefixes and decoding refs to them yield the declared schema type
 
 ## [0.5.0] - 2026-06-19
 
