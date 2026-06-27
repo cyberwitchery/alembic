@@ -167,3 +167,16 @@ when the adapter fails, respond with `ok: false`:
   "error": "explain what went wrong"
 }
 ```
+
+## conformance
+
+`fixtures/external_protocol/` holds canonical request/response pairs for `read`,
+`write`, `ensure_schema`, adapter errors, and version mismatch — the
+compatibility contract for adapters in any language: feed each `request` on stdin
+and emit the matching `response` on stdout as a single json line.
+
+`crates/alembic-engine/tests/external_protocol.rs` is the harness over those
+fixtures. it runs an adapter command for each fixture and checks the process
+boundary: one json line on stdout, a valid envelope, a payload that fits the
+method — the mistakes (a log line on stdout, extra output, a crash) that only
+surface when the adapter runs as its own process.

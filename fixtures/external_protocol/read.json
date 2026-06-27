@@ -1,0 +1,34 @@
+{
+  "description": "read returns the observed objects for the requested types",
+  "request": {
+    "version": 1,
+    "setup": {},
+    "method": "read",
+    "schema": {
+      "types": {
+        "dcim.site": {
+          "key": {
+            "site": { "type": "slug", "required": false, "nullable": false }
+          },
+          "fields": {
+            "name": { "type": "string", "required": false, "nullable": false },
+            "slug": { "type": "slug", "required": false, "nullable": false }
+          }
+        }
+      }
+    },
+    "types": ["dcim.site"],
+    "state": { "mappings": {} }
+  },
+  "response": {
+    "ok": true,
+    "result": [
+      {
+        "type_name": "dcim.site",
+        "key": { "site": "fra1" },
+        "attrs": { "name": "FRA1", "slug": "fra1" },
+        "backend_id": 1
+      }
+    ]
+  }
+}
