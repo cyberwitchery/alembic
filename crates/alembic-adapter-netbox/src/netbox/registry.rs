@@ -185,7 +185,10 @@ fn pluralize(value: &str) -> String {
         return format!("{value}es");
     }
     if let Some(stripped) = value.strip_suffix('y') {
-        return format!("{stripped}ies");
+        // consonant + y -> ies (city -> cities); vowel + y -> +s (bay -> bays)
+        if !stripped.ends_with(['a', 'e', 'i', 'o', 'u']) {
+            return format!("{stripped}ies");
+        }
     }
     if value.ends_with('s')
         || value.ends_with('x')
@@ -234,6 +237,10 @@ mod tests {
             type_name_from_endpoint("ipam/prefixes/"),
             Some("ipam.prefix".to_string())
         );
+        assert_eq!(
+            type_name_from_endpoint("dcim/device-bays/"),
+            Some("dcim.device_bay".to_string())
+        );
     }
 
     #[test]
@@ -253,6 +260,10 @@ mod tests {
         assert_eq!(
             endpoint_from_type_name("ipam.prefix"),
             Some("ipam/prefixes/".to_string())
+        );
+        assert_eq!(
+            endpoint_from_type_name("dcim.device_bay"),
+            Some("dcim/device-bays/".to_string())
         );
     }
 }
