@@ -2,7 +2,7 @@ use alembic_adapter_test::{load_cases, run_builtin, run_cases, Case, Expect, Out
 use serde_json::json;
 use std::path::PathBuf;
 use std::process::Command;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -44,6 +44,24 @@ fn rejects_a_timeout() {
     let outcomes = run_builtin(&sh("sleep 30"), Duration::from_millis(300));
     let failed = outcomes.iter().find(|o| !o.passed()).expect("a failure");
     assert!(message(failed).contains("terminate"), "{}", message(failed));
+}
+
+#[test]
+fn forked_adapter_does_not_outlast_the_timeout() {
+    // `sleep 30 & wait`: the shell backgrounds a sleep that inherits stdout, then
+    // waits on it. killing the shell at the timeout orphans the sleep, which keeps
+    // the pipe open. the runner must not block reading it until the orphan exits
+    // (which would take ~30s a check); the bounded drain caps that. each check is
+    // ~timeout + a grace, so four stay comfortably under this bound, while the
+    // pre-fix behavior was ~120s.
+    let start = Instant::now();
+    let outcomes = run_builtin(&sh("sleep 30 & wait"), Duration::from_millis(300));
+    assert!(outcomes.iter().all(|o| !o.passed()));
+    assert!(
+        start.elapsed() < Duration::from_secs(15),
+        "runner blocked on an orphaned grandchild for {:?}",
+        start.elapsed()
+    );
 }
 
 #[test]
@@ -154,4 +172,59 @@ fn case_result_mismatch_reported() {
         "{}",
         message(&outcomes[0])
     );
+}
+
+// the fixtures under fixtures/external_protocol/ are documented as the
+// cross-language protocol contract, so they must stay shape-compatible with the
+// real envelope and payload types. nothing else loads them, so guard them here.
+#[test]
+fn fixtures_match_the_protocol_types() {
+    use alembic_engine::{ApplyReport, ExternalObject, ExternalResponse, ProvisionReport};
+    use serde_json::Value;
+
+    let dir = PathBuf::from(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../fixtures/external_protocol"
+    ));
+    let mut checked = 0;
+    for entry in std::fs::read_dir(&dir).expect("read fixtures dir") {
+        let path = entry.expect("dir entry").path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let name = path.file_stem().unwrap().to_string_lossy().into_owned();
+        let fixture: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect("read fixture"))
+                .unwrap_or_else(|e| panic!("{name}: invalid json: {e}"));
+        let method = fixture["request"]["method"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{name}: request has no method"));
+        let response: ExternalResponse<Value> = serde_json::from_value(fixture["response"].clone())
+            .unwrap_or_else(|e| panic!("{name}: response is not an envelope: {e}"));
+        match (response.ok, response.result, response.error) {
+            (true, Some(result), None) => match method {
+                "read" => drop(
+                    serde_json::from_value::<Vec<ExternalObject>>(result)
+                        .unwrap_or_else(|e| panic!("{name}: bad read result: {e}")),
+                ),
+                "write" => drop(
+                    serde_json::from_value::<ApplyReport>(result)
+                        .unwrap_or_else(|e| panic!("{name}: bad write result: {e}")),
+                ),
+                "ensure_schema" => drop(
+                    serde_json::from_value::<ProvisionReport>(result)
+                        .unwrap_or_else(|e| panic!("{name}: bad ensure_schema result: {e}")),
+                ),
+                other => panic!("{name}: unknown method {other}"),
+            },
+            (false, None, Some(error)) => assert!(!error.is_empty(), "{name}: empty error"),
+            (ok, result, error) => panic!(
+                "{name}: inconsistent envelope: ok={ok}, has_result={}, has_error={}",
+                result.is_some(),
+                error.is_some()
+            ),
+        }
+        checked += 1;
+    }
+    assert_eq!(checked, 5, "expected 5 fixtures, checked {checked}");
 }

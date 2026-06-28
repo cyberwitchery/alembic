@@ -7,6 +7,7 @@ use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::path::Path;
 use std::process::{Command, ExitStatus, Stdio};
+use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -358,23 +359,45 @@ fn run_once(adapter: &[String], timeout: Duration, stdin: &[u8]) -> RunResult {
         }
     };
 
+    // the drains run concurrently, so wait for both against one shared deadline
+    // rather than spending a full grace on each in series.
+    let drain_deadline = Instant::now() + DRAIN_GRACE;
     RunResult {
         timed_out,
         status,
         stdout: stdout
-            .map(|h| h.join().unwrap_or_default())
+            .map(|rx| collect(rx, drain_deadline))
             .unwrap_or_default(),
         stderr: stderr
-            .map(|h| h.join().unwrap_or_default())
+            .map(|rx| collect(rx, drain_deadline))
             .unwrap_or_default(),
     }
 }
 
-/// drain a pipe to end on its own thread so a chatty adapter can't deadlock.
-fn drain<R: Read + Send + 'static>(mut pipe: R) -> thread::JoinHandle<Vec<u8>> {
+/// how long to keep reading a pipe after the adapter has exited or been killed.
+/// a pipe closes the instant its last writer exits, so a well-behaved adapter
+/// drains far inside this; it only bites when a forked grandchild outlived the
+/// adapter still holding the pipe open (see `collect`).
+const DRAIN_GRACE: Duration = Duration::from_secs(1);
+
+/// drain a pipe to end on its own thread so a chatty adapter can't deadlock,
+/// handing the bytes back over a channel so the caller can stop waiting on it.
+fn drain<R: Read + Send + 'static>(mut pipe: R) -> mpsc::Receiver<Vec<u8>> {
+    let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
         let mut buf = Vec::new();
         let _ = pipe.read_to_end(&mut buf);
-        buf
-    })
+        let _ = tx.send(buf);
+    });
+    rx
+}
+
+/// collect what a drain thread read, but give up at `deadline`. killing the
+/// adapter only signals the process we spawned; a grandchild it forked can outlive
+/// it still holding the pipe open, which would block `read_to_end` (and us) until
+/// that grandchild exits on its own, defeating the timeout. capping the wait keeps
+/// the runner's wall-clock bounded by the timeout; anything unread reads as empty.
+fn collect(rx: mpsc::Receiver<Vec<u8>>, deadline: Instant) -> Vec<u8> {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    rx.recv_timeout(remaining).unwrap_or_default()
 }
