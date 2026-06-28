@@ -15,7 +15,8 @@ there is one fixture per protocol case: `read`, `write`, `ensure_schema`, an
 adapter `error`, and a `version_mismatch`.
 
 these fixtures are the compatibility contract for adapter implementations in any
-language. the rust harness in `crates/alembic-engine/tests/external_protocol.rs`
-runs an adapter command for each fixture and checks the process boundary (one
-json line on stdout, a valid envelope, a payload that fits the method); other
-sdks should load the same files and check their adapter the same way.
+language: feed each `request` on stdin and emit the matching `response` on stdout.
+`alembic-adapter-test` checks an adapter executable against this protocol, both
+with built-in checks and with `--cases` files in the same `{name,request,expect}`
+form as `crates/alembic-adapter-test/examples/cases/`; other sdks can load these
+files and check their adapter the same way.

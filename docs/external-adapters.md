@@ -168,15 +168,56 @@ when the adapter fails, respond with `ok: false`:
 }
 ```
 
-## conformance
+## conformance testing
 
-`fixtures/external_protocol/` holds canonical request/response pairs for `read`,
-`write`, `ensure_schema`, adapter errors, and version mismatch — the
-compatibility contract for adapters in any language: feed each `request` on stdin
-and emit the matching `response` on stdout as a single json line.
+`alembic-adapter-test` is a standalone runner that checks an adapter executable
+against this protocol. it ships alongside alembic, so adapter authors do not need
+a rust toolchain. point it at the adapter, whose arguments follow `--`:
 
-`crates/alembic-engine/tests/external_protocol.rs` is the harness over those
-fixtures. it runs an adapter command for each fixture and checks the process
-boundary: one json line on stdout, a valid envelope, a payload that fits the
-method — the mistakes (a log line on stdout, extra output, a crash) that only
-surface when the adapter runs as its own process.
+```console
+alembic-adapter-test -- ./alembic-adapter-mybackend --verbose
+```
+
+the built-in checks need no fixtures. they confirm the backend-independent
+behaviour: malformed json, an unsupported version, and an unknown method each
+produce a structured error; the process exits 0 within the timeout after writing
+exactly one json document (surrounding whitespace and multi-line json are fine,
+logs on stdout are not); the envelope is consistent; and a successful payload has
+the right shape for its method.
+
+to exercise `read`, `write`, and `ensure_schema` against your own fake or
+disposable backend, pass `--cases` a file or directory of cases. a case is a
+complete request and an expectation:
+
+```json
+{
+  "name": "read empty inventory",
+  "request": {
+    "version": 1,
+    "setup": {},
+    "method": "read",
+    "schema": { "types": {} },
+    "types": [],
+    "state": { "mappings": {} }
+  },
+  "expect": { "ok": true, "result": [] }
+}
+```
+
+`result` is optional: omitted, the runner only checks the payload shape; present,
+it compares the returned json structurally. the runner exits `0` when every check
+passes, `1` when a check fails, and `2` on a usage or fixtures error, so it drops
+straight into ci:
+
+```console
+alembic-adapter-test --cases tests/alembic -- ./alembic-adapter-mybackend
+```
+
+```yaml
+- run: alembic-adapter-test --cases tests/alembic -- ./alembic-adapter-mybackend
+```
+
+a worked python adapter and its cases live in
+`crates/alembic-adapter-test/examples/`. the canonical request/response pairs in
+`fixtures/external_protocol/` document the same protocol as plain json for sdks
+in other languages.

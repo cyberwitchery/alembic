@@ -1,0 +1,15 @@
+{
+  "name": "read empty inventory",
+  "request": {
+    "version": 1,
+    "setup": {},
+    "method": "read",
+    "schema": { "types": {} },
+    "types": [],
+    "state": { "mappings": {} }
+  },
+  "expect": {
+    "ok": true,
+    "result": []
+  }
+}
