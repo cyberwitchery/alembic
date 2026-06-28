@@ -95,24 +95,16 @@ pub fn plan(
 /// compute field-level diffs for attrs.
 fn diff_attrs(existing: &JsonMap, desired: &JsonMap) -> Vec<FieldChange> {
     let mut changes = Vec::new();
-    let keys: BTreeSet<String> = existing.keys().chain(desired.keys()).cloned().collect();
-
-    for key in keys.iter() {
-        let from = existing.get(key).cloned().unwrap_or(Value::Null);
-        let desired_has = desired.contains_key(key);
-        if !desired_has {
-            continue;
-        }
-        let to = desired.get(key).cloned().unwrap_or(Value::Null);
-        if from != to {
+    for (field, to) in desired.iter() {
+        let from = existing.get(field).cloned().unwrap_or(Value::Null);
+        if from != *to {
             changes.push(FieldChange {
-                field: key.clone(),
+                field: field.clone(),
                 from,
-                to,
+                to: to.clone(),
             });
         }
     }
-
     changes
 }
 
