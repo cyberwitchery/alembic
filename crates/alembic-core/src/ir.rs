@@ -456,28 +456,30 @@ impl<'de> Deserialize<'de> for FieldSchema {
             .as_object()
             .ok_or_else(|| serde::de::Error::custom("field schema must be an object"))?;
 
-        let required = map
-            .get("required")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false);
-        let nullable = map
-            .get("nullable")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false);
-        let description = map
-            .get("description")
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_string);
+        let bool_field = |key: &str| -> Result<bool, D::Error> {
+            match map.get(key) {
+                None => Ok(false),
+                Some(value) => value.as_bool().ok_or_else(|| {
+                    serde::de::Error::custom(format!("field schema `{key}` must be a boolean"))
+                }),
+            }
+        };
+        let str_field = |key: &str| -> Result<Option<String>, D::Error> {
+            match map.get(key) {
+                None => Ok(None),
+                Some(value) => value.as_str().map(|s| Some(s.to_string())).ok_or_else(|| {
+                    serde::de::Error::custom(format!("field schema `{key}` must be a string"))
+                }),
+            }
+        };
 
-        let format = map
-            .get("format")
-            .and_then(serde_json::Value::as_str)
-            .map(|raw| parse_field_format(raw).map_err(serde::de::Error::custom))
+        let required = bool_field("required")?;
+        let nullable = bool_field("nullable")?;
+        let description = str_field("description")?;
+        let pattern = str_field("pattern")?;
+        let format = str_field("format")?
+            .map(|raw| parse_field_format(&raw).map_err(serde::de::Error::custom))
             .transpose()?;
-        let pattern = map
-            .get("pattern")
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_string);
 
         let type_value = map
             .get("type")
@@ -1215,6 +1217,22 @@ mod tests {
         });
         let result: Result<FieldSchema, _> = serde_json::from_value(json);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn field_schema_non_bool_flag_errors() {
+        let required = serde_json::json!({ "type": "string", "required": "true" });
+        assert!(serde_json::from_value::<FieldSchema>(required).is_err());
+        let nullable = serde_json::json!({ "type": "string", "nullable": 1 });
+        assert!(serde_json::from_value::<FieldSchema>(nullable).is_err());
+    }
+
+    #[test]
+    fn field_schema_non_string_meta_errors() {
+        let format = serde_json::json!({ "type": "string", "format": 1 });
+        assert!(serde_json::from_value::<FieldSchema>(format).is_err());
+        let pattern = serde_json::json!({ "type": "string", "pattern": true });
+        assert!(serde_json::from_value::<FieldSchema>(pattern).is_err());
     }
 
     #[test]
