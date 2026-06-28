@@ -110,7 +110,10 @@ fn pluralize(value: &str) -> String {
         return format!("{value}es");
     }
     if let Some(stripped) = value.strip_suffix('y') {
-        return format!("{stripped}ies");
+        // consonant + y -> ies (city -> cities); vowel + y -> +s (bay -> bays)
+        if !stripped.ends_with(['a', 'e', 'i', 'o', 'u']) {
+            return format!("{stripped}ies");
+        }
     }
     if value.ends_with('s')
         || value.ends_with('x')
@@ -143,6 +146,12 @@ mod tests {
                 display: Some("dcim | location type".to_string()),
                 ..Default::default()
             },
+            ContentType {
+                app_label: "dcim".to_string(),
+                model: "devicebay".to_string(),
+                display: Some("dcim | device bay".to_string()),
+                ..Default::default()
+            },
         ];
 
         let registry = ObjectTypeRegistry::from_content_types(types).unwrap();
@@ -153,6 +162,9 @@ mod tests {
             .info_for(&TypeName::new("dcim.locationtype"))
             .unwrap();
         assert_eq!(loc_type.endpoint, "dcim/location-types/");
+
+        let device_bay = registry.info_for(&TypeName::new("dcim.devicebay")).unwrap();
+        assert_eq!(device_bay.endpoint, "dcim/device-bays/");
     }
 
     #[test]
@@ -177,5 +189,6 @@ mod tests {
         assert_eq!(pluralize("location-type"), "location-types");
         assert_eq!(pluralize("address"), "addresses");
         assert_eq!(pluralize("facility"), "facilities");
+        assert_eq!(pluralize("device-bay"), "device-bays");
     }
 }
