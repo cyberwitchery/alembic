@@ -133,6 +133,23 @@ fn accepts_multiline_json() {
 }
 
 #[test]
+fn version_mismatch_uses_the_next_protocol_version() {
+    use alembic_engine::EXTERNAL_PROTOCOL_VERSION;
+    // this adapter answers ok only to EXTERNAL_PROTOCOL_VERSION + 1, so the must-error
+    // check fails iff the runner sent exactly that valid-but-unsupported version (and
+    // not a hardcoded, u8-overflowing 999, which this adapter would have rejected).
+    let next = format!(r#""version":{}"#, EXTERNAL_PROTOCOL_VERSION + 1);
+    let script = format!(
+        r#"req=$(cat); case "$req" in *'{next}'*) printf '{{"ok":true,"result":[]}}' ;; *) printf '{{"ok":false,"error":"unsupported"}}' ;; esac"#
+    );
+    let outcomes = run_builtin(&sh(&script), TIMEOUT);
+    assert!(
+        !find(&outcomes, "protocol/version-mismatch").passed(),
+        "version-mismatch did not send EXTERNAL_PROTOCOL_VERSION + 1"
+    );
+}
+
+#[test]
 fn python_example_passes_builtin() {
     if !python3_available() {
         eprintln!("skipping python_example_passes_builtin: python3 not found");
