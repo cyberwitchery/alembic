@@ -128,6 +128,14 @@ impl StateStore {
     }
 }
 
+impl From<&StateStore> for StateData {
+    fn from(store: &StateStore) -> Self {
+        Self {
+            mappings: store.all_mappings().clone(),
+        }
+    }
+}
+
 #[derive(Debug)]
 struct LocalBackend {
     path: PathBuf,

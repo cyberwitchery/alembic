@@ -39,8 +39,8 @@ pub use drift::{ChangedEntry, DriftEntry, DriftReport};
 pub use endpoint::normalize_endpoint;
 pub use errors::AdapterApplyError;
 pub use external::{
-    run_external_adapter, ExternalAdapter, ExternalEnvelope, ExternalObject, ExternalRequest,
-    ExternalResponse, EXTERNAL_PROTOCOL_VERSION,
+    run_external_adapter, ExternalAdapter, ExternalEnvelope, ExternalEnvelopeRef, ExternalObject,
+    ExternalRequest, ExternalRequestRef, ExternalResponse, EXTERNAL_PROTOCOL_VERSION,
 };
 pub use extract::{import_inventory, ImportReport};
 pub use inflect::pluralize;
