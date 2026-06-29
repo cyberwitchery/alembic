@@ -1,0 +1,30 @@
+{
+  "description": "ensure_schema provisions backend types and fields and reports what it created",
+  "request": {
+    "version": 1,
+    "setup": {},
+    "method": "ensure_schema",
+    "schema": {
+      "types": {
+        "dcim.site": {
+          "key": {
+            "site": { "type": "slug", "required": false, "nullable": false }
+          },
+          "fields": {
+            "name": { "type": "string", "required": false, "nullable": false },
+            "slug": { "type": "slug", "required": false, "nullable": false }
+          }
+        }
+      }
+    }
+  },
+  "response": {
+    "ok": true,
+    "result": {
+      "created_fields": [],
+      "created_tags": [],
+      "created_object_types": ["dcim.site"],
+      "created_object_fields": ["dcim.site.name"]
+    }
+  }
+}

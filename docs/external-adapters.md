@@ -167,3 +167,58 @@ when the adapter fails, respond with `ok: false`:
   "error": "explain what went wrong"
 }
 ```
+
+## conformance testing
+
+`alembic-adapter-test` is a standalone runner that checks an adapter executable
+against this protocol. it ships alongside alembic, so adapter authors do not need
+a rust toolchain. point it at the adapter, whose arguments follow `--`:
+
+```console
+alembic-adapter-test -- ./alembic-adapter-mybackend --verbose
+```
+
+the built-in checks need no fixtures. they confirm the backend-independent
+behaviour: malformed json, an unsupported version, and an unknown method each
+produce a structured error; the process exits 0 within the timeout after writing
+exactly one json document (surrounding whitespace and multi-line json are fine,
+logs on stdout are not); the envelope is consistent; and a valid read of an empty
+inventory succeeds with a right-shaped payload, so an adapter that errors on every
+request does not pass.
+
+to exercise `read`, `write`, and `ensure_schema` against your own fake or
+disposable backend, pass `--cases` a file or directory of cases. a case is a
+complete request and an expectation:
+
+```json
+{
+  "name": "read empty inventory",
+  "request": {
+    "version": 1,
+    "setup": {},
+    "method": "read",
+    "schema": { "types": {} },
+    "types": [],
+    "state": { "mappings": {} }
+  },
+  "expect": { "ok": true, "result": [] }
+}
+```
+
+`result` is optional: omitted, the runner only checks the payload shape; present,
+it compares the returned json structurally. the runner exits `0` when every check
+passes, `1` when a check fails, and `2` on a usage or fixtures error, so it drops
+straight into ci:
+
+```console
+alembic-adapter-test --cases tests/alembic -- ./alembic-adapter-mybackend
+```
+
+```yaml
+- run: alembic-adapter-test --cases tests/alembic -- ./alembic-adapter-mybackend
+```
+
+a worked python adapter and its cases live in
+`crates/alembic-adapter-test/examples/`. the canonical request/response pairs in
+`fixtures/external_protocol/` document the same protocol as plain json for sdks
+in other languages.

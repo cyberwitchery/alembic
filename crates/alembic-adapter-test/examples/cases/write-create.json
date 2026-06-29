@@ -1,0 +1,36 @@
+{
+  "name": "write a create op",
+  "request": {
+    "version": 1,
+    "setup": {},
+    "method": "write",
+    "schema": {
+      "types": {
+        "dcim.site": {
+          "key": { "site": { "type": "slug", "required": false, "nullable": false } },
+          "fields": {
+            "name": { "type": "string", "required": false, "nullable": false },
+            "slug": { "type": "slug", "required": false, "nullable": false }
+          }
+        }
+      }
+    },
+    "ops": [
+      {
+        "op": "create",
+        "uid": "11111111-1111-1111-1111-111111111111",
+        "type_name": "dcim.site",
+        "desired": {
+          "uid": "11111111-1111-1111-1111-111111111111",
+          "type": "dcim.site",
+          "key": { "site": "fra1" },
+          "attrs": { "name": "FRA1", "slug": "fra1" }
+        }
+      }
+    ],
+    "state": { "mappings": {} }
+  },
+  "expect": {
+    "ok": true
+  }
+}
