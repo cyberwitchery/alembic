@@ -98,7 +98,7 @@ pub fn run_builtin(adapter: &[String], timeout: Duration) -> Vec<Outcome> {
             "protocol/read-empty",
             &request_bytes(&read_request),
             "read",
-            Expectation::WellFormedTolerant,
+            Expectation::MustSucceed,
         ),
     ]
 }
@@ -159,8 +159,8 @@ pub fn load_cases(path: &Path) -> anyhow::Result<Vec<Case>> {
 enum Expectation<'a> {
     /// the adapter must reject the request with a structured error.
     MustError,
-    /// a well-formed request: ok=true must have a valid payload, ok=false is allowed.
-    WellFormedTolerant,
+    /// a valid request the adapter must answer with ok=true and a right-shaped payload.
+    MustSucceed,
     /// an adapter-specific expectation.
     Case(&'a Expect),
 }
@@ -236,7 +236,12 @@ fn validate(run: &RunResult, method: &str, expectation: &Expectation) -> Result<
                 return Err("expected a structured error, got ok=true".to_string());
             }
         }
-        Expectation::WellFormedTolerant => {
+        Expectation::MustSucceed => {
+            if let Some(error) = &response.error {
+                return Err(format!(
+                    "a valid request must succeed, but the adapter returned an error: {error}"
+                ));
+            }
             if let Some(result) = &response.result {
                 check_payload(method, result)?;
             }

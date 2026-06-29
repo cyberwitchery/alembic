@@ -102,6 +102,27 @@ fn rejects_bad_payload() {
 }
 
 #[test]
+fn rejects_an_always_erroring_adapter() {
+    // an adapter that ignores its input and always returns a structured error
+    // satisfies every must-error check, so the empty read has to demand success
+    // for the runner to reject it.
+    let outcomes = run_builtin(
+        &sh(r#"cat >/dev/null; printf '{"ok":false,"error":"no"}\n'"#),
+        TIMEOUT,
+    );
+    let read = find(&outcomes, "protocol/read-empty");
+    assert!(
+        !read.passed(),
+        "the empty read must reject an always-erroring adapter"
+    );
+    assert!(message(read).contains("must succeed"), "{}", message(read));
+    // the must-error checks still pass, so read-empty is the discriminating check.
+    assert!(find(&outcomes, "protocol/invalid-json").passed());
+    assert!(find(&outcomes, "protocol/version-mismatch").passed());
+    assert!(find(&outcomes, "protocol/unknown-method").passed());
+}
+
+#[test]
 fn accepts_multiline_json() {
     let outcomes = run_builtin(
         &sh("cat >/dev/null; printf '{\\n  \"ok\": true,\\n  \"result\": []\\n}\\n'"),
