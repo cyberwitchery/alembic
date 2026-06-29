@@ -1,6 +1,8 @@
 //! conformance checks for external adapter executables.
 
-use alembic_engine::{ApplyReport, ExternalObject, ExternalResponse, ProvisionReport};
+use alembic_engine::{
+    ApplyReport, ExternalObject, ExternalResponse, ProvisionReport, EXTERNAL_PROTOCOL_VERSION,
+};
 use anyhow::Context;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -52,8 +54,10 @@ pub struct Expect {
 
 /// run the backend-independent protocol checks against the adapter command.
 pub fn run_builtin(adapter: &[String], timeout: Duration) -> Vec<Outcome> {
+    // requests use the version the engine sends, so the suite tracks the protocol it tests.
+    let version = EXTERNAL_PROTOCOL_VERSION;
     let read_request = json!({
-        "version": 1,
+        "version": version,
         "setup": {},
         "method": "read",
         "schema": { "types": {} },
@@ -74,7 +78,7 @@ pub fn run_builtin(adapter: &[String], timeout: Duration) -> Vec<Outcome> {
             timeout,
             "protocol/version-mismatch",
             &request_bytes(&json!({
-                "version": 999,
+                "version": version + 1,
                 "setup": {},
                 "method": "read",
                 "schema": { "types": {} },
@@ -88,7 +92,7 @@ pub fn run_builtin(adapter: &[String], timeout: Duration) -> Vec<Outcome> {
             adapter,
             timeout,
             "protocol/unknown-method",
-            &request_bytes(&json!({ "version": 1, "setup": {}, "method": "frobnicate" })),
+            &request_bytes(&json!({ "version": version, "setup": {}, "method": "frobnicate" })),
             "read",
             Expectation::MustError,
         ),
