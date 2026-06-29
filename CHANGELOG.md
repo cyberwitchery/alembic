@@ -14,6 +14,7 @@
 - netbox + nautobot adapters: pluralize vowel + `y` endpoints correctly (`dcim.device_bay` → `dcim/device-bays/`, not `dcim/device-baies/`), so reading and writing those types hit the right REST endpoint
 - core: reject a wrong-typed `required`/`nullable`/`format`/`pattern` in a field schema instead of silently coercing it to the permissive default, so a malformed schema fails to load rather than dropping the constraint
 - add alembic-adapter-test, a standalone conformance runner for external adapter executables
+- security: bump anyhow 1.0.102 to 1.0.103 to clear RUSTSEC-2026-0190 (unsoundness in Error::downcast_mut); not reachable in our usage
 
 ## [0.5.0] - 2026-06-19
 
