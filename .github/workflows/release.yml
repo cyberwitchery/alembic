@@ -144,6 +144,11 @@ jobs:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: cargo publish -p alembic-cli --no-verify
 
+      - name: publish alembic-adapter-test
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish -p alembic-adapter-test --no-verify
+
   binaries:
     name: binaries (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
@@ -181,21 +186,22 @@ jobs:
           key: ${{ matrix.target }}
           cache-targets: true
 
-      - name: build alembic-cli
-        run: cargo build --release --locked -p alembic-cli --target ${{ matrix.target }}
+      - name: build binaries
+        run: cargo build --release --locked -p alembic-cli -p alembic-adapter-test --target ${{ matrix.target }}
 
       - name: package
         shell: bash
         run: |
           set -euo pipefail
-          dir="alembic-cli-${GITHUB_REF_NAME}-${{ matrix.target }}"
-          mkdir "$dir"
-          cp "target/ci/${{ matrix.target }}/release/alembic-cli" "$dir/"
-          cp README.md "$dir/"
-          tar czf "${dir}.tar.gz" "$dir"
-          echo "ASSET=${dir}.tar.gz" >> "$GITHUB_ENV"
+          for bin in alembic-cli alembic-adapter-test; do
+            dir="${bin}-${GITHUB_REF_NAME}-${{ matrix.target }}"
+            mkdir "$dir"
+            cp "target/ci/${{ matrix.target }}/release/${bin}" "$dir/"
+            cp README.md "$dir/"
+            tar czf "${dir}.tar.gz" "$dir"
+          done
 
-      - name: attach binary to release
+      - name: attach binaries to release
         uses: softprops/action-gh-release@v3
         with:
-          files: ${{ env.ASSET }}
+          files: "*-${{ github.ref_name }}-${{ matrix.target }}.tar.gz"
