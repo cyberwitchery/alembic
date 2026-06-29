@@ -1,4 +1,4 @@
-use alembic_core::{uid_v5, Key};
+use alembic_core::{uid_v5, Key, Uid};
 use anyhow::{anyhow, Result};
 use serde::Deserialize;
 use serde_json::{Map as JsonObject, Value as JsonValue};
@@ -218,17 +218,48 @@ fn render_uid_mapping(
     let (Some(kind), Some(stable)) = (kind, stable) else {
         return Ok(None);
     };
+    // an optional uid whose components render empty is skipped, not an error.
+    if optional && (kind.trim().is_empty() || stable.trim().is_empty()) {
+        return Ok(None);
+    }
+    let uid = derive_v5_uid(&kind, &stable, ctx.rule)?;
+    Ok(Some(JsonValue::String(uid.to_string())))
+}
+
+/// derive a `v5` uid from already-rendered `type`/`stable` components, rejecting
+/// either trimming empty. shared by the `${uid: {...}}` attr form and the map
+/// emit/named-uid `v5` specs.
+pub(crate) fn derive_v5_uid(kind: &str, stable: &str, rule: &str) -> Result<Uid> {
     if kind.trim().is_empty() || stable.trim().is_empty() {
-        if optional {
+        return Err(anyhow!(
+            "rule {rule}: uid requires non-empty type and stable values"
+        ));
+    }
+    Ok(uid_v5(kind, stable))
+}
+
+/// look up `name` in the var namespace, applying the shared missing/null
+/// short-circuit: a missing var (or, under `allow_missing`, a null one) yields
+/// `Ok(None)`; a missing var without `allow_missing` is an error.
+fn resolve_var<'a>(
+    ctx: &RenderCtx<'a>,
+    name: &str,
+    context: &str,
+    allow_missing: bool,
+) -> Result<Option<&'a JsonValue>> {
+    let Some(value) = ctx.vars.get(name) else {
+        if allow_missing {
             return Ok(None);
         }
         return Err(anyhow!(
-            "rule {}: uid mapping requires non-empty type and stable",
+            "rule {}: missing var {name} in {context}",
             ctx.rule
         ));
+    };
+    if value.is_null() && allow_missing {
+        return Ok(None);
     }
-    let uid = uid_v5(&kind, &stable);
-    Ok(Some(JsonValue::String(uid.to_string())))
+    Ok(Some(value))
 }
 
 fn render_string_value(
@@ -240,19 +271,9 @@ fn render_string_value(
 ) -> Result<Option<JsonValue>> {
     if let Some(inner) = placeholder_only(raw) {
         let placeholder = parse_placeholder(inner, ctx.rule, context)?;
-        let Some(value) = ctx.vars.get(placeholder.name) else {
-            if allow_missing {
-                return Ok(None);
-            }
-            return Err(anyhow!(
-                "rule {}: missing var {} in {context}",
-                ctx.rule,
-                placeholder.name
-            ));
-        };
-        if value.is_null() && allow_missing {
+        let Some(value) = resolve_var(ctx, placeholder.name, context, allow_missing)? else {
             return Ok(None);
-        }
+        };
         // a lone `${var}` with no transforms preserves its raw typed value;
         // render_yaml_value gates scalar-ness for key/uid output.
         if placeholder.transforms.is_empty() {
@@ -530,15 +551,27 @@ fn apply_builtin(
     ctx: &RenderCtx,
     context: &str,
 ) -> Result<String> {
-    match call.name {
-        "upper" | "lower" | "trim" | "slug" => {}
+    // classify the name first, so an unknown transform errors before the
+    // argument check and coercion (the original precedence), then dispatch
+    // exhaustively over the four built-ins.
+    enum Builtin {
+        Upper,
+        Lower,
+        Trim,
+        Slug,
+    }
+    let builtin = match call.name {
+        "upper" => Builtin::Upper,
+        "lower" => Builtin::Lower,
+        "trim" => Builtin::Trim,
+        "slug" => Builtin::Slug,
         other => {
             return Err(anyhow!(
                 "rule {}: unknown transform {other} in {context}",
                 ctx.rule
             ))
         }
-    }
+    };
     if !call.args.is_empty() {
         return Err(anyhow!(
             "rule {}: transform {} takes no arguments in {context}",
@@ -547,16 +580,16 @@ fn apply_builtin(
         ));
     }
     let value = coerce_to_string(current, var_name, ctx.rule, context)?;
-    Ok(match call.name {
-        "upper" => value.to_uppercase(),
-        "lower" => value.to_lowercase(),
-        "trim" => value.trim().to_string(),
+    Ok(match builtin {
+        Builtin::Upper => value.to_uppercase(),
+        Builtin::Lower => value.to_lowercase(),
+        Builtin::Trim => value.trim().to_string(),
         // `mapping::slugify` lowercases, collapses runs of non-`[a-z0-9]`
         // to a single `-`, and trims leading/trailing `-`, producing a valid
         // `slug` value. an input with no ascii alphanumerics (e.g. `---`)
         // slugifies to an empty string, which is not a valid slug, so we
         // error rather than emit it.
-        "slug" => {
+        Builtin::Slug => {
             let slug = crate::mapping::slugify(&value);
             if slug.is_empty() {
                 return Err(anyhow!(
@@ -566,7 +599,6 @@ fn apply_builtin(
             }
             slug
         }
-        _ => unreachable!("guarded above"),
     })
 }
 
@@ -606,35 +638,55 @@ fn apply_placeholder(
     coerce_to_string(&typed, placeholder.name, ctx.rule, context)
 }
 
+/// whether a value has a scalar string form, without allocating one (cf. [`scalar_string`]).
+fn is_scalar(value: &JsonValue) -> bool {
+    matches!(
+        value,
+        JsonValue::String(_) | JsonValue::Number(_) | JsonValue::Bool(_)
+    )
+}
+
+/// the scalar→string partition shared by predicate comparison, template
+/// coercion, and key/uid scalar gating: strings clone through, numbers and bools
+/// take their natural form (`42`, `true`); null, arrays, and objects have no
+/// scalar string form.
+pub(crate) fn scalar_string(value: &JsonValue) -> Option<String> {
+    match value {
+        JsonValue::String(value) => Some(value.clone()),
+        JsonValue::Number(value) => Some(value.to_string()),
+        JsonValue::Bool(value) => Some(value.to_string()),
+        JsonValue::Null | JsonValue::Array(_) | JsonValue::Object(_) => None,
+    }
+}
+
 /// render a scalar var as a string. strings pass through; numbers and bools are
 /// coerced to their natural form (`42`, `true`). nulls, arrays, and objects
 /// have no template representation and are an error.
 fn coerce_to_string(value: &JsonValue, name: &str, rule: &str, context: &str) -> Result<String> {
-    match value {
-        JsonValue::String(value) => Ok(value.clone()),
-        JsonValue::Number(value) => Ok(value.to_string()),
-        JsonValue::Bool(value) => Ok(value.to_string()),
-        JsonValue::Null => Err(anyhow!(
-            "rule {rule}: var {name} in {context} is null and cannot be rendered as a string"
-        )),
-        JsonValue::Array(_) | JsonValue::Object(_) => Err(anyhow!(
-            "rule {rule}: var {name} in {context} must be a scalar (string, number, or bool)"
-        )),
-    }
+    scalar_string(value).ok_or_else(|| {
+        if value.is_null() {
+            anyhow!(
+                "rule {rule}: var {name} in {context} is null and cannot be rendered as a string"
+            )
+        } else {
+            anyhow!(
+                "rule {rule}: var {name} in {context} must be a scalar (string, number, or bool)"
+            )
+        }
+    })
 }
 
 /// a key or uid component must be scalar; null, arrays, and objects have no
 /// identity form (docs/map.md).
 fn ensure_scalar(value: &JsonValue, rule: &str, context: &str) -> Result<()> {
-    match value {
-        JsonValue::String(_) | JsonValue::Number(_) | JsonValue::Bool(_) => Ok(()),
-        JsonValue::Null => Err(anyhow!(
-            "rule {rule}: {context} is null and cannot be rendered as a string"
-        )),
-        JsonValue::Array(_) | JsonValue::Object(_) => Err(anyhow!(
-            "rule {rule}: {context} must be a scalar (string, number, or bool)"
-        )),
+    if is_scalar(value) {
+        return Ok(());
     }
+    Err(if value.is_null() {
+        anyhow!("rule {rule}: {context} is null and cannot be rendered as a string")
+    } else {
+        anyhow!("rule {rule}: {context} must be a scalar (string, number, or bool)")
+    })
 }
 
 pub(crate) fn render_template(template: &str, ctx: &RenderCtx, context: &str) -> Result<String> {
@@ -661,19 +713,9 @@ fn render_template_optional(
             ));
         };
         let placeholder = parse_placeholder(&after[..end], ctx.rule, context)?;
-        let Some(value) = ctx.vars.get(placeholder.name) else {
-            if allow_missing {
-                return Ok(None);
-            }
-            return Err(anyhow!(
-                "rule {}: missing var {} in {context}",
-                ctx.rule,
-                placeholder.name
-            ));
-        };
-        if value.is_null() && allow_missing {
+        let Some(value) = resolve_var(ctx, placeholder.name, context, allow_missing)? else {
             return Ok(None);
-        }
+        };
         rendered.push_str(&apply_placeholder(value, &placeholder, ctx, context)?);
         rest = &after[end + 1..];
     }
