@@ -21,7 +21,9 @@ setup:
 
 ## protocol
 
-all requests include a `version` field. the current protocol version is `1`.
+all requests include a `version` field (the current protocol version is `1`) and a
+`setup` object: the adapter's `setup:` config block, or `null` when there is none
+(`{}` is also accepted).
 
 ## rust sdk
 
@@ -77,6 +79,7 @@ request:
 ```json
 {
   "version": 1,
+  "setup": {},
   "method": "read",
   "schema": { "types": { /* alembic schema */ } },
   "types": ["dcim.site", "dcim.device"],
@@ -107,6 +110,7 @@ request:
 ```json
 {
   "version": 1,
+  "setup": {},
   "method": "write",
   "schema": { "types": { /* alembic schema */ } },
   "ops": [ /* plan ops */ ],
@@ -138,6 +142,7 @@ request:
 ```json
 {
   "version": 1,
+  "setup": {},
   "method": "ensure_schema",
   "schema": { "types": { /* alembic schema */ } }
 }
@@ -159,7 +164,9 @@ response:
 
 ### errors
 
-when the adapter fails, respond with `ok: false`:
+when the adapter fails, respond with `ok: false` and still exit `0`. a non-zero
+exit is treated as a hard failure and the response on stdout is ignored, so signal
+failure through the envelope, not the exit code:
 
 ```json
 {
