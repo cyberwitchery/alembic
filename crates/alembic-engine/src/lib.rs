@@ -28,6 +28,7 @@ mod tests;
 
 pub use adapter_ops::{
     build_key_from_schema, build_request_body, query_filters_from_key, resolve_value_for_type,
+    resolved_ids_from_state, state_mappings_by_id,
 };
 pub use apply_retry::{apply_non_delete_with_retries, RetryApplyDriver, RetryApplyResult};
 pub use drift::{ChangedEntry, DriftEntry, DriftReport};
