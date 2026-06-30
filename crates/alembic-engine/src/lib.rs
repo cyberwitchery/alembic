@@ -3,6 +3,7 @@
 mod adapter_ops;
 mod apply_retry;
 mod drift;
+mod endpoint;
 mod errors;
 pub mod external;
 mod extract;
@@ -31,6 +32,7 @@ pub use adapter_ops::{
 };
 pub use apply_retry::{apply_non_delete_with_retries, RetryApplyDriver, RetryApplyResult};
 pub use drift::{ChangedEntry, DriftEntry, DriftReport};
+pub use endpoint::normalize_endpoint;
 pub use errors::AdapterApplyError;
 pub use external::{
     run_external_adapter, ExternalAdapter, ExternalEnvelope, ExternalObject, ExternalRequest,

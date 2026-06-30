@@ -1,5 +1,5 @@
 use alembic_core::TypeName;
-use alembic_engine::pluralize;
+use alembic_engine::{normalize_endpoint, pluralize};
 use anyhow::{anyhow, Result};
 use nautobot::models::ContentType;
 use std::collections::{BTreeMap, BTreeSet};
@@ -70,40 +70,11 @@ impl ObjectTypeRegistry {
     }
 
     pub(super) fn type_name_for_endpoint(&self, endpoint: &str) -> Option<&str> {
-        let normalized = normalize_endpoint(endpoint)?;
+        let normalized = normalize_endpoint(endpoint, |s| {
+            s.chars().all(|c| c.is_ascii_digit()) || uuid::Uuid::parse_str(s).is_ok()
+        })?;
         self.by_endpoint.get(&normalized).map(|name| name.as_str())
     }
-}
-
-fn normalize_endpoint(endpoint: &str) -> Option<String> {
-    let trimmed = endpoint.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-
-    let mut path = trimmed;
-    if let Some(idx) = trimmed.find("/api/") {
-        path = &trimmed[idx + 5..];
-    }
-    let path = path.trim_start_matches('/');
-    let path = path.strip_prefix("api/").unwrap_or(path);
-    let trimmed = path.trim_end_matches('/');
-    let mut segments: Vec<&str> = trimmed.split('/').collect();
-
-    if let Some(last) = segments.last().copied() {
-        if !last.is_empty()
-            && (last.chars().all(|ch| ch.is_ascii_digit()) || uuid::Uuid::parse_str(last).is_ok())
-        {
-            segments.pop();
-        }
-    }
-
-    if segments.is_empty() {
-        return None;
-    }
-    let mut normalized = segments.join("/");
-    normalized.push('/');
-    Some(normalized)
 }
 
 #[cfg(test)]
@@ -148,17 +119,22 @@ mod tests {
     }
 
     #[test]
-    fn endpoint_normalization() {
+    fn normalize_endpoint_strips_trailing_integer_and_uuid_ids() {
+        // nautobot uses uuid pks, so both an all-digit and a uuid trailing
+        // segment count as an object id.
+        let is_id =
+            |s: &str| s.chars().all(|c| c.is_ascii_digit()) || uuid::Uuid::parse_str(s).is_ok();
         assert_eq!(
-            normalize_endpoint("http://localhost/api/dcim/devices/"),
+            normalize_endpoint("dcim/devices/5/", is_id),
             Some("dcim/devices/".to_string())
         );
         assert_eq!(
-            normalize_endpoint("/api/dcim/devices/6d74797d-de61-46b6-95e4-27c5eadb8fc6/"),
+            normalize_endpoint("dcim/devices/6d74797d-de61-46b6-95e4-27c5eadb8fc6/", is_id),
             Some("dcim/devices/".to_string())
         );
+        // a non-id trailing segment is a resource and stays.
         assert_eq!(
-            normalize_endpoint("dcim/devices"),
+            normalize_endpoint("dcim/devices/", is_id),
             Some("dcim/devices/".to_string())
         );
     }
