@@ -1,4 +1,4 @@
-use crate::AdapterApplyError;
+use crate::{AdapterApplyError, BackendId, StateStore};
 use alembic_core::{FieldType, JsonMap, Key, TypeSchema, Uid};
 use anyhow::{anyhow, Result};
 use serde_json::{Map, Value};
@@ -214,6 +214,42 @@ fn value_to_query_value(value: &Value) -> Result<String> {
         Value::Null => Err(anyhow!("key value is null")),
         Value::Array(_) | Value::Object(_) => Err(anyhow!("key value must be scalar")),
     }
+}
+
+/// project the state store into a per-type `backend-id -> uid` map, keeping only
+/// the backend ids `extract` accepts (the variant a given adapter retains).
+pub fn state_mappings_by_id<I: Ord>(
+    state: &StateStore,
+    extract: impl Fn(&BackendId) -> Option<I>,
+) -> BTreeMap<String, BTreeMap<I, Uid>> {
+    let mut by_type = BTreeMap::new();
+    for (type_name, mapping) in state.all_mappings() {
+        let mut id_to_uid = BTreeMap::new();
+        for (uid, backend_id) in mapping {
+            if let Some(id) = extract(backend_id) {
+                id_to_uid.insert(id, *uid);
+            }
+        }
+        by_type.insert(type_name.as_str().to_string(), id_to_uid);
+    }
+    by_type
+}
+
+/// project the state store into a flat `uid -> backend-id` map, keeping only the
+/// backend ids `extract` accepts. companion to [`state_mappings_by_id`].
+pub fn resolved_ids_from_state<I>(
+    state: &StateStore,
+    extract: impl Fn(&BackendId) -> Option<I>,
+) -> BTreeMap<Uid, I> {
+    let mut resolved = BTreeMap::new();
+    for mapping in state.all_mappings().values() {
+        for (uid, backend_id) in mapping {
+            if let Some(id) = extract(backend_id) {
+                resolved.insert(*uid, id);
+            }
+        }
+    }
+    resolved
 }
 
 #[cfg(test)]
@@ -661,5 +697,63 @@ mod tests {
         let key = Key::from(BTreeMap::from([("tags".to_string(), json!("not-array"))]));
         let err = query_filters_from_key(&schema, &key, &empty_resolved()).unwrap_err();
         assert!(err.to_string().contains("key field tags must be an array"));
+    }
+
+    // --- state projection helpers ---
+
+    fn store_with_mixed_ids(type_name: &str) -> StateStore {
+        use crate::StateData;
+        use alembic_core::TypeName;
+
+        let mut data = StateData::default();
+        data.mappings
+            .entry(TypeName::new(type_name))
+            .or_default()
+            .extend([
+                (Uid::from_u128(1), BackendId::Int(5)),
+                (Uid::from_u128(2), BackendId::String("uuid-2".to_string())),
+            ]);
+        StateStore::new(None, data)
+    }
+
+    fn keep_int(b: &BackendId) -> Option<u64> {
+        match b {
+            BackendId::Int(i) => Some(*i),
+            _ => None,
+        }
+    }
+
+    fn keep_string(b: &BackendId) -> Option<String> {
+        match b {
+            BackendId::String(s) => Some(s.clone()),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn state_mappings_by_id_keeps_only_accepted_variant() {
+        let store = store_with_mixed_ids("dcim.site");
+
+        let ints = state_mappings_by_id(&store, keep_int);
+        assert_eq!(ints["dcim.site"].get(&5), Some(&Uid::from_u128(1)));
+        assert_eq!(ints["dcim.site"].len(), 1);
+
+        let strings = state_mappings_by_id(&store, keep_string);
+        assert_eq!(strings["dcim.site"].get("uuid-2"), Some(&Uid::from_u128(2)));
+        assert_eq!(strings["dcim.site"].len(), 1);
+    }
+
+    #[test]
+    fn resolved_ids_from_state_filters_by_variant() {
+        let store = store_with_mixed_ids("t");
+
+        let ints = resolved_ids_from_state(&store, keep_int);
+        assert_eq!(ints, BTreeMap::from([(Uid::from_u128(1), 5u64)]));
+
+        let strings = resolved_ids_from_state(&store, keep_string);
+        assert_eq!(
+            strings,
+            BTreeMap::from([(Uid::from_u128(2), "uuid-2".to_string())])
+        );
     }
 }
