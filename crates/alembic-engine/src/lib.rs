@@ -6,6 +6,7 @@ mod drift;
 mod errors;
 pub mod external;
 mod extract;
+mod inflect;
 pub mod journal;
 mod loader;
 pub mod mapping;
@@ -36,6 +37,7 @@ pub use external::{
     ExternalResponse, EXTERNAL_PROTOCOL_VERSION,
 };
 pub use extract::{import_inventory, ImportReport};
+pub use inflect::pluralize;
 pub use loader::load_inventory;
 pub use planner::{plan, sort_ops_for_apply};
 pub use state::{PostgresTlsMode, StateData, StateStore};

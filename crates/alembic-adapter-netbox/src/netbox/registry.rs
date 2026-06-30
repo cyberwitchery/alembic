@@ -1,4 +1,5 @@
 use alembic_core::TypeName;
+use alembic_engine::pluralize;
 use anyhow::{anyhow, Result};
 use netbox::models::ObjectType;
 use std::collections::{BTreeMap, BTreeSet};
@@ -180,27 +181,6 @@ fn endpoint_from_type_name(type_name: &str) -> Option<String> {
     Some(format!("{app}/{resource}/"))
 }
 
-fn pluralize(value: &str) -> String {
-    if value.ends_with("address") {
-        return format!("{value}es");
-    }
-    if let Some(stripped) = value.strip_suffix('y') {
-        // consonant + y -> ies (city -> cities); vowel + y -> +s (bay -> bays)
-        if !stripped.ends_with(['a', 'e', 'i', 'o', 'u']) {
-            return format!("{stripped}ies");
-        }
-    }
-    if value.ends_with('s')
-        || value.ends_with('x')
-        || value.ends_with('z')
-        || value.ends_with("ch")
-        || value.ends_with("sh")
-    {
-        return format!("{value}es");
-    }
-    format!("{value}s")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -265,5 +245,19 @@ mod tests {
             endpoint_from_type_name("dcim.device_bay"),
             Some("dcim/device-bays/".to_string())
         );
+    }
+
+    #[test]
+    fn singularize_inverts_pluralize() {
+        for stem in [
+            "device",
+            "prefix",
+            "device_bay",
+            "ip_address",
+            "circuit_termination",
+            "interface",
+        ] {
+            assert_eq!(singularize(&pluralize(stem)), stem);
+        }
     }
 }
