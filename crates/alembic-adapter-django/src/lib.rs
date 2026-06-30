@@ -2,7 +2,7 @@
 
 use crate::cast_django::{CommandRunner, DjangoConfig};
 use alembic_core::{FieldFormat, FieldType, Inventory, Object, Schema, TypeName, TypeSchema};
-use alembic_engine::{AppliedOp, ApplyReport, Emitter, Op, StateStore};
+use alembic_engine::{pluralize, AppliedOp, ApplyReport, Emitter, Op, StateStore};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -602,16 +602,6 @@ fn class_name_for_type(type_name: &str) -> String {
         .collect::<String>()
 }
 
-fn pluralize(name: &str) -> String {
-    if name.ends_with('s') {
-        format!("{name}es")
-    } else if let Some(stripped) = name.strip_suffix('y') {
-        format!("{}ies", stripped)
-    } else {
-        format!("{name}s")
-    }
-}
-
 fn field_spec_from_schema(
     name: &str,
     schema: &alembic_core::FieldSchema,
@@ -1125,5 +1115,28 @@ mod tests {
         let site_pos = models.find("class DcimSite").unwrap();
         assert!(device_pos < interface_pos);
         assert!(interface_pos < site_pos);
+    }
+
+    #[test]
+    fn render_routes_block_pluralizes_endpoints() {
+        // regression for the stale pluralize copy: `prefix` -> `prefixes`
+        // (not `prefixs`), vowel + y `gateway` -> `gateways` (not `gatewaies`).
+        let models = vec![
+            ModelSpec {
+                class_name: "Prefix".to_string(),
+                fields: Vec::new(),
+                key_fields: Vec::new(),
+                has_validators: false,
+            },
+            ModelSpec {
+                class_name: "Gateway".to_string(),
+                fields: Vec::new(),
+                key_fields: Vec::new(),
+                has_validators: false,
+            },
+        ];
+        let routes = render_routes_block(&models);
+        assert!(routes.contains("router.register(\"prefixes\", PrefixViewSet)"));
+        assert!(routes.contains("router.register(\"gateways\", GatewayViewSet)"));
     }
 }

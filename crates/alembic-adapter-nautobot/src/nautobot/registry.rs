@@ -1,4 +1,5 @@
 use alembic_core::TypeName;
+use alembic_engine::pluralize;
 use anyhow::{anyhow, Result};
 use nautobot::models::ContentType;
 use std::collections::{BTreeMap, BTreeSet};
@@ -103,27 +104,6 @@ fn normalize_endpoint(endpoint: &str) -> Option<String> {
     let mut normalized = segments.join("/");
     normalized.push('/');
     Some(normalized)
-}
-
-fn pluralize(value: &str) -> String {
-    if value.ends_with("address") {
-        return format!("{value}es");
-    }
-    if let Some(stripped) = value.strip_suffix('y') {
-        // consonant + y -> ies (city -> cities); vowel + y -> +s (bay -> bays)
-        if !stripped.ends_with(['a', 'e', 'i', 'o', 'u']) {
-            return format!("{stripped}ies");
-        }
-    }
-    if value.ends_with('s')
-        || value.ends_with('x')
-        || value.ends_with('z')
-        || value.ends_with("ch")
-        || value.ends_with("sh")
-    {
-        return format!("{value}es");
-    }
-    format!("{value}s")
 }
 
 #[cfg(test)]
