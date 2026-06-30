@@ -1,5 +1,5 @@
 use alembic_core::TypeName;
-use alembic_engine::pluralize;
+use alembic_engine::{normalize_endpoint, pluralize};
 use anyhow::{anyhow, Result};
 use netbox::models::ObjectType;
 use std::collections::{BTreeMap, BTreeSet};
@@ -25,7 +25,7 @@ impl ObjectTypeRegistry {
             let Some(endpoint) = object_type
                 .rest_api_endpoint
                 .as_deref()
-                .and_then(normalize_endpoint)
+                .and_then(|e| normalize_endpoint(e, |s| s.chars().all(|c| c.is_ascii_digit())))
             else {
                 continue;
             };
@@ -105,36 +105,9 @@ impl ObjectTypeRegistry {
     }
 
     pub(super) fn type_name_for_endpoint(&self, endpoint: &str) -> Option<&str> {
-        let normalized = normalize_endpoint(endpoint)?;
+        let normalized = normalize_endpoint(endpoint, |s| s.chars().all(|c| c.is_ascii_digit()))?;
         self.by_endpoint.get(&normalized).map(|name| name.as_str())
     }
-}
-
-fn normalize_endpoint(endpoint: &str) -> Option<String> {
-    let trimmed = endpoint.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-
-    let mut path = trimmed;
-    if let Some(idx) = trimmed.find("/api/") {
-        path = &trimmed[idx + 5..];
-    }
-    let path = path.trim_start_matches('/');
-    let path = path.strip_prefix("api/").unwrap_or(path);
-    let trimmed = path.trim_end_matches('/');
-    let mut segments: Vec<&str> = trimmed.split('/').collect();
-    if let Some(last) = segments.last().copied() {
-        if !last.is_empty() && last.chars().all(|ch| ch.is_ascii_digit()) {
-            segments.pop();
-        }
-    }
-    if segments.is_empty() {
-        return None;
-    }
-    let mut normalized = segments.join("/");
-    normalized.push('/');
-    Some(normalized)
 }
 
 fn type_name_from_endpoint(endpoint: &str) -> Option<String> {
@@ -186,16 +159,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn normalize_endpoint_handles_urls_and_paths() {
-        let url = "https://netbox.example.com/api/dcim/sites/";
-        assert_eq!(normalize_endpoint(url), Some("dcim/sites/".to_string()));
+    fn normalize_endpoint_strips_trailing_integer_id() {
+        // netbox uses integer pks, so a trailing all-digit segment is an id.
+        let is_id = |s: &str| s.chars().all(|c| c.is_ascii_digit());
         assert_eq!(
-            normalize_endpoint("/api/ipam/prefixes/"),
-            Some("ipam/prefixes/".to_string())
+            normalize_endpoint("dcim/sites/5/", is_id),
+            Some("dcim/sites/".to_string())
         );
+        // a non-numeric trailing segment is a resource, not an id.
         assert_eq!(
-            normalize_endpoint("dcim/devices"),
-            Some("dcim/devices/".to_string())
+            normalize_endpoint("dcim/sites/", is_id),
+            Some("dcim/sites/".to_string())
         );
     }
 
