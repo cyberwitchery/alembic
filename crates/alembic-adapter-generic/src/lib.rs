@@ -2,9 +2,9 @@
 
 use alembic_core::{JsonMap, Schema, TypeName, Uid};
 use alembic_engine::{
-    apply_non_delete_with_retries, build_key_from_schema, resolved_ids_from_state,
-    state_mappings_by_id, Adapter, AdapterApplyError, AppliedOp, ApplyReport, BackendId, Emitter,
-    ObservedObject, ObservedState, Observer, Op, RetryApplyDriver,
+    apply_non_delete_with_retries, build_key_from_schema, describe_missing_refs,
+    is_missing_ref_error, resolved_ids_from_state, state_mappings_by_id, Adapter, AppliedOp,
+    ApplyReport, BackendId, Emitter, ObservedObject, ObservedState, Observer, Op, RetryApplyDriver,
 };
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
@@ -591,54 +591,6 @@ fn resolve_value_for_type(
         BackendId::Int(n) => serde_json::Value::Number((*n).into()),
         BackendId::String(s) => serde_json::Value::String(s.clone()),
     })
-}
-
-fn is_missing_ref_error(err: &anyhow::Error) -> bool {
-    err.downcast_ref::<AdapterApplyError>()
-        .is_some_and(|e| matches!(e, AdapterApplyError::MissingRef { .. }))
-}
-
-fn describe_missing_refs(ops: &[Op], resolved: &BTreeMap<Uid, BackendId>) -> String {
-    let mut missing = BTreeSet::new();
-    for op in ops {
-        if let Op::Create { desired, .. } | Op::Update { desired, .. } = op {
-            for value in desired.attrs.values() {
-                collect_missing_refs(value, resolved, &mut missing);
-            }
-        }
-    }
-    missing
-        .into_iter()
-        .map(|uid| uid.to_string())
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
-fn collect_missing_refs(
-    value: &serde_json::Value,
-    resolved: &BTreeMap<Uid, BackendId>,
-    missing: &mut BTreeSet<Uid>,
-) {
-    match value {
-        serde_json::Value::String(raw) => {
-            if let Ok(uid) = Uid::parse_str(raw) {
-                if !resolved.contains_key(&uid) {
-                    missing.insert(uid);
-                }
-            }
-        }
-        serde_json::Value::Array(items) => {
-            for item in items {
-                collect_missing_refs(item, resolved, missing);
-            }
-        }
-        serde_json::Value::Object(map) => {
-            for value in map.values() {
-                collect_missing_refs(value, resolved, missing);
-            }
-        }
-        _ => {}
-    }
 }
 
 #[cfg(test)]

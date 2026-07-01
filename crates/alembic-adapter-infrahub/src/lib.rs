@@ -2,8 +2,8 @@
 
 use alembic_core::{key_string, uid_v5, FieldType, JsonMap, Key, Schema, TypeName, Uid};
 use alembic_engine::{
-    apply_non_delete_with_retries, build_key_from_schema, resolve_value_for_type,
-    resolved_ids_from_state, state_mappings_by_id, Adapter, AdapterApplyError, AppliedOp,
+    apply_non_delete_with_retries, build_key_from_schema, is_missing_ref_error,
+    resolve_value_for_type, resolved_ids_from_state, state_mappings_by_id, Adapter, AppliedOp,
     ApplyReport, BackendId, Emitter, ObservedObject, ObservedState, Observer, Op, ProvisionReport,
     RetryApplyDriver, StateStore,
 };
@@ -1977,11 +1977,6 @@ fn backend_id_from_value(value: &Value) -> Option<BackendId> {
         Value::Object(map) => map.get("id").and_then(backend_id_from_value),
         _ => None,
     }
-}
-
-fn is_missing_ref_error(err: &anyhow::Error) -> bool {
-    err.downcast_ref::<AdapterApplyError>()
-        .is_some_and(|e| matches!(e, AdapterApplyError::MissingRef { .. }))
 }
 
 fn describe_missing_refs(ops: &[Op], resolved: &BTreeMap<Uid, BackendId>) -> String {
