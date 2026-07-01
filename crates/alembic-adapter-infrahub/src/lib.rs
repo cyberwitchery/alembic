@@ -3,9 +3,9 @@
 use alembic_core::{key_string, uid_v5, FieldType, JsonMap, Key, Schema, TypeName, Uid};
 use alembic_engine::{
     apply_non_delete_with_retries, backend_id_from_value, build_key_from_schema,
-    describe_missing_refs, is_missing_ref_error, normalize_attrs_refs, resolve_value_for_type,
-    resolved_ids_identity, Adapter, AppliedOp, ApplyReport, BackendId, Emitter, ObservedObject,
-    ObservedState, Observer, Op, ProvisionReport, RetryApplyDriver, StateMappings, StateStore,
+    is_missing_ref_error, normalize_attrs_refs, resolve_value_for_type, resolved_ids_identity,
+    Adapter, AppliedOp, ApplyReport, BackendId, Emitter, ObservedObject, ObservedState, Observer,
+    Op, ProvisionReport, RetryApplyDriver, StateMappings, StateStore,
 };
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
@@ -1883,6 +1883,36 @@ fn key_refs_resolved(
         }
     }
     true
+}
+
+// kept local, not the engine's deep collector: infrahub graphql refs are flat
+// uid strings/arrays, so this stays a shallow first-match extractor (see #174).
+fn describe_missing_refs(ops: &[Op], resolved: &BTreeMap<Uid, BackendId>) -> String {
+    let mut missing = BTreeSet::new();
+    for op in ops {
+        if let Op::Create { desired, .. } | Op::Update { desired, .. } = op {
+            for value in desired.attrs.values() {
+                if let Some(uid) = extract_ref_uid(value) {
+                    if !resolved.contains_key(&uid) {
+                        missing.insert(uid);
+                    }
+                }
+            }
+        }
+    }
+    missing
+        .into_iter()
+        .map(|uid| uid.to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn extract_ref_uid(value: &Value) -> Option<Uid> {
+    match value {
+        Value::String(raw) => Uid::parse_str(raw).ok(),
+        Value::Array(items) => items.iter().find_map(extract_ref_uid),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
