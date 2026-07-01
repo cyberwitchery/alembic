@@ -2,8 +2,9 @@
 
 use alembic_core::{JsonMap, Schema, TypeName, Uid};
 use alembic_engine::{
-    apply_non_delete_with_retries, build_key_from_schema, Adapter, AdapterApplyError, AppliedOp,
-    ApplyReport, BackendId, Emitter, ObservedObject, ObservedState, Observer, Op, RetryApplyDriver,
+    apply_non_delete_with_retries, build_key_from_schema, resolved_ids_from_state,
+    state_mappings_by_id, Adapter, AdapterApplyError, AppliedOp, ApplyReport, BackendId, Emitter,
+    ObservedObject, ObservedState, Observer, Op, RetryApplyDriver,
 };
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
@@ -461,25 +462,13 @@ impl StateMappings {
 }
 
 fn state_mappings(state: &alembic_engine::StateStore) -> StateMappings {
-    let mut by_type = BTreeMap::new();
-    for (type_name, mapping) in state.all_mappings() {
-        let mut id_to_uid = BTreeMap::new();
-        for (uid, backend_id) in mapping {
-            id_to_uid.insert(backend_id.clone(), *uid);
-        }
-        by_type.insert(type_name.as_str().to_string(), id_to_uid);
+    StateMappings {
+        by_type: state_mappings_by_id(state, |b| Some(b.clone())),
     }
-    StateMappings { by_type }
 }
 
 fn resolved_from_state(state: &alembic_engine::StateStore) -> BTreeMap<Uid, BackendId> {
-    let mut resolved = BTreeMap::new();
-    for mapping in state.all_mappings().values() {
-        for (uid, backend_id) in mapping {
-            resolved.insert(*uid, backend_id.clone());
-        }
-    }
-    resolved
+    resolved_ids_from_state(state, |b| Some(b.clone()))
 }
 
 fn normalize_attrs_refs(
