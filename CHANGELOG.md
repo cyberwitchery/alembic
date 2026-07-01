@@ -13,6 +13,7 @@
 - engine: import errors on a malformed tag item instead of silently dropping it
 - engine: parse a `u64`-range transform argument literal (above `i64::MAX`) as an exact integer instead of a lossy float, matching the value path
 - netbox adapter: singularize `x`/`z`/`ch`/`sh`-stemmed endpoints correctly (`ipam/prefixes/` → `ipam.prefix`, not `ipam.prefixe`), so reading prefixes and decoding refs to them yield the declared schema type
+- netbox adapter: singularize `s`-stemmed endpoints correctly (`extras/statuses/` → `extras.status`, not `extras.statu`), so reading and decoding refs to a custom object type whose singular ends in `s` yield the declared schema type
 - netbox + nautobot adapters: pluralize vowel + `y` endpoints correctly (`dcim.device_bay` → `dcim/device-bays/`, not `dcim/device-baies/`), so reading and writing those types hit the right REST endpoint
 - django adapter: pluralize generated drf router endpoints correctly (`prefix` → `prefixes`, not `prefixs`; `gateway` → `gateways`, not `gatewaies`) by sharing one `pluralize` helper across the netbox, nautobot, and django adapters instead of a stale third copy
 - core: reject a wrong-typed `required`/`nullable`/`format`/`pattern` in a field schema instead of silently coercing it to the permissive default, so a malformed schema fails to load rather than dropping the constraint

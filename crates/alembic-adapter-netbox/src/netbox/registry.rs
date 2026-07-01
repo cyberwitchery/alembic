@@ -132,15 +132,12 @@ fn singularize(value: &str) -> String {
     if let Some(stripped) = value.strip_suffix("ies") {
         return format!("{stripped}y");
     }
-    // inverse of pluralize's x/z/ch/sh -> +es rule (e.g. prefix -> prefixes)
-    if ["xes", "zes", "ches", "shes"]
+    // inverse of pluralize's s/x/z/ch/sh -> +es rule (e.g. prefix -> prefixes, status -> statuses)
+    if ["ses", "xes", "zes", "ches", "shes"]
         .iter()
         .any(|s| value.ends_with(s))
     {
         return value[..value.len() - 2].to_string();
-    }
-    if let Some(stripped) = value.strip_suffix("ses") {
-        return stripped.to_string();
     }
     if let Some(stripped) = value.strip_suffix('s') {
         return stripped.to_string();
@@ -180,6 +177,10 @@ mod tests {
             type_name_from_endpoint("dcim/device-bays/"),
             Some("dcim.device_bay".to_string())
         );
+        assert_eq!(
+            type_name_from_endpoint("extras/statuses/"),
+            Some("extras.status".to_string())
+        );
     }
 
     #[test]
@@ -215,6 +216,9 @@ mod tests {
             "ip_address",
             "circuit_termination",
             "interface",
+            "status",
+            "class",
+            "bus",
         ] {
             assert_eq!(singularize(&pluralize(stem)), stem);
         }
