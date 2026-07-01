@@ -258,21 +258,6 @@ fn test_resolve_value_for_type_ref_missing_uid() {
     assert!(err.to_string().contains("missing referenced uid"));
 }
 
-// tests for is_missing_ref_error
-#[test]
-fn test_is_missing_ref_error_true() {
-    let err = anyhow::Error::from(alembic_engine::AdapterApplyError::MissingRef {
-        uid: Uid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap(),
-    });
-    assert!(is_missing_ref_error(&err));
-}
-
-#[test]
-fn test_is_missing_ref_error_false() {
-    let err = anyhow!("some other error");
-    assert!(!is_missing_ref_error(&err));
-}
-
 // tests for resolve_attrs
 #[test]
 fn test_resolve_attrs_success() {

@@ -1,7 +1,10 @@
 use crate::journal::Journal;
-use crate::{AppliedOp, Op};
+use crate::{AdapterApplyError, AppliedOp, Op};
+use alembic_core::Uid;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
+use serde_json::Value;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug)]
 pub struct RetryApplyResult {
@@ -102,6 +105,56 @@ pub async fn apply_non_delete_with_retries(
     Ok(RetryApplyResult { applied, pending })
 }
 
+/// true when `err` is a retryable missing-ref apply error.
+pub fn is_missing_ref_error(err: &anyhow::Error) -> bool {
+    err.downcast_ref::<AdapterApplyError>()
+        .is_some_and(|e| matches!(e, AdapterApplyError::MissingRef { .. }))
+}
+
+/// comma-joined referenced uids in `ops` that are absent from `resolved`.
+pub fn describe_missing_refs<V>(ops: &[Op], resolved: &BTreeMap<Uid, V>) -> String {
+    let mut missing = BTreeSet::new();
+    for op in ops {
+        if let Op::Create { desired, .. } | Op::Update { desired, .. } = op {
+            for value in desired.attrs.values() {
+                collect_missing_refs(value, resolved, &mut missing);
+            }
+        }
+    }
+    missing
+        .into_iter()
+        .map(|uid| uid.to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn collect_missing_refs<V>(
+    value: &Value,
+    resolved: &BTreeMap<Uid, V>,
+    missing: &mut BTreeSet<Uid>,
+) {
+    match value {
+        Value::String(raw) => {
+            if let Ok(uid) = Uid::parse_str(raw) {
+                if !resolved.contains_key(&uid) {
+                    missing.insert(uid);
+                }
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                collect_missing_refs(item, resolved, missing);
+            }
+        }
+        Value::Object(map) => {
+            for value in map.values() {
+                collect_missing_refs(value, resolved, missing);
+            }
+        }
+        _ => {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -110,7 +163,49 @@ mod tests {
     use anyhow::anyhow;
     use rand::rng;
     use rand::seq::SliceRandom;
+    use serde_json::json;
     use tempfile::tempdir;
+
+    #[test]
+    fn is_missing_ref_error_matches_only_missing_ref() {
+        let err = anyhow::Error::from(AdapterApplyError::MissingRef {
+            uid: Uid::from_u128(1),
+        });
+        assert!(is_missing_ref_error(&err));
+        assert!(!is_missing_ref_error(&anyhow!("some other error")));
+    }
+
+    #[test]
+    fn describe_missing_refs_reports_unresolved_nested_refs() {
+        let present = Uid::from_u128(1);
+        let missing = Uid::from_u128(2);
+
+        let attrs = JsonMap::from(BTreeMap::from([
+            ("resolved_ref".to_string(), json!(present.to_string())),
+            (
+                "nested".to_string(),
+                json!({ "list": [missing.to_string()] }),
+            ),
+        ]));
+        let op = Op::Create {
+            uid: present,
+            type_name: TypeName::new("test.item"),
+            desired: Object {
+                uid: present,
+                type_name: TypeName::new("test.item"),
+                key: Key::default(),
+                attrs,
+                source: None,
+            },
+        };
+
+        let mut resolved = BTreeMap::new();
+        resolved.insert(present, BackendId::Int(1));
+
+        let described = describe_missing_refs(&[op], &resolved);
+        assert!(described.contains(&missing.to_string()));
+        assert!(!described.contains(&present.to_string()));
+    }
 
     fn create_op(uid: Uid) -> Op {
         Op::Create {

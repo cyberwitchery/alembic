@@ -7,9 +7,9 @@ use alembic_core::{
     key_string, uid_v5, FieldSchema, FieldType, JsonMap, Key, Schema, TypeName, TypeSchema, Uid,
 };
 use alembic_engine::{
-    apply_non_delete_with_retries, build_key_from_schema, query_filters_from_key, Adapter,
-    AdapterApplyError, AppliedOp, ApplyReport, BackendId, Emitter, ObservedObject, ObservedState,
-    Observer, Op, ProvisionReport, RetryApplyDriver,
+    apply_non_delete_with_retries, build_key_from_schema, describe_missing_refs,
+    is_missing_ref_error, query_filters_from_key, Adapter, AppliedOp, ApplyReport, BackendId,
+    Emitter, ObservedObject, ObservedState, Observer, Op, ProvisionReport, RetryApplyDriver,
 };
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
@@ -1562,11 +1562,6 @@ fn supports_feature(features: &BTreeSet<String>, candidates: &[&str]) -> bool {
     candidates.iter().any(|name| features.contains(*name))
 }
 
-fn is_missing_ref_error(err: &anyhow::Error) -> bool {
-    err.downcast_ref::<AdapterApplyError>()
-        .is_some_and(|e| matches!(e, AdapterApplyError::MissingRef { .. }))
-}
-
 fn is_404_error(err: &netbox::Error) -> bool {
     err.to_string().contains("status 404")
 }
@@ -1594,45 +1589,6 @@ fn is_conflict_error(err: &netbox::Error) -> bool {
                 || body.contains("unique")
         }
         _ => false,
-    }
-}
-
-fn describe_missing_refs(ops: &[Op], resolved: &BTreeMap<Uid, u64>) -> String {
-    let mut missing = BTreeSet::new();
-    for op in ops {
-        if let Op::Create { desired, .. } | Op::Update { desired, .. } = op {
-            for value in desired.attrs.values() {
-                collect_missing_refs(value, resolved, &mut missing);
-            }
-        }
-    }
-    missing
-        .into_iter()
-        .map(|uid| uid.to_string())
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
-fn collect_missing_refs(value: &Value, resolved: &BTreeMap<Uid, u64>, missing: &mut BTreeSet<Uid>) {
-    match value {
-        Value::String(raw) => {
-            if let Ok(uid) = Uid::parse_str(raw) {
-                if !resolved.contains_key(&uid) {
-                    missing.insert(uid);
-                }
-            }
-        }
-        Value::Array(items) => {
-            for item in items {
-                collect_missing_refs(item, resolved, missing);
-            }
-        }
-        Value::Object(map) => {
-            for value in map.values() {
-                collect_missing_refs(value, resolved, missing);
-            }
-        }
-        _ => {}
     }
 }
 
