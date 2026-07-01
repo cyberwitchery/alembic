@@ -2,10 +2,10 @@
 
 use alembic_core::{key_string, uid_v5, FieldType, JsonMap, Key, Schema, TypeName, Uid};
 use alembic_engine::{
-    apply_non_delete_with_retries, build_key_from_schema, is_missing_ref_error,
-    resolve_value_for_type, resolved_ids_from_state, state_mappings_by_id, Adapter, AppliedOp,
-    ApplyReport, BackendId, Emitter, ObservedObject, ObservedState, Observer, Op, ProvisionReport,
-    RetryApplyDriver, StateStore,
+    apply_non_delete_with_retries, backend_id_from_value, build_key_from_schema,
+    describe_missing_refs, is_missing_ref_error, normalize_attrs_refs, resolve_value_for_type,
+    resolved_ids_identity, Adapter, AppliedOp, ApplyReport, BackendId, Emitter, ObservedObject,
+    ObservedState, Observer, Op, ProvisionReport, RetryApplyDriver, StateMappings, StateStore,
 };
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
@@ -529,7 +529,7 @@ impl Observer for InfrahubAdapter {
         // seeding the next round, until nothing new resolves. (saved state, if
         // any, is folded in up front; a reference cycle leaves the stragglers
         // pointing at backend ids, still internally consistent.)
-        let mut mappings = state_mappings(state_store);
+        let mut mappings = StateMappings::from_state(state_store);
         let mut resolved = vec![false; raw.len()];
         loop {
             let mut progressed = false;
@@ -585,7 +585,7 @@ impl Emitter for InfrahubAdapter {
         validate_schema(schema, &schema_info)?;
 
         let mut applied = Vec::new();
-        let mut resolved = resolved_from_state(state);
+        let mut resolved = resolved_ids_identity(state);
         let mut creates_updates = Vec::new();
         let mut deletes = Vec::new();
         for op in ops {
@@ -1846,26 +1846,6 @@ fn validate_value(field: &str, field_type: &FieldType, value: &Value) -> Result<
     Ok(())
 }
 
-#[derive(Debug, Default, Clone)]
-struct StateMappings {
-    by_type: BTreeMap<String, BTreeMap<BackendId, Uid>>,
-}
-
-impl StateMappings {
-    fn uid_for(&self, type_name: &str, backend_id: &BackendId) -> Option<Uid> {
-        self.by_type
-            .get(type_name)
-            .and_then(|mapping| mapping.get(backend_id).copied())
-    }
-
-    fn insert(&mut self, type_name: &str, backend_id: BackendId, uid: Uid) {
-        self.by_type
-            .entry(type_name.to_string())
-            .or_default()
-            .insert(backend_id, uid);
-    }
-}
-
 /// a node observed from Infrahub before its references are resolved: the
 /// relationship attrs still hold backend ids.
 struct RawNode {
@@ -1903,108 +1883,6 @@ fn key_refs_resolved(
         }
     }
     true
-}
-
-fn state_mappings(state: &StateStore) -> StateMappings {
-    StateMappings {
-        by_type: state_mappings_by_id(state, |b| Some(b.clone())),
-    }
-}
-
-fn resolved_from_state(state: &StateStore) -> BTreeMap<Uid, BackendId> {
-    resolved_ids_from_state(state, |b| Some(b.clone()))
-}
-
-fn normalize_attrs_refs(
-    attrs: &JsonMap,
-    type_schema: &alembic_core::TypeSchema,
-    mappings: &StateMappings,
-) -> JsonMap {
-    let mut normalized = attrs.clone();
-    for (field, schema) in &type_schema.fields {
-        match &schema.r#type {
-            FieldType::Ref { target } => {
-                if let Some(value) = attrs.get(field) {
-                    normalized.insert(
-                        field.clone(),
-                        normalize_ref_value(value.clone(), target, mappings),
-                    );
-                }
-            }
-            FieldType::ListRef { target } => {
-                if let Some(value) = attrs.get(field) {
-                    let updated = if let Value::Array(items) = value {
-                        let mapped = items
-                            .iter()
-                            .cloned()
-                            .map(|item| normalize_ref_value(item, target, mappings))
-                            .collect::<Vec<_>>();
-                        Value::Array(mapped)
-                    } else {
-                        value.clone()
-                    };
-                    normalized.insert(field.clone(), updated);
-                }
-            }
-            _ => {}
-        }
-    }
-    normalized
-}
-
-fn normalize_ref_value(value: Value, target: &str, mappings: &StateMappings) -> Value {
-    if value.is_null() {
-        return value;
-    }
-    let backend_id = match backend_id_from_value(&value) {
-        Some(id) => id,
-        None => return value,
-    };
-    mappings
-        .uid_for(target, &backend_id)
-        .map(|uid| Value::String(uid.to_string()))
-        .unwrap_or(value)
-}
-
-fn backend_id_from_value(value: &Value) -> Option<BackendId> {
-    match value {
-        Value::Number(n) => n.as_u64().map(BackendId::Int).or_else(|| {
-            n.as_i64()
-                .and_then(|v| u64::try_from(v).ok())
-                .map(BackendId::Int)
-        }),
-        Value::String(s) => Some(BackendId::String(s.clone())),
-        Value::Object(map) => map.get("id").and_then(backend_id_from_value),
-        _ => None,
-    }
-}
-
-fn describe_missing_refs(ops: &[Op], resolved: &BTreeMap<Uid, BackendId>) -> String {
-    let mut missing = BTreeSet::new();
-    for op in ops {
-        if let Op::Create { desired, .. } | Op::Update { desired, .. } = op {
-            for value in desired.attrs.values() {
-                if let Some(uid) = extract_ref_uid(value) {
-                    if !resolved.contains_key(&uid) {
-                        missing.insert(uid);
-                    }
-                }
-            }
-        }
-    }
-    missing
-        .into_iter()
-        .map(|uid| uid.to_string())
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
-fn extract_ref_uid(value: &Value) -> Option<Uid> {
-    match value {
-        Value::String(raw) => Uid::parse_str(raw).ok(),
-        Value::Array(items) => items.iter().find_map(extract_ref_uid),
-        _ => None,
-    }
 }
 
 #[cfg(test)]
@@ -2495,10 +2373,7 @@ schema { query: Query }
     fn normalize_refs_and_backend_id() {
         let uid = Uid::parse_str("00000000-0000-0000-0000-000000000010").unwrap();
         let mut mappings = StateMappings::default();
-        mappings.by_type.insert(
-            "dcim.site".to_string(),
-            BTreeMap::from([(BackendId::String("site-1".to_string()), uid)]),
-        );
+        mappings.insert("dcim.site", BackendId::String("site-1".to_string()), uid);
 
         let type_schema = type_schema(
             Vec::new(),
@@ -2545,7 +2420,54 @@ schema { query: Query }
     }
 
     #[test]
-    fn describe_missing_refs_and_extract_ref_uid() {
+    fn normalize_resolves_refs_nested_in_list_and_map() {
+        let uid = Uid::parse_str("00000000-0000-0000-0000-000000000030").unwrap();
+        let mut mappings = StateMappings::default();
+        mappings.insert("dcim.site", BackendId::Int(7), uid);
+
+        let type_schema = type_schema(
+            Vec::new(),
+            vec![
+                (
+                    "members",
+                    field_schema(
+                        FieldType::List {
+                            item: Box::new(FieldType::Ref {
+                                target: "dcim.site".to_string(),
+                            }),
+                        },
+                        false,
+                    ),
+                ),
+                (
+                    "links",
+                    field_schema(
+                        FieldType::Map {
+                            value: Box::new(FieldType::Ref {
+                                target: "dcim.site".to_string(),
+                            }),
+                        },
+                        false,
+                    ),
+                ),
+            ],
+        );
+
+        let attrs = JsonMap::from(BTreeMap::from([
+            ("members".to_string(), json!([7])),
+            ("links".to_string(), json!({ "primary": 7 })),
+        ]));
+
+        let normalized = normalize_attrs_refs(&attrs, &type_schema, &mappings);
+        assert_eq!(normalized.get("members"), Some(&json!([uid.to_string()])));
+        assert_eq!(
+            normalized.get("links"),
+            Some(&json!({ "primary": uid.to_string() }))
+        );
+    }
+
+    #[test]
+    fn describe_missing_refs_reports_unresolved() {
         let uid_present = Uid::parse_str("00000000-0000-0000-0000-000000000020").unwrap();
         let uid_missing = Uid::parse_str("00000000-0000-0000-0000-000000000021").unwrap();
 
@@ -2577,9 +2499,6 @@ schema { query: Query }
 
         let err = anyhow::Error::new(AdapterApplyError::MissingRef { uid: uid_missing });
         assert!(is_missing_ref_error(&err));
-
-        let extracted = extract_ref_uid(&json!([uid_present.to_string(), uid_missing.to_string()]));
-        assert_eq!(extracted, Some(uid_present));
     }
 
     #[test]
