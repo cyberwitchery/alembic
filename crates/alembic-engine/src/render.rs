@@ -443,6 +443,9 @@ fn parse_literal_arg(token: &str, rule: &str, context: &str) -> Result<JsonValue
     if let Ok(int) = token.parse::<i64>() {
         return Ok(JsonValue::Number(int.into()));
     }
+    if let Ok(int) = token.parse::<u64>() {
+        return Ok(JsonValue::Number(int.into()));
+    }
     if let Ok(float) = token.parse::<f64>() {
         if let Some(number) = serde_json::Number::from_f64(float) {
             return Ok(JsonValue::Number(number));
@@ -1104,6 +1107,27 @@ uid:
                 ]
             )]
         );
+    }
+
+    #[test]
+    fn parses_wide_integer_arguments() {
+        // i64::MAX, i64::MAX + 1, and u64::MAX must parse to exact integers,
+        // not a lossy f64 (mirrors json_to_starlark's i64 -> u64 -> f64 order).
+        let (_, calls) =
+            parse("x|f(9223372036854775807, 9223372036854775808, 18446744073709551615)").unwrap();
+        assert_eq!(
+            calls,
+            vec![(
+                "f".to_string(),
+                vec![
+                    serde_json::json!(9223372036854775807i64),
+                    serde_json::json!(9223372036854775808u64),
+                    serde_json::json!(18446744073709551615u64),
+                ]
+            )]
+        );
+        // a non-numeric token is still rejected.
+        assert!(parse("x|f(abc)").is_err());
     }
 
     #[test]

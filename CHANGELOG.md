@@ -11,6 +11,7 @@
 - core: attribute reference-type-mismatch errors to the referencing object, not the referent
 - engine: locate an object at its own `uid:` line, not an earlier line that references its uid, so validation errors point at the right object
 - engine: import errors on a malformed tag item instead of silently dropping it
+- engine: parse a `u64`-range transform argument literal (above `i64::MAX`) as an exact integer instead of a lossy float, matching the value path
 - netbox adapter: singularize `x`/`z`/`ch`/`sh`-stemmed endpoints correctly (`ipam/prefixes/` → `ipam.prefix`, not `ipam.prefixe`), so reading prefixes and decoding refs to them yield the declared schema type
 - netbox + nautobot adapters: pluralize vowel + `y` endpoints correctly (`dcim.device_bay` → `dcim/device-bays/`, not `dcim/device-baies/`), so reading and writing those types hit the right REST endpoint
 - django adapter: pluralize generated drf router endpoints correctly (`prefix` → `prefixes`, not `prefixs`; `gateway` → `gateways`, not `gatewaies`) by sharing one `pluralize` helper across the netbox, nautobot, and django adapters instead of a stale third copy
