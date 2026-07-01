@@ -8,6 +8,7 @@
 - core: reject a `format:`/`pattern:` constraint on a non-string field type (`int`, `float`, `bool`, `list`, `map`, `list_ref`) at schema-load time, instead of only failing per-object with a misleading `expected string` error (and never for types with no objects)
 - engine: map rewrites refs nested in `list` and `map` fields across a rename, not just top-level `ref`/`list_ref` attrs
 - generic adapter: resolve refs nested in `list` and `map` fields on read, matching the write path and the netbox/nautobot adapters
+- infrahub adapter: resolve refs nested in `list` and `map` fields on read, matching the generic/netbox/nautobot adapters and the write path, by sharing the engine's read-side reference normalizer
 - core: attribute reference-type-mismatch errors to the referencing object, not the referent
 - engine: locate an object at its own `uid:` line, not an earlier line that references its uid, so validation errors point at the right object
 - engine: import errors on a malformed tag item instead of silently dropping it

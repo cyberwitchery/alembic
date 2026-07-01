@@ -28,8 +28,9 @@ use anyhow::{anyhow, Result};
 mod tests;
 
 pub use adapter_ops::{
-    build_key_from_schema, build_request_body, query_filters_from_key, resolve_value_for_type,
-    resolved_ids_from_state, state_mappings_by_id,
+    backend_id_from_value, build_key_from_schema, build_request_body, normalize_attrs_refs,
+    normalize_ref_value, normalize_value_for_type, query_filters_from_key, resolve_value_for_type,
+    resolved_ids_from_state, resolved_ids_identity, state_mappings_by_id, StateMappings,
 };
 pub use apply_retry::{
     apply_non_delete_with_retries, describe_missing_refs, is_missing_ref_error, RetryApplyDriver,

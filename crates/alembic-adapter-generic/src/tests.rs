@@ -168,20 +168,20 @@ fn test_resolve_path_not_found() {
     assert!(err.to_string().contains("path segment not found"));
 }
 
-// tests for resolved_from_state
+// tests for resolved_ids_identity
 #[test]
-fn test_resolved_from_state_empty() {
+fn test_resolved_ids_identity_empty() {
     let state = new_state_store();
-    let resolved = resolved_from_state(&state);
+    let resolved = resolved_ids_identity(&state);
     assert!(resolved.is_empty());
 }
 
 #[test]
-fn test_resolved_from_state_with_mappings() {
+fn test_resolved_ids_identity_with_mappings() {
     let mut state = new_state_store();
     let uid = Uid::new_v4();
     state.set_backend_id(TypeName::new("device".to_string()), uid, BackendId::Int(42));
-    let resolved = resolved_from_state(&state);
+    let resolved = resolved_ids_identity(&state);
     assert_eq!(resolved.get(&uid), Some(&BackendId::Int(42)));
 }
 
@@ -408,7 +408,7 @@ fn test_normalize_attrs_refs_resolves_refs_nested_in_list() {
         site_uid,
         BackendId::Int(7),
     );
-    let mappings = state_mappings(&state);
+    let mappings = StateMappings::from_state(&state);
 
     let attrs: JsonMap = serde_json::json!({ "members": [7] })
         .as_object()
@@ -445,7 +445,7 @@ fn test_normalize_attrs_refs_resolves_refs_nested_in_map() {
         site_uid,
         BackendId::Int(7),
     );
-    let mappings = state_mappings(&state);
+    let mappings = StateMappings::from_state(&state);
 
     let attrs: JsonMap = serde_json::json!({ "links": {"primary": 7} })
         .as_object()
@@ -480,7 +480,7 @@ fn test_normalize_attrs_refs_resolves_list_ref() {
         site_uid,
         BackendId::Int(7),
     );
-    let mappings = state_mappings(&state);
+    let mappings = StateMappings::from_state(&state);
 
     let attrs: JsonMap = serde_json::json!({ "peers": [7] })
         .as_object()
@@ -515,7 +515,7 @@ fn test_normalize_attrs_refs_resolves_object_shaped_ref() {
         site_uid,
         BackendId::Int(7),
     );
-    let mappings = state_mappings(&state);
+    let mappings = StateMappings::from_state(&state);
 
     let attrs: JsonMap = serde_json::json!({ "site": {"id": 7} })
         .as_object()

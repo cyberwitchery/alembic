@@ -3,8 +3,9 @@
 use alembic_core::{JsonMap, Schema, TypeName, Uid};
 use alembic_engine::{
     apply_non_delete_with_retries, build_key_from_schema, describe_missing_refs,
-    is_missing_ref_error, resolved_ids_from_state, state_mappings_by_id, Adapter, AppliedOp,
+    is_missing_ref_error, normalize_attrs_refs, resolved_ids_identity, Adapter, AppliedOp,
     ApplyReport, BackendId, Emitter, ObservedObject, ObservedState, Observer, Op, RetryApplyDriver,
+    StateMappings,
 };
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
@@ -227,7 +228,7 @@ impl Observer for GenericAdapter {
         state_store: &alembic_engine::StateStore,
     ) -> Result<ObservedState> {
         let mut state = ObservedState::default();
-        let mappings = state_mappings(state_store);
+        let mappings = StateMappings::from_state(state_store);
         let requested: BTreeSet<TypeName> = if types.is_empty() {
             self.config
                 .types
@@ -331,7 +332,7 @@ impl Emitter for GenericAdapter {
         state: &alembic_engine::StateStore,
     ) -> Result<ApplyReport> {
         let mut applied = Vec::new();
-        let mut resolved = resolved_from_state(state);
+        let mut resolved = resolved_ids_identity(state);
 
         let mut creates_updates = Vec::new();
         let mut deletes = Vec::new();
@@ -446,116 +447,6 @@ fn resolve_path(value: &serde_json::Value, path: &str) -> Result<serde_json::Val
             .ok_or_else(|| anyhow!("path segment not found: {}", segment))?;
     }
     Ok(current.clone())
-}
-
-#[derive(Debug, Default, Clone)]
-struct StateMappings {
-    by_type: BTreeMap<String, BTreeMap<BackendId, Uid>>,
-}
-
-impl StateMappings {
-    fn uid_for(&self, type_name: &str, backend_id: &BackendId) -> Option<Uid> {
-        self.by_type
-            .get(type_name)
-            .and_then(|mapping| mapping.get(backend_id).copied())
-    }
-}
-
-fn state_mappings(state: &alembic_engine::StateStore) -> StateMappings {
-    StateMappings {
-        by_type: state_mappings_by_id(state, |b| Some(b.clone())),
-    }
-}
-
-fn resolved_from_state(state: &alembic_engine::StateStore) -> BTreeMap<Uid, BackendId> {
-    resolved_ids_from_state(state, |b| Some(b.clone()))
-}
-
-fn normalize_attrs_refs(
-    attrs: &JsonMap,
-    type_schema: &alembic_core::TypeSchema,
-    mappings: &StateMappings,
-) -> JsonMap {
-    let mut normalized = attrs.clone();
-    for (field, schema) in &type_schema.fields {
-        if let Some(value) = attrs.get(field) {
-            normalized.insert(
-                field.clone(),
-                normalize_value_for_type(&schema.r#type, value.clone(), mappings),
-            );
-        }
-    }
-    normalized
-}
-
-/// read-side mirror of `resolve_value_for_type`: maps backend ids back to uids
-/// at each ref leaf, recursing into `list` and `map` like netbox/nautobot.
-fn normalize_value_for_type(
-    field_type: &alembic_core::FieldType,
-    value: serde_json::Value,
-    mappings: &StateMappings,
-) -> serde_json::Value {
-    match field_type {
-        alembic_core::FieldType::Ref { target } => normalize_ref_value(value, target, mappings),
-        alembic_core::FieldType::ListRef { target } => match value {
-            serde_json::Value::Array(items) => serde_json::Value::Array(
-                items
-                    .into_iter()
-                    .map(|item| normalize_ref_value(item, target, mappings))
-                    .collect(),
-            ),
-            other => other,
-        },
-        alembic_core::FieldType::List { item } => match value {
-            serde_json::Value::Array(items) => serde_json::Value::Array(
-                items
-                    .into_iter()
-                    .map(|elem| normalize_value_for_type(item, elem, mappings))
-                    .collect(),
-            ),
-            other => other,
-        },
-        alembic_core::FieldType::Map { value: inner } => match value {
-            serde_json::Value::Object(obj) => serde_json::Value::Object(
-                obj.into_iter()
-                    .map(|(k, v)| (k, normalize_value_for_type(inner, v, mappings)))
-                    .collect(),
-            ),
-            other => other,
-        },
-        _ => value,
-    }
-}
-
-fn normalize_ref_value(
-    value: serde_json::Value,
-    target: &str,
-    mappings: &StateMappings,
-) -> serde_json::Value {
-    if value.is_null() {
-        return value;
-    }
-    let backend_id = match backend_id_from_value(&value) {
-        Some(id) => id,
-        None => return value,
-    };
-    mappings
-        .uid_for(target, &backend_id)
-        .map(|uid| serde_json::Value::String(uid.to_string()))
-        .unwrap_or(value)
-}
-
-fn backend_id_from_value(value: &serde_json::Value) -> Option<BackendId> {
-    match value {
-        serde_json::Value::Number(n) => n.as_u64().map(BackendId::Int).or_else(|| {
-            n.as_i64()
-                .and_then(|v| u64::try_from(v).ok())
-                .map(BackendId::Int)
-        }),
-        serde_json::Value::String(s) => Some(BackendId::String(s.clone())),
-        serde_json::Value::Object(map) => map.get("id").and_then(backend_id_from_value),
-        _ => None,
-    }
 }
 
 fn resolve_attrs(

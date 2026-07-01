@@ -252,6 +252,131 @@ pub fn resolved_ids_from_state<I>(
     resolved
 }
 
+/// per-type `backend-id -> uid` map for read-side ref normalization.
+#[derive(Debug, Default, Clone)]
+pub struct StateMappings {
+    by_type: BTreeMap<String, BTreeMap<BackendId, Uid>>,
+}
+
+impl StateMappings {
+    /// the canonical uid a backend id maps to for `type_name`, if known.
+    pub fn uid_for(&self, type_name: &str, backend_id: &BackendId) -> Option<Uid> {
+        self.by_type
+            .get(type_name)
+            .and_then(|mapping| mapping.get(backend_id).copied())
+    }
+
+    /// record a `backend-id -> uid` mapping for `type_name`.
+    pub fn insert(&mut self, type_name: &str, backend_id: BackendId, uid: Uid) {
+        self.by_type
+            .entry(type_name.to_string())
+            .or_default()
+            .insert(backend_id, uid);
+    }
+
+    /// project the whole state store into per-type backend-id -> uid mappings.
+    pub fn from_state(state: &StateStore) -> Self {
+        StateMappings {
+            by_type: state_mappings_by_id(state, |b| Some(b.clone())),
+        }
+    }
+}
+
+/// project the state store into a flat `uid -> backend-id` map, keeping every
+/// mapping. identity companion to [`resolved_ids_from_state`].
+pub fn resolved_ids_identity(state: &StateStore) -> BTreeMap<Uid, BackendId> {
+    resolved_ids_from_state(state, |b| Some(b.clone()))
+}
+
+/// rewrite every reference-typed field of `attrs` from backend ids back to
+/// canonical uids. read-side inverse of `build_request_body`.
+pub fn normalize_attrs_refs(
+    attrs: &JsonMap,
+    type_schema: &TypeSchema,
+    mappings: &StateMappings,
+) -> JsonMap {
+    let mut normalized = attrs.clone();
+    for (field, schema) in &type_schema.fields {
+        if let Some(value) = attrs.get(field) {
+            normalized.insert(
+                field.clone(),
+                normalize_value_for_type(&schema.r#type, value.clone(), mappings),
+            );
+        }
+    }
+    normalized
+}
+
+/// read-side mirror of `resolve_value_for_type`: maps backend ids back to uids
+/// at each ref leaf, recursing into `list` and `map` field types.
+pub fn normalize_value_for_type(
+    field_type: &FieldType,
+    value: Value,
+    mappings: &StateMappings,
+) -> Value {
+    match field_type {
+        FieldType::Ref { target } => normalize_ref_value(value, target, mappings),
+        FieldType::ListRef { target } => match value {
+            Value::Array(items) => Value::Array(
+                items
+                    .into_iter()
+                    .map(|item| normalize_ref_value(item, target, mappings))
+                    .collect(),
+            ),
+            other => other,
+        },
+        FieldType::List { item } => match value {
+            Value::Array(items) => Value::Array(
+                items
+                    .into_iter()
+                    .map(|elem| normalize_value_for_type(item, elem, mappings))
+                    .collect(),
+            ),
+            other => other,
+        },
+        FieldType::Map { value: inner } => match value {
+            Value::Object(obj) => Value::Object(
+                obj.into_iter()
+                    .map(|(k, v)| (k, normalize_value_for_type(inner, v, mappings)))
+                    .collect(),
+            ),
+            other => other,
+        },
+        _ => value,
+    }
+}
+
+/// map one ref value's backend id back to its canonical uid, or leave it as-is
+/// when the id is unknown or the value is not a ref shape.
+pub fn normalize_ref_value(value: Value, target: &str, mappings: &StateMappings) -> Value {
+    if value.is_null() {
+        return value;
+    }
+    let backend_id = match backend_id_from_value(&value) {
+        Some(id) => id,
+        None => return value,
+    };
+    mappings
+        .uid_for(target, &backend_id)
+        .map(|uid| Value::String(uid.to_string()))
+        .unwrap_or(value)
+}
+
+/// read a backend id out of a raw json value: a number, a string, or an object
+/// with an `id` field (a nested brief).
+pub fn backend_id_from_value(value: &Value) -> Option<BackendId> {
+    match value {
+        Value::Number(n) => n.as_u64().map(BackendId::Int).or_else(|| {
+            n.as_i64()
+                .and_then(|v| u64::try_from(v).ok())
+                .map(BackendId::Int)
+        }),
+        Value::String(s) => Some(BackendId::String(s.clone())),
+        Value::Object(map) => map.get("id").and_then(backend_id_from_value),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -754,6 +879,128 @@ mod tests {
         assert_eq!(
             strings,
             BTreeMap::from([(Uid::from_u128(2), "uuid-2".to_string())])
+        );
+    }
+
+    // --- read-side ref normalization ---
+
+    fn ref_type(target: &str) -> FieldType {
+        FieldType::Ref {
+            target: target.to_string(),
+        }
+    }
+
+    fn mappings_with(type_name: &str, backend_id: BackendId, uid: Uid) -> StateMappings {
+        let mut m = StateMappings::default();
+        m.insert(type_name, backend_id, uid);
+        m
+    }
+
+    #[test]
+    fn normalize_value_ref_maps_backend_id_to_uid() {
+        let uid = Uuid::from_u128(1);
+        let m = mappings_with("t", BackendId::Int(7), uid);
+        let out = normalize_value_for_type(&ref_type("t"), json!(7), &m);
+        assert_eq!(out, json!(uid.to_string()));
+    }
+
+    #[test]
+    fn normalize_value_ref_unknown_id_passes_through() {
+        let out = normalize_value_for_type(&ref_type("t"), json!(7), &StateMappings::default());
+        assert_eq!(out, json!(7));
+    }
+
+    #[test]
+    fn normalize_value_list_ref_maps_each_known() {
+        let uid = Uuid::from_u128(2);
+        let m = mappings_with("t", BackendId::Int(8), uid);
+        let out = normalize_value_for_type(
+            &FieldType::ListRef {
+                target: "t".to_string(),
+            },
+            json!([8, 9]),
+            &m,
+        );
+        assert_eq!(out, json!([uid.to_string(), 9]));
+    }
+
+    #[test]
+    fn normalize_value_ref_nested_in_list() {
+        let uid = Uuid::from_u128(3);
+        let m = mappings_with("t", BackendId::Int(10), uid);
+        let out = normalize_value_for_type(
+            &FieldType::List {
+                item: Box::new(ref_type("t")),
+            },
+            json!([10]),
+            &m,
+        );
+        assert_eq!(out, json!([uid.to_string()]));
+    }
+
+    #[test]
+    fn normalize_value_ref_nested_in_map() {
+        let uid = Uuid::from_u128(4);
+        let m = mappings_with("t", BackendId::String("s".to_string()), uid);
+        let out = normalize_value_for_type(
+            &FieldType::Map {
+                value: Box::new(ref_type("t")),
+            },
+            json!({ "k": "s" }),
+            &m,
+        );
+        assert_eq!(out, json!({ "k": uid.to_string() }));
+    }
+
+    #[test]
+    fn normalize_ref_value_object_shaped_brief() {
+        let uid = Uuid::from_u128(5);
+        let m = mappings_with("t", BackendId::Int(11), uid);
+        let out = normalize_ref_value(json!({ "id": 11, "display": "x" }), "t", &m);
+        assert_eq!(out, json!(uid.to_string()));
+    }
+
+    #[test]
+    fn backend_id_from_value_variants() {
+        assert_eq!(backend_id_from_value(&json!(42)), Some(BackendId::Int(42)));
+        assert_eq!(backend_id_from_value(&json!(-1)), None);
+        assert_eq!(
+            backend_id_from_value(&json!("abc")),
+            Some(BackendId::String("abc".to_string()))
+        );
+        assert_eq!(
+            backend_id_from_value(&json!({ "id": 3 })),
+            Some(BackendId::Int(3))
+        );
+        assert_eq!(backend_id_from_value(&Value::Null), None);
+    }
+
+    #[test]
+    fn normalize_attrs_refs_resolves_declared_fields() {
+        let uid = Uuid::from_u128(6);
+        let m = mappings_with("dcim.site", BackendId::Int(12), uid);
+        let schema = TypeSchema {
+            key: BTreeMap::new(),
+            fields: BTreeMap::from([("site".to_string(), field_schema(ref_type("dcim.site")))]),
+        };
+        let a = attrs(vec![("site", json!(12))]);
+        let out = normalize_attrs_refs(&a, &schema, &m);
+        assert_eq!(out.get("site"), Some(&json!(uid.to_string())));
+    }
+
+    #[test]
+    fn from_state_and_resolved_ids_identity_roundtrip() {
+        let store = store_with_mixed_ids("dcim.site");
+        let m = StateMappings::from_state(&store);
+        assert_eq!(
+            m.uid_for("dcim.site", &BackendId::Int(5)),
+            Some(Uid::from_u128(1))
+        );
+        let resolved = resolved_ids_identity(&store);
+        assert_eq!(resolved.get(&Uid::from_u128(1)), Some(&BackendId::Int(5)));
+        assert_eq!(
+            resolved.get(&Uid::from_u128(2)),
+            Some(&BackendId::String("uuid-2".to_string()))
         );
     }
 }
