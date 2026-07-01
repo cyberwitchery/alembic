@@ -68,6 +68,8 @@ pub enum ValidationError {
         constraint: String,
         field_type: String,
     },
+    #[error("empty enum for {type_name}.{field}: an enum with no values is unsatisfiable")]
+    EmptyEnum { type_name: String, field: String },
 }
 
 impl ValidationError {
@@ -265,6 +267,7 @@ pub fn validate_inventory(inventory: &Inventory) -> ValidationReport {
     validate_schema_ref_targets(&inventory.schema, &mut report);
     validate_schema_patterns(&inventory.schema, &mut report);
     validate_schema_constraint_types(&inventory.schema, &mut report);
+    validate_schema_enums(&inventory.schema, &mut report);
     validate_schema_types(&inventory.schema, &inventory.objects, &mut report);
     for object in &inventory.objects {
         validate_object(object, &inventory.schema, &uid_to_type, &mut report);
@@ -458,6 +461,73 @@ fn is_never_string_type(field_type: &FieldType) -> bool {
         | FieldType::Enum { .. }
         | FieldType::Ref { .. }
         | FieldType::Json => false,
+    }
+}
+
+/// reject an `enum` field declared with an empty `values` list. an empty enum is
+/// unsatisfiable, so every value fails per-object with a confusing
+/// `expected: enum()` message (and never at all for a type with no objects). this
+/// catches the mistake at the schema level, attributed to the declaring type and
+/// field.
+///
+/// `list`/`map` item types can nest an enum, and per-object validation recurses
+/// into them keeping the same field label, so this walk recurses the same way.
+fn validate_schema_enums(schema: &Schema, report: &mut ValidationReport) {
+    for (type_name, type_schema) in &schema.types {
+        for (field, field_schema) in &type_schema.key {
+            validate_field_enum(
+                type_name,
+                &format!("key.{field}"),
+                &field_schema.r#type,
+                report,
+            );
+        }
+        for (field, field_schema) in &type_schema.fields {
+            validate_field_enum(type_name, field, &field_schema.r#type, report);
+        }
+    }
+}
+
+/// recursively check for an empty-values enum within a field type, descending
+/// into `list` and `map` item types so enums nested inside them are caught too.
+fn validate_field_enum(
+    type_name: &str,
+    field: &str,
+    field_type: &FieldType,
+    report: &mut ValidationReport,
+) {
+    match field_type {
+        FieldType::Enum { values } => {
+            if values.is_empty() {
+                report.errors.push(ValidationError::EmptyEnum {
+                    type_name: type_name.to_string(),
+                    field: field.to_string(),
+                });
+            }
+        }
+        FieldType::List { item } => {
+            validate_field_enum(type_name, field, item, report);
+        }
+        FieldType::Map { value } => {
+            validate_field_enum(type_name, field, value, report);
+        }
+        FieldType::String
+        | FieldType::Text
+        | FieldType::Int
+        | FieldType::Float
+        | FieldType::Bool
+        | FieldType::Uuid
+        | FieldType::Date
+        | FieldType::Datetime
+        | FieldType::Time
+        | FieldType::Json
+        | FieldType::IpAddress
+        | FieldType::Cidr
+        | FieldType::Prefix
+        | FieldType::Mac
+        | FieldType::Slug
+        | FieldType::Ref { .. }
+        | FieldType::ListRef { .. } => {}
     }
 }
 
@@ -1385,6 +1455,95 @@ mod tests {
             .errors
             .iter()
             .any(|e| matches!(e, ValidationError::ConstraintOnNonStringField { .. })));
+    }
+
+    #[test]
+    fn detects_empty_enum_in_attr_field() {
+        let device = TypeSchema {
+            key: BTreeMap::new(),
+            fields: BTreeMap::from([(
+                "role".to_string(),
+                schema_field(FieldType::Enum { values: vec![] }),
+            )]),
+        };
+        let report = validate_schema(BTreeMap::from([("device".to_string(), device)]));
+        assert!(report.errors.iter().any(|e| matches!(
+            e,
+            ValidationError::EmptyEnum { type_name, field }
+                if type_name == "device" && field == "role"
+        )));
+    }
+
+    #[test]
+    fn detects_empty_enum_nested_in_list_field() {
+        let device = TypeSchema {
+            key: BTreeMap::new(),
+            fields: BTreeMap::from([(
+                "roles".to_string(),
+                schema_field(FieldType::List {
+                    item: Box::new(FieldType::Enum { values: vec![] }),
+                }),
+            )]),
+        };
+        let report = validate_schema(BTreeMap::from([("device".to_string(), device)]));
+        assert!(report.errors.iter().any(|e| matches!(
+            e,
+            ValidationError::EmptyEnum { type_name, field }
+                if type_name == "device" && field == "roles"
+        )));
+    }
+
+    #[test]
+    fn non_empty_enum_passes_schema_validation() {
+        let device = TypeSchema {
+            key: BTreeMap::new(),
+            fields: BTreeMap::from([
+                (
+                    "role".to_string(),
+                    schema_field(FieldType::Enum {
+                        values: vec!["leaf".to_string(), "spine".to_string()],
+                    }),
+                ),
+                (
+                    "roles".to_string(),
+                    schema_field(FieldType::List {
+                        item: Box::new(FieldType::Enum {
+                            values: vec!["a".to_string()],
+                        }),
+                    }),
+                ),
+            ]),
+        };
+        let report = validate_schema(BTreeMap::from([("device".to_string(), device)]));
+        assert!(!report
+            .errors
+            .iter()
+            .any(|e| matches!(e, ValidationError::EmptyEnum { .. })));
+    }
+
+    #[test]
+    fn detects_empty_enum_for_type_with_no_objects() {
+        // the headline win: an empty enum on a type with NO objects is never
+        // reached by per-object validation, but schema-load validation catches
+        // it. the key field also exercises the `key.{field}` label path.
+        let ghost = TypeSchema {
+            key: BTreeMap::from([(
+                "role".to_string(),
+                schema_field(FieldType::Enum { values: vec![] }),
+            )]),
+            fields: BTreeMap::new(),
+        };
+        let report = validate_inventory(&Inventory {
+            schema: Schema {
+                types: BTreeMap::from([("ghost".to_string(), ghost)]),
+            },
+            objects: vec![],
+        });
+        assert!(report.errors.iter().any(|e| matches!(
+            e,
+            ValidationError::EmptyEnum { type_name, field }
+                if type_name == "ghost" && field == "key.role"
+        )));
     }
 
     #[test]
