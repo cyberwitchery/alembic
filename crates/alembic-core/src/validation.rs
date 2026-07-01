@@ -61,6 +61,13 @@ pub enum ValidationError {
         pattern: String,
         error: String,
     },
+    #[error("{constraint} constraint on non-string field {type_name}.{field} (type {field_type})")]
+    ConstraintOnNonStringField {
+        type_name: String,
+        field: String,
+        constraint: String,
+        field_type: String,
+    },
 }
 
 impl ValidationError {
@@ -257,6 +264,7 @@ pub fn validate_inventory(inventory: &Inventory) -> ValidationReport {
 
     validate_schema_ref_targets(&inventory.schema, &mut report);
     validate_schema_patterns(&inventory.schema, &mut report);
+    validate_schema_constraint_types(&inventory.schema, &mut report);
     validate_schema_types(&inventory.schema, &inventory.objects, &mut report);
     for object in &inventory.objects {
         validate_object(object, &inventory.schema, &uid_to_type, &mut report);
@@ -371,6 +379,85 @@ fn validate_field_pattern(
             pattern: pattern.to_string(),
             error: err.to_string(),
         });
+    }
+}
+
+/// reject a top-level `format:`/`pattern:` on a field whose type can never hold
+/// a string; otherwise it is silently accepted at load and only fails per-object
+/// as a misleading `expected string` error (never at all for an empty type).
+///
+/// `format`/`pattern` live only on the top-level `FieldSchema`, so a flat walk
+/// over key and attr fields is complete.
+fn validate_schema_constraint_types(schema: &Schema, report: &mut ValidationReport) {
+    for (type_name, type_schema) in &schema.types {
+        for (field, field_schema) in &type_schema.key {
+            validate_field_constraint_type(
+                type_name,
+                &format!("key.{field}"),
+                field_schema,
+                report,
+            );
+        }
+        for (field, field_schema) in &type_schema.fields {
+            validate_field_constraint_type(type_name, field, field_schema, report);
+        }
+    }
+}
+
+/// flag each `format:`/`pattern:` present on a never-string field, one error per
+/// constraint.
+fn validate_field_constraint_type(
+    type_name: &str,
+    field: &str,
+    field_schema: &crate::ir::FieldSchema,
+    report: &mut ValidationReport,
+) {
+    if !is_never_string_type(&field_schema.r#type) {
+        return;
+    }
+    let field_type = field_type_label(&field_schema.r#type);
+    for (present, constraint) in [
+        (field_schema.format.is_some(), "format"),
+        (field_schema.pattern.is_some(), "pattern"),
+    ] {
+        if present {
+            report
+                .errors
+                .push(ValidationError::ConstraintOnNonStringField {
+                    type_name: type_name.to_string(),
+                    field: field.to_string(),
+                    constraint: constraint.to_string(),
+                    field_type: field_type.clone(),
+                });
+        }
+    }
+}
+
+/// true when a field's type can never hold a json string, so a `format:` or
+/// `pattern:` on it is meaningless. `ref`/`json` can carry a string; only the
+/// scalar non-string and collection types are rejected.
+fn is_never_string_type(field_type: &FieldType) -> bool {
+    match field_type {
+        FieldType::Int
+        | FieldType::Float
+        | FieldType::Bool
+        | FieldType::List { .. }
+        | FieldType::Map { .. }
+        | FieldType::ListRef { .. } => true,
+        FieldType::String
+        | FieldType::Text
+        | FieldType::Date
+        | FieldType::Datetime
+        | FieldType::Time
+        | FieldType::IpAddress
+        | FieldType::Uuid
+        | FieldType::Cidr
+        | FieldType::Prefix
+        | FieldType::Mac
+        | FieldType::Slug
+        | FieldType::Enum { .. }
+        | FieldType::Ref { .. }
+        | FieldType::Json => false,
     }
 }
 
@@ -1177,6 +1264,127 @@ mod tests {
             .errors
             .iter()
             .any(|e| matches!(e, ValidationError::InvalidSchemaPattern { .. })));
+    }
+
+    #[test]
+    fn detects_format_on_int_field() {
+        let mut count = schema_field(FieldType::Int);
+        count.format = Some(FieldFormat::Slug);
+        let device = TypeSchema {
+            key: BTreeMap::new(),
+            fields: BTreeMap::from([("count".to_string(), count)]),
+        };
+        let report = validate_schema(BTreeMap::from([("device".to_string(), device)]));
+        assert!(report.errors.iter().any(|e| matches!(
+            e,
+            ValidationError::ConstraintOnNonStringField { type_name, field, constraint, field_type }
+                if type_name == "device"
+                    && field == "count"
+                    && constraint == "format"
+                    && field_type == "int"
+        )));
+    }
+
+    #[test]
+    fn detects_pattern_on_list_field() {
+        let mut tags = schema_field(FieldType::List {
+            item: Box::new(FieldType::String),
+        });
+        tags.pattern = Some("^x$".to_string());
+        let device = TypeSchema {
+            key: BTreeMap::new(),
+            fields: BTreeMap::from([("tags".to_string(), tags)]),
+        };
+        let report = validate_schema(BTreeMap::from([("device".to_string(), device)]));
+        assert!(report.errors.iter().any(|e| matches!(
+            e,
+            ValidationError::ConstraintOnNonStringField { type_name, field, constraint, field_type }
+                if type_name == "device"
+                    && field == "tags"
+                    && constraint == "pattern"
+                    && field_type == "list"
+        )));
+    }
+
+    #[test]
+    fn format_and_pattern_on_non_string_field_yield_two_errors() {
+        let mut flag = schema_field(FieldType::Bool);
+        flag.format = Some(FieldFormat::Slug);
+        flag.pattern = Some("^x$".to_string());
+        let device = TypeSchema {
+            key: BTreeMap::new(),
+            fields: BTreeMap::from([("flag".to_string(), flag)]),
+        };
+        let report = validate_schema(BTreeMap::from([("device".to_string(), device)]));
+        let count = report
+            .errors
+            .iter()
+            .filter(|e| matches!(e, ValidationError::ConstraintOnNonStringField { .. }))
+            .count();
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn detects_constraint_on_non_string_field_for_type_with_no_objects() {
+        // the headline win: a constraint on a never-string field of a type with
+        // NO objects is never reached by per-object validation, but schema-load
+        // validation catches it.
+        let mut count = schema_field(FieldType::Int);
+        count.pattern = Some("^[0-9]+$".to_string());
+        let ghost = TypeSchema {
+            key: BTreeMap::new(),
+            fields: BTreeMap::from([("count".to_string(), count)]),
+        };
+        let report = validate_inventory(&Inventory {
+            schema: Schema {
+                types: BTreeMap::from([("ghost".to_string(), ghost)]),
+            },
+            objects: vec![],
+        });
+        assert!(report.errors.iter().any(|e| matches!(
+            e,
+            ValidationError::ConstraintOnNonStringField { type_name, field, .. }
+                if type_name == "ghost" && field == "count"
+        )));
+    }
+
+    #[test]
+    fn string_valued_fields_accept_format_and_pattern() {
+        // string, slug, enum, and ref can all hold a string, so a format/pattern
+        // on them is not a malformed schema.
+        let mut name = schema_field(FieldType::String);
+        name.pattern = Some("^[a-z]+$".to_string());
+        let mut handle = schema_field(FieldType::Slug);
+        handle.format = Some(FieldFormat::Slug);
+        let mut role = schema_field(FieldType::Enum {
+            values: vec!["leaf".to_string()],
+        });
+        role.pattern = Some("^[a-z]+$".to_string());
+        let mut owner = schema_field(FieldType::Ref {
+            target: "person".to_string(),
+        });
+        owner.format = Some(FieldFormat::Uuid);
+        let device = TypeSchema {
+            key: BTreeMap::new(),
+            fields: BTreeMap::from([
+                ("name".to_string(), name),
+                ("handle".to_string(), handle),
+                ("role".to_string(), role),
+                ("owner".to_string(), owner),
+            ]),
+        };
+        let person = TypeSchema {
+            key: BTreeMap::new(),
+            fields: BTreeMap::new(),
+        };
+        let report = validate_schema(BTreeMap::from([
+            ("device".to_string(), device),
+            ("person".to_string(), person),
+        ]));
+        assert!(!report
+            .errors
+            .iter()
+            .any(|e| matches!(e, ValidationError::ConstraintOnNonStringField { .. })));
     }
 
     #[test]
