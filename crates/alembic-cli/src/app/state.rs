@@ -15,12 +15,16 @@ pub(super) enum StateBackendConfig {
 }
 
 pub(super) async fn load_state() -> Result<StateStore> {
-    match resolve_state_backend_config(Path::new("."))? {
-        StateBackendConfig::Local { path } => StateStore::load(path),
+    let root = Path::new(".");
+    let store = match resolve_state_backend_config(root)? {
+        StateBackendConfig::Local { path } => StateStore::load(path)?,
         StateBackendConfig::Postgres { url, key, tls_mode } => {
-            StateStore::load_postgres(url, key, tls_mode).await
+            StateStore::load_postgres(url, key, tls_mode).await?
         }
-    }
+    };
+    // apply journals are local scratch; keep them alongside state under `.alembic/`
+    // even when the state backend is postgres.
+    Ok(store.with_journal_dir(root.join(".alembic")))
 }
 
 pub(super) fn state_path(root: &Path) -> PathBuf {

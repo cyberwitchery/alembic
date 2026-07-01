@@ -37,12 +37,28 @@ pub trait StateBackend: Send + Sync + std::fmt::Debug {
 pub struct StateStore {
     backend: Option<Arc<Mutex<dyn StateBackend>>>,
     data: StateData,
+    journal_dir: Option<PathBuf>,
 }
 
 impl StateStore {
     /// create a new state store with an optional backend.
     pub fn new(backend: Option<Arc<Mutex<dyn StateBackend>>>, data: StateData) -> Self {
-        Self { backend, data }
+        Self {
+            backend,
+            data,
+            journal_dir: None,
+        }
+    }
+
+    /// set the directory used to persist apply journals for resumable applies.
+    pub fn with_journal_dir(mut self, dir: PathBuf) -> Self {
+        self.journal_dir = Some(dir);
+        self
+    }
+
+    /// directory used to persist apply journals, if configured.
+    pub fn journal_dir(&self) -> Option<&Path> {
+        self.journal_dir.as_deref()
     }
 
     /// load state from a file path.
@@ -390,6 +406,16 @@ mod tests {
         let mut store = StateStore::new(None, StateData::default());
         store.remove_backend_id(t("site"), uid(1));
         // should not panic
+    }
+
+    #[test]
+    fn journal_dir_defaults_to_none_and_round_trips() {
+        let store = StateStore::new(None, StateData::default());
+        assert_eq!(store.journal_dir(), None);
+
+        let dir = PathBuf::from("/tmp/alembic-journal");
+        let store = store.with_journal_dir(dir.clone());
+        assert_eq!(store.journal_dir(), Some(dir.as_path()));
     }
 
     #[tokio::test]

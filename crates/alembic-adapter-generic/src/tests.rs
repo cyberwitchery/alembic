@@ -1244,3 +1244,81 @@ async fn test_observe_non_array_response() {
 
     assert!(err.to_string().contains("expected array in list response"));
 }
+
+#[tokio::test]
+async fn test_apply_create_conflict_reuses_existing() {
+    // a create that conflicts (409, e.g. a prior run already created it) is
+    // recovered by looking the object up by key and reusing its id.
+    let server = MockServer::start();
+    let create = server.mock(|when, then| {
+        when.method(POST).path("/api/sites");
+        then.status(409);
+    });
+    let lookup = server.mock(|when, then| {
+        when.method(GET).path("/api/sites");
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(serde_json::json!([{"id": 7, "name": "fra1"}]));
+    });
+
+    let config = test_config(&server.base_url());
+    let adapter = GenericAdapter::new(config).unwrap();
+    let schema = test_schema();
+
+    let uid = Uid::new_v4();
+    let mut key = BTreeMap::new();
+    key.insert("name".to_string(), serde_json::json!("fra1"));
+    let mut attrs = BTreeMap::new();
+    attrs.insert("name".to_string(), serde_json::json!("fra1"));
+
+    let ops = vec![Op::Create {
+        uid,
+        type_name: TypeName::new("site".to_string()),
+        desired: alembic_core::Object {
+            uid,
+            type_name: TypeName::new("site".to_string()),
+            key: Key::from(key),
+            attrs: attrs.into(),
+            source: None,
+        },
+    }];
+
+    let state = new_state_store();
+    let report = adapter.write(&schema, &ops, &state).await.unwrap();
+    create.assert();
+    lookup.assert();
+    assert_eq!(report.applied.len(), 1);
+    assert_eq!(report.applied[0].backend_id, Some(BackendId::Int(7)));
+}
+
+#[tokio::test]
+async fn test_apply_delete_tolerates_not_found() {
+    // deletes are re-issued on every run (they are not journaled), so deleting an
+    // already-gone object (404) must be a no-op rather than an error.
+    let server = MockServer::start();
+    let mock = server.mock(|when, then| {
+        when.method(DELETE).path("/api/devices/42");
+        then.status(404);
+    });
+
+    let config = test_config(&server.base_url());
+    let adapter = GenericAdapter::new(config).unwrap();
+    let schema = test_schema();
+
+    let uid = Uid::new_v4();
+    let mut key = BTreeMap::new();
+    key.insert("name".to_string(), serde_json::json!("to-delete"));
+
+    let ops = vec![Op::Delete {
+        uid,
+        type_name: TypeName::new("device".to_string()),
+        key: Key::from(key),
+        backend_id: Some(BackendId::Int(42)),
+    }];
+
+    let state = new_state_store();
+    let report = adapter.write(&schema, &ops, &state).await.unwrap();
+    mock.assert();
+    assert_eq!(report.applied.len(), 1);
+    assert_eq!(report.applied[0].backend_id, None);
+}

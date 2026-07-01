@@ -1,11 +1,11 @@
 //! generic rest adapter for alembic.
 
-use alembic_core::{JsonMap, Schema, TypeName, Uid};
+use alembic_core::{JsonMap, Key, Schema, TypeName, TypeSchema, Uid};
 use alembic_engine::{
     apply_non_delete_with_retries, build_key_from_schema, describe_missing_refs,
     is_missing_ref_error, normalize_attrs_refs, resolved_ids_identity, Adapter, AppliedOp,
-    ApplyReport, BackendId, Emitter, ObservedObject, ObservedState, Observer, Op, RetryApplyDriver,
-    StateMappings,
+    ApplyReport, BackendId, Emitter, Journal, ObservedObject, ObservedState, Observer, Op,
+    RetryApplyDriver, StateMappings,
 };
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
@@ -101,6 +101,7 @@ impl GenericAdapter {
         type_name: &TypeName,
         desired: &alembic_core::Object,
         schema: &Schema,
+        mappings: &StateMappings,
         resolved: &mut BTreeMap<Uid, BackendId>,
     ) -> Result<AppliedOp> {
         let endpoint = self
@@ -120,13 +121,32 @@ impl GenericAdapter {
         );
         let body = resolve_attrs(&desired.attrs, type_schema, resolved)?;
 
-        let resp = self
-            .client
-            .post(&url)
-            .json(&body)
-            .send()
-            .await?
-            .error_for_status()?;
+        let resp = self.client.post(&url).json(&body).send().await?;
+        let resp = match resp.error_for_status() {
+            Ok(resp) => resp,
+            Err(err) if err.status() == Some(reqwest::StatusCode::CONFLICT) => {
+                // a prior (possibly interrupted) run may already have created this
+                // object; reuse the existing one when present.
+                let key = build_key_from_schema(type_schema, &desired.attrs)?;
+                if let Some(existing) = self
+                    .lookup_backend_id(type_name, endpoint, type_schema, mappings, &key)
+                    .await?
+                {
+                    tracing::warn!(
+                        type_name = %type_name,
+                        "create already exists; using existing object"
+                    );
+                    resolved.insert(uid, existing.clone());
+                    return Ok(AppliedOp {
+                        uid,
+                        type_name: type_name.clone(),
+                        backend_id: Some(existing),
+                    });
+                }
+                return Err(err.into());
+            }
+            Err(err) => return Err(err.into()),
+        };
         let body: serde_json::Value = resp.json().await?;
 
         let id_val = resolve_path(&body, &endpoint.id_path)?;
@@ -144,6 +164,58 @@ impl GenericAdapter {
             type_name: type_name.clone(),
             backend_id: Some(backend_id),
         })
+    }
+
+    /// list the endpoint and return the backend id of the object whose key matches,
+    /// or `None` when no such object exists. used to recover from a create conflict.
+    async fn lookup_backend_id(
+        &self,
+        type_name: &TypeName,
+        endpoint: &EndpointConfig,
+        type_schema: &TypeSchema,
+        mappings: &StateMappings,
+        key: &Key,
+    ) -> Result<Option<BackendId>> {
+        let url = format!(
+            "{}/{}",
+            self.config.base_url.trim_end_matches('/'),
+            endpoint.path.trim_start_matches('/')
+        );
+        let resp = self.client.get(&url).send().await?.error_for_status()?;
+        let body: serde_json::Value = resp.json().await?;
+
+        let results = if let Some(path) = &endpoint.results_path {
+            resolve_path(&body, path)?
+                .as_array()
+                .ok_or_else(|| anyhow!("expected array at path {} for {}", path, type_name))?
+                .clone()
+        } else if let Some(arr) = body.as_array() {
+            arr.clone()
+        } else {
+            return Err(anyhow!("expected array in list response for {}", type_name));
+        };
+
+        for item in results {
+            let attrs: JsonMap = match &item {
+                serde_json::Value::Object(map) => {
+                    map.clone().into_iter().collect::<BTreeMap<_, _>>().into()
+                }
+                _ => return Err(anyhow!("expected object in results")),
+            };
+            let attrs = normalize_attrs_refs(&attrs, type_schema, mappings);
+            if build_key_from_schema(type_schema, &attrs)? == *key {
+                let id_val = resolve_path(&item, &endpoint.id_path)?;
+                let backend_id = match id_val {
+                    serde_json::Value::Number(n) => {
+                        BackendId::Int(n.as_u64().ok_or_else(|| anyhow!("invalid integer id"))?)
+                    }
+                    serde_json::Value::String(s) => BackendId::String(s),
+                    _ => return Err(anyhow!("id must be number or string")),
+                };
+                return Ok(Some(backend_id));
+            }
+        }
+        Ok(None)
     }
 
     async fn apply_update(
@@ -193,7 +265,15 @@ impl GenericAdapter {
         match endpoint.delete_strategy {
             DeleteStrategy::Standard => {
                 let url = self.backend_id_to_url(endpoint, id);
-                self.client.delete(&url).send().await?.error_for_status()?;
+                let resp = self.client.delete(&url).send().await?;
+                match resp.error_for_status() {
+                    Ok(_) => {}
+                    // already gone: a prior run (or another actor) removed it.
+                    Err(err) if err.status() == Some(reqwest::StatusCode::NOT_FOUND) => {
+                        tracing::warn!(type_name = %type_name, "delete target already gone");
+                    }
+                    Err(err) => return Err(err.into()),
+                }
             }
             DeleteStrategy::None => {
                 return Err(anyhow!(
@@ -333,6 +413,7 @@ impl Emitter for GenericAdapter {
     ) -> Result<ApplyReport> {
         let mut applied = Vec::new();
         let mut resolved = resolved_ids_identity(state);
+        let mappings = StateMappings::from_state(state);
 
         let mut creates_updates = Vec::new();
         let mut deletes = Vec::new();
@@ -347,6 +428,7 @@ impl Emitter for GenericAdapter {
             adapter: &'a GenericAdapter,
             resolved: &'a mut BTreeMap<Uid, BackendId>,
             schema: &'a Schema,
+            mappings: &'a StateMappings,
         }
 
         #[async_trait]
@@ -359,7 +441,14 @@ impl Emitter for GenericAdapter {
                         desired,
                     } => {
                         self.adapter
-                            .apply_create(*uid, type_name, desired, self.schema, self.resolved)
+                            .apply_create(
+                                *uid,
+                                type_name,
+                                desired,
+                                self.schema,
+                                self.mappings,
+                                self.resolved,
+                            )
                             .await
                     }
                     Op::Update {
@@ -393,9 +482,15 @@ impl Emitter for GenericAdapter {
             adapter: self,
             resolved: &mut resolved,
             schema,
+            mappings: &mappings,
         };
+        let mut journal = match state.journal_dir() {
+            Some(dir) => Some(Journal::load_or_create(dir, "generic", &creates_updates)?),
+            None => None,
+        };
+        let previously_applied = journal.as_ref().map(|j| j.done_ops_count()).unwrap_or(0);
         let retry_result =
-            apply_non_delete_with_retries(&creates_updates, None, &mut driver).await?;
+            apply_non_delete_with_retries(&creates_updates, journal.as_mut(), &mut driver).await?;
         if !retry_result.pending.is_empty() {
             let missing = describe_missing_refs(&retry_result.pending, &resolved);
             return Err(anyhow!("unresolved references: {missing}"));
@@ -428,6 +523,7 @@ impl Emitter for GenericAdapter {
 
         Ok(ApplyReport {
             applied,
+            previously_applied_count: (previously_applied > 0).then_some(previously_applied),
             ..Default::default()
         })
     }

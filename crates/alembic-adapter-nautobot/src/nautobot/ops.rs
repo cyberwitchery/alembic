@@ -8,7 +8,8 @@ use alembic_core::{
 use alembic_engine::{
     apply_non_delete_with_retries, build_key_from_schema, describe_missing_refs,
     is_missing_ref_error, query_filters_from_key, Adapter, AppliedOp, ApplyReport, BackendId,
-    Emitter, ObservedObject, ObservedState, Observer, Op, ProvisionReport, RetryApplyDriver,
+    Emitter, Journal, ObservedObject, ObservedState, Observer, Op, ProvisionReport,
+    RetryApplyDriver,
 };
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
@@ -181,8 +182,13 @@ impl Emitter for NautobotAdapter {
             schema,
             custom_fields_by_type: &custom_fields_by_type,
         };
+        let mut journal = match state.journal_dir() {
+            Some(dir) => Some(Journal::load_or_create(dir, "nautobot", &creates_updates)?),
+            None => None,
+        };
+        let previously_applied = journal.as_ref().map(|j| j.done_ops_count()).unwrap_or(0);
         let retry_result =
-            apply_non_delete_with_retries(&creates_updates, None, &mut driver).await?;
+            apply_non_delete_with_retries(&creates_updates, journal.as_mut(), &mut driver).await?;
 
         if !retry_result.pending.is_empty() {
             let missing = describe_missing_refs(&retry_result.pending, &resolved);
@@ -243,6 +249,7 @@ impl Emitter for NautobotAdapter {
 
         Ok(ApplyReport {
             applied,
+            previously_applied_count: (previously_applied > 0).then_some(previously_applied),
             ..Default::default()
         })
     }

@@ -469,4 +469,94 @@ mod tests {
         assert_eq!(applied_uids, op_uids,);
         assert!(journal.is_completed());
     }
+
+    /// mirrors how the adapters wire the journal: build one from
+    /// `StateStore::journal_dir()`, run the retry loop, and surface the resumed
+    /// count on the report.
+    async fn run_journaled_apply(
+        state: &crate::StateStore,
+        ops: &[Op],
+        driver: &mut impl RetryApplyDriver,
+    ) -> Result<crate::ApplyReport> {
+        let creates_updates: Vec<Op> = ops
+            .iter()
+            .filter(|op| !matches!(op, Op::Delete { .. }))
+            .cloned()
+            .collect();
+        let mut journal = match state.journal_dir() {
+            Some(dir) => Some(crate::Journal::load_or_create(
+                dir,
+                "test",
+                &creates_updates,
+            )?),
+            None => None,
+        };
+        let previously_applied = journal.as_ref().map(|j| j.done_ops_count()).unwrap_or(0);
+        let result =
+            apply_non_delete_with_retries(&creates_updates, journal.as_mut(), driver).await?;
+        Ok(crate::ApplyReport {
+            applied: result.applied,
+            previously_applied_count: (previously_applied > 0).then_some(previously_applied),
+            ..Default::default()
+        })
+    }
+
+    #[tokio::test]
+    async fn journaled_apply_via_state_store_resumes_and_reports() {
+        let uid1 = Uid::from_u128(1);
+        let uid2 = Uid::from_u128(2);
+        let uid3 = Uid::from_u128(3);
+        let ops = vec![create_op(uid1), create_op(uid2), create_op(uid3)];
+        let dir = tempdir().unwrap();
+        let state = crate::StateStore::new(None, crate::StateData::default())
+            .with_journal_dir(dir.path().to_path_buf());
+        let journal_path = crate::Journal::stable_file_name(dir.path(), "test", &ops);
+
+        // first run crashes after applying the first op; the journal persists progress.
+        {
+            let mut driver = ErraticDriver {
+                countdown_to_crash: 2,
+                applied_ops: vec![],
+            };
+            run_journaled_apply(&state, &ops, &mut driver)
+                .await
+                .expect_err("should crash on the second op");
+            assert_eq!(driver.applied_ops.len(), 1);
+            assert!(journal_path.exists());
+        }
+
+        // second run resumes: only the remaining ops apply, the report notes the
+        // resumed count, and the completed journal is cleaned up.
+        {
+            let mut driver = ErraticDriver {
+                countdown_to_crash: 99999,
+                applied_ops: vec![],
+            };
+            let report = run_journaled_apply(&state, &ops, &mut driver)
+                .await
+                .unwrap();
+            assert_eq!(
+                driver.applied_ops.iter().map(|a| a.uid).collect::<Vec<_>>(),
+                vec![uid2, uid3]
+            );
+            assert_eq!(report.applied.len(), 2);
+            assert_eq!(report.previously_applied_count, Some(1));
+            assert!(!journal_path.exists());
+        }
+    }
+
+    #[tokio::test]
+    async fn journaled_apply_without_journal_dir_reports_no_resume() {
+        let ops = vec![create_op(Uid::from_u128(1))];
+        let state = crate::StateStore::new(None, crate::StateData::default());
+        let mut driver = ErraticDriver {
+            countdown_to_crash: 99999,
+            applied_ops: vec![],
+        };
+        let report = run_journaled_apply(&state, &ops, &mut driver)
+            .await
+            .unwrap();
+        assert_eq!(report.applied.len(), 1);
+        assert_eq!(report.previously_applied_count, None);
+    }
 }

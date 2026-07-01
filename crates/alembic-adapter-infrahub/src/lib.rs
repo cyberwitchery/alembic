@@ -4,8 +4,8 @@ use alembic_core::{key_string, uid_v5, FieldType, JsonMap, Key, Schema, TypeName
 use alembic_engine::{
     apply_non_delete_with_retries, backend_id_from_value, build_key_from_schema,
     is_missing_ref_error, normalize_attrs_refs, resolve_value_for_type, resolved_ids_identity,
-    Adapter, AppliedOp, ApplyReport, BackendId, Emitter, ObservedObject, ObservedState, Observer,
-    Op, ProvisionReport, RetryApplyDriver, StateMappings, StateStore,
+    Adapter, AppliedOp, ApplyReport, BackendId, Emitter, Journal, ObservedObject, ObservedState,
+    Observer, Op, ProvisionReport, RetryApplyDriver, StateMappings, StateStore,
 };
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
@@ -244,11 +244,34 @@ impl InfrahubAdapter {
             type_name = gql_type
         );
 
-        let response = self
+        let response = match self
             .client
             .execute_raw(&mutation, Some(json!({ "data": data })), None)
             .await
-            .context("execute infrahub create")?;
+        {
+            Ok(response) => response,
+            Err(err) => {
+                // a prior (possibly interrupted) run may already have created this
+                // object; treat a matching existing object as success, otherwise
+                // surface the original error.
+                let key = build_key_from_schema(type_schema, &desired.attrs)?;
+                if let Ok(Some(existing)) = self.find_backend_id(type_name, type_schema, &key).await
+                {
+                    tracing::warn!(
+                        type_name = %type_name,
+                        "create already exists; using existing object"
+                    );
+                    let backend_id = BackendId::String(existing);
+                    resolved.insert(uid, backend_id.clone());
+                    return Ok(AppliedOp {
+                        uid,
+                        type_name: type_name.clone(),
+                        backend_id: Some(backend_id),
+                    });
+                }
+                return Err(anyhow::Error::new(err).context("execute infrahub create"));
+            }
+        };
         let data = response
             .data
             .ok_or_else(|| anyhow!("missing data in infrahub response"))?;
@@ -347,21 +370,41 @@ impl InfrahubAdapter {
         let gql_type = gql_type_name(type_name);
 
         let id = if let Some(BackendId::String(id)) = backend_id {
-            id.clone()
+            Some(id.clone())
         } else if let Some(BackendId::String(id)) = resolved.get(&uid) {
-            id.clone()
+            Some(id.clone())
         } else {
-            self.lookup_backend_id(type_name, type_schema, key).await?
+            self.find_backend_id(type_name, type_schema, key).await?
+        };
+
+        // no object with this key means it is already gone; the delete is a no-op.
+        let Some(id) = id else {
+            tracing::warn!(type_name = %type_name, "delete target already gone");
+            return Ok(AppliedOp {
+                uid,
+                type_name: type_name.clone(),
+                backend_id: None,
+            });
         };
 
         let mutation = format!(
             "mutation($data: DeleteInput!) {{ {type_name}Delete(data: $data) {{ ok }} }}",
             type_name = gql_type
         );
-        self.client
+        if let Err(err) = self
+            .client
             .execute_raw(&mutation, Some(json!({ "data": { "id": id } })), None)
             .await
-            .context("execute infrahub delete")?;
+        {
+            // the object may have been removed already (e.g. by a prior run); tolerate
+            // that, but surface any error where the object is still present.
+            match self.find_backend_id(type_name, type_schema, key).await {
+                Ok(None) => {
+                    tracing::warn!(type_name = %type_name, "delete target already gone");
+                }
+                _ => return Err(anyhow::Error::new(err).context("execute infrahub delete")),
+            }
+        }
 
         Ok(AppliedOp {
             uid,
@@ -370,26 +413,41 @@ impl InfrahubAdapter {
         })
     }
 
+    /// look up the backend id of an existing object by key, returning `None` when
+    /// no object with that key exists (as opposed to a lookup failure).
+    async fn find_backend_id(
+        &self,
+        type_name: &TypeName,
+        type_schema: &alembic_core::TypeSchema,
+        key: &Key,
+    ) -> Result<Option<String>> {
+        let schema_info = self.load_schema_info().await?;
+        let objects = self
+            .read_type_objects(&schema_info, type_name, type_schema)
+            .await?;
+        for (backend_id, attrs) in objects {
+            let obj_key = build_key_from_schema(type_schema, &attrs)?;
+            if obj_key == *key {
+                if let BackendId::String(id) = backend_id {
+                    return Ok(Some(id));
+                }
+            }
+        }
+        Ok(None)
+    }
+
     async fn lookup_backend_id(
         &self,
         type_name: &TypeName,
         type_schema: &alembic_core::TypeSchema,
         key: &Key,
     ) -> Result<String> {
-        let schema_info = self.load_schema_info().await?;
-        let objects = self
-            .read_type_objects(&schema_info, type_name, type_schema)
-            .await?;
-        let key_repr = serde_json::to_string(key).unwrap_or_default();
-        for (backend_id, attrs) in objects {
-            let obj_key = build_key_from_schema(type_schema, &attrs)?;
-            if obj_key == *key {
-                if let BackendId::String(id) = backend_id {
-                    return Ok(id);
-                }
-            }
-        }
-        Err(anyhow!("missing infrahub object with key {key_repr}"))
+        self.find_backend_id(type_name, type_schema, key)
+            .await?
+            .ok_or_else(|| {
+                let key_repr = serde_json::to_string(key).unwrap_or_default();
+                anyhow!("missing infrahub object with key {key_repr}")
+            })
     }
 
     async fn apply_schema_infrahubctl(&self, config: &SchemaPushConfig) -> Result<()> {
@@ -629,8 +687,13 @@ impl Emitter for InfrahubAdapter {
             schema,
             resolved: &mut resolved,
         };
+        let mut journal = match state.journal_dir() {
+            Some(dir) => Some(Journal::load_or_create(dir, "infrahub", &creates_updates)?),
+            None => None,
+        };
+        let previously_applied = journal.as_ref().map(|j| j.done_ops_count()).unwrap_or(0);
         let retry_result =
-            apply_non_delete_with_retries(&creates_updates, None, &mut driver).await?;
+            apply_non_delete_with_retries(&creates_updates, journal.as_mut(), &mut driver).await?;
         if !retry_result.pending.is_empty() {
             let missing = describe_missing_refs(&retry_result.pending, &resolved);
             return Err(anyhow!("unresolved references: {missing}"));
@@ -649,6 +712,7 @@ impl Emitter for InfrahubAdapter {
 
         Ok(ApplyReport {
             applied,
+            previously_applied_count: (previously_applied > 0).then_some(previously_applied),
             ..Default::default()
         })
     }
@@ -2811,6 +2875,115 @@ schema { query: Query }
         let state = StateStore::new(None, StateData::default());
         let report = adapter.write(&schema, &ops, &state).await.unwrap();
         assert_eq!(report.applied.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn write_create_conflict_reuses_existing() {
+        // a create that errors because the object already exists (e.g. a prior,
+        // interrupted run created it) is recovered by looking it up by key.
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/schema.graphql");
+            then.status(200).body(GRAPHQL_SCHEMA);
+        });
+        // create fails with a graphql error. registered before the generic DcimSite
+        // read mock so the create mutation (body contains "Create") matches here.
+        server.mock(|when, then| {
+            when.method(POST).path("/graphql").body_includes("Create");
+            then.status(200).json_body(json!({
+                "data": null,
+                "errors": [{ "message": "An object already exists" }]
+            }));
+        });
+        // the existing-object lookup finds it by key.
+        server.mock(|when, then| {
+            when.method(POST).path("/graphql").body_includes("DcimSite");
+            then.status(200).json_body(json!({
+                "data": { "DcimSite": { "count": 1, "edges": [
+                    { "node": { "id": "site-existing", "hfid": "site-existing", "name": { "value": "Site A" } } }
+                ] } },
+                "errors": []
+            }));
+        });
+
+        let adapter = InfrahubAdapter::new(&server.base_url(), "token", None).unwrap();
+        let schema = schema_with(vec![(
+            "dcim.site",
+            type_schema(
+                vec![("name", field_schema(FieldType::String, true))],
+                vec![],
+            ),
+        )]);
+        let uid = Uid::parse_str("00000000-0000-0000-0000-000000000200").unwrap();
+        let key = Key::from(BTreeMap::from([("name".to_string(), json!("Site A"))]));
+        let ops = vec![Op::Create {
+            uid,
+            type_name: TypeName::new("dcim.site"),
+            desired: Object {
+                uid,
+                type_name: TypeName::new("dcim.site"),
+                key,
+                attrs: JsonMap::from(BTreeMap::from([("name".to_string(), json!("Site A"))])),
+                source: None,
+            },
+        }];
+
+        let state = StateStore::new(None, StateData::default());
+        let report = adapter.write(&schema, &ops, &state).await.unwrap();
+        assert_eq!(report.applied.len(), 1);
+        assert_eq!(
+            report.applied[0].backend_id,
+            Some(BackendId::String("site-existing".to_string()))
+        );
+    }
+
+    #[tokio::test]
+    async fn write_delete_tolerates_already_gone() {
+        // deletes are re-issued on every run (they are not journaled), so deleting an
+        // object that is already gone must be a no-op rather than an error.
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/schema.graphql");
+            then.status(200).body(GRAPHQL_SCHEMA);
+        });
+        // delete fails because the object is already gone.
+        server.mock(|when, then| {
+            when.method(POST).path("/graphql").body_includes("Delete");
+            then.status(200).json_body(json!({
+                "data": null,
+                "errors": [{ "message": "Node not found" }]
+            }));
+        });
+        // the existence check confirms it is absent.
+        server.mock(|when, then| {
+            when.method(POST).path("/graphql").body_includes("DcimSite");
+            then.status(200).json_body(json!({
+                "data": { "DcimSite": { "count": 0, "edges": [] } },
+                "errors": []
+            }));
+        });
+
+        let adapter = InfrahubAdapter::new(&server.base_url(), "token", None).unwrap();
+        let schema = schema_with(vec![(
+            "dcim.site",
+            type_schema(
+                vec![("name", field_schema(FieldType::String, true))],
+                vec![],
+            ),
+        )]);
+        let uid = Uid::parse_str("00000000-0000-0000-0000-000000000201").unwrap();
+        let key = Key::from(BTreeMap::from([("name".to_string(), json!("Site A"))]));
+        let ops = vec![Op::Delete {
+            uid,
+            type_name: TypeName::new("dcim.site"),
+            key,
+            backend_id: Some(BackendId::String("site-gone".to_string())),
+        }];
+
+        let state = StateStore::new(None, StateData::default());
+        let report = adapter.write(&schema, &ops, &state).await.unwrap();
+        assert_eq!(report.applied.len(), 1);
+        assert_eq!(report.applied[0].backend_id, None);
     }
 
     #[tokio::test]

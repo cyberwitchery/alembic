@@ -33,6 +33,9 @@ impl Journal {
     /// in either case, the new Journal instance will be backed by the file at `file_path`.
     /// delete ops will not be saved in the journal.
     pub fn load_or_create(directory: &Path, adapter_name: &str, ops: &[Op]) -> Result<Self> {
+        // apply writes the journal before any state save, so `directory` (e.g. `.alembic/`)
+        // may not exist yet on a fresh checkout.
+        fs::create_dir_all(directory)?;
         let file_name = Self::stable_file_name(directory, adapter_name, ops);
         if fs::metadata(&file_name).is_ok() {
             Self::new_from_existing_file(directory, adapter_name, ops)

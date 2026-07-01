@@ -45,6 +45,7 @@ pub use external::{
 };
 pub use extract::{import_inventory, ImportReport};
 pub use inflect::pluralize;
+pub use journal::Journal;
 pub use loader::load_inventory;
 pub use planner::{plan, sort_ops_for_apply};
 pub use state::{PostgresTlsMode, StateData, StateStore};
