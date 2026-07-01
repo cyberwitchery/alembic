@@ -713,6 +713,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn fetch_custom_fields_paginates_across_all_pages() {
+        let server = MockServer::start();
+        let client = NetBoxClient::new(&server.base_url(), "token").unwrap();
+
+        // 250 custom fields spread across two pages exceeds the per-request
+        // limit of 200, so fetch_custom_fields must follow pagination.
+        let total = 250usize;
+        let limit = 200usize;
+        let field = |i: usize| json!({ "object_types": ["dcim.device"], "type": {}, "name": format!("cf-{i:04}") });
+        let first: Vec<serde_json::Value> = (0..limit).map(field).collect();
+        let second: Vec<serde_json::Value> = (limit..total).map(field).collect();
+
+        let _page_one = server.mock(|when, then| {
+            when.method(GET)
+                .path("/api/extras/custom-fields/")
+                .query_param("limit", "200")
+                .query_param("offset", "0");
+            then.status(200).json_body(json!({
+                "count": total,
+                "next": null,
+                "previous": null,
+                "results": first,
+            }));
+        });
+        let _page_two = server.mock(|when, then| {
+            when.method(GET)
+                .path("/api/extras/custom-fields/")
+                .query_param("limit", "200")
+                .query_param("offset", "200");
+            then.status(200).json_body(json!({
+                "count": total,
+                "next": null,
+                "previous": null,
+                "results": second,
+            }));
+        });
+
+        let by_type = client.fetch_custom_fields().await.unwrap();
+        let fields = by_type
+            .get("dcim.device")
+            .expect("dcim.device custom fields");
+
+        assert_eq!(fields.len(), total);
+        // first/last of each page, proving both requests were made rather than
+        // stopping after the first page.
+        assert!(fields.contains("cf-0000"));
+        assert!(fields.contains("cf-0199"));
+        assert!(fields.contains("cf-0200"));
+        assert!(fields.contains("cf-0249"));
+    }
+
+    #[tokio::test]
     async fn apply_handles_update_operation() {
         use alembic_engine::FieldChange;
         use httpmock::Method::PATCH;

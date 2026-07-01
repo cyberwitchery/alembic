@@ -74,9 +74,11 @@ impl NetBoxClient {
     }
 
     pub(super) async fn fetch_custom_fields(&self) -> Result<BTreeMap<String, BTreeSet<String>>> {
-        let fields = self.client.extras().custom_fields().list(None).await?;
+        let fields = self
+            .list_all(&self.client.extras().custom_fields(), None)
+            .await?;
         let mut by_type: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-        for field in fields.results {
+        for field in fields {
             for object_type in field.object_types {
                 by_type
                     .entry(object_type)
