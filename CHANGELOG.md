@@ -6,6 +6,7 @@
 - core: validate that schema `ref`/`list_ref` targets name a declared type, including refs nested in `list`/`map` fields, so a misspelled target fails schema validation with one clear error instead of confusing per-object reference errors
 - core: validate that schema `pattern:` regexes compile at schema-load time, instead of only failing per-object (and never for types with no objects yet)
 - core: reject a `format:`/`pattern:` constraint on a non-string field type (`int`, `float`, `bool`, `list`, `map`, `list_ref`) at schema-load time, instead of only failing per-object with a misleading `expected string` error (and never for types with no objects)
+- core: reject an empty `enum` field (`values: []`), including enums nested in `list`/`map` fields, at schema-load time, instead of only failing per-object with a confusing `expected: enum()` error (and never for types with no objects)
 - engine: map rewrites refs nested in `list` and `map` fields across a rename, not just top-level `ref`/`list_ref` attrs
 - generic adapter: resolve refs nested in `list` and `map` fields on read, matching the write path and the netbox/nautobot adapters
 - infrahub adapter: resolve refs nested in `list` and `map` fields on read, matching the generic/netbox/nautobot adapters and the write path, by sharing the engine's read-side reference normalizer
