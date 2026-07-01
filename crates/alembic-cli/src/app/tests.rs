@@ -714,14 +714,72 @@ async fn run_apply_interactive_delete_requires_allow_delete() {
     std::env::set_current_dir(cwd).unwrap();
 }
 
+// registers the nautobot bootstrap list mocks shared by the plan/report tests:
+// content-types (one `dcim.device`), empty custom-fields, empty tags, and a
+// `dcim/devices/` list returning `device_results`. httpmock mocks persist for
+// the server's lifetime (only `MockServer` implements `Drop`), so the mock
+// handles are dropped and just the server is returned.
+fn nautobot_plan_server(device_results: serde_json::Value) -> httpmock::MockServer {
+    use httpmock::Method::GET;
+    use serde_json::json;
+
+    let server = httpmock::MockServer::start();
+    server.mock(|when, then| {
+        when.method(GET)
+            .path("/api/extras/content-types/")
+            .query_param("limit", "200")
+            .query_param("offset", "0");
+        then.status(200).json_body(json!({
+            "count": 1,
+            "next": null,
+            "previous": null,
+            "results": [{
+                "app_label": "dcim",
+                "model": "device",
+                "display": "Device"
+            }]
+        }));
+    });
+    server.mock(|when, then| {
+        when.method(GET).path("/api/extras/custom-fields/");
+        then.status(200).json_body(json!({
+            "count": 0,
+            "next": null,
+            "previous": null,
+            "results": []
+        }));
+    });
+    server.mock(|when, then| {
+        when.method(GET).path("/api/extras/tags/");
+        then.status(200).json_body(json!({
+            "count": 0,
+            "next": null,
+            "previous": null,
+            "results": []
+        }));
+    });
+    let count = device_results.as_array().map_or(0, |r| r.len());
+    server.mock(|when, then| {
+        when.method(GET)
+            .path("/api/dcim/devices/")
+            .query_param("limit", "200")
+            .query_param("offset", "0");
+        then.status(200).json_body(json!({
+            "count": count,
+            "next": null,
+            "previous": null,
+            "results": device_results
+        }));
+    });
+    server
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn run_plan_nautobot_backend() {
-    use httpmock::Method::GET;
-    use httpmock::MockServer;
     use serde_json::json;
 
     let _guard = cwd_lock().lock().await;
-    let server = MockServer::start();
+    let server = nautobot_plan_server(json!([]));
     let dir = tempdir().unwrap();
     let state_path = dir.path().join(".alembic").join("state.json");
     let _env = EnvVarGuard::acquire_async(&[
@@ -762,56 +820,6 @@ objects:
         ),
     )
     .unwrap();
-
-    let _content_types = server.mock(|when, then| {
-        when.method(GET)
-            .path("/api/extras/content-types/")
-            .query_param("limit", "200")
-            .query_param("offset", "0");
-        then.status(200).json_body(json!({
-            "count": 1,
-            "next": null,
-            "previous": null,
-            "results": [{
-                "app_label": "dcim",
-                "model": "device",
-                "display": "Device"
-            }]
-        }));
-    });
-
-    let _custom_fields = server.mock(|when, then| {
-        when.method(GET).path("/api/extras/custom-fields/");
-        then.status(200).json_body(json!({
-            "count": 0,
-            "next": null,
-            "previous": null,
-            "results": []
-        }));
-    });
-
-    let _tags = server.mock(|when, then| {
-        when.method(GET).path("/api/extras/tags/");
-        then.status(200).json_body(json!({
-            "count": 0,
-            "next": null,
-            "previous": null,
-            "results": []
-        }));
-    });
-
-    let _devices = server.mock(|when, then| {
-        when.method(GET)
-            .path("/api/dcim/devices/")
-            .query_param("limit", "200")
-            .query_param("offset", "0");
-        then.status(200).json_body(json!({
-            "count": 0,
-            "next": null,
-            "previous": null,
-            "results": []
-        }));
-    });
 
     let cwd = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
@@ -839,12 +847,10 @@ objects:
 
 #[tokio::test(flavor = "multi_thread")]
 async fn run_plan_report_is_read_only() {
-    use httpmock::Method::GET;
-    use httpmock::MockServer;
     use serde_json::json;
 
     let _guard = cwd_lock().lock().await;
-    let server = MockServer::start();
+    let server = nautobot_plan_server(json!([]));
     let dir = tempdir().unwrap();
     let state_path = dir.path().join(".alembic").join("state.json");
     let _env = EnvVarGuard::acquire_async(&[
@@ -885,56 +891,6 @@ objects:
         ),
     )
     .unwrap();
-
-    let _content_types = server.mock(|when, then| {
-        when.method(GET)
-            .path("/api/extras/content-types/")
-            .query_param("limit", "200")
-            .query_param("offset", "0");
-        then.status(200).json_body(json!({
-            "count": 1,
-            "next": null,
-            "previous": null,
-            "results": [{
-                "app_label": "dcim",
-                "model": "device",
-                "display": "Device"
-            }]
-        }));
-    });
-
-    let _custom_fields = server.mock(|when, then| {
-        when.method(GET).path("/api/extras/custom-fields/");
-        then.status(200).json_body(json!({
-            "count": 0,
-            "next": null,
-            "previous": null,
-            "results": []
-        }));
-    });
-
-    let _tags = server.mock(|when, then| {
-        when.method(GET).path("/api/extras/tags/");
-        then.status(200).json_body(json!({
-            "count": 0,
-            "next": null,
-            "previous": null,
-            "results": []
-        }));
-    });
-
-    let _devices = server.mock(|when, then| {
-        when.method(GET)
-            .path("/api/dcim/devices/")
-            .query_param("limit", "200")
-            .query_param("offset", "0");
-        then.status(200).json_body(json!({
-            "count": 0,
-            "next": null,
-            "previous": null,
-            "results": []
-        }));
-    });
 
     let cwd = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
@@ -999,12 +955,10 @@ async fn run_plan_report_surfaces_extra() {
     // regression test for the `extra` category: an object present on the backend
     // but not declared in intent must surface under --report even without
     // --allow-delete (the existing read-only test only covered a missing object).
-    use httpmock::Method::GET;
-    use httpmock::MockServer;
     use serde_json::json;
 
     let _guard = cwd_lock().lock().await;
-    let server = MockServer::start();
+    let server = nautobot_plan_server(json!([{ "id": "uuid-leaf01", "name": "leaf01" }]));
     let dir = tempdir().unwrap();
     let state_path = dir.path().join(".alembic").join("state.json");
     let _env = EnvVarGuard::acquire_async(&[
@@ -1040,59 +994,6 @@ objects: []
         ),
     )
     .unwrap();
-
-    let _content_types = server.mock(|when, then| {
-        when.method(GET)
-            .path("/api/extras/content-types/")
-            .query_param("limit", "200")
-            .query_param("offset", "0");
-        then.status(200).json_body(json!({
-            "count": 1,
-            "next": null,
-            "previous": null,
-            "results": [{
-                "app_label": "dcim",
-                "model": "device",
-                "display": "Device"
-            }]
-        }));
-    });
-
-    let _custom_fields = server.mock(|when, then| {
-        when.method(GET).path("/api/extras/custom-fields/");
-        then.status(200).json_body(json!({
-            "count": 0,
-            "next": null,
-            "previous": null,
-            "results": []
-        }));
-    });
-
-    let _tags = server.mock(|when, then| {
-        when.method(GET).path("/api/extras/tags/");
-        then.status(200).json_body(json!({
-            "count": 0,
-            "next": null,
-            "previous": null,
-            "results": []
-        }));
-    });
-
-    let _devices = server.mock(|when, then| {
-        when.method(GET)
-            .path("/api/dcim/devices/")
-            .query_param("limit", "200")
-            .query_param("offset", "0");
-        then.status(200).json_body(json!({
-            "count": 1,
-            "next": null,
-            "previous": null,
-            "results": [{
-                "id": "uuid-leaf01",
-                "name": "leaf01"
-            }]
-        }));
-    });
 
     let cwd = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();

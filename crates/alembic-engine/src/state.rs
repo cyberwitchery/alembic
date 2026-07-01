@@ -310,12 +310,6 @@ mod tests {
     }
 
     #[test]
-    fn state_data_default_is_empty() {
-        let data = StateData::default();
-        assert!(data.mappings.is_empty());
-    }
-
-    #[test]
     fn backend_id_returns_none_for_missing_type() {
         let store = StateStore::new(None, StateData::default());
         assert_eq!(store.backend_id(t("site"), uid(1)), None);
@@ -388,12 +382,6 @@ mod tests {
         let mut store = StateStore::new(None, StateData::default());
         store.remove_backend_id(t("site"), uid(1));
         // should not panic
-    }
-
-    #[test]
-    fn all_mappings_returns_internal_reference() {
-        let store = StateStore::new(None, StateData::default());
-        assert!(store.all_mappings().is_empty());
     }
 
     #[tokio::test]

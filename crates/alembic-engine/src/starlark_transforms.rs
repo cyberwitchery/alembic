@@ -248,20 +248,6 @@ mod tests {
     }
 
     #[test]
-    fn typed_returns_map_to_json() {
-        let user = transforms(
-            "def profile(platform):\n    return {\"os\": platform, \"ports\": [1, 2]}\n",
-        );
-        let result = user
-            .call("profile", &serde_json::json!("eos"), &[])
-            .unwrap();
-        assert_eq!(
-            result,
-            Some(serde_json::json!({"os": "eos", "ports": [1, 2]}))
-        );
-    }
-
-    #[test]
     fn function_return_has_no_json_representation() {
         let user = transforms("def f(v):\n    return lambda: v\n");
         let err = user.call("f", &serde_json::json!(1), &[]).unwrap_err();

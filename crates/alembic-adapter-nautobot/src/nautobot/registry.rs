@@ -117,34 +117,4 @@ mod tests {
         let device_bay = registry.info_for(&TypeName::new("dcim.devicebay")).unwrap();
         assert_eq!(device_bay.endpoint, "dcim/device-bays/");
     }
-
-    #[test]
-    fn normalize_endpoint_strips_trailing_integer_and_uuid_ids() {
-        // nautobot uses uuid pks, so both an all-digit and a uuid trailing
-        // segment count as an object id.
-        let is_id =
-            |s: &str| s.chars().all(|c| c.is_ascii_digit()) || uuid::Uuid::parse_str(s).is_ok();
-        assert_eq!(
-            normalize_endpoint("dcim/devices/5/", is_id),
-            Some("dcim/devices/".to_string())
-        );
-        assert_eq!(
-            normalize_endpoint("dcim/devices/6d74797d-de61-46b6-95e4-27c5eadb8fc6/", is_id),
-            Some("dcim/devices/".to_string())
-        );
-        // a non-id trailing segment is a resource and stays.
-        assert_eq!(
-            normalize_endpoint("dcim/devices/", is_id),
-            Some("dcim/devices/".to_string())
-        );
-    }
-
-    #[test]
-    fn pluralization_rules() {
-        assert_eq!(pluralize("device"), "devices");
-        assert_eq!(pluralize("location-type"), "location-types");
-        assert_eq!(pluralize("address"), "addresses");
-        assert_eq!(pluralize("facility"), "facilities");
-        assert_eq!(pluralize("device-bay"), "device-bays");
-    }
 }

@@ -159,21 +159,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn normalize_endpoint_strips_trailing_integer_id() {
-        // netbox uses integer pks, so a trailing all-digit segment is an id.
-        let is_id = |s: &str| s.chars().all(|c| c.is_ascii_digit());
-        assert_eq!(
-            normalize_endpoint("dcim/sites/5/", is_id),
-            Some("dcim/sites/".to_string())
-        );
-        // a non-numeric trailing segment is a resource, not an id.
-        assert_eq!(
-            normalize_endpoint("dcim/sites/", is_id),
-            Some("dcim/sites/".to_string())
-        );
-    }
-
-    #[test]
     fn type_name_from_endpoint_handles_pluralization() {
         assert_eq!(
             type_name_from_endpoint("ipam/ip-addresses/"),

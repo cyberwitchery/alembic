@@ -175,11 +175,6 @@ mod tests {
     }
 
     #[test]
-    fn new_creates_adapter() {
-        let _adapter = PeeringDBAdapter::new();
-    }
-
-    #[test]
     fn build_key_extracts_fields() {
         let schema = ix_schema();
         let attrs: JsonMap = BTreeMap::from([

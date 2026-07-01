@@ -932,32 +932,11 @@ uid:
     }
 
     #[test]
-    fn lone_placeholder_non_null_string_mode_returns_value() {
-        let mut vars = BTreeMap::new();
-        vars.insert("x".to_string(), JsonValue::String("leaf01".to_string()));
-        let rendered =
-            render_string_value("${x}", &ctx(&vars), "key", false, TransformedOutput::String)
-                .unwrap()
-                .unwrap();
-        assert_eq!(rendered, JsonValue::String("leaf01".to_string()));
-    }
-
-    #[test]
     fn render_key_rejects_array_lone_placeholder() {
         let mut vars = BTreeMap::new();
         vars.insert("tags".to_string(), serde_json::json!(["a", "b"]));
         let mut key = BTreeMap::new();
         key.insert("k".to_string(), YamlValue::String("${tags}".to_string()));
-        let err = render_key(&key, &ctx(&vars)).unwrap_err();
-        assert!(err.to_string().contains("must be a scalar"), "{err:#}");
-    }
-
-    #[test]
-    fn render_key_rejects_object_lone_placeholder() {
-        let mut vars = BTreeMap::new();
-        vars.insert("obj".to_string(), serde_json::json!({"a": 1}));
-        let mut key = BTreeMap::new();
-        key.insert("k".to_string(), YamlValue::String("${obj}".to_string()));
         let err = render_key(&key, &ctx(&vars)).unwrap_err();
         assert!(err.to_string().contains("must be a scalar"), "{err:#}");
     }

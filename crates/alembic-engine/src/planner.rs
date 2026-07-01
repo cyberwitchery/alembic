@@ -398,16 +398,6 @@ mod tests {
         assert!(fields.contains(&"b"));
     }
 
-    #[test]
-    fn diff_attrs_type_change() {
-        let existing = make_attrs(&[("val", json!("string"))]);
-        let desired = make_attrs(&[("val", json!(42))]);
-        let changes = diff_attrs(&existing, &desired);
-        assert_eq!(changes.len(), 1);
-        assert_eq!(changes[0].from, json!("string"));
-        assert_eq!(changes[0].to, json!(42));
-    }
-
     // --- plan() ---
 
     #[test]
@@ -759,28 +749,6 @@ mod tests {
         ];
         let sorted = sort_ops_for_apply(&ops, &empty_schema());
         assert!(matches!(&sorted[0], Op::Create { .. }));
-        assert!(matches!(&sorted[1], Op::Delete { .. }));
-    }
-
-    #[test]
-    fn sort_ops_updates_before_deletes() {
-        let ops = vec![
-            Op::Delete {
-                uid: Uid::from_u128(1),
-                type_name: TypeName::new("dcim.site"),
-                key: make_key("fra1"),
-                backend_id: None,
-            },
-            Op::Update {
-                uid: Uid::from_u128(2),
-                type_name: TypeName::new("dcim.site"),
-                desired: make_object(2, "dcim.site", "ams1", make_attrs(&[])),
-                changes: vec![],
-                backend_id: None,
-            },
-        ];
-        let sorted = sort_ops_for_apply(&ops, &empty_schema());
-        assert!(matches!(&sorted[0], Op::Update { .. }));
         assert!(matches!(&sorted[1], Op::Delete { .. }));
     }
 

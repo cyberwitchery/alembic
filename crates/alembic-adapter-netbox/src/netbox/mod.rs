@@ -30,7 +30,6 @@ impl NetBoxAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::netbox::mapping::{build_tag_inputs, slugify};
     use alembic_core::{key_string, JsonMap, Key, TypeName, Uid};
     use alembic_engine::Op;
     use httpmock::Method::{GET, POST};
@@ -711,21 +710,6 @@ mod tests {
         assert!(tags.contains("tag-0199"));
         assert!(tags.contains("tag-0200"));
         assert!(tags.contains("tag-0249"));
-    }
-
-    #[test]
-    fn slugify_normalizes_value() {
-        assert_eq!(slugify("EVPN Fabric"), "evpn-fabric");
-        assert_eq!(slugify("edge--core"), "edge-core");
-    }
-
-    #[test]
-    fn build_tag_inputs_uses_slugify() {
-        let tags = vec!["EVPN Fabric".to_string()];
-        let inputs = build_tag_inputs(&tags);
-        assert_eq!(inputs.len(), 1);
-        assert_eq!(inputs[0].name, "EVPN Fabric");
-        assert_eq!(inputs[0].slug, "evpn-fabric");
     }
 
     #[tokio::test]

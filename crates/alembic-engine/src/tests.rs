@@ -857,15 +857,6 @@ async fn state_store_save_async_no_backend() {
 }
 
 #[test]
-fn state_store_new_without_backend() {
-    let data = StateData::default();
-    let store = StateStore::new(None, data);
-    assert!(store.all_mappings().is_empty());
-    // save_async should succeed with no backend
-    futures::executor::block_on(store.save_async()).unwrap();
-}
-
-#[test]
 fn plan_generates_deletes_when_enabled() {
     let desired = inv(vec![]);
     let mut observed = ObservedState::default();

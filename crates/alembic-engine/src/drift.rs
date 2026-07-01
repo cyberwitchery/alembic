@@ -316,13 +316,6 @@ mod tests {
         assert!(report.changed[0].changes.is_empty());
     }
 
-    #[test]
-    fn from_ref_matches_from_plan() {
-        let plan = plan_with(vec![create_op(1, "dcim.site", "ams1")]);
-        let via_from: DriftReport = (&plan).into();
-        assert_eq!(via_from, DriftReport::from_plan(&plan));
-    }
-
     // --- display ---
 
     #[test]

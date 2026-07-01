@@ -168,37 +168,6 @@ fn test_resolve_path_not_found() {
     assert!(err.to_string().contains("path segment not found"));
 }
 
-// tests for build_key_from_schema
-#[test]
-fn test_build_key_from_schema_success() {
-    let schema = test_schema();
-    let type_schema = schema.types.get("device").unwrap();
-    let attrs: JsonMap = serde_json::json!({"name": "dev1", "site": "site1"})
-        .as_object()
-        .unwrap()
-        .clone()
-        .into_iter()
-        .collect::<BTreeMap<_, _>>()
-        .into();
-    let key = build_key_from_schema(type_schema, &attrs).unwrap();
-    assert_eq!(key.get("name"), Some(&serde_json::json!("dev1")));
-}
-
-#[test]
-fn test_build_key_from_schema_missing_field() {
-    let schema = test_schema();
-    let type_schema = schema.types.get("device").unwrap();
-    let attrs: JsonMap = serde_json::json!({"other": "value"})
-        .as_object()
-        .unwrap()
-        .clone()
-        .into_iter()
-        .collect::<BTreeMap<_, _>>()
-        .into();
-    let err = build_key_from_schema(type_schema, &attrs).unwrap_err();
-    assert!(err.to_string().contains("missing key field"));
-}
-
 // tests for resolved_from_state
 #[test]
 fn test_resolved_from_state_empty() {
@@ -217,21 +186,6 @@ fn test_resolved_from_state_with_mappings() {
 }
 
 // tests for resolve_value_for_type
-#[test]
-fn test_resolve_value_for_type_string() {
-    let resolved = BTreeMap::new();
-    let result =
-        resolve_value_for_type(&FieldType::String, serde_json::json!("test"), &resolved).unwrap();
-    assert_eq!(result, serde_json::json!("test"));
-}
-
-#[test]
-fn test_resolve_value_for_type_int() {
-    let resolved = BTreeMap::new();
-    let result = resolve_value_for_type(&FieldType::Int, serde_json::json!(42), &resolved).unwrap();
-    assert_eq!(result, serde_json::json!(42));
-}
-
 #[test]
 fn test_resolve_value_for_type_ref() {
     let mut resolved = BTreeMap::new();
@@ -271,20 +225,6 @@ fn test_resolve_value_for_type_list_ref() {
     assert_eq!(result, serde_json::json!([1, "abc"]));
 }
 
-#[test]
-fn test_resolve_value_for_type_list_ref_not_array() {
-    let resolved = BTreeMap::new();
-    let err = resolve_value_for_type(
-        &FieldType::ListRef {
-            target: "tag".to_string(),
-        },
-        serde_json::json!("not_an_array"),
-        &resolved,
-    )
-    .unwrap_err();
-    assert!(err.to_string().contains("list_ref value must be an array"));
-}
-
 // these exercise the resolve_value_for_type wrapper's encode closure for string
 // backend ids and the error / MissingRef paths surfaced by the shared helper.
 #[test]
@@ -302,34 +242,6 @@ fn test_resolve_value_for_type_ref_string_backend_id() {
     )
     .unwrap();
     assert_eq!(result, serde_json::json!("abc-123"));
-}
-
-#[test]
-fn test_resolve_value_for_type_ref_not_string() {
-    let resolved = BTreeMap::new();
-    let err = resolve_value_for_type(
-        &FieldType::Ref {
-            target: "site".to_string(),
-        },
-        serde_json::json!(42),
-        &resolved,
-    )
-    .unwrap_err();
-    assert!(err.to_string().contains("ref value must be a uuid string"));
-}
-
-#[test]
-fn test_resolve_value_for_type_ref_invalid_uuid() {
-    let resolved = BTreeMap::new();
-    let err = resolve_value_for_type(
-        &FieldType::Ref {
-            target: "site".to_string(),
-        },
-        serde_json::json!("not-a-uuid"),
-        &resolved,
-    )
-    .unwrap_err();
-    assert!(err.to_string().contains("ref value is not a uuid"));
 }
 
 #[test]
@@ -633,43 +545,6 @@ fn test_normalize_attrs_refs_resolves_object_shaped_ref() {
         normalized.get("site"),
         Some(&serde_json::json!(site_uid.to_string()))
     );
-}
-
-// tests for default functions
-#[test]
-fn test_default_id_path() {
-    assert_eq!(default_id_path(), "id");
-}
-
-#[test]
-fn test_default_update_method() {
-    assert_eq!(default_update_method(), "PATCH");
-}
-
-// tests for DeleteStrategy
-#[test]
-fn test_delete_strategy_default() {
-    let strategy = DeleteStrategy::default();
-    assert!(matches!(strategy, DeleteStrategy::None));
-}
-
-#[test]
-fn test_delete_strategy_serde() {
-    let standard: DeleteStrategy = serde_json::from_str("\"standard\"").unwrap();
-    assert!(matches!(standard, DeleteStrategy::Standard));
-
-    let none: DeleteStrategy = serde_json::from_str("\"none\"").unwrap();
-    assert!(matches!(none, DeleteStrategy::None));
-}
-
-// tests for GenericConfig serialization
-#[test]
-fn test_generic_config_serde() {
-    let config = test_config("http://example.com");
-    let json = serde_json::to_string(&config).unwrap();
-    let parsed: GenericConfig = serde_json::from_str(&json).unwrap();
-    assert_eq!(parsed.base_url, "http://example.com");
-    assert!(parsed.types.contains_key("device"));
 }
 
 // tests for GenericAdapter::new

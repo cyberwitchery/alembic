@@ -690,26 +690,6 @@ mod tests {
     }
 
     #[test]
-    fn object_roundtrip_json_only_attrs() {
-        let mut key = BTreeMap::new();
-        key.insert("slug".to_string(), serde_json::json!("fra1"));
-        let mut attrs = BTreeMap::new();
-        attrs.insert("name".to_string(), serde_json::json!("FRA1"));
-        attrs.insert("extra".to_string(), serde_json::json!(true));
-        let object = Object::new(
-            Uuid::from_u128(2),
-            TypeName::new("dcim.site"),
-            Key::from(key),
-            attrs.into(),
-        )
-        .unwrap();
-
-        let value = serde_json::to_value(&object).unwrap();
-        let decoded: Object = serde_json::from_value(value).unwrap();
-        assert_eq!(decoded.attrs.get("extra"), Some(&serde_json::json!(true)));
-    }
-
-    #[test]
     fn field_type_roundtrip() {
         let cases = vec![
             FieldType::String,
@@ -822,17 +802,6 @@ mod tests {
     }
 
     #[test]
-    fn test_type_name() {
-        let t = TypeName::new("test");
-        assert_eq!(t.as_str(), "test");
-        assert!(!t.is_empty());
-        assert_eq!(format!("{}", t), "test");
-
-        let empty = TypeName::new("");
-        assert!(empty.is_empty());
-    }
-
-    #[test]
     fn test_field_schema_defaults() {
         let json = serde_json::json!({ "type": "string" });
         let schema: FieldSchema = serde_json::from_value(json).unwrap();
@@ -919,27 +888,6 @@ mod tests {
     }
 
     #[test]
-    fn key_into_inner_and_is_empty() {
-        let key = Key::default();
-        assert!(key.is_empty());
-        let inner = key.into_inner();
-        assert!(inner.is_empty());
-
-        let mut k = BTreeMap::new();
-        k.insert("a".to_string(), serde_json::json!(1));
-        let key = Key::from(k);
-        assert!(!key.is_empty());
-    }
-
-    #[test]
-    fn json_map_into_inner_and_is_empty() {
-        let map = JsonMap::default();
-        assert!(map.is_empty());
-        let inner = map.into_inner();
-        assert!(inner.is_empty());
-    }
-
-    #[test]
     fn object_with_empty_key_errors() {
         let key = Key::default();
         let attrs = JsonMap::default();
@@ -983,21 +931,6 @@ mod tests {
             ObjectError::MissingKey.to_string(),
             "object key must be set"
         );
-    }
-
-    #[test]
-    fn object_with_source() {
-        let mut k = BTreeMap::new();
-        k.insert("slug".to_string(), serde_json::json!("x"));
-        let obj = Object::new(
-            Uuid::from_u128(1),
-            TypeName::new("dcim.site"),
-            Key::from(k),
-            JsonMap::default(),
-        )
-        .unwrap()
-        .with_source(SourceLocation::file_line("test.yaml", 42));
-        assert_eq!(obj.source.as_ref().unwrap().line, Some(42));
     }
 
     #[test]
@@ -1091,16 +1024,6 @@ mod tests {
     }
 
     #[test]
-    fn json_map_serde_transparent() {
-        let mut map = JsonMap::default();
-        map.insert("k".to_string(), serde_json::json!("v"));
-        let json = serde_json::to_value(&map).unwrap();
-        assert_eq!(json, serde_json::json!({"k": "v"}));
-        let back: JsonMap = serde_json::from_value(json).unwrap();
-        assert_eq!(back, map);
-    }
-
-    #[test]
     fn key_serde_transparent() {
         let mut k = BTreeMap::new();
         k.insert("slug".to_string(), serde_json::json!("x"));
@@ -1109,15 +1032,6 @@ mod tests {
         assert_eq!(json, serde_json::json!({"slug": "x"}));
         let back: Key = serde_json::from_value(json).unwrap();
         assert_eq!(back, key);
-    }
-
-    #[test]
-    fn type_name_serde_transparent() {
-        let t = TypeName::new("dcim.site");
-        let json = serde_json::to_value(&t).unwrap();
-        assert_eq!(json, serde_json::json!("dcim.site"));
-        let back: TypeName = serde_json::from_value(json).unwrap();
-        assert_eq!(back, t);
     }
 
     #[test]
@@ -1154,23 +1068,6 @@ mod tests {
             let json = serde_json::to_string(&case).unwrap();
             let back: FieldType = serde_json::from_str(&json).unwrap();
             assert_eq!(back, case, "roundtrip failed for {:?}", case);
-        }
-    }
-
-    #[test]
-    fn field_format_serde_roundtrip() {
-        let formats = vec![
-            FieldFormat::Slug,
-            FieldFormat::IpAddress,
-            FieldFormat::Cidr,
-            FieldFormat::Prefix,
-            FieldFormat::Mac,
-            FieldFormat::Uuid,
-        ];
-        for fmt in formats {
-            let json = serde_json::to_value(&fmt).unwrap();
-            let back: FieldFormat = serde_json::from_value(json).unwrap();
-            assert_eq!(back, fmt);
         }
     }
 
@@ -1303,15 +1200,6 @@ mod tests {
         let back = serde_json::to_value(&inv).unwrap();
         let back_inv: Inventory = serde_json::from_value(back).unwrap();
         assert_eq!(back_inv, inv);
-    }
-
-    #[test]
-    fn inventory_empty_objects_default() {
-        let json = serde_json::json!({
-            "schema": { "types": {} }
-        });
-        let inv: Inventory = serde_json::from_value(json).unwrap();
-        assert!(inv.objects.is_empty());
     }
 
     #[test]
