@@ -950,6 +950,31 @@ fn report_and_dry_run_conflict() {
     assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
 }
 
+#[test]
+fn provision_conflicts_with_report_and_dry_run() {
+    use clap::Parser;
+    // --provision mutates backend schema (ensure_schema), while --report and
+    // --dry-run both promise read-only, so combining them is rejected at parse
+    // time rather than silently provisioning under a preview.
+    for read_only in ["--report", "--dry-run"] {
+        let result = Cli::try_parse_from([
+            "alembic",
+            "plan",
+            "-f",
+            "inventory.yaml",
+            "-o",
+            "plan.json",
+            "--provision",
+            read_only,
+        ]);
+        // `Cli` is not `Debug`, so unwrap the error via `Option` rather than `expect_err`.
+        let err = result
+            .err()
+            .unwrap_or_else(|| panic!("--provision and {read_only} must conflict"));
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn run_plan_report_surfaces_extra() {
     // regression test for the `extra` category: an object present on the backend
