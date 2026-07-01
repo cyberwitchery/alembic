@@ -309,7 +309,7 @@ pub fn normalize_attrs_refs(
 
 /// read-side mirror of `resolve_value_for_type`: maps backend ids back to uids
 /// at each ref leaf, recursing into `list` and `map` field types.
-pub fn normalize_value_for_type(
+fn normalize_value_for_type(
     field_type: &FieldType,
     value: Value,
     mappings: &StateMappings,
@@ -348,7 +348,7 @@ pub fn normalize_value_for_type(
 
 /// map one ref value's backend id back to its canonical uid, or leave it as-is
 /// when the id is unknown or the value is not a ref shape.
-pub fn normalize_ref_value(value: Value, target: &str, mappings: &StateMappings) -> Value {
+fn normalize_ref_value(value: Value, target: &str, mappings: &StateMappings) -> Value {
     if value.is_null() {
         return value;
     }
