@@ -89,6 +89,7 @@ NETBOX_URL=https://netbox.example.com NETBOX_TOKEN=$NETBOX_TOKEN \
 - `--dry-run` prints the raw plan json instead of writing it
 - `--report` prints a read-only drift report and exits without writing a plan file or saving state
 - `--report` and `--dry-run` are mutually exclusive (both exit without applying); passing both is rejected at parse time
+- `--provision` cannot be combined with `--dry-run` (rejected at parse time): a `--dry-run` preview promises not to write, but `--provision` still writes backend schema (`ensure_schema`). combining `--provision` with `--report` stays allowed as the documented "provision schema, then preview drift" workflow (see below)
 - accepts any type string and arbitrary attrs (schema validation is required)
 
 ### drift report
