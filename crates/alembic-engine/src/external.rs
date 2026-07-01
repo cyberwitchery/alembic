@@ -41,6 +41,38 @@ pub enum ExternalRequest {
     EnsureSchema { schema: Schema },
 }
 
+/// borrowed host-side serializer; keep field-compatible with [`ExternalEnvelope`].
+#[derive(Debug, Serialize)]
+pub struct ExternalEnvelopeRef<'a> {
+    /// protocol version.
+    pub version: u8,
+    /// custom plugin configuration.
+    pub setup: serde_yaml::Value,
+    /// request payload.
+    #[serde(flatten)]
+    pub request: ExternalRequestRef<'a>,
+}
+
+/// borrowed host-side serializer; keep field-compatible with [`ExternalRequest`].
+#[derive(Debug, Serialize)]
+#[serde(tag = "method", rename_all = "snake_case")]
+pub enum ExternalRequestRef<'a> {
+    /// read inventory for the requested types.
+    Read {
+        schema: &'a Schema,
+        types: &'a [TypeName],
+        state: StateData,
+    },
+    /// apply a set of operations.
+    Write {
+        schema: &'a Schema,
+        ops: &'a [Op],
+        state: StateData,
+    },
+    /// ensure the backend schema exists.
+    EnsureSchema { schema: &'a Schema },
+}
+
 /// observed object representation for external adapters.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExternalObject {
@@ -91,7 +123,7 @@ impl<T> ExternalResponse<T> {
     pub fn from_result(result: Result<T>) -> Self {
         match result {
             Ok(value) => Self::ok(value),
-            Err(err) => Self::error(err.to_string()),
+            Err(err) => Self::error(format!("{err:#}")),
         }
     }
 }
@@ -196,10 +228,11 @@ macro_rules! alembic_external_main {
 mod tests {
     use super::ExternalResponse;
     use crate::{
-        run_external_adapter, ApplyReport, ExternalAdapter, ExternalEnvelope, ExternalObject,
-        ExternalRequest, Op, ProvisionReport, StateData, EXTERNAL_PROTOCOL_VERSION,
+        run_external_adapter, ApplyReport, ExternalAdapter, ExternalEnvelope, ExternalEnvelopeRef,
+        ExternalObject, ExternalRequest, ExternalRequestRef, Op, ProvisionReport, StateData,
+        EXTERNAL_PROTOCOL_VERSION,
     };
-    use alembic_core::{Schema, TypeName, TypeSchema};
+    use alembic_core::{Key, Object, Schema, TypeName, TypeSchema, Uid};
     use serde_json::json;
     use serde_yaml::Value;
     use std::io::BufReader;
@@ -217,6 +250,103 @@ mod tests {
         let response: ExternalResponse<Vec<String>> = ExternalResponse::error("boom");
         let value = serde_json::to_value(&response).unwrap();
         assert_eq!(value, json!({"ok": false, "error": "boom"}));
+    }
+
+    #[test]
+    fn external_response_from_result_renders_error_chain() {
+        let err = anyhow::anyhow!("connection refused")
+            .context("connecting to backend")
+            .context("reading inventory");
+        let response: ExternalResponse<()> = ExternalResponse::from_result(Err(err));
+        let error = response.error.unwrap();
+        assert!(error.contains("reading inventory"));
+        assert!(error.contains("connecting to backend"));
+        assert!(error.contains("connection refused"));
+    }
+
+    #[test]
+    fn ref_and_owned_request_types_serialize_identically() {
+        let schema = Schema {
+            types: [(
+                "dcim.device".to_string(),
+                TypeSchema {
+                    key: [].into(),
+                    fields: [].into(),
+                },
+            )]
+            .into(),
+        };
+        let types = vec![TypeName::new("dcim.device")];
+        let ops = vec![Op::Create {
+            uid: Uid::from_u128(1),
+            type_name: TypeName::new("dcim.device"),
+            desired: Object {
+                uid: Uid::from_u128(1),
+                type_name: TypeName::new("dcim.device"),
+                key: Key::default(),
+                attrs: Default::default(),
+                source: None,
+            },
+        }];
+        let state = StateData::default();
+
+        let owned_read = serde_json::to_value(ExternalRequest::Read {
+            schema: schema.clone(),
+            types: types.clone(),
+            state: state.clone(),
+        })
+        .unwrap();
+        let ref_read = serde_json::to_value(ExternalRequestRef::Read {
+            schema: &schema,
+            types: &types,
+            state: state.clone(),
+        })
+        .unwrap();
+        assert_eq!(owned_read, ref_read);
+
+        let owned_write = serde_json::to_value(ExternalRequest::Write {
+            schema: schema.clone(),
+            ops: ops.clone(),
+            state: state.clone(),
+        })
+        .unwrap();
+        let ref_write = serde_json::to_value(ExternalRequestRef::Write {
+            schema: &schema,
+            ops: &ops,
+            state: state.clone(),
+        })
+        .unwrap();
+        assert_eq!(owned_write, ref_write);
+
+        let owned_ensure = serde_json::to_value(ExternalRequest::EnsureSchema {
+            schema: schema.clone(),
+        })
+        .unwrap();
+        let ref_ensure =
+            serde_json::to_value(ExternalRequestRef::EnsureSchema { schema: &schema }).unwrap();
+        assert_eq!(owned_ensure, ref_ensure);
+
+        let owned_envelope = serde_json::to_value(ExternalEnvelope {
+            version: EXTERNAL_PROTOCOL_VERSION,
+            setup: Default::default(),
+            request: ExternalRequest::Read {
+                schema: schema.clone(),
+                types: types.clone(),
+                state: state.clone(),
+            },
+        })
+        .unwrap();
+        let ref_envelope = serde_json::to_value(ExternalEnvelopeRef {
+            version: EXTERNAL_PROTOCOL_VERSION,
+            setup: Default::default(),
+            request: ExternalRequestRef::Read {
+                schema: &schema,
+                types: &types,
+                state,
+            },
+        })
+        .unwrap();
+        assert_eq!(owned_envelope, ref_envelope);
     }
 
     #[derive(Debug, Default)]

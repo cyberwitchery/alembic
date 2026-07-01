@@ -1,11 +1,12 @@
 //! adapter registry and config loading for alembic.
 
 use alembic_engine::{
-    Adapter, ApplyReport, Backend, Emitter, ExternalObject, ExternalResponse, ObservedObject,
-    ObservedState, Observer, Op, ProvisionReport, StateData, StateStore, EXTERNAL_PROTOCOL_VERSION,
+    Adapter, ApplyReport, Backend, Emitter, ExternalEnvelopeRef, ExternalObject,
+    ExternalRequestRef, ExternalResponse, ObservedObject, ObservedState, Observer, Op,
+    ProvisionReport, StateData, StateStore, EXTERNAL_PROTOCOL_VERSION,
 };
 use anyhow::{anyhow, Context, Result};
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize};
 use serde_json::Value as JsonValue;
 use std::collections::BTreeMap;
 use std::fs;
@@ -266,7 +267,10 @@ impl AdapterConfig {
     }
 }
 
-#[derive(Debug, Clone)]
+/// default external-adapter request timeout, in seconds.
+const DEFAULT_EXTERNAL_TIMEOUT_SECS: u64 = 120;
+
+#[derive(Debug)]
 struct ProcessAdapter {
     command: String,
     args: Vec<String>,
@@ -282,7 +286,8 @@ impl ProcessAdapter {
             .command
             .or_else(|| std::env::var("EXTERNAL_COMMAND").ok())
             .ok_or_else(|| anyhow!("external backend requires command"))?;
-        let timeout = Duration::from_secs(cfg.timeout_seconds.unwrap_or(120));
+        let timeout =
+            Duration::from_secs(cfg.timeout_seconds.unwrap_or(DEFAULT_EXTERNAL_TIMEOUT_SECS));
         Ok(Self {
             command,
             args: cfg.args,
@@ -293,8 +298,8 @@ impl ProcessAdapter {
         })
     }
 
-    async fn call<R: DeserializeOwned>(&self, request: ExternalRequest<'_>) -> Result<R> {
-        let envelope = ExternalEnvelope {
+    async fn call<R: DeserializeOwned>(&self, request: ExternalRequestRef<'_>) -> Result<R> {
+        let envelope = ExternalEnvelopeRef {
             version: EXTERNAL_PROTOCOL_VERSION,
             request,
             setup: self.setup.clone(),
@@ -352,6 +357,11 @@ impl ProcessAdapter {
             ));
         }
 
+        // forward adapter warnings so they aren't lost on a successful run.
+        if !output.stderr.is_empty() {
+            eprint!("{}", String::from_utf8_lossy(&output.stderr));
+        }
+
         Ok(output)
     }
 }
@@ -364,11 +374,9 @@ impl Observer for ProcessAdapter {
         types: &[alembic_core::TypeName],
         state: &StateStore,
     ) -> Result<ObservedState> {
-        let state = StateData {
-            mappings: state.all_mappings().clone(),
-        };
+        let state = StateData::from(state);
         let objects: Vec<ExternalObject> = self
-            .call(ExternalRequest::Read {
+            .call(ExternalRequestRef::Read {
                 schema,
                 types,
                 state,
@@ -395,10 +403,8 @@ impl Emitter for ProcessAdapter {
         ops: &[Op],
         state: &StateStore,
     ) -> Result<ApplyReport> {
-        let state = StateData {
-            mappings: state.all_mappings().clone(),
-        };
-        self.call(ExternalRequest::Write { schema, ops, state })
+        let state = StateData::from(state);
+        self.call(ExternalRequestRef::Write { schema, ops, state })
             .await
     }
 }
@@ -406,34 +412,8 @@ impl Emitter for ProcessAdapter {
 #[async_trait::async_trait]
 impl Adapter for ProcessAdapter {
     async fn ensure_schema(&self, schema: &alembic_core::Schema) -> Result<ProvisionReport> {
-        self.call(ExternalRequest::EnsureSchema { schema }).await
+        self.call(ExternalRequestRef::EnsureSchema { schema }).await
     }
-}
-
-#[derive(Debug, Serialize)]
-struct ExternalEnvelope<'a> {
-    version: u8,
-    setup: serde_yaml::Value,
-    #[serde(flatten)]
-    request: ExternalRequest<'a>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(tag = "method", rename_all = "snake_case")]
-enum ExternalRequest<'a> {
-    Read {
-        schema: &'a alembic_core::Schema,
-        types: &'a [alembic_core::TypeName],
-        state: StateData,
-    },
-    Write {
-        schema: &'a alembic_core::Schema,
-        ops: &'a [Op],
-        state: StateData,
-    },
-    EnsureSchema {
-        schema: &'a alembic_core::Schema,
-    },
 }
 
 #[cfg(feature = "infrahub")]
