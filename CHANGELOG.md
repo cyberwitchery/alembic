@@ -26,6 +26,7 @@
 - cli: create the parent directory when writing a plan or ir output, instead of failing if it does not exist
 - cli: reject `plan --provision` together with `--dry-run` at parse time, so a `--dry-run` preview (which writes nothing) can't silently provision backend schema via `ensure_schema`
 - cli: `plan --report` and `plan --dry-run` no longer require `-o`/`--output`, since neither writes a plan file (`-o` is still accepted for backward compatibility)
+- cli: plugin discovery reports an unreadable plugins directory (permission denied, not a directory, a per-entry io error) as an error instead of silently treating it as "no plugins" and later failing with a misleading "unknown backend"
 
 ## [0.5.0] - 2026-06-19
 

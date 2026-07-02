@@ -7,7 +7,7 @@ mod state;
 
 use alembic_adapter_registry::{create_backend, Plugin};
 use alembic_engine::{apply_plan, build_plan, load_inventory, ApplyReport, DriftReport, Plan};
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
 use std::fs;
 use std::path::PathBuf;
@@ -183,7 +183,7 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
         } => {
             let inventory = load_inventory(&file)?;
             let mut state = load_state().await?;
-            let plugins = search_for_plugins(&config);
+            let plugins = search_for_plugins(&config)?;
             let backend = create_backend(&plugins, backend.as_deref(), backend_config)?;
             if provision {
                 let provision_report = backend.adapter()?.ensure_schema(&inventory.schema).await?;
@@ -232,7 +232,7 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             interactive,
         } => {
             let mut state = load_state().await?;
-            let plugins = search_for_plugins(&config);
+            let plugins = search_for_plugins(&config)?;
             let backend = create_backend(&plugins, backend.as_deref(), backend_config)?;
             let plan = read_plan(&plan)?;
 
@@ -344,7 +344,7 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             // observe live backend state into ir; the inventory's schema selects
             // which types to observe.
             let inventory = load_inventory(&file)?;
-            let plugins = search_for_plugins(&config);
+            let plugins = search_for_plugins(&config)?;
             let backend = create_backend(&plugins, backend.as_deref(), backend_config)?;
             let state = load_state().await?;
             let types: Vec<TypeName> = inventory.schema.types.keys().map(TypeName::new).collect();
@@ -381,14 +381,28 @@ fn print_apply_report(report: ApplyReport) {
     }
 }
 
-fn search_for_plugins(config: &AppConfig) -> Vec<Plugin> {
-    let Ok(dir_contents) = fs::read_dir(&config.plugins_dir) else {
-        tracing::debug!("plugin dir '{}' not found", config.plugins_dir.display());
-        return vec![];
+fn search_for_plugins(config: &AppConfig) -> Result<Vec<Plugin>> {
+    let dir_contents = match fs::read_dir(&config.plugins_dir) {
+        Ok(dir_contents) => dir_contents,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            tracing::debug!(
+                "plugin dir '{}' not configured",
+                config.plugins_dir.display()
+            );
+            return Ok(vec![]);
+        }
+        Err(e) => {
+            return Err(e)
+                .with_context(|| format!("read plugin dir: {}", config.plugins_dir.display()))
+        }
     };
 
-    dir_contents
-        .flatten()
+    let entries = dir_contents
+        .collect::<std::io::Result<Vec<_>>>()
+        .with_context(|| format!("read plugin dir entry: {}", config.plugins_dir.display()))?;
+
+    Ok(entries
+        .into_iter()
         .filter(|e| {
             e.path()
                 .extension()
@@ -407,7 +421,7 @@ fn search_for_plugins(config: &AppConfig) -> Vec<Plugin> {
                 path: e.path(),
             })
         })
-        .collect()
+        .collect())
 }
 
 #[cfg(test)]

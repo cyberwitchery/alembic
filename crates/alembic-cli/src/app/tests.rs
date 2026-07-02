@@ -1192,6 +1192,44 @@ async fn minimal_external_adapter() {
     }
 }
 
+#[test]
+fn search_for_plugins_missing_dir_is_ok() {
+    // a plugins dir that does not exist is optional, not an error: no plugins
+    // are configured, so discovery returns an empty list.
+    let temp = tempdir().unwrap();
+    let config = AppConfig {
+        plugins_dir: temp.path().join("does-not-exist"),
+    };
+    let plugins = search_for_plugins(&config).expect("a missing plugins dir must not be an error");
+    assert!(plugins.is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn search_for_plugins_unreadable_dir_errors() {
+    // a plugins dir that exists but cannot be read (permission denied) must
+    // surface an error, not be silently mistaken for "no plugins configured".
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = tempdir().unwrap();
+    let plugins_dir = temp.path().join("plugins");
+    std::fs::create_dir(&plugins_dir).unwrap();
+    std::fs::set_permissions(&plugins_dir, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+    let config = AppConfig {
+        plugins_dir: plugins_dir.clone(),
+    };
+    let result = search_for_plugins(&config);
+
+    // restore permissions so the tempdir cleans itself up on drop.
+    std::fs::set_permissions(&plugins_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    assert!(
+        result.is_err(),
+        "an unreadable plugins dir must surface an error, not an empty plugin list"
+    );
+}
+
 fn find_example_binary(name: &str) -> PathBuf {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let target_dir = manifest_dir
