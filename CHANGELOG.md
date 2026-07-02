@@ -25,6 +25,7 @@
 - external adapters: surface an adapter's full error cause chain on failure, and forward its stderr to the host on success, instead of dropping those diagnostics
 - cli: create the parent directory when writing a plan or ir output, instead of failing if it does not exist
 - cli: reject `plan --provision` together with `--dry-run` at parse time, so a `--dry-run` preview (which writes nothing) can't silently provision backend schema via `ensure_schema`
+- cli: `plan --report` and `plan --dry-run` no longer require `-o`/`--output`, since neither writes a plan file (`-o` is still accepted for backward compatibility)
 
 ## [0.5.0] - 2026-06-19
 

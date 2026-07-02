@@ -83,11 +83,11 @@ NETBOX_URL=https://netbox.example.com NETBOX_TOKEN=$NETBOX_TOKEN \
 ```
 
 - creates a deterministic plan
-- writes json plan to the output path
+- writes json plan to the `-o`/`--output` path (required only for this default write path)
 - honors `--allow-delete` if you want delete ops
 - `--provision` runs adapter provisioning (`ensure_schema`) before observing backend state
-- `--dry-run` prints the raw plan json instead of writing it
-- `--report` prints a read-only drift report and exits without writing a plan file or saving state
+- `--dry-run` prints the raw plan json instead of writing it (no `-o`/`--output` needed)
+- `--report` prints a read-only drift report and exits without writing a plan file or saving state (no `-o`/`--output` needed)
 - `--report` and `--dry-run` are mutually exclusive (both exit without applying); passing both is rejected at parse time
 - `--provision` cannot be combined with `--dry-run` (rejected at parse time): a `--dry-run` preview promises not to write, but `--provision` still writes backend schema (`ensure_schema`). combining `--provision` with `--report` stays allowed as the documented "provision schema, then preview drift" workflow (see below)
 - accepts any type string and arbitrary attrs (schema validation is required)
@@ -96,7 +96,7 @@ NETBOX_URL=https://netbox.example.com NETBOX_TOKEN=$NETBOX_TOKEN \
 
 ```bash
 NETBOX_URL=https://netbox.example.com NETBOX_TOKEN=$NETBOX_TOKEN \
-  alembic plan --backend netbox -f examples/inventory.yaml -o plan.json --report
+  alembic plan --backend netbox -f examples/inventory.yaml --report
 ```
 
 `--report` surfaces the same desired-vs-observed diff that `plan` computes, as a
@@ -108,8 +108,9 @@ standalone human-readable summary grouped into three categories:
 
 it is one-way by construction: it only ever describes how observed state diverges
 from intent and never writes observed state back into the inventory or state
-store. `--output` is still required (as with `--dry-run`) but nothing is written
-to it.
+store. `-o`/`--output` is optional in `--report` mode (as with `--dry-run`): both
+exit without writing a plan file, so neither needs an output path. it is required
+only for the default write path.
 
 note that combining `--report` with `--provision` is not fully read-only:
 `--provision` still runs adapter provisioning (`ensure_schema`) against the

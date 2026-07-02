@@ -61,8 +61,8 @@ enum Command {
     Plan {
         #[arg(short = 'f', long)]
         file: PathBuf,
-        #[arg(short = 'o', long)]
-        output: PathBuf,
+        #[arg(short = 'o', long, required_unless_present_any = ["report", "dry_run"])]
+        output: Option<PathBuf>,
         #[arg(long)]
         backend: Option<String>,
         #[arg(long)]
@@ -207,6 +207,9 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                 let raw = serde_json::to_string_pretty(&plan)?;
                 println!("{raw}");
             } else {
+                let Some(output) = output else {
+                    return Err(anyhow!("--output is required unless --report or --dry-run"));
+                };
                 if let Some(msg) = warn_misleading_output_extension(&output) {
                     eprintln!("{msg}");
                 }

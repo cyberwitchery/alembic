@@ -655,7 +655,7 @@ objects:
     let cli = Cli {
         command: Command::Plan {
             file: inventory,
-            output: out,
+            output: Some(out),
             backend: Some("netbox".to_string()),
             backend_config: None,
             provision: false,
@@ -854,7 +854,7 @@ objects:
     let cli = Cli {
         command: Command::Plan {
             file: inventory,
-            output: out.clone(),
+            output: Some(out.clone()),
             backend: None,
             backend_config: Some(config),
             provision: false,
@@ -925,7 +925,7 @@ objects:
     let cli = Cli {
         command: Command::Plan {
             file: inventory,
-            output: out.clone(),
+            output: Some(out.clone()),
             backend: None,
             backend_config: Some(config),
             provision: false,
@@ -1018,6 +1018,49 @@ fn provision_conflicts_with_dry_run_but_not_report() {
         "--report --provision must still parse: {:?}",
         report.err()
     );
+}
+
+#[test]
+fn plan_report_output_optional() {
+    use clap::Parser;
+    // --report exits without writing a plan file, so -o/--output is not required.
+    let result = Cli::try_parse_from(["alembic", "plan", "-f", "inventory.yaml", "--report"]);
+    assert!(result.is_ok(), "plan --report without -o must parse");
+}
+
+#[test]
+fn plan_dry_run_output_optional() {
+    use clap::Parser;
+    // --dry-run prints raw json to stdout without writing a plan file, so -o/--output
+    // is not required.
+    let result = Cli::try_parse_from(["alembic", "plan", "-f", "inventory.yaml", "--dry-run"]);
+    assert!(result.is_ok(), "plan --dry-run without -o must parse");
+}
+
+#[test]
+fn plan_write_mode_requires_output() {
+    use clap::Parser;
+    // the default write path still requires -o/--output.
+    let result = Cli::try_parse_from(["alembic", "plan", "-f", "inventory.yaml"]);
+    let err = result.err().expect("plan write-mode without -o must fail");
+    assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+}
+
+#[test]
+fn plan_report_with_output_still_parses() {
+    use clap::Parser;
+    // backward-compat: -o alongside --report is still accepted, not rejected as a
+    // conflict, so existing scripts that always pass -o keep working.
+    let result = Cli::try_parse_from([
+        "alembic",
+        "plan",
+        "-f",
+        "inventory.yaml",
+        "-o",
+        "plan.json",
+        "--report",
+    ]);
+    assert!(result.is_ok(), "plan -o ... --report must still parse");
 }
 
 #[tokio::test(flavor = "multi_thread")]
