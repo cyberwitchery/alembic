@@ -200,12 +200,7 @@ fn predicate_matches(pred: &Predicate, vars: &BTreeMap<String, JsonValue>) -> bo
 /// render a scalar json value to the text a predicate compares against; mirrors
 /// `predicate` scalar rules for the json value model.
 fn json_scalar(value: &JsonValue) -> Option<String> {
-    match value {
-        JsonValue::String(text) => Some(text.clone()),
-        JsonValue::Number(number) => Some(number.to_string()),
-        JsonValue::Bool(boolean) => Some(boolean.to_string()),
-        JsonValue::Null | JsonValue::Array(_) | JsonValue::Object(_) => None,
-    }
+    crate::render::scalar_string(value)
 }
 
 /// load a map spec from a yaml file. the spec remembers the file's directory so
@@ -553,12 +548,7 @@ fn resolve_uid_spec(spec: &EmitUid, ctx: &RenderCtx, context: &str) -> Result<Ui
         EmitUid::V5 { v5 } => {
             let kind = render_template(&v5.type_name, ctx, context)?;
             let stable = render_template(&v5.stable, ctx, context)?;
-            if kind.trim().is_empty() || stable.trim().is_empty() {
-                return Err(anyhow!(
-                    "rule {rule}: uid v5 requires non-empty type and stable values"
-                ));
-            }
-            Ok(uid_v5(&kind, &stable))
+            crate::render::derive_v5_uid(&kind, &stable, rule)
         }
     }
 }
@@ -1410,6 +1400,183 @@ rules:
         assert_eq!(
             out.objects[0].attrs.get("status").unwrap(),
             &json!("Active")
+        );
+    }
+
+    /// the spec used by the three `resolve_lookup` failure tests: a single
+    /// device rule following `attrs.status` and reading `attrs.label` off it.
+    const LOOKUP_SPEC: &str = r#"
+schema:
+  types:
+    dcim.device:
+      key:
+        name: { type: slug }
+      fields:
+        status: { type: string }
+rules:
+  - name: devices
+    match: "dcim.device"
+    lookups:
+      status_label:
+        ref: "${attrs.status}"
+        get: "attrs.label"
+    emit:
+      type: dcim.device
+      key:
+        name: "${key.name}"
+      attrs:
+        status: "${lookup.status_label}"
+"#;
+
+    #[test]
+    fn lookup_ref_must_be_a_valid_uuid() {
+        let input = input_inventory(json!([
+            { "uid": Uuid::from_u128(1).to_string(), "type": "dcim.device",
+              "key": { "name": "leaf01" }, "attrs": { "status": "not-a-uuid" } }
+        ]));
+        let err = compile_map(&input, &spec(LOOKUP_SPEC)).unwrap_err();
+        assert!(
+            err.to_string().contains("ref is not a valid uuid"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn lookup_ref_must_be_present_in_the_input() {
+        let absent = Uuid::from_u128(99).to_string();
+        let input = input_inventory(json!([
+            { "uid": Uuid::from_u128(1).to_string(), "type": "dcim.device",
+              "key": { "name": "leaf01" }, "attrs": { "status": absent } }
+        ]));
+        let err = compile_map(&input, &spec(LOOKUP_SPEC)).unwrap_err();
+        assert!(err.to_string().contains("is not in the input"), "{err:#}");
+    }
+
+    #[test]
+    fn lookup_get_field_must_exist_on_the_referent() {
+        let status_uid = Uuid::from_u128(9).to_string();
+        let input = input_inventory(json!([
+            { "uid": status_uid, "type": "extras.status",
+              "key": { "name": "active" }, "attrs": {} },
+            { "uid": Uuid::from_u128(1).to_string(), "type": "dcim.device",
+              "key": { "name": "leaf01" }, "attrs": { "status": status_uid } }
+        ]));
+        let err = compile_map(&input, &spec(LOOKUP_SPEC)).unwrap_err();
+        assert!(err.to_string().contains("is absent on"), "{err:#}");
+    }
+
+    #[test]
+    fn conflicting_one_to_one_rules_on_one_source_error() {
+        // two 1:1 rules match the same source but emit different target
+        // identities, so the recorded source->target uid remap conflicts.
+        let input = input_inventory(json!([
+            { "uid": Uuid::from_u128(1).to_string(), "type": "dcim.device",
+              "key": { "name": "leaf01" }, "attrs": {} }
+        ]));
+        let err = compile_map(
+            &input,
+            &spec(
+                r#"
+schema:
+  types:
+    a.node:
+      key:
+        name: { type: slug }
+    b.node:
+      key:
+        name: { type: slug }
+rules:
+  - name: as
+    match: "dcim.device"
+    emit:
+      type: a.node
+      key:
+        name: "${key.name}"
+  - name: bs
+    match: "dcim.device"
+    emit:
+      type: b.node
+      key:
+        name: "${key.name}"
+"#,
+            ),
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("matched by multiple rules emitting different uids"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn emit_uid_template_must_be_a_valid_uuid() {
+        let input = input_inventory(json!([
+            { "uid": Uuid::from_u128(1).to_string(), "type": "dcim.device",
+              "key": { "name": "leaf01" }, "attrs": {} }
+        ]));
+        let err = compile_map(
+            &input,
+            &spec(
+                r#"
+schema:
+  types:
+    lab.node:
+      key:
+        name: { type: slug }
+rules:
+  - name: nodes
+    match: "dcim.device"
+    emit:
+      type: lab.node
+      key:
+        name: "${key.name}"
+      uid: "not-a-uuid"
+"#,
+            ),
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("uid template is not a valid uuid"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn emit_uid_v5_rejects_empty_components() {
+        // the `stable` component renders empty, tripping the shared
+        // `derive_v5_uid` non-empty guard.
+        let input = input_inventory(json!([
+            { "uid": Uuid::from_u128(1).to_string(), "type": "dcim.device",
+              "key": { "name": "leaf01" }, "attrs": { "blank": "" } }
+        ]));
+        let err = compile_map(
+            &input,
+            &spec(
+                r#"
+schema:
+  types:
+    lab.node:
+      key:
+        name: { type: slug }
+rules:
+  - name: nodes
+    match: "dcim.device"
+    emit:
+      type: lab.node
+      key:
+        name: "${key.name}"
+      uid:
+        v5:
+          type: "lab.node"
+          stable: "${attrs.blank}"
+"#,
+            ),
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("non-empty type and stable"),
+            "{err:#}"
         );
     }
 
