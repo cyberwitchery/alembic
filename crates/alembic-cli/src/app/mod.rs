@@ -67,7 +67,7 @@ enum Command {
         backend: Option<String>,
         #[arg(long)]
         backend_config: Option<PathBuf>,
-        #[arg(long, default_value_t = false)]
+        #[arg(long, default_value_t = false, conflicts_with = "dry_run")]
         provision: bool,
         #[arg(long, default_value_t = false)]
         dry_run: bool,

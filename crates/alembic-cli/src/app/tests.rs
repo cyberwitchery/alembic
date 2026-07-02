@@ -950,6 +950,49 @@ fn report_and_dry_run_conflict() {
     assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
 }
 
+#[test]
+fn provision_conflicts_with_dry_run_but_not_report() {
+    use clap::Parser;
+    // --provision runs ensure_schema (a real backend schema write). --dry-run
+    // promises a non-writing preview, so combining them is a footgun and is
+    // rejected at parse time. --report --provision, by contrast, is the
+    // documented "provision schema, then preview drift" workflow (docs/cli.md)
+    // and must still parse.
+    let conflict = Cli::try_parse_from([
+        "alembic",
+        "plan",
+        "-f",
+        "inventory.yaml",
+        "-o",
+        "plan.json",
+        "--provision",
+        "--dry-run",
+    ]);
+    // `Cli` is not `Debug`, so unwrap the error via `Option` rather than `expect_err`.
+    let err = conflict
+        .err()
+        .expect("--provision and --dry-run must conflict");
+    assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+
+    // regression guard for the documented provision-then-preview combo: it must
+    // keep parsing (it fails later on the backend requirement, not here).
+    let report = Cli::try_parse_from([
+        "alembic",
+        "plan",
+        "-f",
+        "inventory.yaml",
+        "-o",
+        "plan.json",
+        "--provision",
+        "--report",
+    ]);
+    assert!(
+        report.is_ok(),
+        "--report --provision must still parse: {:?}",
+        report.err()
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn run_plan_report_surfaces_extra() {
     // regression test for the `extra` category: an object present on the backend
