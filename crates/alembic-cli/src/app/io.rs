@@ -14,12 +14,23 @@ pub(super) fn format_validation_errors(
         .collect()
 }
 
+fn ensure_parent_dir(path: &Path) -> Result<()> {
+    match path.parent() {
+        // a bare filename has an empty parent; create_dir_all("") is not portable
+        Some(parent) if !parent.as_os_str().is_empty() => fs::create_dir_all(parent)
+            .with_context(|| format!("create output directory: {}", parent.display())),
+        _ => Ok(()),
+    }
+}
+
 pub(super) fn write_plan(path: &Path, plan: &Plan) -> Result<()> {
+    ensure_parent_dir(path)?;
     let raw = serde_json::to_string_pretty(plan)?;
     fs::write(path, raw).with_context(|| format!("write plan: {}", path.display()))
 }
 
 pub(super) fn write_inventory(path: &Path, inventory: &alembic_core::Inventory) -> Result<()> {
+    ensure_parent_dir(path)?;
     let raw = serde_json::to_string_pretty(inventory)?;
     fs::write(path, raw).with_context(|| format!("write ir: {}", path.display()))
 }
