@@ -489,7 +489,7 @@ fn group_vars(group_key: &str, members: &[&Object]) -> BTreeMap<String, JsonValu
     for path in paths {
         let values: Vec<JsonValue> = per_member
             .iter()
-            .filter_map(|member| member.get(&path).cloned())
+            .filter_map(|member| member.get(&path).filter(|v| !v.is_null()).cloned())
             .collect();
         vars.insert(format!("group.items.{path}"), JsonValue::Array(values));
     }
@@ -1323,6 +1323,47 @@ rules:
             .unwrap();
         assert_eq!(blue.attrs.get("vlans").unwrap(), &json!([10, 20]));
         assert_eq!(red.attrs.get("vlans").unwrap(), &json!([30]));
+    }
+
+    #[test]
+    fn group_by_excludes_null_member_values() {
+        // a member whose value at the path is present-but-null is dropped from
+        // the `group.items` list, matching the "non-missing values only" contract
+        // (and the null-is-missing convention the predicates use).
+        let input = input_inventory(json!([
+            { "uid": Uuid::from_u128(1).to_string(), "type": "ipam.vlan",
+              "key": { "vid": 10 }, "attrs": { "vrf": "blue", "name": "core" } },
+            { "uid": Uuid::from_u128(2).to_string(), "type": "ipam.vlan",
+              "key": { "vid": 20 }, "attrs": { "vrf": "blue", "name": null } }
+        ]));
+        let out = compile_map(
+            &input,
+            &spec(
+                r#"
+schema:
+  types:
+    ipam.vrf:
+      key:
+        name: { type: slug }
+      fields:
+        names: { type: json }
+rules:
+  - name: vrfs
+    match: "ipam.vlan"
+    group_by: "${attrs.vrf}"
+    emit:
+      type: ipam.vrf
+      key:
+        name: "${group.key}"
+      attrs:
+        names: "${group.items.attrs.name}"
+"#,
+            ),
+        )
+        .unwrap();
+
+        assert_eq!(out.objects.len(), 1);
+        assert_eq!(out.objects[0].attrs.get("names").unwrap(), &json!(["core"]));
     }
 
     #[test]
