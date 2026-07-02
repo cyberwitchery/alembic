@@ -157,6 +157,33 @@ fn plan_roundtrip_io() {
 }
 
 #[test]
+fn write_plan_creates_missing_parent_dirs() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("nested/out/plan.json");
+    let plan = Plan {
+        schema: alembic_core::Schema {
+            types: BTreeMap::new(),
+        },
+        ops: vec![],
+        summary: None,
+    };
+    write_plan(&path, &plan).unwrap();
+    assert!(read_plan(&path).is_ok());
+}
+
+#[test]
+fn write_inventory_creates_missing_parent_dirs() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("nested/out/ir.json");
+    let inventory = Inventory {
+        schema: Default::default(),
+        objects: vec![],
+    };
+    write_inventory(&path, &inventory).unwrap();
+    assert!(path.exists());
+}
+
+#[test]
 fn cast_django_runs_migrations_by_default() {
     let dir = tempdir().unwrap();
     let output = dir.path().join("out");
