@@ -44,22 +44,26 @@ jobs:
           tool: cargo-cyclonedx
 
       - name: generate sbom
+        env:
+          REF_NAME: ${{ github.ref_name }}
         run: |
           for manifest in "$GITHUB_WORKSPACE"/crates/*/Cargo.toml; do
             crate="$(basename "$(dirname "$manifest")")"
             (cd /tmp && cargo cyclonedx --manifest-path "$manifest" \
               --format json \
-              --override-filename "sbom-${{ github.ref_name }}-${crate}.cdx" \
+              --override-filename "sbom-${REF_NAME}-${crate}.cdx" \
               --all-features)
           done
 
       - name: collect sbom files
+        env:
+          REF_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           mkdir -p /tmp/alembic-sbom
-          find /tmp -maxdepth 1 -type f -name "sbom-${{ github.ref_name }}-*.cdx.json" \
+          find /tmp -maxdepth 1 -type f -name "sbom-${REF_NAME}-*.cdx.json" \
             -exec mv {} /tmp/alembic-sbom/ \;
-          find "$GITHUB_WORKSPACE" -type f -name "sbom-${{ github.ref_name }}-*.cdx.json" \
+          find "$GITHUB_WORKSPACE" -type f -name "sbom-${REF_NAME}-*.cdx.json" \
             -exec mv {} /tmp/alembic-sbom/ \;
 
       - name: prepare release notes from changelog
