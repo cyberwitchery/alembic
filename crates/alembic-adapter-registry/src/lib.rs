@@ -324,7 +324,9 @@ impl ProcessAdapter {
 
     async fn run(&self, payload: Vec<u8>) -> Result<std::process::Output> {
         let mut cmd = Command::new(&self.command);
+        // kill the child when we drop it on timeout, so it can't keep writing to the backend.
         cmd.args(&self.args)
+            .kill_on_drop(true)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -337,10 +339,8 @@ impl ProcessAdapter {
 
         let mut child = cmd.spawn().context("spawn external adapter")?;
         if let Some(mut stdin) = child.stdin.take() {
-            stdin
-                .write_all(&payload)
-                .await
-                .context("write external adapter stdin")?;
+            // ignore a BrokenPipe from a crashed adapter so its real exit error surfaces below.
+            let _ = stdin.write_all(&payload).await;
         }
 
         let output = timeout(self.timeout, child.wait_with_output())
@@ -531,6 +531,8 @@ mod tests {
     use super::ExternalConfig;
     #[cfg(feature = "infrahub")]
     use super::InfrahubSchemaConfig;
+    #[cfg(unix)]
+    use super::ProcessAdapter;
     use alembic_core::{JsonMap, Key, Object, Schema, TypeName, Uid};
     use alembic_engine::{BackendId, Op, StateData, StateStore};
     use serde_json::json;
@@ -538,6 +540,8 @@ mod tests {
     use std::fs;
     use std::path::Path;
     use std::sync::{Mutex, OnceLock};
+    #[cfg(unix)]
+    use std::time::Duration;
     use tempfile::tempdir;
 
     fn env_lock() -> &'static Mutex<()> {
@@ -717,5 +721,70 @@ fi
         assert!(provision
             .created_object_types
             .contains(&"dcim.site".to_string()));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_kills_child_on_timeout() {
+        let dir = tempdir().unwrap();
+        let script_path = dir.path().join("slow.sh");
+        write_script(&script_path, "#!/usr/bin/env bash\nsleep 2\ntouch \"$1\"\n");
+        let sentinel = dir.path().join("sentinel");
+
+        let adapter = ProcessAdapter {
+            command: script_path.to_string_lossy().to_string(),
+            args: vec![sentinel.to_string_lossy().to_string()],
+            working_dir: None,
+            env: BTreeMap::new(),
+            timeout: Duration::from_secs(1),
+            setup: serde_yaml::Value::default(),
+        };
+
+        let err = adapter.run(Vec::new()).await.unwrap_err();
+        assert!(
+            err.to_string().contains("timed out"),
+            "expected timeout error, got: {err}"
+        );
+
+        // the child is SIGKILLed at ~1s so the `touch` after `sleep 2` never runs.
+        for _ in 0..30 {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            assert!(
+                !sentinel.exists(),
+                "adapter child kept running after timeout and touched the sentinel"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_surfaces_adapter_exit_not_stdin_error() {
+        let dir = tempdir().unwrap();
+        let script_path = dir.path().join("crash.sh");
+        write_script(
+            &script_path,
+            "#!/usr/bin/env bash\necho \"boom: bad config\" >&2\nexit 1\n",
+        );
+
+        let adapter = ProcessAdapter {
+            command: script_path.to_string_lossy().to_string(),
+            args: Vec::new(),
+            working_dir: None,
+            env: BTreeMap::new(),
+            timeout: Duration::from_secs(5),
+            setup: serde_yaml::Value::default(),
+        };
+
+        // 100 KB > the 64 KB pipe buffer, so the unread write hits BrokenPipe.
+        let err = adapter.run(vec![b'x'; 100_000]).await.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("boom"),
+            "expected the adapter's real stderr, got: {msg}"
+        );
+        assert!(
+            !msg.contains("write external adapter stdin"),
+            "stdin write error masked the real failure: {msg}"
+        );
     }
 }
