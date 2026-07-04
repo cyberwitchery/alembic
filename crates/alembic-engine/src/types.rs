@@ -221,8 +221,10 @@ pub struct ApplyReport {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ProvisionReport {
     /// custom fields created on the backend.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub created_fields: Vec<String>,
     /// tags created on the backend.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub created_tags: Vec<String>,
     /// custom object types created on the backend.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -382,6 +384,23 @@ mod tests {
         assert_eq!(json, "\"uuid\"");
         let back: BackendId = serde_json::from_str(&json).unwrap();
         assert_eq!(back, str_id);
+    }
+
+    #[test]
+    fn provision_report_defaults_omitted_lists() {
+        // a non-Rust ensure_schema adapter that provisioned an object type but no
+        // custom fields/tags naturally omits the empty lists; that must deserialize.
+        let report: ProvisionReport =
+            serde_json::from_value(serde_json::json!({"created_object_types": ["dcim.site"]}))
+                .unwrap();
+        assert!(report.created_fields.is_empty());
+        assert!(report.created_tags.is_empty());
+        assert_eq!(report.created_object_types, ["dcim.site"]);
+
+        // the whole report deserializes from an empty object.
+        assert!(serde_json::from_str::<ProvisionReport>("{}")
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
