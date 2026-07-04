@@ -33,8 +33,8 @@ pub use adapter_ops::{
     state_mappings_by_id, StateMappings,
 };
 pub use apply_retry::{
-    apply_non_delete_with_retries, describe_missing_refs, is_missing_ref_error, RetryApplyDriver,
-    RetryApplyResult,
+    apply_non_delete_journaled, apply_non_delete_with_retries, describe_missing_refs,
+    is_missing_ref_error, RetryApplyDriver, RetryApplyResult,
 };
 pub use drift::{ChangedEntry, DriftEntry, DriftReport};
 pub use endpoint::normalize_endpoint;

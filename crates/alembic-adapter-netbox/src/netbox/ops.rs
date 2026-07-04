@@ -7,10 +7,9 @@ use alembic_core::{
     key_string, uid_v5, FieldSchema, FieldType, JsonMap, Key, Schema, TypeName, TypeSchema, Uid,
 };
 use alembic_engine::{
-    apply_non_delete_with_retries, build_key_from_schema, describe_missing_refs,
-    is_missing_ref_error, query_filters_from_key, Adapter, AppliedOp, ApplyReport, BackendId,
-    Emitter, Journal, ObservedObject, ObservedState, Observer, Op, ProvisionReport,
-    RetryApplyDriver,
+    apply_non_delete_journaled, build_key_from_schema, describe_missing_refs, is_missing_ref_error,
+    query_filters_from_key, Adapter, AppliedOp, ApplyReport, BackendId, Emitter, ObservedObject,
+    ObservedState, Observer, Op, ProvisionReport, RetryApplyDriver,
 };
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
@@ -178,13 +177,8 @@ impl Emitter for NetBoxAdapter {
             schema,
             custom_fields_by_type: &custom_fields_by_type,
         };
-        let mut journal = match state.journal_dir() {
-            Some(dir) => Some(Journal::load_or_create(dir, "netbox", &creates_updates)?),
-            None => None,
-        };
-        let previously_applied = journal.as_ref().map(|j| j.done_ops_count()).unwrap_or(0);
-        let retry_result =
-            apply_non_delete_with_retries(&creates_updates, journal.as_mut(), &mut driver).await?;
+        let (retry_result, previously_applied_count) =
+            apply_non_delete_journaled(state, "netbox", &creates_updates, &mut driver).await?;
 
         if !retry_result.pending.is_empty() {
             let missing = describe_missing_refs(&retry_result.pending, &resolved);
@@ -246,7 +240,7 @@ impl Emitter for NetBoxAdapter {
 
         Ok(ApplyReport {
             applied,
-            previously_applied_count: (previously_applied > 0).then_some(previously_applied),
+            previously_applied_count,
             ..Default::default()
         })
     }
