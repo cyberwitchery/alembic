@@ -2,10 +2,10 @@
 
 use alembic_core::{key_string, uid_v5, FieldType, JsonMap, Key, Schema, TypeName, Uid};
 use alembic_engine::{
-    apply_non_delete_with_retries, backend_id_from_value, build_key_from_schema,
-    is_missing_ref_error, normalize_attrs_refs, resolve_value_for_type, resolved_ids_identity,
-    Adapter, AppliedOp, ApplyReport, BackendId, Emitter, Journal, ObservedObject, ObservedState,
-    Observer, Op, ProvisionReport, RetryApplyDriver, StateMappings, StateStore,
+    apply_non_delete_journaled, backend_id_from_value, build_key_from_schema, is_missing_ref_error,
+    normalize_attrs_refs, resolve_value_for_type, resolved_ids_identity, Adapter, AppliedOp,
+    ApplyReport, BackendId, Emitter, ObservedObject, ObservedState, Observer, Op, ProvisionReport,
+    RetryApplyDriver, StateMappings, StateStore,
 };
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
@@ -687,13 +687,8 @@ impl Emitter for InfrahubAdapter {
             schema,
             resolved: &mut resolved,
         };
-        let mut journal = match state.journal_dir() {
-            Some(dir) => Some(Journal::load_or_create(dir, "infrahub", &creates_updates)?),
-            None => None,
-        };
-        let previously_applied = journal.as_ref().map(|j| j.done_ops_count()).unwrap_or(0);
-        let retry_result =
-            apply_non_delete_with_retries(&creates_updates, journal.as_mut(), &mut driver).await?;
+        let (retry_result, previously_applied_count) =
+            apply_non_delete_journaled(state, "infrahub", &creates_updates, &mut driver).await?;
         if !retry_result.pending.is_empty() {
             let missing = describe_missing_refs(&retry_result.pending, &resolved);
             return Err(anyhow!("unresolved references: {missing}"));
@@ -712,7 +707,7 @@ impl Emitter for InfrahubAdapter {
 
         Ok(ApplyReport {
             applied,
-            previously_applied_count: (previously_applied > 0).then_some(previously_applied),
+            previously_applied_count,
             ..Default::default()
         })
     }

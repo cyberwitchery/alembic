@@ -105,6 +105,27 @@ pub async fn apply_non_delete_with_retries(
     Ok(RetryApplyResult { applied, pending })
 }
 
+/// journal-wiring shared by the internal apply-adapters: build the journal from `state`,
+/// run the retry loop, and return the result plus the resumed count (`None` when none),
+/// ready for `ApplyReport::previously_applied_count`.
+pub async fn apply_non_delete_journaled(
+    state: &crate::StateStore,
+    adapter_name: &str,
+    creates_updates: &[Op],
+    driver: &mut impl RetryApplyDriver,
+) -> Result<(RetryApplyResult, Option<usize>)> {
+    let mut journal = match state.journal_dir() {
+        Some(dir) => Some(Journal::load_or_create(dir, adapter_name, creates_updates)?),
+        None => None,
+    };
+    let previously_applied = journal.as_ref().map(|j| j.done_ops_count()).unwrap_or(0);
+    let result = apply_non_delete_with_retries(creates_updates, journal.as_mut(), driver).await?;
+    Ok((
+        result,
+        (previously_applied > 0).then_some(previously_applied),
+    ))
+}
+
 /// true when `err` is a retryable missing-ref apply error.
 pub fn is_missing_ref_error(err: &anyhow::Error) -> bool {
     err.downcast_ref::<AdapterApplyError>()
@@ -470,9 +491,9 @@ mod tests {
         assert!(journal.is_completed());
     }
 
-    /// mirrors how the adapters wire the journal: build one from
-    /// `StateStore::journal_dir()`, run the retry loop, and surface the resumed
-    /// count on the report.
+    /// exercises the same `apply_non_delete_journaled` wiring the adapters use:
+    /// filter to non-delete ops, run the journaled retry loop, and surface the
+    /// resumed count on the report.
     async fn run_journaled_apply(
         state: &crate::StateStore,
         ops: &[Op],
@@ -483,20 +504,11 @@ mod tests {
             .filter(|op| !matches!(op, Op::Delete { .. }))
             .cloned()
             .collect();
-        let mut journal = match state.journal_dir() {
-            Some(dir) => Some(crate::Journal::load_or_create(
-                dir,
-                "test",
-                &creates_updates,
-            )?),
-            None => None,
-        };
-        let previously_applied = journal.as_ref().map(|j| j.done_ops_count()).unwrap_or(0);
-        let result =
-            apply_non_delete_with_retries(&creates_updates, journal.as_mut(), driver).await?;
+        let (result, previously_applied_count) =
+            apply_non_delete_journaled(state, "test", &creates_updates, driver).await?;
         Ok(crate::ApplyReport {
             applied: result.applied,
-            previously_applied_count: (previously_applied > 0).then_some(previously_applied),
+            previously_applied_count,
             ..Default::default()
         })
     }

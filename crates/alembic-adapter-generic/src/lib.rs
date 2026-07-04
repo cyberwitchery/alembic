@@ -2,10 +2,9 @@
 
 use alembic_core::{JsonMap, Key, Schema, TypeName, TypeSchema, Uid};
 use alembic_engine::{
-    apply_non_delete_with_retries, build_key_from_schema, describe_missing_refs,
-    is_missing_ref_error, normalize_attrs_refs, resolved_ids_identity, Adapter, AppliedOp,
-    ApplyReport, BackendId, Emitter, Journal, ObservedObject, ObservedState, Observer, Op,
-    RetryApplyDriver, StateMappings,
+    apply_non_delete_journaled, build_key_from_schema, describe_missing_refs, is_missing_ref_error,
+    normalize_attrs_refs, resolved_ids_identity, Adapter, AppliedOp, ApplyReport, BackendId,
+    Emitter, ObservedObject, ObservedState, Observer, Op, RetryApplyDriver, StateMappings,
 };
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
@@ -484,13 +483,8 @@ impl Emitter for GenericAdapter {
             schema,
             mappings: &mappings,
         };
-        let mut journal = match state.journal_dir() {
-            Some(dir) => Some(Journal::load_or_create(dir, "generic", &creates_updates)?),
-            None => None,
-        };
-        let previously_applied = journal.as_ref().map(|j| j.done_ops_count()).unwrap_or(0);
-        let retry_result =
-            apply_non_delete_with_retries(&creates_updates, journal.as_mut(), &mut driver).await?;
+        let (retry_result, previously_applied_count) =
+            apply_non_delete_journaled(state, "generic", &creates_updates, &mut driver).await?;
         if !retry_result.pending.is_empty() {
             let missing = describe_missing_refs(&retry_result.pending, &resolved);
             return Err(anyhow!("unresolved references: {missing}"));
@@ -523,7 +517,7 @@ impl Emitter for GenericAdapter {
 
         Ok(ApplyReport {
             applied,
-            previously_applied_count: (previously_applied > 0).then_some(previously_applied),
+            previously_applied_count,
             ..Default::default()
         })
     }
