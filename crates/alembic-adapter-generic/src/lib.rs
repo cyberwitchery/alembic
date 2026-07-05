@@ -149,13 +149,7 @@ impl GenericAdapter {
         let body: serde_json::Value = resp.json().await?;
 
         let id_val = resolve_path(&body, &endpoint.id_path)?;
-        let backend_id = match id_val {
-            serde_json::Value::Number(n) => {
-                BackendId::Int(n.as_u64().ok_or_else(|| anyhow!("invalid integer id"))?)
-            }
-            serde_json::Value::String(s) => BackendId::String(s),
-            _ => return Err(anyhow!("id must be number or string")),
-        };
+        let backend_id = parse_backend_id(id_val)?;
         resolved.insert(uid, backend_id.clone());
 
         Ok(AppliedOp {
@@ -204,13 +198,7 @@ impl GenericAdapter {
             let attrs = normalize_attrs_refs(&attrs, type_schema, mappings);
             if build_key_from_schema(type_schema, &attrs)? == *key {
                 let id_val = resolve_path(&item, &endpoint.id_path)?;
-                let backend_id = match id_val {
-                    serde_json::Value::Number(n) => {
-                        BackendId::Int(n.as_u64().ok_or_else(|| anyhow!("invalid integer id"))?)
-                    }
-                    serde_json::Value::String(s) => BackendId::String(s),
-                    _ => return Err(anyhow!("id must be number or string")),
-                };
+                let backend_id = parse_backend_id(id_val)?;
                 return Ok(Some(backend_id));
             }
         }
@@ -361,13 +349,7 @@ impl Observer for GenericAdapter {
                 let mut observed = Vec::new();
                 for item in results {
                     let id_val = resolve_path(&item, &endpoint.id_path)?;
-                    let backend_id = match id_val {
-                        serde_json::Value::Number(n) => {
-                            BackendId::Int(n.as_u64().ok_or_else(|| anyhow!("invalid integer id"))?)
-                        }
-                        serde_json::Value::String(s) => BackendId::String(s),
-                        _ => return Err(anyhow!("id must be number or string")),
-                    };
+                    let backend_id = parse_backend_id(id_val)?;
 
                     let attrs = match item {
                         serde_json::Value::Object(map) => {
@@ -537,6 +519,17 @@ fn resolve_path(value: &serde_json::Value, path: &str) -> Result<serde_json::Val
             .ok_or_else(|| anyhow!("path segment not found: {}", segment))?;
     }
     Ok(current.clone())
+}
+
+/// decode a backend id from the id-path value the api returned.
+fn parse_backend_id(id_val: serde_json::Value) -> Result<BackendId> {
+    match id_val {
+        serde_json::Value::Number(n) => Ok(BackendId::Int(
+            n.as_u64().ok_or_else(|| anyhow!("invalid integer id"))?,
+        )),
+        serde_json::Value::String(s) => Ok(BackendId::String(s)),
+        _ => Err(anyhow!("id must be number or string")),
+    }
 }
 
 fn resolve_attrs(
