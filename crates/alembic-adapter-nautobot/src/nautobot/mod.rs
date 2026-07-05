@@ -294,4 +294,47 @@ mod tests {
             vec!["dcim.site.asset_tag".to_string()]
         );
     }
+
+    #[tokio::test]
+    async fn preview_schema_reports_without_creating() {
+        let server = MockServer::start();
+        mock_content_types(&server);
+        mock_empty_custom_fields(&server);
+        // native-field probe: one object, none present.
+        let _probe = server.mock(|when, then| {
+            when.method(GET).path("/api/dcim/sites/");
+            then.status(200).json_body(page(json!([])));
+        });
+        // preview must never touch the custom-field create endpoint.
+        let cf_create = server.mock(|when, then| {
+            when.method(POST).path("/api/extras/custom-fields/");
+            then.status(201).json_body(json!({
+                "id": "44444444-4444-4444-4444-444444444444",
+                "label": "asset_tag",
+                "content_types": ["dcim.site"],
+                "type": {},
+            }));
+        });
+
+        let schema = Schema {
+            types: BTreeMap::from([(
+                "dcim.site".to_string(),
+                TypeSchema {
+                    key: BTreeMap::from([("name".to_string(), field(FieldType::String))]),
+                    fields: BTreeMap::from([("asset_tag".to_string(), field(FieldType::String))]),
+                },
+            )]),
+        };
+
+        let adapter = NautobotAdapter::new(&server.base_url(), "token").unwrap();
+        let report = adapter.preview_schema(&schema).await.unwrap().unwrap();
+
+        // same missing field ensure_schema would create, computed from the same reads.
+        assert_eq!(
+            report.created_fields,
+            vec!["dcim.site.asset_tag".to_string()]
+        );
+        // read-only: the custom-field create endpoint saw zero writes.
+        cf_create.assert_calls(0);
+    }
 }

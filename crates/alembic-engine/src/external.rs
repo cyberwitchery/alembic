@@ -39,6 +39,8 @@ pub enum ExternalRequest {
     },
     /// ensure the backend schema exists.
     EnsureSchema { schema: Schema },
+    /// preview what ensuring the backend schema would provision, writing nothing.
+    PreviewSchema { schema: Schema },
 }
 
 /// borrowed host-side serializer; keep field-compatible with [`ExternalEnvelope`].
@@ -71,6 +73,8 @@ pub enum ExternalRequestRef<'a> {
     },
     /// ensure the backend schema exists.
     EnsureSchema { schema: &'a Schema },
+    /// preview what ensuring the backend schema would provision, writing nothing.
+    PreviewSchema { schema: &'a Schema },
 }
 
 /// observed object representation for external adapters.
@@ -149,6 +153,14 @@ pub trait ExternalAdapter {
         let _ = schema;
         Ok(ProvisionReport::default())
     }
+
+    /// preview schema provisioning, writing nothing. `None` (the default) means this
+    /// adapter cannot preview schema; `Some(report)` is what [`ExternalAdapter::ensure_schema`]
+    /// would provision.
+    fn preview_schema(&mut self, schema: &Schema) -> Result<Option<ProvisionReport>> {
+        let _ = schema;
+        Ok(None)
+    }
 }
 
 /// run an external adapter using stdin/stdout for a single request.
@@ -193,6 +205,10 @@ pub fn run_external_adapter<A: ExternalAdapter>(
         }
         ExternalRequest::EnsureSchema { schema } => {
             let response = ExternalResponse::from_result(adapter.ensure_schema(&schema));
+            write_response(&mut writer, response)
+        }
+        ExternalRequest::PreviewSchema { schema } => {
+            let response = ExternalResponse::from_result(adapter.preview_schema(&schema));
             write_response(&mut writer, response)
         }
     }
@@ -326,6 +342,14 @@ mod tests {
             serde_json::to_value(ExternalRequestRef::EnsureSchema { schema: &schema }).unwrap();
         assert_eq!(owned_ensure, ref_ensure);
 
+        let owned_preview = serde_json::to_value(ExternalRequest::PreviewSchema {
+            schema: schema.clone(),
+        })
+        .unwrap();
+        let ref_preview =
+            serde_json::to_value(ExternalRequestRef::PreviewSchema { schema: &schema }).unwrap();
+        assert_eq!(owned_preview, ref_preview);
+
         let owned_envelope = serde_json::to_value(ExternalEnvelope {
             version: EXTERNAL_PROTOCOL_VERSION,
             setup: Default::default(),
@@ -399,6 +423,14 @@ mod tests {
                 ..Default::default()
             })
         }
+
+        fn preview_schema(&mut self, schema: &Schema) -> anyhow::Result<Option<ProvisionReport>> {
+            // read-only mirror of ensure_schema: report the same fields, provision none.
+            Ok(Some(ProvisionReport {
+                created_fields: schema.types.keys().cloned().collect(),
+                ..Default::default()
+            }))
+        }
     }
 
     #[test]
@@ -446,6 +478,68 @@ mod tests {
         );
 
         t.join().unwrap();
+    }
+
+    #[test]
+    fn external_adapter_preview_schema_roundtrip() {
+        let adapter = TestExternalAdapter::default();
+
+        let (in_reader, mut in_writer) = std::io::pipe().unwrap();
+        let (out_reader, out_writer) = std::io::pipe().unwrap();
+
+        let t = std::thread::spawn(move || {
+            assert!(run_external_adapter(adapter, (in_reader, out_writer)).is_ok());
+        });
+
+        let dummy_type_schema = TypeSchema {
+            key: [].into(),
+            fields: [].into(),
+        };
+        let request = ExternalRequest::PreviewSchema {
+            schema: Schema {
+                types: [
+                    ("a".to_string(), dummy_type_schema.clone()),
+                    ("b".to_string(), dummy_type_schema.clone()),
+                ]
+                .into(),
+            },
+        };
+        let envelope = ExternalEnvelope {
+            version: EXTERNAL_PROTOCOL_VERSION,
+            setup: Default::default(),
+            request,
+        };
+
+        writeln!(in_writer, "{}", serde_json::to_string(&envelope).unwrap()).unwrap();
+        drop(in_writer);
+
+        let mut response = String::new();
+        BufReader::new(out_reader).read_line(&mut response).unwrap();
+
+        let response: ExternalResponse<Option<ProvisionReport>> =
+            serde_json::from_str(&response).unwrap();
+        assert!(response.ok);
+        // preview returned Some(report) with the same fields ensure_schema would create.
+        assert_eq!(
+            response.result.flatten().unwrap().created_fields,
+            vec!["a".to_string(), "b".to_string()]
+        );
+
+        t.join().unwrap();
+    }
+
+    #[test]
+    fn preview_schema_none_roundtrips_as_null_result() {
+        // the honesty-critical case: an adapter that cannot preview returns Ok(None),
+        // which must survive the wire as an explicit null result (not a missing one)
+        // so the host reads it back as None, never as an empty "no schema changes".
+        let response: ExternalResponse<Option<ProvisionReport>> =
+            ExternalResponse::from_result(Ok(None));
+        let wire = serde_json::to_value(&response).unwrap();
+        assert_eq!(wire, json!({"ok": true, "result": null}));
+        let back: ExternalResponse<Option<ProvisionReport>> = serde_json::from_value(wire).unwrap();
+        assert!(back.ok);
+        assert!(back.result.flatten().is_none());
     }
 
     #[test]

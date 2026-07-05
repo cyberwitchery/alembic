@@ -149,6 +149,7 @@ fn plan_roundtrip_io() {
             backend_id: Some(alembic_engine::BackendId::Int(1)),
         }],
         summary: None,
+        schema_preview: None,
     };
 
     write_plan(&path, &plan).unwrap();
@@ -166,6 +167,7 @@ fn write_plan_creates_missing_parent_dirs() {
         },
         ops: vec![],
         summary: None,
+        schema_preview: None,
     };
     write_plan(&path, &plan).unwrap();
     assert!(read_plan(&path).is_ok());
@@ -720,6 +722,7 @@ async fn run_apply_interactive_delete_requires_allow_delete() {
             backend_id: Some(alembic_engine::BackendId::Int(1)),
         }],
         summary: None,
+        schema_preview: None,
     };
     write_plan(&plan_path, &plan).unwrap();
     let cwd = std::env::current_dir().unwrap();

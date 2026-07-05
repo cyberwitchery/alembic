@@ -87,6 +87,7 @@ pub fn plan(
         schema: schema.clone(),
         ops,
         summary: None,
+        schema_preview: None,
     };
     plan.summary = Some(plan.summary());
     plan

@@ -191,6 +191,7 @@ mod tests {
             schema: empty_schema(),
             ops,
             summary: None,
+            schema_preview: None,
         };
         plan.summary = Some(plan.summary());
         plan

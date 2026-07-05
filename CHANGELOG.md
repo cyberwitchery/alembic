@@ -31,6 +31,8 @@
 - cli: reject `plan --provision` together with `--dry-run` at parse time, so a `--dry-run` preview (which writes nothing) can't silently provision backend schema via `ensure_schema`
 - cli: `plan --report` and `plan --dry-run` no longer require `-o`/`--output`, since neither writes a plan file (`-o` is still accepted for backward compatibility)
 - engine: `ProvisionReport` accepts an omitted `created_fields`/`created_tags` on deserialize, so an external `ensure_schema` adapter that creates neither isn't rejected
+- engine + cli: `plan` now previews the schema provisioning `apply` would perform (object types and fields to create/deprecate/delete) read-only, writing nothing, and carries it in the plan json as `schema_preview` (visible in `plan --dry-run`), so the see-before-write contract finally covers schema and not just data ops; infrahub and nautobot report it, a backend that cannot preview prints `schema preview: unavailable for this backend`, and `plan --provision` stays the write escape hatch
+- external adapter protocol: add a read-only `preview_schema` request alongside `ensure_schema`; an adapter can now surface what provisioning would do at plan time, and the default returns nothing to preview so existing adapters are unaffected
 
 ## [0.5.0] - 2026-06-19
 

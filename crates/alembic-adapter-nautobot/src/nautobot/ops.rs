@@ -252,10 +252,47 @@ impl Emitter for NautobotAdapter {
 #[async_trait]
 impl Adapter for NautobotAdapter {
     async fn ensure_schema(&self, schema: &Schema) -> Result<ProvisionReport> {
+        let mut created_fields = Vec::new();
+        for (type_name, field_name, field_schema) in self.missing_custom_fields(schema).await? {
+            if self
+                .create_custom_field(&type_name, field_name, field_schema)
+                .await?
+            {
+                created_fields.push(format!("{type_name}.{field_name}"));
+            }
+        }
+        Ok(ProvisionReport {
+            created_fields,
+            ..Default::default()
+        })
+    }
+
+    async fn preview_schema(&self, schema: &Schema) -> Result<Option<ProvisionReport>> {
+        let created_fields = self
+            .missing_custom_fields(schema)
+            .await?
+            .into_iter()
+            .map(|(type_name, field_name, _)| format!("{type_name}.{field_name}"))
+            .collect();
+        Ok(Some(ProvisionReport {
+            created_fields,
+            ..Default::default()
+        }))
+    }
+}
+
+impl NautobotAdapter {
+    /// read the live schema and compute which declared custom fields the backend
+    /// lacks. read-only: shared by `ensure_schema` (which then creates them) and
+    /// `preview_schema` (which only reports them), so the decision never drifts
+    /// between preview and apply.
+    async fn missing_custom_fields<'a>(
+        &self,
+        schema: &'a Schema,
+    ) -> Result<Vec<(TypeName, &'a String, &'a FieldSchema)>> {
         let registry: ObjectTypeRegistry = self.client.fetch_object_types().await?;
         let custom_fields_by_type = self.client.fetch_custom_fields().await?;
-        let mut created_fields = Vec::new();
-        let created_tags = Vec::new();
+        let mut missing = Vec::new();
 
         for (type_name, type_schema) in &schema.types {
             let type_name = TypeName::new(type_name);
@@ -282,29 +319,13 @@ impl Adapter for NautobotAdapter {
                 if native_fields.contains(field_name) || existing.contains(field_name) {
                     continue;
                 }
-                if self
-                    .create_custom_field(&type_name, field_name, field_schema)
-                    .await?
-                {
-                    created_fields.push(format!("{}.{}", type_name, field_name));
-                }
+                missing.push((type_name.clone(), field_name, field_schema));
             }
         }
 
-        Ok(ProvisionReport {
-            created_fields,
-            created_tags,
-            created_object_types: Vec::new(),
-            created_object_fields: Vec::new(),
-            deprecated_object_types: Vec::new(),
-            deprecated_object_fields: Vec::new(),
-            deleted_object_types: Vec::new(),
-            deleted_object_fields: Vec::new(),
-        })
+        Ok(missing)
     }
-}
 
-impl NautobotAdapter {
     async fn apply_create(
         &self,
         op: &Op,

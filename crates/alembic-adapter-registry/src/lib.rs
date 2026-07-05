@@ -298,7 +298,9 @@ impl ProcessAdapter {
         })
     }
 
-    async fn call<R: DeserializeOwned>(&self, request: ExternalRequestRef<'_>) -> Result<R> {
+    /// send a request and return the raw success payload, or `None` when the adapter
+    /// reported success with a null/absent `result` field.
+    async fn call_raw(&self, request: ExternalRequestRef<'_>) -> Result<Option<JsonValue>> {
         let envelope = ExternalEnvelopeRef {
             version: EXTERNAL_PROTOCOL_VERSION,
             request,
@@ -316,10 +318,29 @@ impl ProcessAdapter {
                 .unwrap_or_else(|| "external adapter error".to_string());
             return Err(anyhow!(message));
         }
-        let result = response
-            .result
+        Ok(response.result)
+    }
+
+    async fn call<R: DeserializeOwned>(&self, request: ExternalRequestRef<'_>) -> Result<R> {
+        let result = self
+            .call_raw(request)
+            .await?
             .ok_or_else(|| anyhow!("external adapter response missing result"))?;
         serde_json::from_value(result).context("deserialize external adapter result")
+    }
+
+    /// like [`ProcessAdapter::call`] but tolerates a null/absent result, mapping it to
+    /// `None` — used for optional responses such as schema preview.
+    async fn call_optional<R: DeserializeOwned>(
+        &self,
+        request: ExternalRequestRef<'_>,
+    ) -> Result<Option<R>> {
+        match self.call_raw(request).await? {
+            None | Some(JsonValue::Null) => Ok(None),
+            Some(value) => serde_json::from_value(value)
+                .map(Some)
+                .context("deserialize external adapter result"),
+        }
     }
 
     async fn run(&self, payload: Vec<u8>) -> Result<std::process::Output> {
@@ -413,6 +434,14 @@ impl Emitter for ProcessAdapter {
 impl Adapter for ProcessAdapter {
     async fn ensure_schema(&self, schema: &alembic_core::Schema) -> Result<ProvisionReport> {
         self.call(ExternalRequestRef::EnsureSchema { schema }).await
+    }
+
+    async fn preview_schema(
+        &self,
+        schema: &alembic_core::Schema,
+    ) -> Result<Option<ProvisionReport>> {
+        self.call_optional(ExternalRequestRef::PreviewSchema { schema })
+            .await
     }
 }
 
