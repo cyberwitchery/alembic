@@ -2,6 +2,7 @@
 
 ## [unreleased]
 
+- infrahub adapter: write a null-valued attribute under the same `{ "value": … }` wrapper as every non-null attribute and the read path, instead of a bare `null`, so clearing a nullable field sends the attribute-input shape rather than an unwrapped value; a null `ref`/`list_ref` still goes out bare to clear the relationship
 - nautobot adapter: write the `dcim.interface` type field back under the api name `type` (not `if_type`) and treat `if_type` as a native field, so an interface create/update sets the real type instead of failing validation or provisioning a spurious `if_type` custom field
 - core: format-typed fields (`cidr`, `prefix`, `mac`, `slug`) now validate their value's format instead of silently accepting any string, matching how `uuid` already validated and the `format:` constraint
 - core: validate that schema `ref`/`list_ref` targets name a declared type, including refs nested in `list`/`map` fields, so a misspelled target fails schema validation with one clear error instead of confusing per-object reference errors
