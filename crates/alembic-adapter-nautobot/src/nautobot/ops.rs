@@ -698,10 +698,26 @@ fn uid_from_key_fields(
 
     let target_schema = schema.types.get(target)?;
 
+    // a ref-typed key field (e.g. an interface keyed by `(device, name)`)
+    // arrives as a nested brief, so resolve it to the referent's uid first,
+    // mirroring how the referent itself is keyed.
     let mut key_map = BTreeMap::new();
-    for key_field in target_schema.key.keys() {
+    for (key_field, field_schema) in &target_schema.key {
         let value = map.get(key_field)?;
-        key_map.insert(key_field.clone(), value.clone());
+        let resolved = match &field_schema.r#type {
+            FieldType::Ref { target: ref_target } | FieldType::ListRef { target: ref_target } => {
+                match value {
+                    Value::Object(brief) => {
+                        uid_from_key_fields(brief, ref_target, schema, registry, mappings)
+                            .map(|uid| Value::String(uid.to_string()))
+                            .unwrap_or_else(|| value.clone())
+                    }
+                    _ => value.clone(),
+                }
+            }
+            _ => value.clone(),
+        };
+        key_map.insert(key_field.clone(), resolved);
     }
 
     let key = Key::from(key_map);
@@ -966,6 +982,109 @@ mod tests {
         let uid3 = uid_from_key_fields(&nested2, "dcim.device", &schema, &registry, &mappings);
         assert!(uid3.is_some());
         assert_ne!(uid, uid3);
+    }
+
+    #[test]
+    fn test_uid_from_key_fields_resolves_ref_key() {
+        let registry = ObjectTypeRegistry::default();
+        let mappings = super::super::state::StateMappings::default();
+
+        // dcim.device is keyed by `name`; dcim.interface is keyed by both
+        // `device` (a ref to dcim.device) and `name`.
+        let mut schema = Schema {
+            types: BTreeMap::new(),
+        };
+
+        let mut device_schema = TypeSchema {
+            key: BTreeMap::new(),
+            fields: BTreeMap::new(),
+        };
+        device_schema.key.insert(
+            "name".to_string(),
+            FieldSchema {
+                r#type: FieldType::String,
+                required: true,
+                nullable: false,
+                description: None,
+                format: None,
+                pattern: None,
+            },
+        );
+        schema
+            .types
+            .insert("dcim.device".to_string(), device_schema);
+
+        let mut interface_schema = TypeSchema {
+            key: BTreeMap::new(),
+            fields: BTreeMap::new(),
+        };
+        interface_schema.key.insert(
+            "device".to_string(),
+            FieldSchema {
+                r#type: FieldType::Ref {
+                    target: "dcim.device".to_string(),
+                },
+                required: true,
+                nullable: false,
+                description: None,
+                format: None,
+                pattern: None,
+            },
+        );
+        interface_schema.key.insert(
+            "name".to_string(),
+            FieldSchema {
+                r#type: FieldType::String,
+                required: true,
+                nullable: false,
+                description: None,
+                format: None,
+                pattern: None,
+            },
+        );
+        schema
+            .types
+            .insert("dcim.interface".to_string(), interface_schema);
+
+        // resolve the device's own uid from its key
+        let device_map = serde_json::Map::from_iter([("name".to_string(), json!("router-01"))]);
+        let device_uid =
+            uid_from_key_fields(&device_map, "dcim.device", &schema, &registry, &mappings)
+                .expect("device uid");
+
+        // expected: interface uid with the device key already resolved to its uid string
+        let expected_map = serde_json::Map::from_iter([
+            ("device".to_string(), json!(device_uid.to_string())),
+            ("name".to_string(), json!("eth1")),
+        ]);
+        let expected = uid_from_key_fields(
+            &expected_map,
+            "dcim.interface",
+            &schema,
+            &registry,
+            &mappings,
+        );
+
+        // actual: interface uid with the device key as a nested brief
+        let actual_map = serde_json::Map::from_iter([
+            ("device".to_string(), json!({ "name": "router-01" })),
+            ("name".to_string(), json!("eth1")),
+        ]);
+        let actual =
+            uid_from_key_fields(&actual_map, "dcim.interface", &schema, &registry, &mappings);
+
+        // the nested device brief got resolved to the device uid
+        assert!(actual.is_some());
+        assert_eq!(actual, expected);
+
+        // eth1 under a different device must not collide with eth1 here
+        let other_map = serde_json::Map::from_iter([
+            ("device".to_string(), json!({ "name": "router-02" })),
+            ("name".to_string(), json!("eth1")),
+        ]);
+        let other =
+            uid_from_key_fields(&other_map, "dcim.interface", &schema, &registry, &mappings);
+        assert_ne!(actual, other);
     }
 
     #[test]
