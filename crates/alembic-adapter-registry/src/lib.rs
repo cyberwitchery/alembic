@@ -727,13 +727,20 @@ fi
     #[tokio::test]
     async fn run_kills_child_on_timeout() {
         let dir = tempdir().unwrap();
-        let script_path = dir.path().join("slow.sh");
-        write_script(&script_path, "#!/usr/bin/env bash\nsleep 2\ntouch \"$1\"\n");
         let sentinel = dir.path().join("sentinel");
 
+        // exec a stable interpreter rather than a freshly written script: exec-ing
+        // a just-written file can race a concurrent fork in a sibling test thread
+        // and fail to spawn with ETXTBSY, which is unrelated to the timeout
+        // behaviour under test. `sh` runs `sleep 2` and only then touches the
+        // sentinel, so a timely SIGKILL still prevents the touch.
         let adapter = ProcessAdapter {
-            command: script_path.to_string_lossy().to_string(),
-            args: vec![sentinel.to_string_lossy().to_string()],
+            command: "sh".to_string(),
+            args: vec![
+                "-c".to_string(),
+                "sleep 2; touch \"$0\"".to_string(),
+                sentinel.to_string_lossy().to_string(),
+            ],
             working_dir: None,
             env: BTreeMap::new(),
             timeout: Duration::from_secs(1),
