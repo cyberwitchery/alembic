@@ -169,6 +169,8 @@ fn canonicalize_number(v: Value) -> Value {
         Value::Number(n) => {
             if let Some(i) = n.as_i64() {
                 Value::Number(i.into())
+            } else if let Some(u) = n.as_u64() {
+                Value::Number(u.into())
             } else if let Some(f) = n.as_f64() {
                 let i = f.round() as i64;
                 if f64::abs(i as f64 - f) < 1e-5 {
@@ -1221,5 +1223,32 @@ mod tests {
         let key = Key::from(k);
         let s = key_string(&key);
         assert_eq!(s, "{\"a\":1,\"b\":2.001,\"c\":{\"d\":3}}");
+    }
+
+    #[test]
+    fn key_string_preserves_large_u64() {
+        // a u64 above i64::MAX must stay an exact integer; a lossy f64 would
+        // corrupt the uid derived from the key.
+        let mut k = BTreeMap::new();
+        k.insert("id".to_string(), serde_json::json!(u64::MAX));
+        let s = key_string(&Key::from(k));
+        assert_eq!(s, "{\"id\":18446744073709551615}");
+    }
+
+    #[test]
+    fn key_string_distinguishes_near_u64_max() {
+        // u64::MAX and u64::MAX - 1 round to the same f64, so floating them
+        // would collapse two distinct keys onto one uid.
+        let a = {
+            let mut k = BTreeMap::new();
+            k.insert("id".to_string(), serde_json::json!(u64::MAX));
+            key_string(&Key::from(k))
+        };
+        let b = {
+            let mut k = BTreeMap::new();
+            k.insert("id".to_string(), serde_json::json!(u64::MAX - 1));
+            key_string(&Key::from(k))
+        };
+        assert_ne!(a, b);
     }
 }

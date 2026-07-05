@@ -15,6 +15,7 @@
 - engine: locate an object at its own `uid:` line, not an earlier line that references its uid, so validation errors point at the right object
 - engine: import errors on a malformed tag item instead of silently dropping it
 - engine: parse a `u64`-range transform argument literal (above `i64::MAX`) as an exact integer instead of a lossy float, matching the value path
+- core: canonicalize a `u64`-range key/uid component (above `i64::MAX`) as an exact integer instead of a lossy float, so two distinct large-integer keys no longer collapse onto one uid
 - netbox adapter: singularize `x`/`z`/`ch`/`sh`-stemmed endpoints correctly (`ipam/prefixes/` → `ipam.prefix`, not `ipam.prefixe`), so reading prefixes and decoding refs to them yield the declared schema type
 - netbox adapter: singularize `s`-stemmed endpoints correctly (`extras/statuses/` → `extras.status`, not `extras.statu`), so reading and decoding refs to a custom object type whose singular ends in `s` yield the declared schema type
 - netbox + nautobot adapters: pluralize vowel + `y` endpoints correctly (`dcim.device_bay` → `dcim/device-bays/`, not `dcim/device-baies/`), so reading and writing those types hit the right REST endpoint
