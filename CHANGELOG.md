@@ -9,6 +9,7 @@
 - core: reject an empty `enum` field (`values: []`), including enums nested in `list`/`map` fields, at schema-load time, instead of only failing per-object with a confusing `expected: enum()` error (and never for types with no objects)
 - engine: map rewrites refs nested in `list` and `map` fields across a rename, not just top-level `ref`/`list_ref` attrs
 - engine: drop a present-but-null member value from a `${group.items.<path>}` aggregation list, matching the documented non-missing-values-only contract
+- engine: a lone map placeholder whose transform argument contains a quoted `${` keeps its transformed type in `attrs`, instead of being coerced to a string
 - generic adapter: resolve refs nested in `list` and `map` fields on read, matching the write path and the netbox/nautobot adapters
 - infrahub adapter: resolve refs nested in `list` and `map` fields on read, matching the generic/netbox/nautobot adapters and the write path, by sharing the engine's read-side reference normalizer
 - core: attribute reference-type-mismatch errors to the referencing object, not the referent
