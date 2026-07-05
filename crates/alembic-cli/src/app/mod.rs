@@ -103,7 +103,7 @@ enum Command {
         #[arg(short = 'o', long)]
         output: Option<PathBuf>,
     },
-    /// observe a backend's live state into canonical ir.
+    /// observe a backend's live state into the data model.
     Import {
         #[arg(short = 'o', long)]
         output: PathBuf,

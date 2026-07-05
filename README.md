@@ -2,7 +2,7 @@
 
 the connective tissue of your network automation layer, co-evolved with ai
 
-alembic is a data-model-first converger + loader for dcim/ipam systems. it defines a canonical, vendor-neutral ir (intermediate representation) and an engine that validates, plans, and applies changes to a backend. it supports multiple backend adapters, including NetBox, Nautobot, Infrahub, generic REST APIs, and PeeringDB (read-only).
+alembic is a data-model-first converger + loader for dcim/ipam systems. it lets you define your own vendor-neutral data model, and its engine validates, plans, and applies changes to a backend. it supports multiple backend adapters, including NetBox, Nautobot, Infrahub, generic REST APIs, and PeeringDB (read-only).
 
 ## when not to use alembic
 
@@ -16,10 +16,10 @@ alembic is built to converge a vendor-neutral data model onto one or more dcim/i
 
 most tools manage the boxes in your infrastructure graph: the state inside a single system. alembic works on the edges, the correspondence between systems. it transforms data from a source of truth into a vendor-neutral model, validates it, and converges that model onto one or more backends. each alternative below owns a box; alembic connects them:
 
-- **terraform + netbox provider**: covers the apply segment for a single backend, with hand-written hcl resources. alembic builds the desired state by transforming your source of truth into the ir, then applies it to multiple backends from that one model.
+- **terraform + netbox provider**: covers the apply segment for a single backend, with hand-written hcl resources. alembic builds the desired state by transforming your source of truth into the data model, then applies it to multiple backends from that one model.
 - **nautobot ssot / netbox diode**: cover ingestion into one system. alembic does the same source-to-infra load, but through a backend-neutral model with an explicit plan/diff, and can target several backends from it.
-- **infrahub native sync**: infrahub is itself a source of truth with its own transform/sync into infrahub. alembic keeps the canonical model outside any single backend, so infrahub is one destination among several.
-- **ansible (netbox.netbox collection)**: connects source data to a backend imperatively, task by task. alembic covers the same path with a typed ir, schema validation, and a deterministic create/update/delete plan.
+- **infrahub native sync**: infrahub is itself a source of truth with its own transform/sync into infrahub. alembic keeps the data model outside any single backend, so infrahub is one destination among several.
+- **ansible (netbox.netbox collection)**: connects source data to a backend imperatively, task by task. alembic covers the same path with a typed data model, schema validation, and a deterministic create/update/delete plan.
 - **pynetbox / custom scripts**: the same source-to-infra glue, hand-rolled. alembic provides the transformation, validation, stable uids across renames, and reproducible plans so you do not rebuild that each time.
 
 ## concepts

@@ -167,7 +167,7 @@ alembic map transform --spec examples/map.yaml site_code '"fra1"'
 
 ## import
 
-observe a backend's live state into canonical ir.
+observe a backend's live state into the data model.
 
 ```bash
 alembic import -f examples/inventory.yaml -o observed.yaml \

@@ -1,6 +1,6 @@
 # ir
 
-alembic defines a canonical, vendor-neutral ir for dcim/ipam data. all objects share a common envelope and are typed by an explicit `type` string. types are user-defined and must be described with a schema.
+alembic lets you define your own vendor-neutral data model for dcim/ipam data. all objects share a common envelope and are typed by an explicit `type` string. types are user-defined and must be described with a schema.
 
 ## object envelope
 

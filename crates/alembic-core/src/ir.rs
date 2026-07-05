@@ -1,4 +1,4 @@
-//! canonical ir types for alembic.
+//! data model types for alembic.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

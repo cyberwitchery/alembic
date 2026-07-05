@@ -1,6 +1,6 @@
 # inventory
 
-an inventory is a canonical ir file: a `schema` block plus `objects`. alembic
+an inventory is a data-model file: a `schema` block plus `objects`. alembic
 consumes yaml or json (yaml recommended). this is the authored source of truth;
 it is also what `import` writes when it observes a backend.
 

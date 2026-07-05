@@ -1,12 +1,12 @@
 # docs
 
-this directory contains the canonical documentation for alembic.
+this directory contains the reference documentation for alembic.
 
 ## contents
 
-- `docs/ir.md` - canonical ir schema and object model
-- `docs/inventory.md` - inventory (ir) file format (yaml/json) and includes
-- `docs/map.md` - ir to ir transformation between vocabularies
+- `docs/ir.md` - the data model: schema, types, and objects
+- `docs/inventory.md` - inventory file format (yaml/json) and includes
+- `docs/map.md` - transforming the data model between vocabularies
 - `docs/engine.md` - loader, validation, planning, apply
 - `docs/plan.md` - plan json schema and semantics
 - `docs/state.md` - state store format and behavior
