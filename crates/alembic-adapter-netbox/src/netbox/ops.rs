@@ -536,6 +536,170 @@ impl Adapter for NetBoxAdapter {
             deleted_object_fields,
         })
     }
+
+    /// read-only counterpart to `ensure_schema`: reports what `ensure_schema`
+    /// would create and delete, from the same backend reads, writing nothing.
+    /// it reuses the identical decision predicates (native-field detection, the
+    /// custom-object-name mapping, the reserved-field skip, and the key+fields
+    /// desired set) so the preview cannot claim a change apply would not make,
+    /// nor miss one. netbox's `ensure_schema` interleaves those decisions with
+    /// its writes because it needs the created type's backend id to attach
+    /// fields; a preview needs no ids, so it can decide without writing.
+    async fn preview_schema(&self, schema: &Schema) -> Result<Option<ProvisionReport>> {
+        let registry: ObjectTypeRegistry = self.client.fetch_object_types().await?;
+        let custom_fields_by_type = self.client.fetch_custom_fields().await?;
+        let custom_object_types = self.client.fetch_custom_object_types().await?;
+        let custom_object_fields = self.client.fetch_custom_object_type_fields().await?;
+        let custom_objects_available = custom_object_types.is_some();
+
+        let mut created_fields = Vec::new();
+        let mut created_object_types = Vec::new();
+        let mut created_object_fields = Vec::new();
+        let mut deleted_object_types = Vec::new();
+        let mut deleted_object_fields = Vec::new();
+
+        let mut custom_types_by_name: BTreeMap<String, CustomObjectType> = BTreeMap::new();
+        if let Some(types) = custom_object_types {
+            for item in types {
+                custom_types_by_name.insert(item.name.clone(), item);
+            }
+        }
+
+        let mut custom_field_names_by_type_id: BTreeMap<u64, BTreeSet<String>> = BTreeMap::new();
+        if let Some(fields) = custom_object_fields {
+            for field in fields {
+                custom_field_names_by_type_id
+                    .entry(field.custom_object_type)
+                    .or_default()
+                    .insert(field.name);
+            }
+        }
+
+        // native types: declared custom fields the backend lacks (same filter as
+        // ensure_schema, minus the create call).
+        let mut custom_schema_type_names: BTreeSet<String> = BTreeSet::new();
+        let mut custom_schema_types: Vec<(TypeName, &TypeSchema)> = Vec::new();
+        for (type_name, type_schema) in &schema.types {
+            let type_name = TypeName::new(type_name);
+            if registry.contains_type(&type_name) {
+                let info = registry
+                    .info_for(&type_name)
+                    .ok_or_else(|| anyhow!("unsupported type {}", type_name))?;
+                if !supports_feature(&info.features, &["custom-fields"]) {
+                    continue;
+                }
+                let native_fields = native_fields_for_type(self, &info, type_schema).await?;
+                let existing = custom_fields_by_type
+                    .get(type_name.as_str())
+                    .cloned()
+                    .unwrap_or_default();
+                for (field_name, field_schema) in &type_schema.fields {
+                    if matches!(
+                        field_schema.r#type,
+                        FieldType::Ref { .. } | FieldType::ListRef { .. }
+                    ) {
+                        continue;
+                    }
+                    if native_fields.contains(field_name) || existing.contains(field_name) {
+                        continue;
+                    }
+                    created_fields.push(format!("{}.{}", type_name, field_name));
+                }
+                continue;
+            }
+            custom_schema_type_names.insert(type_name.as_str().to_string());
+            custom_schema_types.push((type_name, type_schema));
+        }
+
+        // custom object types: which would be created, and their would-be fields
+        // (skipping reserved and already-existing fields, as the provisioner does).
+        if !custom_schema_types.is_empty() {
+            if !custom_objects_available {
+                let list = custom_schema_types
+                    .iter()
+                    .map(|(name, _)| name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                return Err(anyhow!(
+                    "schema includes custom type(s) but netbox custom objects are not available: {list}"
+                ));
+            }
+            for (type_name, type_schema) in &custom_schema_types {
+                let custom_name = custom_object_type_name(type_name);
+                let existing_type = custom_types_by_name.get(&custom_name);
+                let existing_fields = existing_type
+                    .and_then(|t| custom_field_names_by_type_id.get(&t.id))
+                    .cloned()
+                    .unwrap_or_default();
+                if existing_type.is_none() {
+                    created_object_types.push(type_name.to_string());
+                }
+                let mut seen = BTreeSet::new();
+                for field_name in type_schema.key.keys().chain(type_schema.fields.keys()) {
+                    if !seen.insert(field_name.clone()) {
+                        continue;
+                    }
+                    if is_reserved_custom_object_field(field_name) {
+                        continue;
+                    }
+                    if existing_fields.contains(field_name) {
+                        continue;
+                    }
+                    created_object_fields.push(format!("{}.{}", type_name, field_name));
+                }
+            }
+        }
+
+        // delete branch: alembic-owned custom types/fields the schema no longer
+        // declares (same reserved-field skip and key+fields desired set).
+        if custom_objects_available {
+            for custom_type in custom_types_by_name.values() {
+                let Some(type_name) = alembic_custom_object_name(custom_type) else {
+                    continue;
+                };
+                let existing_fields = custom_field_names_by_type_id.get(&custom_type.id);
+                if custom_schema_type_names.contains(type_name.as_str()) {
+                    let desired: BTreeSet<String> = schema
+                        .types
+                        .get(type_name.as_str())
+                        .map(|ts| ts.key.keys().chain(ts.fields.keys()).cloned().collect())
+                        .unwrap_or_default();
+                    if let Some(existing) = existing_fields {
+                        for field_name in existing {
+                            if is_reserved_custom_object_field(field_name) {
+                                continue;
+                            }
+                            if desired.contains(field_name) {
+                                continue;
+                            }
+                            deleted_object_fields.push(format!("{}.{}", type_name, field_name));
+                        }
+                    }
+                } else {
+                    if let Some(existing) = existing_fields {
+                        for field_name in existing {
+                            if is_reserved_custom_object_field(field_name) {
+                                continue;
+                            }
+                            deleted_object_fields.push(format!("{}.{}", type_name, field_name));
+                        }
+                    }
+                    deleted_object_types.push(type_name);
+                }
+            }
+        }
+
+        Ok(Some(ProvisionReport {
+            created_fields,
+            created_tags: Vec::new(),
+            created_object_types,
+            created_object_fields,
+            deprecated_object_types: Vec::new(),
+            deprecated_object_fields: Vec::new(),
+            deleted_object_types,
+            deleted_object_fields,
+        }))
+    }
 }
 
 /// decodes every generic foreign key on `type_name` from its NetBox read shape

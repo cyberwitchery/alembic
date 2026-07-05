@@ -1164,6 +1164,7 @@ fn apply_plan_blocks_deletes_without_flag() {
             backend_id: Some(BackendId::Int(1)),
         }],
         summary: None,
+        schema_preview: None,
     };
     let backend = Backend::Adapter(Box::new(adapter));
     let result = futures::executor::block_on(apply_plan(&backend, &plan, &mut state, false));
@@ -1190,6 +1191,7 @@ fn apply_plan_updates_state() {
         },
         ops: vec![],
         summary: None,
+        schema_preview: None,
     };
     let backend = Backend::Adapter(Box::new(adapter));
     futures::executor::block_on(apply_plan(&backend, &plan, &mut state, true)).unwrap();

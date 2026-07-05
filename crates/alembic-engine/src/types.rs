@@ -113,6 +113,10 @@ pub struct Plan {
     /// high-level summary of the plan.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub summary: Option<PlanSummary>,
+    /// read-only preview of the schema provisioning apply would perform, populated at
+    /// plan time. `None` when the backend cannot preview schema (or was not asked).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema_preview: Option<ProvisionReport>,
 }
 
 /// high-level summary of plan operations.
@@ -319,6 +323,14 @@ pub trait Emitter: Send + Sync {
 pub trait Adapter: Observer + Emitter {
     async fn ensure_schema(&self, _schema: &Schema) -> anyhow::Result<ProvisionReport> {
         Ok(ProvisionReport::default())
+    }
+
+    /// read-only counterpart to [`Adapter::ensure_schema`]: report what provisioning
+    /// apply would perform, writing nothing. `None` means this adapter cannot preview
+    /// schema (reported honestly, never as "no schema changes"); `Some(report)` is the
+    /// provisioning it would carry out, `Some(empty)` that there is nothing to provision.
+    async fn preview_schema(&self, _schema: &Schema) -> anyhow::Result<Option<ProvisionReport>> {
+        Ok(None)
     }
 }
 

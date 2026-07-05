@@ -752,6 +752,18 @@ impl Adapter for InfrahubAdapter {
 
         Ok(plan.report)
     }
+
+    async fn preview_schema(&self, schema: &Schema) -> Result<Option<ProvisionReport>> {
+        // read-only counterpart to ensure_schema: the same reads and the same pure
+        // build_provision_plan, minus write_schema_document and the apply. needs no
+        // schema_push config, since it never provisions.
+        let schema_info = self.load_schema_info().await?;
+        let schema_snapshot = self.load_schema_snapshot().await?;
+        let report = build_provision_plan(schema, &schema_info, &schema_snapshot)?
+            .map(|plan| plan.report)
+            .unwrap_or_default();
+        Ok(Some(report))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -2356,6 +2368,68 @@ schema { query: Query }
         names.sort();
         assert!(names.contains(&"Dcim.Site".to_string()));
         assert!(names.contains(&"Ipam.Prefix".to_string()));
+    }
+
+    #[tokio::test]
+    async fn preview_schema_reports_without_writing() {
+        let server = MockServer::start();
+        // read endpoints only: the graphql schema and the menu snapshot.
+        server.mock(|when, then| {
+            when.method(GET).path("/schema.graphql");
+            then.status(200).body(GRAPHQL_SCHEMA);
+        });
+        server.mock(|when, then| {
+            when.method(GET).path("/api/schema");
+            then.status(200).json_body(json!({ "nodes": [] }));
+        });
+
+        // dcim.site exists but lacks `region`; ipam.prefix is missing entirely.
+        let schema = schema_with(vec![
+            (
+                "dcim.site",
+                type_schema(
+                    vec![("name", field_schema(FieldType::String, true))],
+                    vec![(
+                        "region",
+                        field_schema(
+                            FieldType::Ref {
+                                target: "dcim.region".to_string(),
+                            },
+                            false,
+                        ),
+                    )],
+                ),
+            ),
+            (
+                "ipam.prefix",
+                type_schema(
+                    vec![("prefix", field_schema(FieldType::Cidr, true))],
+                    vec![(
+                        "site",
+                        field_schema(
+                            FieldType::Ref {
+                                target: "dcim.site".to_string(),
+                            },
+                            false,
+                        ),
+                    )],
+                ),
+            ),
+        ]);
+
+        // no schema_push config: preview must not need one, because it writes nothing.
+        let adapter = InfrahubAdapter::new(&server.base_url(), "token", None).unwrap();
+        let report = adapter.preview_schema(&schema).await.unwrap().unwrap();
+        assert!(report
+            .created_object_types
+            .contains(&"ipam.prefix".to_string()));
+        assert!(report
+            .created_object_fields
+            .contains(&"dcim.site.region".to_string()));
+
+        // the write path refuses without provisioning config, from the same reads —
+        // proving preview surfaced the changes without performing them.
+        assert!(adapter.ensure_schema(&schema).await.is_err());
     }
 
     #[test]

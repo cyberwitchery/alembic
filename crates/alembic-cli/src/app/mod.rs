@@ -185,20 +185,39 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             let mut state = load_state().await?;
             let plugins = search_for_plugins(&config);
             let backend = create_backend(&plugins, backend.as_deref(), backend_config)?;
+            // read-only schema preview: what apply's ensure_schema would provision,
+            // writing nothing. skipped when --provision actually provisions now, and
+            // for observer/emitter backends that cannot provision schema at all. all
+            // preview output goes to stderr so it never pollutes a --dry-run/--report
+            // stdout; the machine-readable copy rides in the plan's schema_preview.
+            let mut schema_preview = None;
             if provision {
                 let provision_report = backend.adapter()?.ensure_schema(&inventory.schema).await?;
                 if !provision_report.is_empty() {
                     println!("provision: {provision_report}");
                 }
+            } else if let Ok(adapter) = backend.adapter() {
+                match adapter.preview_schema(&inventory.schema).await {
+                    Ok(Some(report)) => {
+                        if !report.is_empty() {
+                            eprintln!("schema preview: {report}");
+                        }
+                        schema_preview = Some(report);
+                    }
+                    Ok(None) => eprintln!("schema preview: unavailable for this backend"),
+                    // a preview hiccup must not sink the read-only plan; report and continue.
+                    Err(err) => eprintln!("schema preview: unavailable for this backend ({err:#})"),
+                }
             }
 
-            let plan = build_plan(
+            let mut plan = build_plan(
                 backend.observer()?,
                 &inventory,
                 &mut state,
                 should_detect_deletes(allow_delete, report),
             )
             .await?;
+            plan.schema_preview = schema_preview;
             if report {
                 // read-only: describe desired-vs-observed and exit without
                 // writing a plan file or saving state.
@@ -279,6 +298,7 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                     schema: plan.schema.clone(),
                     ops: approved,
                     summary: None,
+                    schema_preview: None,
                 };
                 let report =
                     apply_plan(&backend, &interactive_plan, &mut state, allow_delete).await?;

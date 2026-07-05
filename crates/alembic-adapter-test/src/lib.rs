@@ -293,6 +293,9 @@ fn check_payload(method: &str, result: &Value) -> Result<(), String> {
         "ensure_schema" => serde_json::from_value::<ProvisionReport>(result.clone())
             .map(drop)
             .map_err(|e| format!("bad ensure_schema result: {e}")),
+        "preview_schema" => serde_json::from_value::<Option<ProvisionReport>>(result.clone())
+            .map(drop)
+            .map_err(|e| format!("bad preview_schema result: {e}")),
         other => Err(format!("unknown method {other}")),
     }
 }
