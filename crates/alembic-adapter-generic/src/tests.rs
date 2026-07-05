@@ -168,6 +168,35 @@ fn test_resolve_path_not_found() {
     assert!(err.to_string().contains("path segment not found"));
 }
 
+// tests for parse_backend_id
+#[test]
+fn test_parse_backend_id_number() {
+    assert_eq!(
+        parse_backend_id(serde_json::json!(42)).unwrap(),
+        BackendId::Int(42)
+    );
+}
+
+#[test]
+fn test_parse_backend_id_string() {
+    assert_eq!(
+        parse_backend_id(serde_json::json!("abc-123")).unwrap(),
+        BackendId::String("abc-123".to_string())
+    );
+}
+
+#[test]
+fn test_parse_backend_id_negative_rejected() {
+    let err = parse_backend_id(serde_json::json!(-1)).unwrap_err();
+    assert!(err.to_string().contains("invalid integer id"));
+}
+
+#[test]
+fn test_parse_backend_id_non_scalar_rejected() {
+    let err = parse_backend_id(serde_json::json!(true)).unwrap_err();
+    assert!(err.to_string().contains("id must be number or string"));
+}
+
 // tests for resolved_ids_identity
 #[test]
 fn test_resolved_ids_identity_empty() {
