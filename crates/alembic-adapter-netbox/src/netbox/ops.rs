@@ -639,10 +639,10 @@ impl Adapter for NetBoxAdapter {
                     if !seen.insert(field_name.clone()) {
                         continue;
                     }
-                    if is_reserved_custom_object_field(field_name) {
-                        continue;
-                    }
-                    if existing_fields.contains(field_name) {
+                    if !custom_object_field_needs_create(
+                        field_name,
+                        existing_fields.contains(field_name),
+                    )? {
                         continue;
                     }
                     created_object_fields.push(format!("{}.{}", type_name, field_name));
@@ -1447,13 +1447,12 @@ impl<'a> CustomObjectFieldProvisioner<'a> {
         field_schema: &FieldSchema,
         is_key: bool,
     ) -> Result<()> {
-        if is_reserved_custom_object_field(field_name) {
+        if !custom_object_field_needs_create(
+            field_name,
+            self.existing_fields.contains_key(field_name),
+        )? {
             return Ok(());
         }
-        if self.existing_fields.contains_key(field_name) {
-            return Ok(());
-        }
-        validate_custom_object_field_name(field_name)?;
         let payload = custom_object_field_payload(
             self.registry,
             self.custom_object_type_id,
@@ -1654,6 +1653,17 @@ fn validate_custom_object_field_name(name: &str) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+/// Whether a declared custom-object field needs creating (`false` if reserved or
+/// already present), erroring on a name netbox rejects so `preview_schema` and
+/// `ensure_schema` make the identical create/skip/reject decision.
+fn custom_object_field_needs_create(field_name: &str, field_exists: bool) -> Result<bool> {
+    if is_reserved_custom_object_field(field_name) || field_exists {
+        return Ok(false);
+    }
+    validate_custom_object_field_name(field_name)?;
+    Ok(true)
 }
 
 fn custom_object_field_payload(
