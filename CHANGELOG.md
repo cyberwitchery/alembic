@@ -1,5 +1,9 @@
 # changelog
 
+## Unreleased
+
+- netbox adapter: `plan`'s schema preview rejects an invalid custom-object field name (outside `[A-Za-z0-9_]`) at plan time, matching what `apply` already enforces, instead of reporting a field creation `apply` then refuses
+
 ## [0.6.0] - 2026-07-05
 
 - infrahub adapter: write a null-valued attribute under the same `{ "value": … }` wrapper as every non-null attribute and the read path, instead of a bare `null`, so clearing a nullable field sends the attribute-input shape rather than an unwrapped value; a null `ref`/`list_ref` still goes out bare to clear the relationship
