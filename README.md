@@ -1,8 +1,19 @@
 # alembic
 
-the connective tissue of your network automation layer, co-evolved with ai
+the connective tissue of your network automation layer.
 
-alembic is a data-model-first converger + loader for dcim/ipam systems. it lets you define your own vendor-neutral data model, and its engine validates, plans, and applies changes to a backend. it supports multiple backend adapters, including NetBox, Nautobot, Infrahub, generic REST APIs, and PeeringDB (read-only).
+alembic moves your network data from the system that holds it to the one that needs it. your dcim or ipam holds the truth about your network; alembic reads it, reshapes it into a vendor-neutral model you define, and writes it back out, to another system or to the fabric. you set the shape once, and it runs the same way every time.
+
+under the hood it is a data-model-first converger and loader: you describe your own model, and an engine validates, plans, and applies changes across one or more backends. the open core ships adapters for netbox, nautobot, infrahub, generic rest apis, and peeringdb (read-only). a commercial layer, alembic-ops, carries that same model onto the fabric and into ops, the actual automation: config and deployment, monitoring, dns, and access.
+
+## how it works
+
+alembic is data-model-first: you describe the model once, and the same four steps run every time.
+
+- **describe**: the shape your data takes as it moves. vendor-neutral, set once.
+- **pull**: read straight from a system you already run, through its adapter.
+- **map**: reshape each source to fit the model, with the transformation made explicit.
+- **apply**: see the plan, then write. pull, map, and plan are read-only; apply is the only step that writes, so nothing changes by surprise.
 
 ## when not to use alembic
 
@@ -62,7 +73,9 @@ NETBOX_URL=https://netbox.example.com NETBOX_TOKEN=... \
   cargo run -p alembic-cli -- apply --backend netbox -p plan.json --allow-delete
 ```
 
-## adapter coverage
+## adapters (frontends and backends)
+
+alembic works like a compiler: many frontends, many backends, and some adapters are both. an adapter reads (a frontend), writes (a backend), or does both, and the unifying part in the middle is the data model, the ir, the types. so the same backend is an input one day and an output the next, and supporting a new system means adding an adapter, not touching the engine.
 
 netbox and nautobot adapters are schema-driven and resolve types dynamically via their content type/object type APIs.
 the infrahub adapter uses graphql and can optionally provision missing types/fields by generating
@@ -93,10 +106,6 @@ relationships are validated strictly by schema and `uid` references.
 - input files never contain backend ids.
 - plans are deterministic and stable-sorted.
 - deletes are gated behind `--allow-delete`.
-
-## beyond the open core
-
-the dcim/ipam and generic-rest adapters here are the open core. the same ir drives config and deployment across live and lab fabrics, plus monitoring, dns, and access, through a separate, commercial ops layer.
 
 ## documentation
 
