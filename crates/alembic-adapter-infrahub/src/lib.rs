@@ -1819,7 +1819,15 @@ fn build_input(
         let field_schema = field_schema_for(type_schema, field)
             .ok_or_else(|| anyhow!("missing schema for field {field}"))?;
         if value.is_null() {
-            map.insert(field.clone(), Value::Null);
+            // a null attribute keeps the `{ "value": … }` wrapper like every non-null attribute; only a null ref/list_ref goes out bare, to clear the relationship.
+            match field_schema.r#type {
+                FieldType::Ref { .. } | FieldType::ListRef { .. } => {
+                    map.insert(field.clone(), Value::Null);
+                }
+                _ => {
+                    map.insert(field.clone(), json!({ "value": Value::Null }));
+                }
+            }
             continue;
         }
         validate_value(field, &field_schema.r#type, value)?;
@@ -2456,6 +2464,40 @@ schema { query: Query }
 
         let err = validate_value("count", &FieldType::Int, &json!("oops")).unwrap_err();
         assert!(err.to_string().contains("expects an integer"));
+    }
+
+    #[test]
+    fn build_input_wraps_a_null_attribute_and_leaves_a_null_ref_bare() {
+        let type_schema = type_schema(
+            Vec::new(),
+            vec![
+                ("description", field_schema(FieldType::Text, false)),
+                (
+                    "parent",
+                    field_schema(
+                        FieldType::Ref {
+                            target: "dcim.site".to_string(),
+                        },
+                        false,
+                    ),
+                ),
+            ],
+        );
+
+        let attrs = JsonMap::from(BTreeMap::from([
+            ("description".to_string(), Value::Null),
+            ("parent".to_string(), Value::Null),
+        ]));
+
+        let resolved: BTreeMap<Uid, BackendId> = BTreeMap::new();
+        let input = build_input(&attrs, &type_schema, &resolved).unwrap();
+        assert_eq!(
+            input,
+            json!({
+                "description": {"value": null},
+                "parent": null,
+            })
+        );
     }
 
     #[test]
