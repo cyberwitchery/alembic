@@ -2,6 +2,7 @@
 
 ## [unreleased]
 
+- nautobot adapter: write the `dcim.interface` type field back under the api name `type` (not `if_type`) and treat `if_type` as a native field, so an interface create/update sets the real type instead of failing validation or provisioning a spurious `if_type` custom field
 - core: format-typed fields (`cidr`, `prefix`, `mac`, `slug`) now validate their value's format instead of silently accepting any string, matching how `uuid` already validated and the `format:` constraint
 - core: validate that schema `ref`/`list_ref` targets name a declared type, including refs nested in `list`/`map` fields, so a misspelled target fails schema validation with one clear error instead of confusing per-object reference errors
 - core: validate that schema `pattern:` regexes compile at schema-load time, instead of only failing per-object (and never for types with no objects yet)

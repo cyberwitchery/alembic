@@ -736,13 +736,18 @@ fn build_request_body(
     let mut custom = Map::new();
 
     for (key, value) in attrs.iter() {
+        let api_key = if type_name.as_str() == "dcim.interface" && key == "if_type" {
+            "type"
+        } else {
+            key.as_str()
+        };
         if key == "tags" {
             if !supports_feature(features, &["tags"]) {
                 return Err(anyhow!("{} does not support tags", type_name));
             }
             let tags = tags_from_value(value)?;
             let tag_inputs = build_tag_inputs(&tags);
-            body.insert(key.clone(), Value::Array(tag_inputs));
+            body.insert(api_key.to_string(), Value::Array(tag_inputs));
             continue;
         }
 
@@ -758,7 +763,7 @@ fn build_request_body(
             }
             custom.insert(key.clone(), encoded);
         } else {
-            body.insert(key.clone(), encoded);
+            body.insert(api_key.to_string(), encoded);
         }
     }
 
@@ -850,6 +855,9 @@ async fn native_fields_for_type(
         for key in map.keys() {
             native.insert(key.clone());
         }
+    }
+    if info.type_name.as_str() == "dcim.interface" {
+        native.insert("if_type".to_string());
     }
 
     Ok(native)
@@ -1124,6 +1132,42 @@ mod tests {
         )
         .unwrap();
         assert_eq!(body.get("site").unwrap(), &json!("site-uuid"));
+    }
+
+    #[test]
+    fn test_build_request_body_interface_if_type() {
+        let mut fields = BTreeMap::new();
+        fields.insert(
+            "if_type".to_string(),
+            FieldSchema {
+                r#type: alembic_core::FieldType::String,
+                required: false,
+                nullable: false,
+                description: None,
+                format: None,
+                pattern: None,
+            },
+        );
+        let type_schema = TypeSchema {
+            key: BTreeMap::new(),
+            fields,
+        };
+        let mut attrs = JsonMap::default();
+        attrs.insert("if_type".to_string(), json!("1000base-t"));
+
+        let body = build_request_body(
+            &TypeName::new("dcim.interface"),
+            &type_schema,
+            &attrs,
+            &BTreeMap::new(),
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+        )
+        .unwrap();
+
+        // the schema field `if_type` is written back under the nautobot api name `type`
+        assert_eq!(body.get("type"), Some(&json!("1000base-t")));
+        assert!(body.get("if_type").is_none());
     }
 
     #[test]
