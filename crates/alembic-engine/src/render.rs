@@ -313,7 +313,9 @@ fn placeholder_only(input: &str) -> Option<&str> {
         return None;
     }
     let inner = &body[..end];
-    if inner.contains("${") || inner.is_empty() {
+    // the quote-aware `end == body.len() - 1` check above already proves
+    // lone-ness, so don't reject a `${` sitting inside a quoted arg here.
+    if inner.is_empty() {
         return None;
     }
     Some(inner)
@@ -1338,6 +1340,24 @@ uid:
             .unwrap()
             .unwrap();
             assert_eq!(rendered, serde_json::json!({"v": ["a", true]}));
+        }
+
+        #[test]
+        fn quoted_dollarbrace_arg_keeps_lone_placeholder_typed() {
+            // a `${` inside a quoted transform arg must not demote a lone typed
+            // placeholder to the string-wrapping embedded-template path.
+            let transforms = registry("def numify(v, a):\n    return 42\n");
+            let vars = string_var("ignored");
+            let rendered = render_string_value(
+                "${x|numify(\"${\")}",
+                &user_ctx(&vars, &transforms),
+                "attrs",
+                false,
+                TransformedOutput::Typed,
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(rendered, serde_json::json!(42));
         }
 
         #[test]
