@@ -4,7 +4,8 @@ use alembic_core::{JsonMap, Key, Schema, TypeName, TypeSchema, Uid};
 use alembic_engine::{
     apply_non_delete_journaled, build_key_from_schema, describe_missing_refs, is_missing_ref_error,
     normalize_attrs_refs, resolved_ids_identity, Adapter, AppliedOp, ApplyReport, BackendId,
-    Emitter, ObservedObject, ObservedState, Observer, Op, RetryApplyDriver, StateMappings,
+    Emitter, ObservedObject, ObservedState, Observer, Op, ProvisionReport, RetryApplyDriver,
+    StateMappings,
 };
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
@@ -506,7 +507,16 @@ impl Emitter for GenericAdapter {
 }
 
 #[async_trait]
-impl Adapter for GenericAdapter {}
+impl Adapter for GenericAdapter {
+    // the generic rest adapter never provisions schema: it assumes the backend
+    // schema already exists, so ensure_schema is the no-op default (an empty
+    // report). preview must mirror that honestly as "nothing to provision"
+    // rather than the default None, which the cli renders as "preview
+    // unavailable for this backend" — a capability limit generic does not have.
+    async fn preview_schema(&self, _schema: &Schema) -> Result<Option<ProvisionReport>> {
+        Ok(Some(ProvisionReport::default()))
+    }
+}
 
 fn resolve_path(value: &serde_json::Value, path: &str) -> Result<serde_json::Value> {
     let mut current = value;
@@ -532,36 +542,19 @@ fn parse_backend_id(id_val: serde_json::Value) -> Result<BackendId> {
     }
 }
 
+/// builds the generic api request body from an object's attrs, encoding a
+/// resolved ref as the backend id (number or string) the generic api expects.
+///
+/// delegates to the shared engine `build_request_body`, which passes a null
+/// value straight through (clearing a nullable field) and recurses into refs
+/// nested inside `List` and `Map` fields, matching the netbox and nautobot
+/// adapters.
 fn resolve_attrs(
     attrs: &JsonMap,
     type_schema: &alembic_core::TypeSchema,
     resolved: &BTreeMap<Uid, BackendId>,
 ) -> Result<serde_json::Value> {
-    let mut map = serde_json::Map::new();
-    for (key, value) in attrs.iter() {
-        let field_schema = type_schema
-            .fields
-            .get(key)
-            .ok_or_else(|| anyhow!("missing schema for field {key}"))?;
-        map.insert(
-            key.clone(),
-            resolve_value_for_type(&field_schema.r#type, value.clone(), resolved)?,
-        );
-    }
-    Ok(serde_json::Value::Object(map))
-}
-
-/// resolves a single field value against the shared engine helper, encoding a
-/// resolved ref as the backend id (number or string) the generic api expects.
-///
-/// the shared helper recurses into refs nested inside `List` and `Map` fields,
-/// matching the netbox and nautobot adapters.
-fn resolve_value_for_type(
-    field_type: &alembic_core::FieldType,
-    value: serde_json::Value,
-    resolved: &BTreeMap<Uid, BackendId>,
-) -> Result<serde_json::Value> {
-    alembic_engine::resolve_value_for_type(field_type, value, resolved, |id| match id {
+    alembic_engine::build_request_body(type_schema, attrs, resolved, |id| match id {
         BackendId::Int(n) => serde_json::Value::Number((*n).into()),
         BackendId::String(s) => serde_json::Value::String(s.clone()),
     })

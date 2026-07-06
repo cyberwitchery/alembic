@@ -578,6 +578,18 @@ mod tests {
         LOCK.get_or_init(|| Mutex::new(()))
     }
 
+    /// Serializes the tests that spawn a child process (via [`ProcessAdapter`] or
+    /// an external backend). exec-ing a just-written script can race a sibling
+    /// test thread's `fork` and fail to spawn with `ETXTBSY`; holding this lock
+    /// for the whole spawn keeps no two of these tests running concurrently, so
+    /// no fork can observe a half-written-then-exec'd file. It is a
+    /// `tokio::sync::Mutex` so the async spawn tests can hold the guard across
+    /// `.await` without tripping `clippy::await_holding_lock`.
+    fn spawn_lock() -> &'static tokio::sync::Mutex<()> {
+        static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+    }
+
     #[test]
     fn resolve_credentials_prefers_args() {
         let _guard = env_lock().lock().unwrap();
@@ -670,6 +682,7 @@ mod tests {
 
     #[tokio::test]
     async fn external_adapter_roundtrip() {
+        let _spawn = spawn_lock().lock().await;
         let dir = tempdir().unwrap();
         let script_path = dir.path().join("adapter.sh");
         let script = r#"#!/usr/bin/env bash
@@ -755,21 +768,17 @@ fi
     #[cfg(unix)]
     #[tokio::test]
     async fn run_kills_child_on_timeout() {
+        // serialize against the other spawning tests so no sibling fork can race
+        // the write-then-exec of the script below (see `spawn_lock`).
+        let _spawn = spawn_lock().lock().await;
         let dir = tempdir().unwrap();
+        let script_path = dir.path().join("slow.sh");
+        write_script(&script_path, "#!/usr/bin/env bash\nsleep 2\ntouch \"$1\"\n");
         let sentinel = dir.path().join("sentinel");
 
-        // exec a stable interpreter rather than a freshly written script: exec-ing
-        // a just-written file can race a concurrent fork in a sibling test thread
-        // and fail to spawn with ETXTBSY, which is unrelated to the timeout
-        // behaviour under test. `sh` runs `sleep 2` and only then touches the
-        // sentinel, so a timely SIGKILL still prevents the touch.
         let adapter = ProcessAdapter {
-            command: "sh".to_string(),
-            args: vec![
-                "-c".to_string(),
-                "sleep 2; touch \"$0\"".to_string(),
-                sentinel.to_string_lossy().to_string(),
-            ],
+            command: script_path.to_string_lossy().to_string(),
+            args: vec![sentinel.to_string_lossy().to_string()],
             working_dir: None,
             env: BTreeMap::new(),
             timeout: Duration::from_secs(1),
@@ -795,8 +804,14 @@ fi
     #[cfg(unix)]
     #[tokio::test]
     async fn run_surfaces_adapter_exit_not_stdin_error() {
+        // serialize against the other spawning tests so no sibling fork can race
+        // the write-then-exec of the script below (see `spawn_lock`).
+        let _spawn = spawn_lock().lock().await;
         let dir = tempdir().unwrap();
         let script_path = dir.path().join("crash.sh");
+        // the adapter writes to stderr and exits 1 without reading stdin, so the
+        // oversized stdin write below still hits BrokenPipe as a crashing adapter
+        // would.
         write_script(
             &script_path,
             "#!/usr/bin/env bash\necho \"boom: bad config\" >&2\nexit 1\n",
