@@ -1580,6 +1580,21 @@ rules:
         );
     }
 
+    #[test]
+    fn eval_map_transform_without_a_transforms_block_runs_builtins() {
+        // no `transforms:` block -> the built-ins-only EMPTY registry; a
+        // built-in still resolves, and an unknown name has no user fns to fall
+        // through to, so it errors as an unknown transform.
+        let map_spec = spec("{}");
+        let result = eval_map_transform(&map_spec, "upper", &json!("ab"), &[]).unwrap();
+        assert_eq!(result, json!("AB"));
+        let err = eval_map_transform(&map_spec, "nope", &json!("x"), &[]).unwrap_err();
+        assert!(
+            err.to_string().contains("unknown transform nope"),
+            "{err:#}"
+        );
+    }
+
     #[cfg(not(feature = "starlark"))]
     #[test]
     fn transforms_block_errors_without_the_feature() {
@@ -1797,6 +1812,22 @@ rules:
             ]));
             let out = compile_map(&input, &map_spec).unwrap();
             assert_eq!(out.objects[0].key.get("name").unwrap(), &json!("LEAF01"));
+        }
+
+        #[test]
+        fn missing_transforms_file_surfaces() {
+            // a `file:` transforms block pointing at a nonexistent path surfaces
+            // the read error (with its context) rather than silently yielding an
+            // empty transform set.
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(
+                dir.path().join("map.yaml"),
+                "transforms:\n  file: ./missing.star\n",
+            )
+            .unwrap();
+            let map_spec = load_map_spec(dir.path().join("map.yaml")).unwrap();
+            let err = eval_map_transform(&map_spec, "f", &json!("x"), &[]).unwrap_err();
+            assert!(err.to_string().contains("read transforms file"), "{err:#}");
         }
 
         #[test]
