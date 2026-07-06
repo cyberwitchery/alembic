@@ -1351,3 +1351,20 @@ async fn test_apply_delete_tolerates_not_found() {
     assert_eq!(report.applied.len(), 1);
     assert_eq!(report.applied[0].backend_id, None);
 }
+
+#[tokio::test]
+async fn test_preview_schema_reports_nothing_to_provision() {
+    // the generic adapter never provisions schema, so preview_schema must
+    // honestly report Some(empty) ("nothing to provision"), not None ("cannot
+    // preview") — the latter the cli surfaces as "preview unavailable for this
+    // backend". this mirrors its no-op ensure_schema.
+    let adapter = GenericAdapter::new(test_config("http://localhost")).unwrap();
+    let schema = test_schema();
+
+    let preview = adapter.preview_schema(&schema).await.unwrap();
+    let report = preview.expect("generic previews nothing-to-provision, never None");
+    assert!(report.is_empty());
+
+    // and it matches what ensure_schema actually does (a no-op empty report).
+    assert!(adapter.ensure_schema(&schema).await.unwrap().is_empty());
+}
