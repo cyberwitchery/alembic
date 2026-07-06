@@ -76,7 +76,7 @@ schema:
         device:
           type: ref
           target: dcim.device
-        if_type:
+        type:
           type: string
         enabled:
           type: bool
@@ -156,7 +156,7 @@ objects:
     attrs:
       name: "eth0"
       device: "7b8f7a92-8fd0-4667-9a4b-9f3b5c9a4b1a"
-      if_type: "1000base-t"
+      type: "1000base-t"
       enabled: true
 
   - uid: "4b8a93d3-6a6d-4ef5-9b04-1de2b8f5b8f2"
@@ -166,7 +166,7 @@ objects:
     attrs:
       name: "eth1"
       device: "7b8f7a92-8fd0-4667-9a4b-9f3b5c9a4b1a"
-      if_type: "1000base-t"
+      type: "1000base-t"
       enabled: true
 
   - uid: "dc0adf72-3c0b-4c3a-8b18-23a7c0a7c0f1"
@@ -204,3 +204,4 @@ alembic apply -p /tmp/plan.json \
 
 - use uid strings to reference other objects.
 - keys are used only for bootstrap or when state is missing.
+- an interface's `type` is netbox's literal field name; the adapter reads and writes it verbatim. to carry it in your model under a different name (e.g. `if_type`), rename `type` in an `alembic map` spec rather than declaring the renamed field in the inventory.
