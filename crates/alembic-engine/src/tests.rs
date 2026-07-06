@@ -1172,6 +1172,73 @@ fn apply_plan_blocks_deletes_without_flag() {
 }
 
 #[test]
+fn guard_schema_deletes_gate() {
+    let clean = ProvisionReport {
+        created_object_types: vec!["dcim.widget".to_string()],
+        ..Default::default()
+    };
+    // creates only: allowed regardless of the flag.
+    guard_schema_deletes(&clean, false).unwrap();
+
+    let with_deletes = ProvisionReport {
+        deleted_object_types: vec!["dcim.widget".to_string()],
+        deleted_object_fields: vec!["dcim.gadget.color".to_string()],
+        ..Default::default()
+    };
+    // deletes without the flag: refused, and the message points at the flag.
+    let err = guard_schema_deletes(&with_deletes, false).unwrap_err();
+    assert!(err.to_string().contains("--allow-delete"), "{err}");
+    // deletes with the flag: allowed.
+    guard_schema_deletes(&with_deletes, true).unwrap();
+}
+
+#[test]
+fn apply_plan_blocks_schema_deletes_without_flag() {
+    let adapter = TestAdapter {
+        observed: ObservedState::default(),
+        report: ApplyReport::default(),
+    };
+    let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
+    let plan = Plan {
+        schema: Schema {
+            types: BTreeMap::new(),
+        },
+        ops: vec![],
+        summary: None,
+        schema_preview: Some(ProvisionReport {
+            deleted_object_types: vec!["dcim.widget".to_string()],
+            ..Default::default()
+        }),
+    };
+    let backend = Backend::Adapter(Box::new(adapter));
+    let result = futures::executor::block_on(apply_plan(&backend, &plan, &mut state, false));
+    assert!(result.is_err());
+    assert!(result.unwrap_err().to_string().contains("--allow-delete"));
+}
+
+#[test]
+fn apply_plan_allows_schema_deletes_with_flag() {
+    let adapter = TestAdapter {
+        observed: ObservedState::default(),
+        report: ApplyReport::default(),
+    };
+    let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
+    let plan = Plan {
+        schema: Schema {
+            types: BTreeMap::new(),
+        },
+        ops: vec![],
+        summary: None,
+        schema_preview: Some(ProvisionReport {
+            deleted_object_fields: vec!["dcim.widget.color".to_string()],
+            ..Default::default()
+        }),
+    };
+    let backend = Backend::Adapter(Box::new(adapter));
+    futures::executor::block_on(apply_plan(&backend, &plan, &mut state, true)).unwrap();
+}
+
+#[test]
 fn apply_plan_updates_state() {
     let adapter = TestAdapter {
         observed: ObservedState::default(),

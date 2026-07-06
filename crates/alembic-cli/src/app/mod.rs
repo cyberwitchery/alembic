@@ -6,7 +6,9 @@ mod io;
 mod state;
 
 use alembic_adapter_registry::{create_backend, Plugin};
-use alembic_engine::{apply_plan, build_plan, load_inventory, ApplyReport, DriftReport, Plan};
+use alembic_engine::{
+    apply_plan, build_plan, guard_schema_deletes, load_inventory, ApplyReport, DriftReport, Plan,
+};
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand};
 use std::fs;
@@ -192,7 +194,16 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             // stdout; the machine-readable copy rides in the plan's schema_preview.
             let mut schema_preview = None;
             if provision {
-                let provision_report = backend.adapter()?.ensure_schema(&inventory.schema).await?;
+                let adapter = backend.adapter()?;
+                // provisioning can delete custom object types/fields the inventory
+                // no longer declares; gate it behind --allow-delete like apply,
+                // checking the read-only preview before writing schema.
+                if !allow_delete {
+                    if let Ok(Some(preview)) = adapter.preview_schema(&inventory.schema).await {
+                        guard_schema_deletes(&preview, allow_delete)?;
+                    }
+                }
+                let provision_report = adapter.ensure_schema(&inventory.schema).await?;
                 if !provision_report.is_empty() {
                     println!("provision: {provision_report}");
                 }

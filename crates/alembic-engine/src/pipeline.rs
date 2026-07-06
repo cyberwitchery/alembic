@@ -60,6 +60,26 @@ fn detect_key_collisions(observed: &ObservedState) -> Result<()> {
     Ok(())
 }
 
+/// refuse destructive schema provisioning (deleting custom object types/fields
+/// the inventory no longer declares) unless `allow_delete` is set. these deletes
+/// cascade to their objects on the backend, so they are gated behind the same
+/// flag as object deletes. `preview` is the read-only schema preview both `plan`
+/// (before provisioning) and `apply` compute.
+pub fn guard_schema_deletes(preview: &ProvisionReport, allow_delete: bool) -> Result<()> {
+    if allow_delete {
+        return Ok(());
+    }
+    let deleted_types = preview.deleted_object_types.len();
+    let deleted_fields = preview.deleted_object_fields.len();
+    if deleted_types > 0 || deleted_fields > 0 {
+        return Err(anyhow!(
+            "provisioning would delete schema ({deleted_types} type(s), \
+             {deleted_fields} field(s)); re-run with --allow-delete"
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) async fn apply(
     backend: &Backend,
     plan: &Plan,
@@ -76,6 +96,13 @@ pub(crate) async fn apply(
                 "plan contains delete operations; re-run with --allow-delete"
             ));
         }
+    }
+    // schema provisioning can delete custom object types/fields the inventory no
+    // longer declares, cascading to their objects on the backend; gate it behind
+    // the same flag using the plan's read-only schema preview, so apply refuses
+    // before writing anything (same plan-time basis as the op gate above).
+    if let Some(preview) = &plan.schema_preview {
+        guard_schema_deletes(preview, allow_delete)?;
     }
 
     let (emitter, provision): (&dyn Emitter, ProvisionReport) = match backend {

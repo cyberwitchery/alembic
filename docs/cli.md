@@ -88,7 +88,7 @@ NETBOX_URL=https://netbox.example.com NETBOX_TOKEN=$NETBOX_TOKEN \
 - creates a deterministic plan
 - writes json plan to the `-o`/`--output` path (required only for this default write path)
 - honors `--allow-delete` if you want delete ops
-- `--provision` runs adapter provisioning (`ensure_schema`) before observing backend state
+- `--provision` runs adapter provisioning (`ensure_schema`) before observing backend state; provisioning that would delete custom object types/fields the inventory no longer declares is blocked unless `--allow-delete` is also given (such deletes cascade to their objects on the backend)
 - `--dry-run` prints the raw plan json instead of writing it (no `-o`/`--output` needed)
 - `--report` prints a read-only drift report and exits without writing a plan file or saving state (no `-o`/`--output` needed)
 - `--report` and `--dry-run` are mutually exclusive (both exit without applying); passing both is rejected at parse time
@@ -134,7 +134,7 @@ alembic apply -p plan.json \
 ```
 
 - applies a plan file
-- deletes are blocked unless `--allow-delete` is provided
+- deletes are blocked unless `--allow-delete` is provided; this covers both object deletes and destructive schema provisioning (deleting custom object types/fields the inventory no longer declares, which cascades to their objects)
 - `--interactive` prompts per operation and applies only approved ops
   through the same engine path used by non-interactive apply
 - the `peeringdb` backend is read-only; apply will return an error

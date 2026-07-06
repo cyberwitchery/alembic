@@ -47,6 +47,7 @@ pub use extract::{import_inventory, ImportReport};
 pub use inflect::pluralize;
 pub use journal::Journal;
 pub use loader::load_inventory;
+pub use pipeline::guard_schema_deletes;
 pub use planner::{plan, sort_ops_for_apply};
 pub use state::{PostgresTlsMode, StateData, StateStore};
 pub use transform::{compile_map, eval_map_transform, load_map_spec, MapSpec, TransformsSpec};
