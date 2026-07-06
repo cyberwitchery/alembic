@@ -1041,6 +1041,156 @@ mod tests {
         assert_eq!(report.created_fields, vec!["dcim.site.cf_test".to_string()]);
     }
 
+    // ip_address is a multi-word model: its endpoint-form type name is
+    // `ipam.ip_address`, but its django content type (what netbox keys a custom
+    // field's `object_types` by, and returns them under) is `ipam.ipaddress`. the
+    // two regressions below rode on the adapter looking custom fields up, and
+    // posting a field's `object_types`, by the endpoint form against the
+    // content-type form. `fields` holds only the non-key fields under test.
+    fn ip_address_schema(fields: &[&str]) -> alembic_core::Schema {
+        let string_field = || alembic_core::FieldSchema {
+            r#type: alembic_core::FieldType::String,
+            required: false,
+            nullable: true,
+            description: None,
+            format: None,
+            pattern: None,
+        };
+        let field_map: std::collections::BTreeMap<String, alembic_core::FieldSchema> = fields
+            .iter()
+            .map(|name| (name.to_string(), string_field()))
+            .collect();
+        alembic_core::Schema {
+            types: std::collections::BTreeMap::from([(
+                "ipam.ip_address".to_string(),
+                alembic_core::TypeSchema {
+                    key: std::collections::BTreeMap::from([(
+                        "address".to_string(),
+                        string_field(),
+                    )]),
+                    fields: field_map,
+                },
+            )]),
+        }
+    }
+
+    // write: a custom field on a multi-word model must be nested under
+    // `custom_fields`, not sent as a top-level body field (which netbox silently
+    // drops, so the field never converges and every plan re-updates it).
+    #[tokio::test]
+    async fn write_nests_custom_field_on_multi_word_model() {
+        let server = MockServer::start();
+        let dir = tempdir().unwrap();
+        let state = StateStore::load(dir.path().join("state.json")).unwrap();
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
+
+        let _object_types = mock_list(
+            &server,
+            "/api/core/object-types/",
+            json!([{
+                "app_label": "ipam",
+                "model": "ipaddress",
+                "rest_api_endpoint": "/api/ipam/ip-addresses/",
+                "features": ["custom-fields", "tags"]
+            }]),
+        );
+        // criticality is a custom field on the content type `ipam.ipaddress`.
+        let _custom_fields = server.mock(|when, then| {
+            when.method(GET).path("/api/extras/custom-fields/");
+            then.status(200).json_body(page(json!([{
+                "name": "criticality",
+                "object_types": ["ipam.ipaddress"],
+                "type": {}
+            }])));
+        });
+        // the create must nest criticality under `custom_fields`; the pre-fix
+        // lookup (endpoint form) missed, so it was sent top-level and this mock
+        // never matched.
+        let create = server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/ipam/ip-addresses/")
+                .json_body_includes(r#"{"custom_fields": {"criticality": "high"}}"#);
+            then.status(201)
+                .json_body(json!({ "id": 5, "address": "10.0.0.1/32" }));
+        });
+
+        let ops = vec![Op::Create {
+            uid: uid(1),
+            type_name: TypeName::new("ipam.ip_address"),
+            desired: obj(
+                uid(1),
+                "ipam.ip_address",
+                key("address", json!("10.0.0.1/32")),
+                json!({ "address": "10.0.0.1/32", "criticality": "high" }),
+            ),
+        }];
+
+        let report = adapter
+            .write(
+                &ip_address_schema(&["address", "criticality"]),
+                &ops,
+                &state,
+            )
+            .await
+            .unwrap();
+        assert_eq!(report.applied.len(), 1);
+        create.assert_calls(1);
+    }
+
+    // provision: creating a custom field on a multi-word model must post its
+    // object_types in the django content-type form (`ipam.ipaddress`), not the
+    // endpoint form (`ipam.ip_address`), which netbox rejects.
+    #[tokio::test]
+    async fn ensure_schema_posts_content_type_for_multi_word_model() {
+        let server = MockServer::start();
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
+
+        let _object_types = mock_list(
+            &server,
+            "/api/core/object-types/",
+            json!([{
+                "app_label": "ipam",
+                "model": "ipaddress",
+                "rest_api_endpoint": "/api/ipam/ip-addresses/",
+                "features": ["custom-fields", "tags"]
+            }]),
+        );
+        let _custom_fields = server.mock(|when, then| {
+            when.method(GET).path("/api/extras/custom-fields/");
+            then.status(200).json_body(page(json!([])));
+        });
+        // native-field probe reads one sample object.
+        let _probe = server.mock(|when, then| {
+            when.method(GET)
+                .path("/api/ipam/ip-addresses/")
+                .query_param("limit", "1");
+            then.status(200).json_body(page(json!([])));
+        });
+        // the create must carry object_types in the content-type form; the pre-fix
+        // payload posted the endpoint form and this mock never matched.
+        let cf_create = server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/extras/custom-fields/")
+                .json_body_includes(r#"{"object_types": ["ipam.ipaddress"]}"#);
+            then.status(201).json_body(json!({
+                "id": 1,
+                "name": "criticality",
+                "object_types": ["ipam.ipaddress"],
+                "type": {"value": "text", "label": "Text"}
+            }));
+        });
+
+        let report = adapter
+            .ensure_schema(&ip_address_schema(&["criticality"]))
+            .await
+            .unwrap();
+        assert_eq!(
+            report.created_fields,
+            vec!["ipam.ip_address.criticality".to_string()]
+        );
+        cf_create.assert_calls(1);
+    }
+
     #[tokio::test]
     async fn ensure_schema_creates_custom_object_types() {
         let server = MockServer::start();
