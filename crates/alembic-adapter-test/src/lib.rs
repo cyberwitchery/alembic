@@ -217,6 +217,12 @@ fn validate(run: &RunResult, method: &str, expectation: &Expectation) -> Result<
 
     let consistent = match (response.ok, &response.result, &response.error) {
         (true, Some(_), None) => true,
+        // preview_schema may answer with a null/absent result to mean "cannot preview
+        // schema"; the host's call_optional maps that to Ok(None), so a correct adapter
+        // passes against the registry and must pass conformance too. this stays
+        // preview_schema-only: read/write/ensure_schema go through call(), which
+        // hard-errors on a null result, so a null there is a real failure to still catch.
+        (true, None, None) if method == "preview_schema" => true,
         (false, None, Some(error)) => {
             if error.is_empty() {
                 return Err("inconsistent envelope: error message is empty".to_string());

@@ -92,6 +92,68 @@ fn rejects_inconsistent_envelope() {
 }
 
 #[test]
+fn preview_schema_may_return_null() {
+    // a null result is the canonical "cannot preview schema" signal; the host's
+    // call_optional maps it to Ok(None), so conformance must accept it too. red before
+    // the guarded (true, None, None) arm, green after.
+    let case = Case {
+        name: "preview-null".into(),
+        request: json!({
+            "version": 1, "setup": {}, "method": "preview_schema",
+            "schema": { "types": {} }
+        }),
+        expect: Expect {
+            ok: true,
+            result: None,
+            error: None,
+        },
+    };
+    let outcomes = run_cases(
+        &sh(r#"cat >/dev/null; printf '{"ok":true,"result":null}\n'"#),
+        TIMEOUT,
+        std::slice::from_ref(&case),
+    );
+    assert!(
+        outcomes[0].passed(),
+        "preview_schema null result rejected: {:?}",
+        outcomes[0].failure
+    );
+}
+
+#[test]
+fn read_null_result_still_rejected() {
+    // the null-result allowance is preview_schema-only: read dispatches through the
+    // host's call(), which hard-errors on a null result, so conformance must still
+    // reject a null read. guards the arm against over-broadening.
+    let case = Case {
+        name: "read-null".into(),
+        request: json!({
+            "version": 1, "setup": {}, "method": "read",
+            "schema": { "types": {} }, "types": [], "state": {}
+        }),
+        expect: Expect {
+            ok: true,
+            result: None,
+            error: None,
+        },
+    };
+    let outcomes = run_cases(
+        &sh(r#"cat >/dev/null; printf '{"ok":true,"result":null}\n'"#),
+        TIMEOUT,
+        std::slice::from_ref(&case),
+    );
+    assert!(
+        !outcomes[0].passed(),
+        "a null read result must still be rejected"
+    );
+    assert!(
+        message(&outcomes[0]).contains("inconsistent envelope"),
+        "{}",
+        message(&outcomes[0])
+    );
+}
+
+#[test]
 fn rejects_bad_payload() {
     let outcomes = run_builtin(
         &sh(r#"cat >/dev/null; printf '{"ok":true,"result":"nope"}\n'"#),
