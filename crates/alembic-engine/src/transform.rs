@@ -24,7 +24,7 @@ use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
 use serde_yaml::Value as YamlValue;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
@@ -105,12 +105,24 @@ pub struct Lookup {
     pub get: String,
 }
 
-/// either a single emit (a mapping) or a list of emits.
+/// `emit: passthrough`, a single emit (a mapping), or a list of emits.
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 pub enum EmitSpec {
+    /// `emit: passthrough` copies each matched source object unchanged (and
+    /// carries its source-schema type into the output), but only for objects no
+    /// other rule emits. paired with `match: "*"`, it is the terse "reshape the
+    /// exceptions, pass the rest through" rule.
+    Keyword(EmitKeyword),
     Single(MapEmit),
     Multi(Vec<MapEmit>),
+}
+
+/// bare-word emit modes.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EmitKeyword {
+    Passthrough,
 }
 
 /// one emitted target object.
@@ -288,14 +300,22 @@ pub fn compile_map(input: &Inventory, spec: &MapSpec) -> Result<Inventory> {
     let mut objects = Vec::new();
     // source uid -> emitted uid, used to re-derive ref values in pass 2.
     let mut remap: BTreeMap<Uid, Uid> = BTreeMap::new();
+    // source objects a non-passthrough rule matched; passthrough only covers the
+    // rest, so a `match: "*"` catch-all cannot collide with a specific rule.
+    let mut claimed: BTreeSet<Uid> = BTreeSet::new();
+    // types emitted by passthrough, whose source schema is carried into the output.
+    let mut passthrough_types: BTreeSet<String> = BTreeSet::new();
 
+    // pass 1: rules that reshape. these claim every source object they match.
     for rule in &spec.rules {
-        let matcher = Matcher::parse(&rule.r#match)
-            .with_context(|| format!("rule {}: invalid match selector", rule.name))?;
         let emits = match &rule.emit {
             EmitSpec::Single(emit) => std::slice::from_ref(emit),
             EmitSpec::Multi(emits) => emits.as_slice(),
+            // passthrough is handled in pass 2, once all claims are known.
+            EmitSpec::Keyword(EmitKeyword::Passthrough) => continue,
         };
+        let matcher = Matcher::parse(&rule.r#match)
+            .with_context(|| format!("rule {}: invalid match selector", rule.name))?;
         match &rule.group_by {
             None => {
                 // a rule emitting exactly one object per source is a 1:1 rename,
@@ -312,6 +332,7 @@ pub fn compile_map(input: &Inventory, spec: &MapSpec) -> Result<Inventory> {
                     if !matcher.predicates_match(&vars) {
                         continue;
                     }
+                    claimed.insert(src.uid);
                     let remap_source = remap_each.then_some(src.uid);
                     emit_objects(
                         rule,
@@ -338,6 +359,7 @@ pub fn compile_map(input: &Inventory, spec: &MapSpec) -> Result<Inventory> {
                     if !matcher.predicates_match(&vars) {
                         continue;
                     }
+                    claimed.insert(src.uid);
                     let group_key = render_template(
                         group_expr,
                         &RenderCtx {
@@ -357,14 +379,62 @@ pub fn compile_map(input: &Inventory, spec: &MapSpec) -> Result<Inventory> {
         }
     }
 
-    rewrite_refs(&mut objects, &spec.schema, &remap);
+    // pass 2: passthrough rules copy every matched source no other rule claimed,
+    // unchanged, deriving the same uid a 1:1 identity rule would.
+    for rule in &spec.rules {
+        if !matches!(rule.emit, EmitSpec::Keyword(EmitKeyword::Passthrough)) {
+            continue;
+        }
+        if rule.group_by.is_some() {
+            return Err(anyhow!(
+                "rule {}: `emit: passthrough` cannot be combined with group_by",
+                rule.name
+            ));
+        }
+        let matcher = Matcher::parse(&rule.r#match)
+            .with_context(|| format!("rule {}: invalid match selector", rule.name))?;
+        for src in input.objects.iter() {
+            if claimed.contains(&src.uid) || !matcher.type_matches(src.type_name.as_str()) {
+                continue;
+            }
+            if !matcher.predicates_match(&object_vars(src)) {
+                continue;
+            }
+            claimed.insert(src.uid);
+            let uid = uid_v5(src.type_name.as_str(), &key_string(&src.key));
+            remap.insert(src.uid, uid);
+            passthrough_types.insert(src.type_name.as_str().to_string());
+            objects.push(Object::new(
+                uid,
+                src.type_name.clone(),
+                src.key.clone(),
+                src.attrs.clone(),
+            )?);
+        }
+    }
+
+    // the output schema is the target schema, plus the source schema for every
+    // passed-through type not already declared, so the spec need only spell out
+    // the types it reshapes.
+    let mut out_schema = spec.schema.clone();
+    for type_name in &passthrough_types {
+        if !out_schema.types.contains_key(type_name) {
+            if let Some(type_schema) = input.schema.types.get(type_name) {
+                out_schema
+                    .types
+                    .insert(type_name.clone(), type_schema.clone());
+            }
+        }
+    }
+
+    rewrite_refs(&mut objects, &out_schema, &remap);
 
     objects.sort_by(|a, b| {
         (a.type_name.as_str(), key_string(&a.key)).cmp(&(b.type_name.as_str(), key_string(&b.key)))
     });
 
     let inventory = Inventory {
-        schema: spec.schema.clone(),
+        schema: out_schema,
         objects,
     };
     crate::report_to_result(crate::validate(&inventory))?;
@@ -1002,6 +1072,138 @@ rules:
             .map(|o| o.key.get("k").unwrap().as_str().unwrap())
             .collect();
         assert_eq!(keys, vec!["a", "b"]);
+    }
+
+    #[test]
+    fn passthrough_carries_unmatched_types_and_rewires_refs() {
+        let input: Inventory = serde_json::from_value(json!({
+            "schema": { "types": {
+                "dcim.interface": { "key": { "name": {"type":"slug"} },
+                                    "fields": { "name": {"type":"string"} } },
+                "ipam.ip_address": { "key": { "address": {"type":"string"} },
+                                     "fields": { "address": {"type":"string"},
+                                                 "assigned_interface": {"type":"ref","target":"dcim.interface"} } }
+            }},
+            "objects": [
+                { "uid": Uuid::from_u128(1).to_string(), "type": "dcim.interface",
+                  "key": {"name":"eth0"}, "attrs": {"name":"eth0"} },
+                { "uid": Uuid::from_u128(2).to_string(), "type": "ipam.ip_address",
+                  "key": {"address":"10.0.0.10/24"},
+                  "attrs": {"address":"10.0.0.10/24", "assigned_interface": Uuid::from_u128(1).to_string()} }
+            ]
+        }))
+        .unwrap();
+        let out = compile_map(
+            &input,
+            &spec(
+                r#"
+schema:
+  types:
+    ipam.ip_address:
+      key: { address: { type: string } }
+      fields:
+        address: { type: string }
+        assigned_object: { type: ref, target: dcim.interface }
+rules:
+  - name: rename-assignment
+    match: ipam.ip_address
+    emit:
+      type: ipam.ip_address
+      key: { address: "${key.address}" }
+      attrs: { address: "${attrs.address}", assigned_object: "${attrs.assigned_interface}" }
+  - name: rest
+    match: "*"
+    emit: passthrough
+"#,
+            ),
+        )
+        .unwrap();
+        // the interface passed through, and its source schema was carried in.
+        assert!(out.schema.types.contains_key("dcim.interface"));
+        let iface = out
+            .objects
+            .iter()
+            .find(|o| o.type_name.as_str() == "dcim.interface")
+            .unwrap();
+        // passthrough uid = uid_v5(type, key), identical to a 1:1 identity rule.
+        assert_eq!(iface.uid, uid_v5("dcim.interface", &key_string(&iface.key)));
+        // the ip's ref was renamed to assigned_object and rewired to the new uid.
+        let ip = out
+            .objects
+            .iter()
+            .find(|o| o.type_name.as_str() == "ipam.ip_address")
+            .unwrap();
+        assert_eq!(
+            ip.attrs.get("assigned_object").unwrap().as_str().unwrap(),
+            iface.uid.to_string()
+        );
+        assert!(ip.attrs.get("assigned_interface").is_none());
+    }
+
+    #[test]
+    fn passthrough_skips_objects_another_rule_claimed() {
+        let input: Inventory = serde_json::from_value(json!({
+            "schema": { "types": { "dcim.site": { "key": {"slug":{"type":"slug"}},
+                                                  "fields": {"name":{"type":"string"}} } } },
+            "objects": [
+                { "uid": Uuid::from_u128(1).to_string(), "type": "dcim.site",
+                  "key": {"slug":"fra1"}, "attrs": {"name":"fra1"} }
+            ]
+        }))
+        .unwrap();
+        let out = compile_map(
+            &input,
+            &spec(
+                r#"
+schema:
+  types:
+    dcim.site:
+      key: { slug: { type: slug } }
+      fields: { name: { type: string } }
+rules:
+  - name: sites
+    match: dcim.site
+    emit:
+      type: dcim.site
+      key: { slug: "${key.slug}" }
+      attrs: { name: "${attrs.name|upper}" }
+  - name: rest
+    match: "*"
+    emit: passthrough
+"#,
+            ),
+        )
+        .unwrap();
+        // reshaped by the specific rule; passthrough did not re-emit it.
+        assert_eq!(out.objects.len(), 1);
+        assert_eq!(
+            out.objects[0].attrs.get("name").unwrap().as_str().unwrap(),
+            "FRA1"
+        );
+    }
+
+    #[test]
+    fn passthrough_with_group_by_is_an_error() {
+        let input = input_inventory(json!([
+            { "uid": Uuid::from_u128(1).to_string(), "type": "dcim.site",
+              "key": {"k":"a"}, "attrs": {} }
+        ]));
+        let err = compile_map(
+            &input,
+            &spec(
+                r#"
+schema:
+  types: {}
+rules:
+  - name: bad
+    match: "*"
+    group_by: "${type}"
+    emit: passthrough
+"#,
+            ),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("passthrough"), "{err}");
     }
 
     #[test]

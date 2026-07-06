@@ -203,54 +203,16 @@ objects:
 
 netbox's ipam names an ip's interface assignment `assigned_object`, a generic
 foreign key, not `assigned_interface`. one `map` step reshapes the neutral model
-to netbox's names.
-
-`map` re-emits the whole inventory under a target schema (the one below is the
-model's schema with that single field renamed). each type needs a rule, so most
-of the spec is mechanical: seven of the eight rules are 1:1 pass-throughs, and
-only `ip-addresses` renames a field. refs are rewired automatically, so the ip
+to netbox's names: a rule that renames the field on `ipam.ip_address`, and a
+`match: "*"` passthrough that carries every other type through unchanged. because
+passthrough carries each source type's schema too, the target `schema` only
+declares the one type you reshape. refs are rewired automatically, so the ip
 still points at its interface even though `map` re-derives uids. save this as
 `netbox-map.yaml`:
 
 ```yaml
 schema:
   types:
-    dcim.manufacturer:
-      key: {slug: {type: slug}}
-      fields: {name: {type: string}, slug: {type: slug}}
-    dcim.device_role:
-      key: {slug: {type: slug}}
-      fields: {name: {type: string}, slug: {type: slug}}
-    dcim.device_type:
-      key: {slug: {type: slug}}
-      fields:
-        manufacturer: {type: ref, target: dcim.manufacturer}
-        model: {type: string}
-        slug: {type: slug}
-    dcim.site:
-      key: {slug: {type: slug}}
-      fields: {name: {type: string}, slug: {type: slug}}
-    dcim.device:
-      key: {name: {type: slug}}
-      fields:
-        name: {type: string}
-        site: {type: ref, target: dcim.site}
-        role: {type: ref, target: dcim.device_role}
-        device_type: {type: ref, target: dcim.device_type}
-        status: {type: string}
-    dcim.interface:
-      key: {name: {type: slug}}
-      fields:
-        name: {type: string}
-        device: {type: ref, target: dcim.device}
-        type: {type: string}
-        enabled: {type: bool}
-    ipam.prefix:
-      key: {prefix: {type: prefix}}
-      fields:
-        prefix: {type: prefix}
-        site: {type: ref, target: dcim.site}
-        description: {type: string}
     ipam.ip_address:
       key: {address: {type: ip_address}}
       fields:
@@ -258,14 +220,18 @@ schema:
         assigned_object: {type: ref, target: dcim.interface}
         description: {type: string}
 rules:
-  - {name: manufacturers, match: dcim.manufacturer, emit: {type: dcim.manufacturer, key: {slug: "${key.slug}"}, attrs: {name: "${attrs.name}", slug: "${attrs.slug}"}}}
-  - {name: device-roles, match: dcim.device_role, emit: {type: dcim.device_role, key: {slug: "${key.slug}"}, attrs: {name: "${attrs.name}", slug: "${attrs.slug}"}}}
-  - {name: device-types, match: dcim.device_type, emit: {type: dcim.device_type, key: {slug: "${key.slug}"}, attrs: {manufacturer: "${attrs.manufacturer}", model: "${attrs.model}", slug: "${attrs.slug}"}}}
-  - {name: sites, match: dcim.site, emit: {type: dcim.site, key: {slug: "${key.slug}"}, attrs: {name: "${attrs.name}", slug: "${attrs.slug}"}}}
-  - {name: devices, match: dcim.device, emit: {type: dcim.device, key: {name: "${key.name}"}, attrs: {name: "${attrs.name}", site: "${attrs.site}", role: "${attrs.role}", device_type: "${attrs.device_type}", status: "${attrs.status}"}}}
-  - {name: interfaces, match: dcim.interface, emit: {type: dcim.interface, key: {name: "${key.name}"}, attrs: {name: "${attrs.name}", device: "${attrs.device}", type: "${attrs.type}", enabled: "${attrs.enabled}"}}}
-  - {name: prefixes, match: ipam.prefix, emit: {type: ipam.prefix, key: {prefix: "${key.prefix}"}, attrs: {prefix: "${attrs.prefix}", site: "${attrs.site}", description: "${attrs.description}"}}}
-  - {name: ip-addresses, match: ipam.ip_address, emit: {type: ipam.ip_address, key: {address: "${key.address}"}, attrs: {address: "${attrs.address}", assigned_object: "${attrs.assigned_interface}", description: "${attrs.description}"}}}
+  - name: rename-assignment
+    match: ipam.ip_address
+    emit:
+      type: ipam.ip_address
+      key: {address: "${key.address}"}
+      attrs:
+        address: "${attrs.address}"
+        assigned_object: "${attrs.assigned_interface}"
+        description: "${attrs.description}"
+  - name: rest
+    match: "*"
+    emit: passthrough
 ```
 
 ## commands
@@ -291,5 +257,5 @@ alembic apply -p /tmp/plan.json \
 ## notes
 
 - reference other objects by their uid string; keys are used only for bootstrap or when state is missing.
-- a field you already name the same as netbox (like the interface's `type` here) needs only a 1:1 pass-through rule; the rename is the exception, not the rule.
+- only the fields netbox names differently need a rule; the `match: "*"` passthrough carries everything else, including the interface's `type` (already netbox's name), through untouched.
 - because `map` re-derives each uid from its `(type, key)`, that identity stays stable across runs even though the mapped uids differ from the ones you authored.

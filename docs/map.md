@@ -46,7 +46,8 @@ rules:
 
 - `schema` is the target schema. the output inventory is validated against it,
   including reference integrity, before it is written.
-- each rule has a `match` selector and one or more `emit` blocks.
+- each rule has a `match` selector and either one or more `emit` blocks or
+  `emit: passthrough` (see below).
 
 ## match
 
@@ -64,6 +65,34 @@ predicates address the same dotted namespace as templates (see vars below), so
 its key. the operators are `=`, `!=`, existence `[field]`, and absence
 `[!field]`; `=`/`!=` compare a field's scalar rendering, while `[field]` is true
 when the field is present and non-null. chained predicates are ANDed.
+
+## passthrough
+
+a rule can set `emit: passthrough` instead of an emit block to copy each matched
+source object through unchanged. paired with `match: "*"`, it is the terse
+"reshape the exceptions, pass the rest through" pattern:
+
+```yaml
+rules:
+  - name: rename-assignment
+    match: ipam.ip_address
+    emit:
+      type: ipam.ip_address
+      key: { address: "${key.address}" }
+      attrs:
+        address: "${attrs.address}"
+        assigned_object: "${attrs.assigned_interface}"
+  - name: rest
+    match: "*"
+    emit: passthrough
+```
+
+passthrough only emits objects no other rule emitted, so a `match: "*"` catch-all
+never collides with a specific rule, whatever the rule order. the passed-through
+type's schema is taken from the input, so the target `schema` need only declare
+the types you actually reshape. refs are rewired as for a 1:1 rule, and a
+passed-through object keeps its `uid_v5(type, key)` identity. `passthrough` cannot
+be combined with `group_by`.
 
 ## vars
 

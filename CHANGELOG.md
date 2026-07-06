@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- map: `emit: passthrough` copies each matched source object through unchanged, carrying its source-schema type into the output, but only for objects no other rule emits. paired with `match: "*"` it is a terse "reshape the exceptions, pass the rest through" catch-all, so renaming one field no longer needs an identity rule per type; the target `schema` need only declare the types actually reshaped
 - external adapters: document the `preview_schema` protocol method (`docs/external-adapters.md`), and the conformance runner now sends a built-in `preview_schema` check plus ships a `preview-schema` case fixture, so an external adapter that omits schema preview is flagged
 - cli: `plan` now prints a human-readable per-op summary of the plan it writes (create/update/delete grouped, with per-field `from -> to` for updates, truncated for large plans), instead of only a one-line count; the machine-readable copy is still the written json plan file
 - cli: `plan` now works against a write-only (emitter) backend such as `django`, producing an all-creates plan against an empty observation instead of failing with `backend is write-only; it cannot observe state`. this makes the documented `plan` then `apply` flow usable for emitters
