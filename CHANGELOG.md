@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- engine: journal hashes no longer depend on the rust version, so a partially-applied plan can be resumed by a different build; a journal from an older version is orphaned once
 - generic adapter: `plan`'s schema preview reports nothing to provision (`schema_preview: {}`, no stderr line) instead of `schema preview: unavailable for this backend`, since the generic adapter provisions no schema (its `ensure_schema` is the no-op default), matching the preview==ensure invariant netbox/nautobot/infrahub already hold
 - netbox + nautobot adapters: remove the adapter-side `type`/`if_type` aliasing entirely, so the adapter reads and writes the backend's literal `type` field for every type, interfaces included; previously the read renamed a backend `type` to `if_type`, the write remapped a `dcim.interface` `if_type` back to `type`, and provisioning treated `if_type` as a native interface field. reshaping a field like this belongs in an `alembic map` spec, not baked into the adapter on a hardcoded `dcim.interface`, so a user who wants `if_type` in their ir renames `type` to `if_type` in map; reverts the aliasing added in #194/#195
 - infrahub adapter: resolve a desired key's `ref`/`list_ref` fields to backend ids before matching it against an existing object, so a ref-keyed type (interfaces, cables, ip assignments) finds its existing object instead of never matching; most severely, a genuinely failing delete of such an object is no longer swallowed and reported as success

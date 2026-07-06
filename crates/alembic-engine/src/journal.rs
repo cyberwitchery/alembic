@@ -8,7 +8,6 @@ use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::fs::{File, OpenOptions};
-use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::{Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use tempfile::NamedTempFile;
@@ -22,9 +21,7 @@ pub struct Journal {
 
 impl Journal {
     pub fn stable_file_name(directory: &Path, adapter_name: &str, ops: &[Op]) -> PathBuf {
-        let mut hasher = DefaultHasher::new();
-        ops.hash(&mut hasher);
-        let hash = hasher.finish();
+        let hash = crate::types::stable_json_hash(&ops);
         let file_name: PathBuf = format!("{}_journal_{}.yaml", adapter_name, hash).into();
         directory.join(file_name)
     }
@@ -272,6 +269,19 @@ mod tests {
                 backend_id: None,
             },
         ]
+    }
+
+    #[test]
+    fn journal_identity_is_stable_across_toolchains() {
+        // pinned constants: the journal file name and per-op hashes are persisted
+        // to disk and compared on resume, so they must not depend on the rust or
+        // dependency versions. if this test breaks, cross-version resume broke.
+        let ops = test_ops();
+        assert_eq!(ops[0].hashed(), 2629757075790778505);
+        assert_eq!(
+            Journal::stable_file_name(Path::new("/tmp"), "test", &ops),
+            PathBuf::from("/tmp/test_journal_5133211470659736648.yaml")
+        );
     }
 
     #[test]

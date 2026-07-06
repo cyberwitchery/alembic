@@ -6,7 +6,6 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
-use std::hash::{DefaultHasher, Hash, Hasher};
 
 /// generic backend identifier (integer or string/uuid).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -97,10 +96,21 @@ impl Op {
     }
 
     pub fn hashed(&self) -> u64 {
-        let mut hasher = DefaultHasher::new();
-        self.hash(&mut hasher);
-        hasher.finish()
+        stable_json_hash(self)
     }
+}
+
+/// hash a value's json serialization via the same v5 uuid mechanism ir
+/// identity is built on. journal identity (file names, per-op hashes) is
+/// persisted to disk and compared across runs, so it must not depend on
+/// `DefaultHasher`, whose algorithm is not stable across rust releases.
+pub(crate) fn stable_json_hash<T: Serialize>(value: &T) -> u64 {
+    // serializing engine types cannot fail: plain structs and enums whose only
+    // maps are string-keyed.
+    let bytes = serde_json::to_vec(value).expect("engine value serializes to json");
+    uuid::Uuid::new_v5(&alembic_core::ALEMBIC_UID_NAMESPACE, &bytes)
+        .as_u64_pair()
+        .0
 }
 
 /// full plan document.
