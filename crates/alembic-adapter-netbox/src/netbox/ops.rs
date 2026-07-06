@@ -1071,11 +1071,6 @@ fn normalize_attrs(
             attrs.insert(key, normalized);
         }
     }
-    if attrs.contains_key("type") && !attrs.contains_key("if_type") {
-        if let Some(value) = attrs.remove("type") {
-            attrs.insert("if_type".to_string(), value);
-        }
-    }
     // generic foreign keys (`assigned_object`, `scope`, terminations, ...) are
     // decoded uniformly from the schema-derived metadata in `decode_generic_fks`.
 }
@@ -1218,18 +1213,13 @@ fn build_request_body(
     let mut custom = Map::new();
 
     for (key, value) in attrs.iter() {
-        let api_key = if type_name.as_str() == "dcim.interface" && key == "if_type" {
-            "type"
-        } else {
-            key.as_str()
-        };
         if key == "tags" {
             if !supports_feature(features, &["tags"]) {
                 return Err(anyhow!("{} does not support tags", type_name));
             }
             let tags = tags_from_value(value)?;
             let tag_inputs = build_tag_inputs(&tags);
-            body.insert(api_key.to_string(), serde_json::to_value(tag_inputs)?);
+            body.insert(key.clone(), serde_json::to_value(tag_inputs)?);
             continue;
         }
 
@@ -1244,7 +1234,7 @@ fn build_request_body(
         if let Some(encoding) = netbox::generic_fk_encoding(content_type, key) {
             encode_generic_fk(
                 &mut body,
-                api_key,
+                key.as_str(),
                 encoding,
                 &field_schema.r#type,
                 value.clone(),
@@ -1262,7 +1252,7 @@ fn build_request_body(
             }
             custom.insert(key.clone(), encoded);
         } else {
-            body.insert(api_key.to_string(), encoded);
+            body.insert(key.clone(), encoded);
         }
     }
 
@@ -1606,9 +1596,6 @@ async fn native_fields_for_type(
             native.insert(key.clone());
         }
     }
-    if info.type_name.as_str() == "dcim.interface" {
-        native.insert("if_type".to_string());
-    }
 
     Ok(native)
 }
@@ -1903,8 +1890,57 @@ mod test_normalization {
         let mut attrs = JsonMap::default();
         attrs.insert("type".to_string(), json!("1000base-t"));
 
+        // the adapter no longer aliases `type` to `if_type`: the literal backend
+        // `type` field is preserved as-is (interfaces and everything else alike).
         normalize_attrs(&mut attrs, &type_schema, &schema, &registry, &mappings);
-        assert_eq!(attrs.get("if_type").unwrap(), &json!("1000base-t"));
+        assert_eq!(attrs.get("type").unwrap(), &json!("1000base-t"));
+        assert!(!attrs.contains_key("if_type"));
+    }
+
+    #[test]
+    fn test_interface_type_round_trips_literally() {
+        let registry = ObjectTypeRegistry::default();
+        let mappings = super::super::state::StateMappings::default();
+        let mut fields = BTreeMap::new();
+        fields.insert(
+            "type".to_string(),
+            FieldSchema {
+                r#type: alembic_core::FieldType::String,
+                required: false,
+                nullable: false,
+                description: None,
+                format: None,
+                pattern: None,
+            },
+        );
+        let type_schema = TypeSchema {
+            key: BTreeMap::new(),
+            fields,
+        };
+        let schema = Schema {
+            types: BTreeMap::new(),
+        };
+        let mut attrs = JsonMap::default();
+        attrs.insert("type".to_string(), json!("1000base-t"));
+
+        // read: a `dcim.interface` `type` stays `type`.
+        normalize_attrs(&mut attrs, &type_schema, &schema, &registry, &mappings);
+        assert_eq!(attrs.get("type").unwrap(), &json!("1000base-t"));
+        assert!(!attrs.contains_key("if_type"));
+
+        // write: it goes back out under its own name, with no `if_type` remap.
+        let body = build_request_body(
+            &TypeName::new("dcim.interface"),
+            &type_schema,
+            &attrs,
+            &BTreeMap::new(),
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+            &ObjectTypeRegistry::default(),
+        )
+        .unwrap();
+        assert_eq!(body.get("type").unwrap(), &json!("1000base-t"));
+        assert!(body.get("if_type").is_none());
     }
 
     #[test]
