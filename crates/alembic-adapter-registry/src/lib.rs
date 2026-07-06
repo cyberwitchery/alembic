@@ -359,15 +359,24 @@ impl ProcessAdapter {
         }
 
         let mut child = cmd.spawn().context("spawn external adapter")?;
-        if let Some(mut stdin) = child.stdin.take() {
-            // ignore a BrokenPipe from a crashed adapter so its real exit error surfaces below.
-            let _ = stdin.write_all(&payload).await;
-        }
-
-        let output = timeout(self.timeout, child.wait_with_output())
-            .await
-            .context("external adapter timed out")?
-            .context("wait for external adapter")?;
+        let stdin = child.stdin.take();
+        // write the request to the child's stdin concurrently with draining its
+        // stdout/stderr, all under the one timeout, so a child that floods its output or
+        // never reads its stdin can't deadlock the write and hang the cli forever, but
+        // instead trips the timeout like any other stall.
+        let output = timeout(self.timeout, async move {
+            let write = async move {
+                if let Some(mut stdin) = stdin {
+                    // ignore a BrokenPipe from a crashed adapter so its real exit error surfaces below.
+                    let _ = stdin.write_all(&payload).await;
+                }
+            };
+            let (_, output) = tokio::join!(write, child.wait_with_output());
+            output
+        })
+        .await
+        .context("external adapter timed out")?
+        .context("wait for external adapter")?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -836,6 +845,40 @@ fi
         assert!(
             !msg.contains("write external adapter stdin"),
             "stdin write error masked the real failure: {msg}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_times_out_when_child_never_drains_stdin() {
+        // serialize against the other spawning tests so no sibling fork can race
+        // the write-then-exec of the script below (see `spawn_lock`).
+        let _spawn = spawn_lock().lock().await;
+        let dir = tempdir().unwrap();
+        let script_path = dir.path().join("stuck.sh");
+        // stays alive for the whole run without ever reading its stdin, so the
+        // oversized write below can only complete once we drain concurrently.
+        write_script(&script_path, "#!/usr/bin/env bash\nsleep 30\n");
+
+        let adapter = ProcessAdapter {
+            command: script_path.to_string_lossy().to_string(),
+            args: Vec::new(),
+            working_dir: None,
+            env: BTreeMap::new(),
+            timeout: Duration::from_secs(1),
+            setup: serde_yaml::Value::default(),
+        };
+
+        // 256 KB > the 64 KB pipe buffer, so an un-drained write blocks after the
+        // buffer fills. before the fix this blocked outside the timeout guard and
+        // hung run() forever; now it trips the 1s timeout instead.
+        let payload = vec![b'x'; 256 * 1024];
+        let result = tokio::time::timeout(Duration::from_secs(10), adapter.run(payload)).await;
+        let run_result =
+            result.expect("run() hung: stdin write deadlocked outside the timeout guard");
+        assert!(
+            run_result.unwrap_err().to_string().contains("timed out"),
+            "expected a timeout error once the un-drained stdin write is under the guard"
         );
     }
 }

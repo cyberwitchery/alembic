@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- external adapters: write the request to a child adapter's stdin concurrently with draining its output, all under the run timeout, so a child that floods its output or never reads its stdin can no longer deadlock the write outside the timeout guard and hang the cli forever
+
 - **breaking** django adapter: rename the `cast_django` module to `emit` and `run_cast_django` to `run_emit`, retiring the last code references to the `cast` command removed in 0.4.0; the test-only `ALEMBIC_CAST_PYTHON` env var becomes `ALEMBIC_DJANGO_PYTHON`
 
 ## [0.7.0] - 2026-07-07
