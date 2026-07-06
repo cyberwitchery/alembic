@@ -5,7 +5,7 @@ use alembic_core::{TypeName, Uid};
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::fs;
+use std::fs::{self, File, OpenOptions, TryLockError};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -38,6 +38,12 @@ pub struct StateStore {
     backend: Option<Arc<Mutex<dyn StateBackend>>>,
     data: StateData,
     journal_dir: Option<PathBuf>,
+    // advisory exclusive lock held for a local-file store's whole lifetime, so two
+    // concurrent runs against the same state file cannot both load-modify-save it
+    // and clobber each other's mappings (the save is atomic but last-writer-wins).
+    // released when the last clone of the store drops. `None` for the postgres
+    // backend (it has its own optimistic lock) and for in-memory stores.
+    lock: Option<Arc<File>>,
 }
 
 impl StateStore {
@@ -47,6 +53,7 @@ impl StateStore {
             backend,
             data,
             journal_dir: None,
+            lock: None,
         }
     }
 
@@ -64,6 +71,10 @@ impl StateStore {
     /// load state from a file path.
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
+        // take the state lock before reading, and hold it for this store's whole
+        // lifetime, so a concurrent run can't load the same snapshot and race us to
+        // save. fail fast rather than block if another run already holds it.
+        let lock = acquire_state_lock(&path)?;
         // always create a backend so we can save to the same path later.
         // the backend's load() method handles missing files gracefully.
         let backend: Option<Arc<Mutex<dyn StateBackend>>> =
@@ -77,7 +88,9 @@ impl StateStore {
         } else {
             StateData::default()
         };
-        Ok(Self::new(backend, data))
+        let mut store = Self::new(backend, data);
+        store.lock = Some(lock);
+        Ok(store)
     }
 
     /// load state from a postgres backend.
@@ -141,6 +154,40 @@ impl StateStore {
     /// return all mappings for external use.
     pub fn all_mappings(&self) -> &BTreeMap<TypeName, BTreeMap<Uid, BackendId>> {
         &self.data.mappings
+    }
+}
+
+/// take an exclusive advisory lock for a local state file. the lock lives in a
+/// sidecar `<path>.lock` file (created if missing) and is released when the
+/// returned handle, and every clone of the owning store, is dropped or the
+/// process exits. errors if another run already holds it.
+fn acquire_state_lock(path: &Path) -> Result<Arc<File>> {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("create state dir: {}", parent.display()))?;
+        }
+    }
+    let lock_path = {
+        let mut p = path.as_os_str().to_owned();
+        p.push(".lock");
+        PathBuf::from(p)
+    };
+    let file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(&lock_path)
+        .with_context(|| format!("open state lock: {}", lock_path.display()))?;
+    match file.try_lock() {
+        Ok(()) => Ok(Arc::new(file)),
+        Err(TryLockError::WouldBlock) => Err(anyhow!(
+            "another alembic run holds the state lock at {}; wait for it to finish",
+            lock_path.display()
+        )),
+        Err(TryLockError::Error(err)) => {
+            Err(err).with_context(|| format!("acquire state lock: {}", lock_path.display()))
+        }
     }
 }
 

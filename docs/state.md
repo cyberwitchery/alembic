@@ -30,6 +30,17 @@ The uid (uuid) is always a string. the backend id can be either an integer (e.g.
 - safe to delete if you want to re-discover by key, but expect extra lookups.
 - custom types are stored under their type string.
 
+## concurrency
+
+for the local backend, each run takes an exclusive advisory lock on a sidecar
+`<state>.lock` file (e.g. `.alembic/state.json.lock`) and holds it for its whole
+lifetime, so two runs against the same state file cannot both load it and race to
+save, silently clobbering each other's mappings. a second concurrent run fails
+fast with `another alembic run holds the state lock` instead of waiting. the lock
+releases when the run exits (the `.lock` file is left in place and reused). the
+postgres backend instead uses optimistic concurrency via `loaded_version`,
+failing a save whose base version changed underneath it.
+
 ## backend selection
 
 use environment variables to select a state backend:

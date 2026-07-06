@@ -687,6 +687,9 @@ fn state_store_roundtrip() {
     let mut store = StateStore::load(&path).unwrap();
     store.set_backend_id(t("dcim.site"), uid(99), BackendId::Int(123));
     futures::executor::block_on(store.save_async()).unwrap();
+    // a real reload happens in a separate process after the first exits; drop the
+    // first store so its exclusive state lock is released before reloading.
+    drop(store);
 
     let reloaded = StateStore::load(&path).unwrap();
     assert_eq!(
@@ -698,6 +701,28 @@ fn state_store_roundtrip() {
     let mut reloaded = reloaded;
     reloaded.remove_backend_id(t("dcim.site"), uid(99));
     assert_eq!(reloaded.backend_id(t("dcim.site"), uid(99)), None);
+}
+
+#[test]
+fn state_store_load_is_exclusive_across_concurrent_holders() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("state.json");
+    let _held = StateStore::load(&path).unwrap();
+    // a second concurrent load of the same state file is refused, so two runs
+    // cannot load-modify-save it and clobber each other's mappings.
+    let err = StateStore::load(&path).unwrap_err();
+    assert!(err.to_string().contains("another alembic run"), "{err}");
+}
+
+#[test]
+fn state_store_lock_releases_on_drop() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("state.json");
+    {
+        let _held = StateStore::load(&path).unwrap();
+    }
+    // the previous holder dropped, so a fresh load acquires the lock cleanly.
+    StateStore::load(&path).unwrap();
 }
 
 #[test]
@@ -727,14 +752,15 @@ fn state_store_load_errors_on_invalid_json() {
 }
 
 #[test]
-fn state_store_save_errors_on_bad_parent() {
+fn state_store_load_errors_on_bad_parent() {
     let dir = tempdir().unwrap();
     let blocking_parent = dir.path().join("state.json");
     std::fs::write(&blocking_parent, "file").unwrap();
     let path = blocking_parent.join("child.json");
-    let store = StateStore::load(&path).unwrap();
-    let err = futures::executor::block_on(store.save_async()).unwrap_err();
-    assert!(err.to_string().contains("create state dir"));
+    // load now creates the state dir (for the lock file), so a parent that cannot
+    // be a directory fails here rather than being deferred to save.
+    let err = StateStore::load(&path).unwrap_err();
+    assert!(err.to_string().contains("create state dir"), "{err}");
 }
 
 #[tokio::test]
@@ -744,6 +770,7 @@ async fn state_store_async_roundtrip() {
     let mut store = StateStore::load(&path).unwrap();
     store.set_backend_id(t("dcim.site"), uid(100), BackendId::Int(456));
     store.save_async().await.unwrap();
+    drop(store); // release the state lock before reloading (models a fresh run).
 
     let mut reloaded = StateStore::load(&path).unwrap();
     reloaded.load_async().await.unwrap();
