@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- django adapter: error when urls.py has no `urlpatterns = [` list to wire the api route into, instead of writing the file and reporting success while the generated app's routes are silently never mounted; the closing bracket was already strict, so the opening landmark now matches every sibling scaffolding step
+
 - **breaking** django adapter: rename the `cast_django` module to `emit` and `run_cast_django` to `run_emit`, retiring the last code references to the `cast` command removed in 0.4.0; the test-only `ALEMBIC_CAST_PYTHON` env var becomes `ALEMBIC_DJANGO_PYTHON`
 
 ## [0.7.0] - 2026-07-07

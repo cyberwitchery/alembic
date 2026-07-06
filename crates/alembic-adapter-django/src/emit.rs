@@ -276,16 +276,17 @@ fn ensure_project_urls(output_dir: &Path, project_name: &str, app_name: &str) ->
     if !contents.contains(&format!("include(\"{}.urls\")", app_name))
         && !contents.contains(&format!("include('{}.urls')", app_name))
     {
-        if let Some(pos) = contents.find("urlpatterns = [") {
-            let insert_pos = contents[pos..]
-                .find(']')
-                .ok_or_else(|| anyhow!("urls.py missing urlpatterns closing bracket"))?
-                + pos;
-            contents.insert_str(
-                insert_pos,
-                &format!("    path(\"api/\", include(\"{}.urls\")),\n", app_name),
-            );
-        }
+        let pos = contents
+            .find("urlpatterns = [")
+            .ok_or_else(|| anyhow!("urls.py missing urlpatterns list"))?;
+        let insert_pos = contents[pos..]
+            .find(']')
+            .ok_or_else(|| anyhow!("urls.py missing urlpatterns closing bracket"))?
+            + pos;
+        contents.insert_str(
+            insert_pos,
+            &format!("    path(\"api/\", include(\"{}.urls\")),\n", app_name),
+        );
     }
 
     fs::write(&urls_path, contents).with_context(|| format!("write {}", urls_path.display()))?;
@@ -302,4 +303,51 @@ fn run_manage_makemigrations(runner: &dyn Runner, output_dir: &Path, python: &st
 
 fn run_manage_migrate(runner: &dyn Runner, output_dir: &Path, python: &str) -> Result<()> {
     runner.run(python, &["manage.py", "migrate"], Some(output_dir))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    fn setup_project(urls_py: &str) -> (tempfile::TempDir, String) {
+        let dir = tempdir().unwrap();
+        let project_name = "proj".to_string();
+        let project_dir = dir.path().join(&project_name);
+        fs::create_dir_all(&project_dir).unwrap();
+        fs::write(project_dir.join("urls.py"), urls_py).unwrap();
+        (dir, project_name)
+    }
+
+    #[test]
+    fn errors_when_urlpatterns_list_missing() {
+        // A tuple-form urlpatterns lacks the exact `urlpatterns = [` landmark, so
+        // the api route cannot be wired in and the step must error rather than
+        // write a routeless file and report success.
+        let urls_py =
+            "from django.urls import path\n\nurlpatterns = (\n    path('admin/', admin.site.urls),\n)\n";
+        let (dir, project) = setup_project(urls_py);
+
+        let result = ensure_project_urls(dir.path(), &project, "api_app");
+
+        assert!(
+            result.is_err(),
+            "expected an error when urls.py has no urlpatterns list to wire the api route into"
+        );
+    }
+
+    #[test]
+    fn wires_route_into_urlpatterns_list() {
+        let urls_py =
+            "from django.contrib import admin\nfrom django.urls import path\n\nurlpatterns = [\n    path('admin/', admin.site.urls),\n]\n";
+        let (dir, project) = setup_project(urls_py);
+
+        ensure_project_urls(dir.path(), &project, "api_app").expect("wiring the api route");
+
+        let written = fs::read_to_string(dir.path().join(&project).join("urls.py")).unwrap();
+        assert!(
+            written.contains("path(\"api/\", include(\"api_app.urls\"))"),
+            "expected the api route to be inserted, got:\n{written}"
+        );
+    }
 }
