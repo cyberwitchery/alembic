@@ -2,9 +2,20 @@
 
 ## goal
 
-create a site, device, two interfaces, a prefix, and an ip address, then converge netbox.
+take a small dcim/ipam model, a site, a device, two interfaces, a prefix, and an
+ip address, and converge it onto netbox.
 
-## inventory
+the model is authored once and kept vendor-neutral: it names an ip's interface
+assignment `assigned_interface`, the name that reads well in your own vocabulary.
+that neutrality is the point; it is what lets the same model target more than one
+backend. netbox happens to call that field `assigned_object` (a generic foreign
+key), so the walkthrough is three steps: author the model, `map` it to netbox's
+field names, then plan and apply. every other field already matches netbox, so
+the map is almost entirely a pass-through.
+
+## the model
+
+the desired state, as a vendor-neutral inventory:
 
 ```yaml
 schema:
@@ -188,12 +199,89 @@ objects:
       description: "leaf01 eth0"
 ```
 
+## map to netbox
+
+netbox's ipam names an ip's interface assignment `assigned_object`, a generic
+foreign key, not `assigned_interface`. one `map` step reshapes the neutral model
+to netbox's names.
+
+`map` re-emits the whole inventory under a target schema (the one below is the
+model's schema with that single field renamed). each type needs a rule, so most
+of the spec is mechanical: seven of the eight rules are 1:1 pass-throughs, and
+only `ip-addresses` renames a field. refs are rewired automatically, so the ip
+still points at its interface even though `map` re-derives uids. save this as
+`netbox-map.yaml`:
+
+```yaml
+schema:
+  types:
+    dcim.manufacturer:
+      key: {slug: {type: slug}}
+      fields: {name: {type: string}, slug: {type: slug}}
+    dcim.device_role:
+      key: {slug: {type: slug}}
+      fields: {name: {type: string}, slug: {type: slug}}
+    dcim.device_type:
+      key: {slug: {type: slug}}
+      fields:
+        manufacturer: {type: ref, target: dcim.manufacturer}
+        model: {type: string}
+        slug: {type: slug}
+    dcim.site:
+      key: {slug: {type: slug}}
+      fields: {name: {type: string}, slug: {type: slug}}
+    dcim.device:
+      key: {name: {type: slug}}
+      fields:
+        name: {type: string}
+        site: {type: ref, target: dcim.site}
+        role: {type: ref, target: dcim.device_role}
+        device_type: {type: ref, target: dcim.device_type}
+        status: {type: string}
+    dcim.interface:
+      key: {name: {type: slug}}
+      fields:
+        name: {type: string}
+        device: {type: ref, target: dcim.device}
+        type: {type: string}
+        enabled: {type: bool}
+    ipam.prefix:
+      key: {prefix: {type: prefix}}
+      fields:
+        prefix: {type: prefix}
+        site: {type: ref, target: dcim.site}
+        description: {type: string}
+    ipam.ip_address:
+      key: {address: {type: ip_address}}
+      fields:
+        address: {type: ip_address}
+        assigned_object: {type: ref, target: dcim.interface}
+        description: {type: string}
+rules:
+  - {name: manufacturers, match: dcim.manufacturer, emit: {type: dcim.manufacturer, key: {slug: "${key.slug}"}, attrs: {name: "${attrs.name}", slug: "${attrs.slug}"}}}
+  - {name: device-roles, match: dcim.device_role, emit: {type: dcim.device_role, key: {slug: "${key.slug}"}, attrs: {name: "${attrs.name}", slug: "${attrs.slug}"}}}
+  - {name: device-types, match: dcim.device_type, emit: {type: dcim.device_type, key: {slug: "${key.slug}"}, attrs: {manufacturer: "${attrs.manufacturer}", model: "${attrs.model}", slug: "${attrs.slug}"}}}
+  - {name: sites, match: dcim.site, emit: {type: dcim.site, key: {slug: "${key.slug}"}, attrs: {name: "${attrs.name}", slug: "${attrs.slug}"}}}
+  - {name: devices, match: dcim.device, emit: {type: dcim.device, key: {name: "${key.name}"}, attrs: {name: "${attrs.name}", site: "${attrs.site}", role: "${attrs.role}", device_type: "${attrs.device_type}", status: "${attrs.status}"}}}
+  - {name: interfaces, match: dcim.interface, emit: {type: dcim.interface, key: {name: "${key.name}"}, attrs: {name: "${attrs.name}", device: "${attrs.device}", type: "${attrs.type}", enabled: "${attrs.enabled}"}}}
+  - {name: prefixes, match: ipam.prefix, emit: {type: ipam.prefix, key: {prefix: "${key.prefix}"}, attrs: {prefix: "${attrs.prefix}", site: "${attrs.site}", description: "${attrs.description}"}}}
+  - {name: ip-addresses, match: ipam.ip_address, emit: {type: ipam.ip_address, key: {address: "${key.address}"}, attrs: {address: "${attrs.address}", assigned_object: "${attrs.assigned_interface}", description: "${attrs.description}"}}}
+```
+
 ## commands
+
+three steps: reshape the model to netbox's names, plan the result, then apply.
+`plan` and `apply` never see the neutral model; they work on the mapped
+inventory, exactly as if you had authored it netbox-shaped.
 
 ```bash
 BACKEND_CONFIG=/path/to/backend-netbox.yaml
 
-alembic plan -f /path/to/basic.yaml -o /tmp/plan.json \
+# 1. reshape the neutral model to netbox's field names.
+alembic map -f /path/to/basic.yaml --spec /path/to/netbox-map.yaml -o /tmp/netbox.json
+
+# 2. plan and apply the netbox-shaped inventory.
+alembic plan -f /tmp/netbox.json -o /tmp/plan.json \
   --backend-config "$BACKEND_CONFIG"
 
 alembic apply -p /tmp/plan.json \
@@ -202,6 +290,6 @@ alembic apply -p /tmp/plan.json \
 
 ## notes
 
-- use uid strings to reference other objects.
-- keys are used only for bootstrap or when state is missing.
-- an interface's `type` is netbox's literal field name; the adapter reads and writes it verbatim. to carry it in your model under a different name (e.g. `if_type`), rename `type` in an `alembic map` spec rather than declaring the renamed field in the inventory.
+- reference other objects by their uid string; keys are used only for bootstrap or when state is missing.
+- a field you already name the same as netbox (like the interface's `type` here) needs only a 1:1 pass-through rule; the rename is the exception, not the rule.
+- because `map` re-derives each uid from its `(type, key)`, that identity stays stable across runs even though the mapped uids differ from the ones you authored.
