@@ -104,6 +104,21 @@ pub fn run_builtin(adapter: &[String], timeout: Duration) -> Vec<Outcome> {
             "read",
             Expectation::MustSucceed,
         ),
+        check(
+            adapter,
+            timeout,
+            "protocol/preview-schema-empty",
+            &request_bytes(&json!({
+                "version": version,
+                "setup": {},
+                "method": "preview_schema",
+                "schema": { "types": {} }
+            })),
+            "preview_schema",
+            // a conformant adapter answers preview_schema, either with a report or
+            // a null result ("cannot preview"); both count as success.
+            Expectation::MustSucceed,
+        ),
     ]
 }
 

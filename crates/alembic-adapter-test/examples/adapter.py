@@ -63,6 +63,22 @@ def main():
                 },
             }
         )
+    elif method == "preview_schema":
+        # preview mirrors ensure_schema without writing: report what it would
+        # provision. (an adapter that cannot preview answers {"ok": True,
+        # "result": null} instead.)
+        types = request.get("schema", {}).get("types", {})
+        respond(
+            {
+                "ok": True,
+                "result": {
+                    "created_fields": [],
+                    "created_tags": [],
+                    "created_object_types": list(types.keys()),
+                    "created_object_fields": [],
+                },
+            }
+        )
     else:
         respond({"ok": False, "error": f"unknown method {method}"})
 

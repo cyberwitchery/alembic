@@ -1,0 +1,28 @@
+{
+  "name": "preview schema for one type",
+  "request": {
+    "version": 1,
+    "setup": {},
+    "method": "preview_schema",
+    "schema": {
+      "types": {
+        "dcim.site": {
+          "key": { "site": { "type": "slug", "required": false, "nullable": false } },
+          "fields": {
+            "name": { "type": "string", "required": false, "nullable": false },
+            "slug": { "type": "slug", "required": false, "nullable": false }
+          }
+        }
+      }
+    }
+  },
+  "expect": {
+    "ok": true,
+    "result": {
+      "created_fields": [],
+      "created_tags": [],
+      "created_object_types": ["dcim.site"],
+      "created_object_fields": []
+    }
+  }
+}

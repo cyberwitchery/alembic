@@ -165,6 +165,38 @@ response:
 }
 ```
 
+### preview_schema
+
+the host calls this at plan time to show what `ensure_schema` would provision,
+without writing anything. return the same `ProvisionReport` shape `ensure_schema`
+would, or a `null` result if the adapter cannot preview (which the host reports as
+`schema preview: unavailable for this backend`).
+
+request:
+
+```json
+{
+  "version": 1,
+  "setup": {},
+  "method": "preview_schema",
+  "schema": { "types": { /* alembic schema */ } }
+}
+```
+
+response (a report, or `"result": null` when preview is unsupported):
+
+```json
+{
+  "ok": true,
+  "result": {
+    "created_fields": [],
+    "created_tags": [],
+    "created_object_types": ["dcim.site"],
+    "created_object_fields": []
+  }
+}
+```
+
 ### errors
 
 when the adapter fails, respond with `ok: false` and still exit `0`. a non-zero
