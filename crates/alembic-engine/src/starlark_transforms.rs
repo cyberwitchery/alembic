@@ -265,6 +265,19 @@ mod tests {
     }
 
     #[test]
+    fn invalid_source_fails_to_parse() {
+        let err = StarlarkTransforms::compile("def f(", "test", None).unwrap_err();
+        assert!(err.to_string().contains("parse starlark"), "{err:#}");
+    }
+
+    #[test]
+    fn module_level_failure_surfaces_from_eval() {
+        let err = StarlarkTransforms::compile("fail(\"boom\")\n", "test", None).unwrap_err();
+        assert!(err.to_string().contains("evaluate starlark"), "{err:#}");
+        assert!(format!("{err:#}").contains("boom"), "{err:#}");
+    }
+
+    #[test]
     fn load_requires_a_base_dir() {
         let err =
             StarlarkTransforms::compile("load(\"lib.star\", \"f\")\n", "test", None).unwrap_err();

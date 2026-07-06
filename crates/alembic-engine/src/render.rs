@@ -1327,6 +1327,19 @@ uid:
         }
 
         #[test]
+        fn builtin_output_feeds_user_transform_as_a_string() {
+            // ${x|upper|kind}: the built-in coerces the numeric var to a string
+            // (apply_placeholder_typed wraps a built-in result as a json string),
+            // so the downstream user transform sees a string, not the number 42.
+            let transforms = registry("def kind(v):\n    return type(v)\n");
+            let mut vars = BTreeMap::new();
+            vars.insert("x".to_string(), JsonValue::Number(42.into()));
+            let rendered =
+                render_template("${x|upper|kind}", &user_ctx(&vars, &transforms), "attrs").unwrap();
+            assert_eq!(rendered, "string");
+        }
+
+        #[test]
         fn typed_return_survives_in_attrs_mode() {
             let transforms = registry("def wrap(v):\n    return {\"v\": [v, True]}\n");
             let vars = string_var("a");
@@ -1389,6 +1402,24 @@ uid:
             )
             .unwrap_err();
             assert!(err.to_string().contains("must be a scalar"), "{err:#}");
+        }
+
+        #[test]
+        fn null_user_return_errors_in_string_mode() {
+            // a user transform returning None yields json null, which has no
+            // scalar string form: coerce_to_string must reject it rather than
+            // render an empty or `null` string.
+            let transforms = registry("def nullify(v):\n    return None\n");
+            let vars = string_var("a");
+            let err = render_string_value(
+                "${x|nullify}",
+                &user_ctx(&vars, &transforms),
+                "key.slug",
+                false,
+                TransformedOutput::String,
+            )
+            .unwrap_err();
+            assert!(err.to_string().contains("is null"), "{err:#}");
         }
 
         #[test]
