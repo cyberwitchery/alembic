@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- infrahub adapter: resolve a desired key's `ref`/`list_ref` fields to backend ids before matching it against an existing object, so a ref-keyed type (interfaces, cables, ip assignments) finds its existing object instead of never matching; most severely, a genuinely failing delete of such an object is no longer swallowed and reported as success
 - netbox adapter: `plan`'s schema preview rejects an invalid custom-object field name (outside `[A-Za-z0-9_]`) at plan time, matching what `apply` already enforces, instead of reporting a field creation `apply` then refuses
 
 ## [0.6.0] - 2026-07-05

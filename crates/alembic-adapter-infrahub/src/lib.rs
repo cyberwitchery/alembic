@@ -255,7 +255,9 @@ impl InfrahubAdapter {
                 // object; treat a matching existing object as success, otherwise
                 // surface the original error.
                 let key = build_key_from_schema(type_schema, &desired.attrs)?;
-                if let Ok(Some(existing)) = self.find_backend_id(type_name, type_schema, &key).await
+                if let Ok(Some(existing)) = self
+                    .find_backend_id(type_name, type_schema, &key, resolved)
+                    .await
                 {
                     tracing::warn!(
                         type_name = %type_name,
@@ -323,7 +325,8 @@ impl InfrahubAdapter {
             id.clone()
         } else {
             let key = build_key_from_schema(type_schema, &desired.attrs)?;
-            self.lookup_backend_id(type_name, type_schema, &key).await?
+            self.lookup_backend_id(type_name, type_schema, &key, resolved)
+                .await?
         };
 
         let mut data = build_input(&desired.attrs, type_schema, resolved)?;
@@ -374,7 +377,8 @@ impl InfrahubAdapter {
         } else if let Some(BackendId::String(id)) = resolved.get(&uid) {
             Some(id.clone())
         } else {
-            self.find_backend_id(type_name, type_schema, key).await?
+            self.find_backend_id(type_name, type_schema, key, resolved)
+                .await?
         };
 
         // no object with this key means it is already gone; the delete is a no-op.
@@ -398,7 +402,10 @@ impl InfrahubAdapter {
         {
             // the object may have been removed already (e.g. by a prior run); tolerate
             // that, but surface any error where the object is still present.
-            match self.find_backend_id(type_name, type_schema, key).await {
+            match self
+                .find_backend_id(type_name, type_schema, key, resolved)
+                .await
+            {
                 Ok(None) => {
                     tracing::warn!(type_name = %type_name, "delete target already gone");
                 }
@@ -420,14 +427,16 @@ impl InfrahubAdapter {
         type_name: &TypeName,
         type_schema: &alembic_core::TypeSchema,
         key: &Key,
+        resolved: &BTreeMap<Uid, BackendId>,
     ) -> Result<Option<String>> {
+        let target_key = key_in_backend_id_space(type_schema, key, resolved)?;
         let schema_info = self.load_schema_info().await?;
         let objects = self
             .read_type_objects(&schema_info, type_name, type_schema)
             .await?;
         for (backend_id, attrs) in objects {
             let obj_key = build_key_from_schema(type_schema, &attrs)?;
-            if obj_key == *key {
+            if obj_key == target_key {
                 if let BackendId::String(id) = backend_id {
                     return Ok(Some(id));
                 }
@@ -441,8 +450,9 @@ impl InfrahubAdapter {
         type_name: &TypeName,
         type_schema: &alembic_core::TypeSchema,
         key: &Key,
+        resolved: &BTreeMap<Uid, BackendId>,
     ) -> Result<String> {
-        self.find_backend_id(type_name, type_schema, key)
+        self.find_backend_id(type_name, type_schema, key, resolved)
             .await?
             .ok_or_else(|| {
                 let key_repr = serde_json::to_string(key).unwrap_or_default();
@@ -1864,6 +1874,36 @@ fn build_input(
     Ok(Value::Object(map))
 }
 
+/// resolve a key's relationship fields from canonical uids to backend ids, so it
+/// can be compared against a key built from observed attrs, whose relationship
+/// fields are still backend ids (see `read_type_objects`). scalar key fields pass
+/// through unchanged. a ref target with no resolved backend id surfaces as the
+/// shared `MissingRef` error, which the callers propagate rather than mis-handle.
+fn key_in_backend_id_space(
+    type_schema: &alembic_core::TypeSchema,
+    key: &Key,
+    resolved: &BTreeMap<Uid, BackendId>,
+) -> Result<Key> {
+    let mut map = BTreeMap::new();
+    for (field, value) in key.iter() {
+        let field_schema = type_schema
+            .key
+            .get(field)
+            .ok_or_else(|| anyhow!("missing schema for key field {field}"))?;
+        let resolved_value = resolve_value_for_type(
+            &field_schema.r#type,
+            value.clone(),
+            resolved,
+            |id| match id {
+                BackendId::String(s) => Value::String(s.clone()),
+                BackendId::Int(n) => Value::String(n.to_string()),
+            },
+        )?;
+        map.insert(field.clone(), resolved_value);
+    }
+    Ok(Key::from(map))
+}
+
 fn validate_value(field: &str, field_type: &FieldType, value: &Value) -> Result<()> {
     if value.is_null() {
         return Ok(());
@@ -3128,10 +3168,126 @@ schema { query: Query }
         );
         let key = Key::from(BTreeMap::from([("name".to_string(), json!("Site Z"))]));
         let id = adapter
-            .lookup_backend_id(&TypeName::new("dcim.site"), &type_schema, &key)
+            .lookup_backend_id(
+                &TypeName::new("dcim.site"),
+                &type_schema,
+                &key,
+                &BTreeMap::new(),
+            )
             .await
             .unwrap();
         assert_eq!(id, "site-42");
+    }
+
+    #[test]
+    fn key_in_backend_id_space_resolves_ref_key_field() {
+        // a key whose fields are a ref (device) and a scalar (name). the ref must
+        // resolve from its canonical uid to the backend id, matching what an
+        // observed object's attrs carry; the scalar passes through unchanged.
+        let type_schema = type_schema(
+            vec![
+                (
+                    "device",
+                    field_schema(
+                        FieldType::Ref {
+                            target: "dcim.device".to_string(),
+                        },
+                        true,
+                    ),
+                ),
+                ("name", field_schema(FieldType::String, true)),
+            ],
+            vec![],
+        );
+
+        let uid_device = Uid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
+        let mut resolved = BTreeMap::new();
+        resolved.insert(uid_device, BackendId::String("dev-1".to_string()));
+
+        let key = Key::from(BTreeMap::from([
+            ("device".to_string(), json!(uid_device.to_string())),
+            ("name".to_string(), json!("eth0")),
+        ]));
+
+        // the same key as it is built from an observed object, whose ref field
+        // already holds the bare backend id.
+        let observed_attrs = JsonMap::from(BTreeMap::from([
+            ("device".to_string(), json!("dev-1")),
+            ("name".to_string(), json!("eth0")),
+        ]));
+        let expected = build_key_from_schema(&type_schema, &observed_attrs).unwrap();
+
+        let resolved_key = key_in_backend_id_space(&type_schema, &key, &resolved).unwrap();
+        assert_eq!(resolved_key, expected);
+        // the raw desired-uid key does not equal the observed-id key: this is the
+        // mismatch the pre-fix direct comparison hit.
+        assert_ne!(key, expected);
+    }
+
+    #[tokio::test]
+    async fn find_backend_id_resolves_ref_keyed_type() {
+        // a type keyed partly by a ref field (parent). the observed object carries
+        // the parent as a backend id; the desired key carries it as a canonical
+        // uid. find_backend_id must resolve the key before comparing, otherwise it
+        // never matches the existing object (and, for deletes, swallows a real
+        // delete error as "already gone").
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/schema.graphql");
+            then.status(200).body(GRAPHQL_SCHEMA);
+        });
+        server.mock(|when, then| {
+            when.method(POST).path("/graphql").body_includes("DcimSite");
+            then.status(200).json_body(json!({
+                "data": {
+                    "DcimSite": {
+                        "count": 1,
+                        "edges": [
+                            {
+                                "node": {
+                                    "id": "site-42",
+                                    "hfid": "site-42",
+                                    "name": { "value": "Site Z" },
+                                    "parent": { "id": "parent-7", "kind": "DcimSite" }
+                                }
+                            }
+                        ]
+                    }
+                },
+                "errors": []
+            }));
+        });
+
+        let adapter = InfrahubAdapter::new(&server.base_url(), "token", None).unwrap();
+        let type_schema = type_schema(
+            vec![
+                ("name", field_schema(FieldType::String, true)),
+                (
+                    "parent",
+                    field_schema(
+                        FieldType::Ref {
+                            target: "dcim.site".to_string(),
+                        },
+                        true,
+                    ),
+                ),
+            ],
+            vec![],
+        );
+
+        let uid_parent = Uid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
+        let key = Key::from(BTreeMap::from([
+            ("name".to_string(), json!("Site Z")),
+            ("parent".to_string(), json!(uid_parent.to_string())),
+        ]));
+        let mut resolved = BTreeMap::new();
+        resolved.insert(uid_parent, BackendId::String("parent-7".to_string()));
+
+        let id = adapter
+            .find_backend_id(&TypeName::new("dcim.site"), &type_schema, &key, &resolved)
+            .await
+            .unwrap();
+        assert_eq!(id, Some("site-42".to_string()));
     }
 
     // characterization tests pinning the empty-list vs absent-single asymmetry
