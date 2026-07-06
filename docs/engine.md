@@ -52,6 +52,8 @@ diffing is **additive-only**: only fields declared in your desired inventory are
 - to stop managing a field, set it to `null` in your `attrs` (sends a null patch to the backend). simply removing it from your inventory has no effect on the backend.
 - this is intentional: you can layer alembic alongside manual backend edits on fields you do not declare.
 
+comparison is type-aware: for a field declared `int` or `float`, values are compared by numeric value (and `list`/`map` fields elementwise), so a backend that returns `1.0` or `"1"` for an int you wrote as `1` does not produce a perpetual update. every other type compares exactly.
+
 ## import
 
 import reads backend state via the adapter and emits a canonical inventory:

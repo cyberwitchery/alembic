@@ -41,7 +41,8 @@ pub fn plan(
             });
 
         if let Some(obs) = observed_object {
-            let changes = diff_object(obs, object);
+            let type_schema = schema.types.get(object.type_name.as_str());
+            let changes = diff_object(obs, object, type_schema);
             if !changes.is_empty() {
                 ops.push(Op::Update {
                     uid: object.uid,
@@ -93,12 +94,24 @@ pub fn plan(
     plan
 }
 
-/// compute field-level diffs for attrs.
-fn diff_attrs(existing: &JsonMap, desired: &JsonMap) -> Vec<FieldChange> {
+/// compute field-level diffs for attrs. `type_schema` drives type-aware value
+/// comparison so a field's representation (int vs float, numeric string) does
+/// not produce a spurious update; an unknown field falls back to raw equality.
+fn diff_attrs(
+    existing: &JsonMap,
+    desired: &JsonMap,
+    type_schema: Option<&TypeSchema>,
+) -> Vec<FieldChange> {
     let mut changes = Vec::new();
     for (field, to) in desired.iter() {
         let from = existing.get(field).cloned().unwrap_or(Value::Null);
-        if from != *to {
+        let field_type = type_schema.and_then(|ts| {
+            ts.fields
+                .get(field)
+                .or_else(|| ts.key.get(field))
+                .map(|fs| &fs.r#type)
+        });
+        if !field_values_equal(field_type, &from, to) {
             changes.push(FieldChange {
                 field: field.clone(),
                 from,
@@ -109,8 +122,77 @@ fn diff_attrs(existing: &JsonMap, desired: &JsonMap) -> Vec<FieldChange> {
     changes
 }
 
-fn diff_object(existing: &crate::types::ObservedObject, desired: &Object) -> Vec<FieldChange> {
-    diff_attrs(&existing.attrs, &desired.attrs)
+fn diff_object(
+    existing: &crate::types::ObservedObject,
+    desired: &Object,
+    type_schema: Option<&TypeSchema>,
+) -> Vec<FieldChange> {
+    diff_attrs(&existing.attrs, &desired.attrs, type_schema)
+}
+
+/// whether observed and desired values are equal for a field of the given
+/// declared type. numeric fields compare by value, so a backend that returns
+/// `1.0` (or `"1"`) for an int the inventory writes as `1` does not produce a
+/// perpetual update; list/map fields compare elementwise under the item/value
+/// type. every other type, and an unknown field, compares structurally.
+fn field_values_equal(field_type: Option<&FieldType>, from: &Value, to: &Value) -> bool {
+    match field_type {
+        Some(FieldType::Int) => match (value_as_int(from), value_as_int(to)) {
+            (Some(a), Some(b)) => a == b,
+            _ => from == to,
+        },
+        Some(FieldType::Float) => match (value_as_float(from), value_as_float(to)) {
+            (Some(a), Some(b)) => a == b,
+            _ => from == to,
+        },
+        Some(FieldType::List { item }) => match (from, to) {
+            (Value::Array(a), Value::Array(b)) => {
+                a.len() == b.len()
+                    && a.iter()
+                        .zip(b)
+                        .all(|(x, y)| field_values_equal(Some(item), x, y))
+            }
+            _ => from == to,
+        },
+        Some(FieldType::Map { value }) => match (from, to) {
+            (Value::Object(a), Value::Object(b)) => {
+                a.len() == b.len()
+                    && a.iter().all(|(k, x)| {
+                        b.get(k)
+                            .is_some_and(|y| field_values_equal(Some(value), x, y))
+                    })
+            }
+            _ => from == to,
+        },
+        _ => from == to,
+    }
+}
+
+/// interpret a value as an integer (json number or numeric string). `i128`
+/// covers the full `u64`/`i64` range exactly, unlike an `f64` round-trip.
+fn value_as_int(value: &Value) -> Option<i128> {
+    match value {
+        Value::Number(n) => n
+            .as_u64()
+            .map(i128::from)
+            .or_else(|| n.as_i64().map(i128::from))
+            .or_else(|| {
+                n.as_f64()
+                    .filter(|f| f.is_finite() && f.fract() == 0.0)
+                    .map(|f| f as i128)
+            }),
+        Value::String(s) => s.trim().parse::<i128>().ok(),
+        _ => None,
+    }
+}
+
+/// interpret a value as a float (json number or numeric string).
+fn value_as_float(value: &Value) -> Option<f64> {
+    match value {
+        Value::Number(n) => n.as_f64(),
+        Value::String(s) => s.trim().parse::<f64>().ok(),
+        _ => None,
+    }
 }
 
 /// stable sort key for desired objects.
@@ -354,15 +436,87 @@ mod tests {
     #[test]
     fn diff_attrs_identical_maps() {
         let attrs = make_attrs(&[("name", json!("FRA1"))]);
-        let changes = diff_attrs(&attrs, &attrs);
+        let changes = diff_attrs(&attrs, &attrs, None);
         assert!(changes.is_empty());
+    }
+
+    fn int_field_schema(name: &str) -> TypeSchema {
+        TypeSchema {
+            key: BTreeMap::new(),
+            fields: BTreeMap::from([(name.to_string(), field(FieldType::Int))]),
+        }
+    }
+
+    #[test]
+    fn diff_attrs_int_field_ignores_int_float_representation() {
+        let existing = make_attrs(&[("count", json!(3.0))]);
+        let desired = make_attrs(&[("count", json!(3))]);
+        let changes = diff_attrs(&existing, &desired, Some(&int_field_schema("count")));
+        assert!(changes.is_empty(), "{changes:?}");
+    }
+
+    #[test]
+    fn diff_attrs_int_field_ignores_numeric_string() {
+        let existing = make_attrs(&[("count", json!("3"))]);
+        let desired = make_attrs(&[("count", json!(3))]);
+        let changes = diff_attrs(&existing, &desired, Some(&int_field_schema("count")));
+        assert!(changes.is_empty(), "{changes:?}");
+    }
+
+    #[test]
+    fn diff_attrs_int_field_still_detects_real_change() {
+        let existing = make_attrs(&[("count", json!(3))]);
+        let desired = make_attrs(&[("count", json!(4))]);
+        let changes = diff_attrs(&existing, &desired, Some(&int_field_schema("count")));
+        assert_eq!(changes.len(), 1);
+    }
+
+    #[test]
+    fn diff_attrs_without_schema_compares_raw() {
+        // no type info: 3.0 vs 3 differ structurally (unchanged behavior).
+        let existing = make_attrs(&[("count", json!(3.0))]);
+        let desired = make_attrs(&[("count", json!(3))]);
+        let changes = diff_attrs(&existing, &desired, None);
+        assert_eq!(changes.len(), 1);
+    }
+
+    #[test]
+    fn diff_attrs_float_field_ignores_int_float_representation() {
+        let ts = TypeSchema {
+            key: BTreeMap::new(),
+            fields: BTreeMap::from([("ratio".to_string(), field(FieldType::Float))]),
+        };
+        let existing = make_attrs(&[("ratio", json!(2))]);
+        let desired = make_attrs(&[("ratio", json!(2.0))]);
+        let changes = diff_attrs(&existing, &desired, Some(&ts));
+        assert!(changes.is_empty(), "{changes:?}");
+    }
+
+    #[test]
+    fn diff_attrs_list_of_int_ignores_representation() {
+        let ts = TypeSchema {
+            key: BTreeMap::new(),
+            fields: BTreeMap::from([(
+                "ports".to_string(),
+                field(FieldType::List {
+                    item: Box::new(FieldType::Int),
+                }),
+            )]),
+        };
+        let existing = make_attrs(&[("ports", json!([1.0, 2.0]))]);
+        let desired = make_attrs(&[("ports", json!([1, 2]))]);
+        let changes = diff_attrs(&existing, &desired, Some(&ts));
+        assert!(changes.is_empty(), "{changes:?}");
+        // a genuine element change is still detected.
+        let desired2 = make_attrs(&[("ports", json!([1, 9]))]);
+        assert_eq!(diff_attrs(&existing, &desired2, Some(&ts)).len(), 1);
     }
 
     #[test]
     fn diff_attrs_field_changed() {
         let existing = make_attrs(&[("name", json!("FRA1"))]);
         let desired = make_attrs(&[("name", json!("FRA2"))]);
-        let changes = diff_attrs(&existing, &desired);
+        let changes = diff_attrs(&existing, &desired, None);
         assert_eq!(changes.len(), 1);
         assert_eq!(changes[0].field, "name");
         assert_eq!(changes[0].from, json!("FRA1"));
@@ -373,7 +527,7 @@ mod tests {
     fn diff_attrs_field_added() {
         let existing = make_attrs(&[]);
         let desired = make_attrs(&[("name", json!("FRA1"))]);
-        let changes = diff_attrs(&existing, &desired);
+        let changes = diff_attrs(&existing, &desired, None);
         assert_eq!(changes.len(), 1);
         assert_eq!(changes[0].field, "name");
         assert_eq!(changes[0].from, json!(null));
@@ -384,7 +538,7 @@ mod tests {
     fn diff_attrs_field_removed_in_desired_is_ignored() {
         let existing = make_attrs(&[("name", json!("FRA1")), ("extra", json!(true))]);
         let desired = make_attrs(&[("name", json!("FRA1"))]);
-        let changes = diff_attrs(&existing, &desired);
+        let changes = diff_attrs(&existing, &desired, None);
         assert!(changes.is_empty());
     }
 
@@ -392,7 +546,7 @@ mod tests {
     fn diff_attrs_multiple_changes() {
         let existing = make_attrs(&[("a", json!(1)), ("b", json!(2))]);
         let desired = make_attrs(&[("a", json!(10)), ("b", json!(20))]);
-        let changes = diff_attrs(&existing, &desired);
+        let changes = diff_attrs(&existing, &desired, None);
         assert_eq!(changes.len(), 2);
         let fields: Vec<&str> = changes.iter().map(|c| c.field.as_str()).collect();
         assert!(fields.contains(&"a"));

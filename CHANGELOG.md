@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- engine: compare attrs by declared field type when diffing, so an `int`/`float` field whose backend representation differs from the inventory's (int vs float, or a numeric string) no longer plans a perpetual no-op update; `list`/`map` fields compare elementwise under their item/value type, every other type compares exactly, and an undeclared field falls back to raw comparison
 - engine: gate destructive schema provisioning behind `--allow-delete`. `apply` and `plan --provision` previously deleted alembic-owned custom object types/fields the inventory no longer declared with no gate, even though object deletes required the flag; deleting a custom object type cascades to its objects on the backend. both paths now refuse those deletions (via the read-only schema preview) unless `--allow-delete` is given, matching the object-delete gate
 - engine: index inventory uid source-lines in a single pass instead of rescanning the whole file per object, so loading is linear in file size; a 50k-object inventory that previously could not `validate` in ten minutes now loads in under a second. also resolves a uid to its own line by exact value rather than substring, so a uid that is a prefix of another no longer points at the wrong line
 - engine: journal hashes no longer depend on the rust version, so a partially-applied plan can be resumed by a different build; a journal from an older version is orphaned once
