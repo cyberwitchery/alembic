@@ -197,7 +197,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for bin in alembic-cli alembic-adapter-test; do
+          for bin in alembic alembic-adapter-test; do
             dir="${bin}-${GITHUB_REF_NAME}-${{ matrix.target }}"
             mkdir "$dir"
             cp "target/ci/${{ matrix.target }}/release/${bin}" "$dir/"

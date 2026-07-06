@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- cli: the installed binary is now `alembic` (not `alembic-cli`), matching every doc and its own `--help`; the crate is still published as `alembic-cli`. release tarballs are renamed to `alembic-<version>-<target>.tar.gz`
+- cli: add `--version`, and help text for every subcommand and flag (`--help` was previously almost blank)
 - engine: the local state store now takes an exclusive advisory lock (a sidecar `<state>.lock` file) for a run's whole lifetime, so two concurrent runs against the same `state.json` can no longer both load it and race to save, silently clobbering each other's uid->backend-id mappings; a second run fails fast with `another alembic run holds the state lock`. the postgres backend already had optimistic locking. the lock is created at load, so a state path whose parent cannot be a directory now errors at load rather than save
 - engine: compare attrs by declared field type when diffing, so an `int`/`float` field whose backend representation differs from the inventory's (int vs float, or a numeric string) no longer plans a perpetual no-op update; `list`/`map` fields compare elementwise under their item/value type, every other type compares exactly, and an undeclared field falls back to raw comparison
 - engine: gate destructive schema provisioning behind `--allow-delete`. `apply` and `plan --provision` previously deleted alembic-owned custom object types/fields the inventory no longer declared with no gate, even though object deletes required the flag; deleting a custom object type cascades to its objects on the backend. both paths now refuse those deletions (via the read-only schema preview) unless `--allow-delete` is given, matching the object-delete gate

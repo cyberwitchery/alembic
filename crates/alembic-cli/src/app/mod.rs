@@ -34,7 +34,7 @@ use std::path::Path;
 
 /// top-level cli definition.
 #[derive(Parser)]
-#[command(name = "alembic")]
+#[command(name = "alembic", version)]
 #[command(
     about = "Data-model-first converger + loader for DCIM/IPAM (YAML/JSON inventories in, JSON plans out)"
 )]
@@ -56,39 +56,58 @@ pub(crate) struct Cli {
 /// cli subcommands.
 #[derive(Subcommand)]
 enum Command {
+    /// validate an inventory against its schema, without touching a backend.
     Validate {
+        /// inventory file to validate (yaml or json).
         #[arg(short = 'f', long)]
         file: PathBuf,
     },
+    /// compute a deterministic plan (desired vs observed) and write it as json.
     Plan {
+        /// inventory file to plan from (yaml or json).
         #[arg(short = 'f', long)]
         file: PathBuf,
+        /// where to write the json plan; required unless --report or --dry-run.
         #[arg(short = 'o', long, required_unless_present_any = ["report", "dry_run"])]
         output: Option<PathBuf>,
+        /// backend name (netbox, nautobot, infrahub, generic, peeringdb, django,
+        /// external); credentials come from the environment.
         #[arg(long)]
         backend: Option<String>,
+        /// path to a backend config file instead of --backend plus env vars.
         #[arg(long)]
         backend_config: Option<PathBuf>,
+        /// run adapter schema provisioning (ensure_schema) now, before observing;
+        /// gated by --allow-delete when it would delete schema.
         #[arg(long, default_value_t = false, conflicts_with = "dry_run")]
         provision: bool,
+        /// print the raw json plan to stdout instead of writing it to a file.
         #[arg(long, default_value_t = false)]
         dry_run: bool,
         /// print a read-only drift report (desired vs observed) and exit without
         /// writing a plan file or saving state. mutually exclusive with --dry-run.
         #[arg(long, default_value_t = false, conflicts_with = "dry_run")]
         report: bool,
+        /// allow the plan to include deletes (objects, and destructive schema
+        /// provisioning) for objects present on the backend but not declared.
         #[arg(long, default_value_t = false)]
         allow_delete: bool,
     },
+    /// apply a json plan to a backend (the only command that writes).
     Apply {
+        /// json plan file produced by `alembic plan`.
         #[arg(short = 'p', long)]
         plan: PathBuf,
+        /// backend name; credentials come from the environment.
         #[arg(long)]
         backend: Option<String>,
+        /// path to a backend config file instead of --backend plus env vars.
         #[arg(long)]
         backend_config: Option<PathBuf>,
+        /// allow delete ops (object and destructive schema deletes) in the plan.
         #[arg(long, default_value_t = false)]
         allow_delete: bool,
+        /// prompt for confirmation per operation, applying only approved ops.
         #[arg(short = 'i', long, default_value_t = false)]
         interactive: bool,
     },
@@ -102,18 +121,22 @@ enum Command {
         /// map specification (target schema + rules).
         #[arg(long)]
         spec: Option<PathBuf>,
+        /// where to write the transformed json inventory.
         #[arg(short = 'o', long)]
         output: Option<PathBuf>,
     },
     /// observe a backend's live state into the data model.
     Import {
+        /// where to write the observed json inventory.
         #[arg(short = 'o', long)]
         output: PathBuf,
         /// inventory whose schema selects which types to observe.
         #[arg(short = 'f', long)]
         file: PathBuf,
+        /// backend name; credentials come from the environment.
         #[arg(long)]
         backend: Option<String>,
+        /// path to a backend config file instead of --backend plus env vars.
         #[arg(long)]
         backend_config: Option<PathBuf>,
     },

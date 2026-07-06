@@ -10,6 +10,12 @@ documentation = "https://docs.rs/alembic-cli"
 description = "Command line interface for Alembic."
 readme = "../../README.md"
 
+# the crate is published as `alembic-cli`, but the user-facing binary is `alembic`
+# (matching every doc and the cli's own `--help`).
+[[bin]]
+name = "alembic"
+path = "src/main.rs"
+
 [dependencies]
 alembic-core.workspace = true
 alembic-engine = { workspace = true, features = ["starlark"] }
