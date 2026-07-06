@@ -1,4 +1,4 @@
-use super::client::CustomObjectType;
+use super::client::{CustomObjectField, CustomObjectType};
 use super::mapping::{build_tag_inputs, custom_field_type_for_schema, slugify, tags_from_value};
 use super::registry::ObjectTypeRegistry;
 use super::state::{resolved_from_state, state_mappings};
@@ -253,7 +253,16 @@ impl Adapter for NetBoxAdapter {
         let custom_fields_by_type = self.client.fetch_custom_fields().await?;
         let custom_object_types = self.client.fetch_custom_object_types().await?;
         let custom_object_fields = self.client.fetch_custom_object_type_fields().await?;
-        let custom_objects_available = custom_object_types.is_some();
+
+        let plan = self
+            .plan_schema(
+                &registry,
+                &custom_fields_by_type,
+                custom_object_types,
+                custom_object_fields,
+                schema,
+            )
+            .await?;
 
         let mut created_fields = Vec::new();
         let created_tags = Vec::new();
@@ -262,266 +271,109 @@ impl Adapter for NetBoxAdapter {
         let mut deleted_object_types = Vec::new();
         let mut deleted_object_fields = Vec::new();
 
-        let mut custom_types_by_name: BTreeMap<String, CustomObjectType> = BTreeMap::new();
-        if let Some(types) = custom_object_types {
-            for item in types {
-                custom_types_by_name.insert(item.name.clone(), item);
+        // native custom fields on existing object types.
+        for field in &plan.native_fields {
+            if self
+                .create_custom_field(&field.type_name, field.field_name, field.field_schema)
+                .await?
+            {
+                created_fields.push(format!("{}.{}", field.type_name, field.field_name));
             }
         }
 
-        let mut custom_fields_by_type_id: BTreeMap<u64, BTreeMap<String, u64>> = BTreeMap::new();
-        if let Some(fields) = custom_object_fields {
-            for field in fields {
-                custom_fields_by_type_id
-                    .entry(field.custom_object_type)
-                    .or_default()
-                    .insert(field.name, field.id);
-            }
-        }
-
-        let mut custom_schema_types: Vec<(TypeName, &TypeSchema)> = Vec::new();
-        let mut custom_schema_type_names: BTreeSet<String> = BTreeSet::new();
-        for (type_name, type_schema) in &schema.types {
-            let type_name = TypeName::new(type_name);
-            if registry.contains_type(&type_name) {
-                let info = registry
-                    .info_for(&type_name)
-                    .ok_or_else(|| anyhow!("unsupported type {}", type_name))?;
-                if !supports_feature(&info.features, &["custom-fields"]) {
-                    continue;
-                }
-
-                let native_fields = native_fields_for_type(self, &info, type_schema).await?;
-                let existing = custom_fields_by_type
-                    .get(type_name.as_str())
-                    .cloned()
-                    .unwrap_or_default();
-
-                for (field_name, field_schema) in &type_schema.fields {
-                    if matches!(
-                        field_schema.r#type,
-                        FieldType::Ref { .. } | FieldType::ListRef { .. }
-                    ) {
-                        continue;
-                    }
-                    if native_fields.contains(field_name) || existing.contains(field_name) {
-                        continue;
-                    }
-                    if self
-                        .create_custom_field(&type_name, field_name, field_schema)
-                        .await?
-                    {
-                        created_fields.push(format!("{}.{}", type_name, field_name));
-                    }
-                }
-                continue;
-            }
-
-            custom_schema_type_names.insert(type_name.as_str().to_string());
-            custom_schema_types.push((type_name, type_schema));
-        }
-
-        let mut desired_fields_by_type_id: BTreeMap<u64, BTreeSet<String>> = BTreeMap::new();
-
-        if !custom_schema_types.is_empty() {
-            if !custom_objects_available {
-                let list = custom_schema_types
-                    .iter()
-                    .map(|(name, _)| name.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                return Err(anyhow!(
-                    "schema includes custom type(s) but netbox custom objects are not available: {list}"
-                ));
-            }
-
-            let mut custom_type_ids: BTreeMap<String, u64> = BTreeMap::new();
-            for (type_name, _) in &custom_schema_types {
-                let custom_name = custom_object_type_name(type_name);
-                let type_id = if let Some(existing) = custom_types_by_name.get(&custom_name) {
+        // resolve or create every custom object type first, registering each so a
+        // field payload can reference a sibling custom type by its resolved
+        // identity (the original interleaves type and field creation for this).
+        let mut type_ids = Vec::with_capacity(plan.object_types.len());
+        for object_type in &plan.object_types {
+            let type_id = match &object_type.existing {
+                Some(existing) => {
                     let (app_label, model) =
                         custom_object_type_parts(existing).unwrap_or_else(|| {
-                            (CUSTOM_OBJECT_APP_LABEL.to_string(), custom_name.clone())
+                            (
+                                CUSTOM_OBJECT_APP_LABEL.to_string(),
+                                object_type.custom_name.clone(),
+                            )
                         });
                     registry.insert_custom_object_type(
-                        type_name.clone(),
-                        custom_object_endpoint(&custom_name),
+                        object_type.type_name.clone(),
+                        custom_object_endpoint(&object_type.custom_name),
                         custom_object_features(),
                         app_label,
                         model,
                     );
                     existing.id
-                } else {
-                    let payload = Map::from_iter([
-                        ("name".to_string(), Value::String(custom_name.clone())),
-                        ("slug".to_string(), Value::String(custom_name.clone())),
-                        (
-                            "description".to_string(),
-                            Value::String(format!(
-                                "alembic custom object for {}",
-                                type_name.as_str()
-                            )),
-                        ),
-                        (
-                            "verbose_name_plural".to_string(),
-                            Value::String(custom_object_verbose_name_plural(type_name)),
-                        ),
-                    ]);
-                    let resource: Resource<Value> = self
-                        .client
-                        .resource("plugins/custom-objects/custom-object-types/");
-                    match resource.create(&Value::Object(payload)).await {
-                        Ok(created) => {
-                            let created_type = super::client::parse_custom_object_type(created)?;
-                            let id = created_type.id;
-                            let (app_label, model) = custom_object_type_parts(&created_type)
-                                .unwrap_or_else(|| {
-                                    (CUSTOM_OBJECT_APP_LABEL.to_string(), custom_name.clone())
-                                });
-                            registry.insert_custom_object_type(
-                                type_name.clone(),
-                                custom_object_endpoint(&custom_name),
-                                custom_object_features(),
-                                app_label,
-                                model,
-                            );
-                            custom_types_by_name.insert(custom_name.clone(), created_type);
-                            created_object_types.push(type_name.to_string());
-                            id
-                        }
-                        Err(err) => {
-                            if let Some(types) = self.client.fetch_custom_object_types().await? {
-                                if let Some(existing) =
-                                    types.into_iter().find(|item| item.name == custom_name)
-                                {
-                                    let (app_label, model) = custom_object_type_parts(&existing)
-                                        .unwrap_or_else(|| {
-                                            (
-                                                CUSTOM_OBJECT_APP_LABEL.to_string(),
-                                                custom_name.clone(),
-                                            )
-                                        });
-                                    registry.insert_custom_object_type(
-                                        type_name.clone(),
-                                        custom_object_endpoint(&custom_name),
-                                        custom_object_features(),
-                                        app_label,
-                                        model,
-                                    );
-                                    let id = existing.id;
-                                    custom_types_by_name.insert(custom_name.clone(), existing);
-                                    id
-                                } else {
-                                    return Err(err.into());
-                                }
-                            } else {
-                                return Err(err.into());
-                            }
-                        }
-                    }
-                };
-                custom_type_ids.insert(type_name.as_str().to_string(), type_id);
-            }
+                }
+                None => {
+                    self.create_custom_object_type(
+                        &mut registry,
+                        &object_type.type_name,
+                        &object_type.custom_name,
+                        &mut created_object_types,
+                    )
+                    .await?
+                }
+            };
+            type_ids.push(type_id);
+        }
 
-            for (type_name, type_schema) in custom_schema_types {
-                let Some(type_id) = custom_type_ids.get(type_name.as_str()).copied() else {
-                    return Err(anyhow!("custom object type id missing for {}", type_name));
-                };
-                let existing_fields = custom_fields_by_type_id.entry(type_id).or_default();
-                let mut provisioner = CustomObjectFieldProvisioner {
-                    adapter: self,
-                    registry: &registry,
-                    custom_object_type_id: type_id,
-                    existing_fields,
-                    created_object_fields: &mut created_object_fields,
-                    type_name: &type_name,
-                };
-                let mut desired_fields = BTreeSet::new();
-                for (field_name, field_schema) in &type_schema.key {
-                    if desired_fields.insert(field_name.clone()) {
-                        provisioner.ensure(field_name, field_schema, true).await?;
-                    }
-                }
-                for (field_name, field_schema) in &type_schema.fields {
-                    if desired_fields.insert(field_name.clone()) {
-                        provisioner.ensure(field_name, field_schema, false).await?;
-                    }
-                }
-                desired_fields_by_type_id.insert(type_id, desired_fields);
+        // create the planned fields for each custom object type. ensure reports
+        // only real creates: a create that turns out to already exist (returns
+        // false / refetches) is not reported, though the plan lists it and preview
+        // renders it — the deliberate TOCTOU divergence.
+        for (object_type, &type_id) in plan.object_types.iter().zip(&type_ids) {
+            let mut existing_fields = object_type.existing_field_ids.clone();
+            let mut provisioner = CustomObjectFieldProvisioner {
+                adapter: self,
+                registry: &registry,
+                custom_object_type_id: type_id,
+                existing_fields: &mut existing_fields,
+                created_object_fields: &mut created_object_fields,
+                type_name: &object_type.type_name,
+            };
+            for field in &object_type.fields {
+                provisioner
+                    .ensure(field.field_name, field.field_schema, field.is_key)
+                    .await?;
             }
         }
 
-        if custom_objects_available {
+        // deletes: alembic-owned custom object fields, then types, the schema no
+        // longer declares. the plan carries their backend ids; the 404 tolerance
+        // matches the original.
+        if !plan.deleted_object_fields.is_empty() || !plan.deleted_object_types.is_empty() {
             let resource_fields: Resource<Value> = self
                 .client
                 .resource("plugins/custom-objects/custom-object-type-fields/");
             let resource_types: Resource<Value> = self
                 .client
                 .resource("plugins/custom-objects/custom-object-types/");
-
-            for custom_type in custom_types_by_name.values() {
-                let Some(type_name) = alembic_custom_object_name(custom_type) else {
-                    continue;
-                };
-                let is_desired = custom_schema_type_names.contains(type_name.as_str());
-                if is_desired {
-                    let Some(existing_fields) = custom_fields_by_type_id.get(&custom_type.id)
-                    else {
-                        continue;
-                    };
-                    let desired_fields = desired_fields_by_type_id.get(&custom_type.id);
-                    for (field_name, field_id) in existing_fields {
-                        if is_reserved_custom_object_field(field_name) {
-                            continue;
-                        }
-                        if desired_fields.is_some_and(|fields| fields.contains(field_name)) {
-                            continue;
-                        }
-                        match resource_fields.delete(*field_id).await {
-                            Ok(_) => {}
-                            Err(err) if is_404_error(&err) => {
-                                tracing::warn!(
-                                    type_name = %type_name,
-                                    field = %field_name,
-                                    "custom object field already deleted"
-                                );
-                            }
-                            Err(err) => return Err(err.into()),
-                        }
-                        deleted_object_fields.push(format!("{}.{}", type_name, field_name));
+            for delete in &plan.deleted_object_fields {
+                match resource_fields.delete(delete.field_id).await {
+                    Ok(_) => {}
+                    Err(err) if is_404_error(&err) => {
+                        tracing::warn!(
+                            type_name = %delete.type_name,
+                            field = %delete.field_name,
+                            "custom object field already deleted"
+                        );
                     }
-                } else {
-                    if let Some(existing_fields) = custom_fields_by_type_id.get(&custom_type.id) {
-                        for (field_name, field_id) in existing_fields {
-                            if is_reserved_custom_object_field(field_name) {
-                                continue;
-                            }
-                            match resource_fields.delete(*field_id).await {
-                                Ok(_) => {}
-                                Err(err) if is_404_error(&err) => {
-                                    tracing::warn!(
-                                        type_name = %type_name,
-                                        field = %field_name,
-                                        "custom object field already deleted"
-                                    );
-                                }
-                                Err(err) => return Err(err.into()),
-                            }
-                            deleted_object_fields.push(format!("{}.{}", type_name, field_name));
-                        }
-                    }
-                    match resource_types.delete(custom_type.id).await {
-                        Ok(_) => {}
-                        Err(err) if is_404_error(&err) => {
-                            tracing::warn!(
-                                type_name = %type_name,
-                                "custom object type already deleted"
-                            );
-                        }
-                        Err(err) => return Err(err.into()),
-                    }
-                    deleted_object_types.push(type_name);
+                    Err(err) => return Err(err.into()),
                 }
+                deleted_object_fields.push(format!("{}.{}", delete.type_name, delete.field_name));
+            }
+            for delete in &plan.deleted_object_types {
+                match resource_types.delete(delete.type_id).await {
+                    Ok(_) => {}
+                    Err(err) if is_404_error(&err) => {
+                        tracing::warn!(
+                            type_name = %delete.type_name,
+                            "custom object type already deleted"
+                        );
+                    }
+                    Err(err) => return Err(err.into()),
+                }
+                deleted_object_types.push(delete.type_name.clone());
             }
         }
 
@@ -539,155 +391,54 @@ impl Adapter for NetBoxAdapter {
 
     /// read-only counterpart to `ensure_schema`: reports what `ensure_schema`
     /// would create and delete, from the same backend reads, writing nothing.
-    /// it reuses the identical decision predicates (native-field detection, the
-    /// custom-object-name mapping, the reserved-field skip, and the key+fields
-    /// desired set) so the preview cannot claim a change apply would not make,
-    /// nor miss one. netbox's `ensure_schema` interleaves those decisions with
-    /// its writes because it needs the created type's backend id to attach
-    /// fields; a preview needs no ids, so it can decide without writing.
+    /// both share one decision — `plan_schema` — so the preview cannot claim a
+    /// change apply would not make, nor miss one. preview renders the plan; ensure
+    /// executes it. netbox interleaves those decisions with its writes only
+    /// because attaching fields needs a created type's backend id, an execution
+    /// concern the plan keeps out of the decision.
     async fn preview_schema(&self, schema: &Schema) -> Result<Option<ProvisionReport>> {
         let registry: ObjectTypeRegistry = self.client.fetch_object_types().await?;
         let custom_fields_by_type = self.client.fetch_custom_fields().await?;
         let custom_object_types = self.client.fetch_custom_object_types().await?;
         let custom_object_fields = self.client.fetch_custom_object_type_fields().await?;
-        let custom_objects_available = custom_object_types.is_some();
+
+        let plan = self
+            .plan_schema(
+                &registry,
+                &custom_fields_by_type,
+                custom_object_types,
+                custom_object_fields,
+                schema,
+            )
+            .await?;
 
         let mut created_fields = Vec::new();
+        for field in &plan.native_fields {
+            created_fields.push(format!("{}.{}", field.type_name, field.field_name));
+        }
+
         let mut created_object_types = Vec::new();
         let mut created_object_fields = Vec::new();
-        let mut deleted_object_types = Vec::new();
-        let mut deleted_object_fields = Vec::new();
-
-        let mut custom_types_by_name: BTreeMap<String, CustomObjectType> = BTreeMap::new();
-        if let Some(types) = custom_object_types {
-            for item in types {
-                custom_types_by_name.insert(item.name.clone(), item);
+        for object_type in &plan.object_types {
+            if object_type.existing.is_none() {
+                created_object_types.push(object_type.type_name.to_string());
+            }
+            for field in &object_type.fields {
+                created_object_fields
+                    .push(format!("{}.{}", object_type.type_name, field.field_name));
             }
         }
 
-        let mut custom_field_names_by_type_id: BTreeMap<u64, BTreeSet<String>> = BTreeMap::new();
-        if let Some(fields) = custom_object_fields {
-            for field in fields {
-                custom_field_names_by_type_id
-                    .entry(field.custom_object_type)
-                    .or_default()
-                    .insert(field.name);
-            }
-        }
-
-        // native types: declared custom fields the backend lacks (same filter as
-        // ensure_schema, minus the create call).
-        let mut custom_schema_type_names: BTreeSet<String> = BTreeSet::new();
-        let mut custom_schema_types: Vec<(TypeName, &TypeSchema)> = Vec::new();
-        for (type_name, type_schema) in &schema.types {
-            let type_name = TypeName::new(type_name);
-            if registry.contains_type(&type_name) {
-                let info = registry
-                    .info_for(&type_name)
-                    .ok_or_else(|| anyhow!("unsupported type {}", type_name))?;
-                if !supports_feature(&info.features, &["custom-fields"]) {
-                    continue;
-                }
-                let native_fields = native_fields_for_type(self, &info, type_schema).await?;
-                let existing = custom_fields_by_type
-                    .get(type_name.as_str())
-                    .cloned()
-                    .unwrap_or_default();
-                for (field_name, field_schema) in &type_schema.fields {
-                    if matches!(
-                        field_schema.r#type,
-                        FieldType::Ref { .. } | FieldType::ListRef { .. }
-                    ) {
-                        continue;
-                    }
-                    if native_fields.contains(field_name) || existing.contains(field_name) {
-                        continue;
-                    }
-                    created_fields.push(format!("{}.{}", type_name, field_name));
-                }
-                continue;
-            }
-            custom_schema_type_names.insert(type_name.as_str().to_string());
-            custom_schema_types.push((type_name, type_schema));
-        }
-
-        // custom object types: which would be created, and their would-be fields
-        // (skipping reserved and already-existing fields, as the provisioner does).
-        if !custom_schema_types.is_empty() {
-            if !custom_objects_available {
-                let list = custom_schema_types
-                    .iter()
-                    .map(|(name, _)| name.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                return Err(anyhow!(
-                    "schema includes custom type(s) but netbox custom objects are not available: {list}"
-                ));
-            }
-            for (type_name, type_schema) in &custom_schema_types {
-                let custom_name = custom_object_type_name(type_name);
-                let existing_type = custom_types_by_name.get(&custom_name);
-                let existing_fields = existing_type
-                    .and_then(|t| custom_field_names_by_type_id.get(&t.id))
-                    .cloned()
-                    .unwrap_or_default();
-                if existing_type.is_none() {
-                    created_object_types.push(type_name.to_string());
-                }
-                let mut seen = BTreeSet::new();
-                for field_name in type_schema.key.keys().chain(type_schema.fields.keys()) {
-                    if !seen.insert(field_name.clone()) {
-                        continue;
-                    }
-                    if !custom_object_field_needs_create(
-                        field_name,
-                        existing_fields.contains(field_name),
-                    )? {
-                        continue;
-                    }
-                    created_object_fields.push(format!("{}.{}", type_name, field_name));
-                }
-            }
-        }
-
-        // delete branch: alembic-owned custom types/fields the schema no longer
-        // declares (same reserved-field skip and key+fields desired set).
-        if custom_objects_available {
-            for custom_type in custom_types_by_name.values() {
-                let Some(type_name) = alembic_custom_object_name(custom_type) else {
-                    continue;
-                };
-                let existing_fields = custom_field_names_by_type_id.get(&custom_type.id);
-                if custom_schema_type_names.contains(type_name.as_str()) {
-                    let desired: BTreeSet<String> = schema
-                        .types
-                        .get(type_name.as_str())
-                        .map(|ts| ts.key.keys().chain(ts.fields.keys()).cloned().collect())
-                        .unwrap_or_default();
-                    if let Some(existing) = existing_fields {
-                        for field_name in existing {
-                            if is_reserved_custom_object_field(field_name) {
-                                continue;
-                            }
-                            if desired.contains(field_name) {
-                                continue;
-                            }
-                            deleted_object_fields.push(format!("{}.{}", type_name, field_name));
-                        }
-                    }
-                } else {
-                    if let Some(existing) = existing_fields {
-                        for field_name in existing {
-                            if is_reserved_custom_object_field(field_name) {
-                                continue;
-                            }
-                            deleted_object_fields.push(format!("{}.{}", type_name, field_name));
-                        }
-                    }
-                    deleted_object_types.push(type_name);
-                }
-            }
-        }
+        let deleted_object_fields = plan
+            .deleted_object_fields
+            .iter()
+            .map(|delete| format!("{}.{}", delete.type_name, delete.field_name))
+            .collect();
+        let deleted_object_types = plan
+            .deleted_object_types
+            .iter()
+            .map(|delete| delete.type_name.clone())
+            .collect();
 
         Ok(Some(ProvisionReport {
             created_fields,
@@ -1003,6 +754,255 @@ impl NetBoxAdapter {
                 } else {
                     Err(err.into())
                 }
+            }
+        }
+    }
+
+    /// decides what `ensure_schema` would create and delete, from the four
+    /// backend reads and the schema, without writing. shared by `ensure_schema`
+    /// (which executes it) and `preview_schema` (which renders it), so the two
+    /// cannot drift. `native_fields_for_type` still reads a sample object per
+    /// native type; no write happens here.
+    async fn plan_schema<'a>(
+        &self,
+        registry: &ObjectTypeRegistry,
+        custom_fields_by_type: &BTreeMap<String, BTreeSet<String>>,
+        custom_object_types: Option<Vec<CustomObjectType>>,
+        custom_object_fields: Option<Vec<CustomObjectField>>,
+        schema: &'a Schema,
+    ) -> Result<ProvisionPlan<'a>> {
+        let custom_objects_available = custom_object_types.is_some();
+
+        let mut custom_types_by_name: BTreeMap<String, CustomObjectType> = BTreeMap::new();
+        if let Some(types) = custom_object_types {
+            for item in types {
+                custom_types_by_name.insert(item.name.clone(), item);
+            }
+        }
+
+        let mut custom_fields_by_type_id: BTreeMap<u64, BTreeMap<String, u64>> = BTreeMap::new();
+        if let Some(fields) = custom_object_fields {
+            for field in fields {
+                custom_fields_by_type_id
+                    .entry(field.custom_object_type)
+                    .or_default()
+                    .insert(field.name, field.id);
+            }
+        }
+
+        // partition declared types into native (custom fields on an existing type)
+        // and custom object types, collecting the native field creates.
+        let mut native_fields = Vec::new();
+        let mut custom_schema_types: Vec<(TypeName, &TypeSchema)> = Vec::new();
+        let mut custom_schema_type_names: BTreeSet<String> = BTreeSet::new();
+        for (type_name, type_schema) in &schema.types {
+            let type_name = TypeName::new(type_name);
+            if registry.contains_type(&type_name) {
+                let info = registry
+                    .info_for(&type_name)
+                    .ok_or_else(|| anyhow!("unsupported type {}", type_name))?;
+                if !supports_feature(&info.features, &["custom-fields"]) {
+                    continue;
+                }
+                let native = native_fields_for_type(self, &info, type_schema).await?;
+                let existing = custom_fields_by_type
+                    .get(type_name.as_str())
+                    .cloned()
+                    .unwrap_or_default();
+                for (field_name, field_schema) in &type_schema.fields {
+                    if matches!(
+                        field_schema.r#type,
+                        FieldType::Ref { .. } | FieldType::ListRef { .. }
+                    ) {
+                        continue;
+                    }
+                    if native.contains(field_name) || existing.contains(field_name) {
+                        continue;
+                    }
+                    native_fields.push(PlannedNativeField {
+                        type_name: type_name.clone(),
+                        field_name: field_name.as_str(),
+                        field_schema,
+                    });
+                }
+                continue;
+            }
+            custom_schema_type_names.insert(type_name.as_str().to_string());
+            custom_schema_types.push((type_name, type_schema));
+        }
+
+        if !custom_schema_types.is_empty() && !custom_objects_available {
+            let list = custom_schema_types
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(anyhow!(
+                "schema includes custom type(s) but netbox custom objects are not available: {list}"
+            ));
+        }
+
+        // custom object types: which to create and their would-be fields (id
+        // resolution and the create-then-conflict-refetch stay in `ensure_schema`).
+        let mut object_types = Vec::new();
+        for (type_name, type_schema) in custom_schema_types {
+            let custom_name = custom_object_type_name(&type_name);
+            let existing = custom_types_by_name.get(&custom_name).cloned();
+            let existing_field_ids = existing
+                .as_ref()
+                .and_then(|existing| custom_fields_by_type_id.get(&existing.id))
+                .cloned()
+                .unwrap_or_default();
+
+            let mut fields = Vec::new();
+            let mut seen = BTreeSet::new();
+            for (field_name, field_schema) in type_schema.key.iter().chain(&type_schema.fields) {
+                if !seen.insert(field_name.as_str()) {
+                    continue;
+                }
+                if !custom_object_field_needs_create(
+                    field_name,
+                    existing_field_ids.contains_key(field_name),
+                )? {
+                    continue;
+                }
+                fields.push(PlannedObjectField {
+                    field_name: field_name.as_str(),
+                    field_schema,
+                    is_key: type_schema.key.contains_key(field_name),
+                });
+            }
+
+            object_types.push(PlannedObjectType {
+                type_name,
+                custom_name,
+                existing,
+                existing_field_ids,
+                fields,
+            });
+        }
+
+        // deletes: alembic-owned custom types/fields the schema no longer declares
+        // (same reserved-field skip and key+fields desired set as create).
+        let mut deleted_object_fields = Vec::new();
+        let mut deleted_object_types = Vec::new();
+        if custom_objects_available {
+            for custom_type in custom_types_by_name.values() {
+                let Some(type_name) = alembic_custom_object_name(custom_type) else {
+                    continue;
+                };
+                let existing_fields = custom_fields_by_type_id.get(&custom_type.id);
+                if custom_schema_type_names.contains(type_name.as_str()) {
+                    let desired: BTreeSet<String> = schema
+                        .types
+                        .get(type_name.as_str())
+                        .map(|ts| ts.key.keys().chain(ts.fields.keys()).cloned().collect())
+                        .unwrap_or_default();
+                    if let Some(existing_fields) = existing_fields {
+                        for (field_name, field_id) in existing_fields {
+                            if is_reserved_custom_object_field(field_name)
+                                || desired.contains(field_name)
+                            {
+                                continue;
+                            }
+                            deleted_object_fields.push(PlannedFieldDelete {
+                                type_name: type_name.clone(),
+                                field_name: field_name.clone(),
+                                field_id: *field_id,
+                            });
+                        }
+                    }
+                } else {
+                    if let Some(existing_fields) = existing_fields {
+                        for (field_name, field_id) in existing_fields {
+                            if is_reserved_custom_object_field(field_name) {
+                                continue;
+                            }
+                            deleted_object_fields.push(PlannedFieldDelete {
+                                type_name: type_name.clone(),
+                                field_name: field_name.clone(),
+                                field_id: *field_id,
+                            });
+                        }
+                    }
+                    deleted_object_types.push(PlannedTypeDelete {
+                        type_name,
+                        type_id: custom_type.id,
+                    });
+                }
+            }
+        }
+
+        Ok(ProvisionPlan {
+            native_fields,
+            object_types,
+            deleted_object_fields,
+            deleted_object_types,
+        })
+    }
+
+    /// creates a custom object type, keeping the create-then-conflict-refetch
+    /// fallback and registering it so field payloads can resolve it. reports the
+    /// create (via `created_object_types`) only when the create actually
+    /// succeeded, not when a concurrent create is discovered on refetch.
+    async fn create_custom_object_type(
+        &self,
+        registry: &mut ObjectTypeRegistry,
+        type_name: &TypeName,
+        custom_name: &str,
+        created_object_types: &mut Vec<String>,
+    ) -> Result<u64> {
+        let payload = Map::from_iter([
+            ("name".to_string(), Value::String(custom_name.to_string())),
+            ("slug".to_string(), Value::String(custom_name.to_string())),
+            (
+                "description".to_string(),
+                Value::String(format!("alembic custom object for {}", type_name.as_str())),
+            ),
+            (
+                "verbose_name_plural".to_string(),
+                Value::String(custom_object_verbose_name_plural(type_name)),
+            ),
+        ]);
+        let resource: Resource<Value> = self
+            .client
+            .resource("plugins/custom-objects/custom-object-types/");
+        match resource.create(&Value::Object(payload)).await {
+            Ok(created) => {
+                let created_type = super::client::parse_custom_object_type(created)?;
+                let id = created_type.id;
+                let (app_label, model) =
+                    custom_object_type_parts(&created_type).unwrap_or_else(|| {
+                        (CUSTOM_OBJECT_APP_LABEL.to_string(), custom_name.to_string())
+                    });
+                registry.insert_custom_object_type(
+                    type_name.clone(),
+                    custom_object_endpoint(custom_name),
+                    custom_object_features(),
+                    app_label,
+                    model,
+                );
+                created_object_types.push(type_name.to_string());
+                Ok(id)
+            }
+            Err(err) => {
+                let Some(types) = self.client.fetch_custom_object_types().await? else {
+                    return Err(err.into());
+                };
+                let Some(existing) = types.into_iter().find(|item| item.name == custom_name) else {
+                    return Err(err.into());
+                };
+                let (app_label, model) = custom_object_type_parts(&existing).unwrap_or_else(|| {
+                    (CUSTOM_OBJECT_APP_LABEL.to_string(), custom_name.to_string())
+                });
+                registry.insert_custom_object_type(
+                    type_name.clone(),
+                    custom_object_endpoint(custom_name),
+                    custom_object_features(),
+                    app_label,
+                    model,
+                );
+                Ok(existing.id)
             }
         }
     }
@@ -1505,6 +1505,61 @@ impl<'a> CustomObjectFieldProvisioner<'a> {
         }
         Ok(())
     }
+}
+
+/// the create/delete decision `ensure_schema` and `preview_schema` share,
+/// computed purely from the four backend reads and the schema without writing.
+/// preview renders it into a `ProvisionReport`; ensure executes it and reports
+/// what actually changed. one plan, two consumers — so a preview can never claim
+/// a change apply would not make, nor miss one.
+struct ProvisionPlan<'a> {
+    native_fields: Vec<PlannedNativeField<'a>>,
+    object_types: Vec<PlannedObjectType<'a>>,
+    deleted_object_fields: Vec<PlannedFieldDelete>,
+    deleted_object_types: Vec<PlannedTypeDelete>,
+}
+
+/// a custom field to create on an existing (native) object type.
+struct PlannedNativeField<'a> {
+    type_name: TypeName,
+    field_name: &'a str,
+    field_schema: &'a FieldSchema,
+}
+
+/// a custom object type to provision, with the object fields to create once its
+/// backend id is known.
+struct PlannedObjectType<'a> {
+    type_name: TypeName,
+    custom_name: String,
+    /// `Some` when the type already exists on the backend (reuse its id, report
+    /// no create); `None` when it must be created.
+    existing: Option<CustomObjectType>,
+    /// existing field ids, seeding the field provisioner so intra-type conflict
+    /// handling matches the interleaved original.
+    existing_field_ids: BTreeMap<String, u64>,
+    /// fields to create, deduped key-then-fields, with reserved/existing/invalid
+    /// names already filtered out.
+    fields: Vec<PlannedObjectField<'a>>,
+}
+
+/// a custom object field to create, tagged whether it is part of the type key.
+struct PlannedObjectField<'a> {
+    field_name: &'a str,
+    field_schema: &'a FieldSchema,
+    is_key: bool,
+}
+
+/// an alembic-owned custom object field to delete, with its backend id.
+struct PlannedFieldDelete {
+    type_name: String,
+    field_name: String,
+    field_id: u64,
+}
+
+/// an alembic-owned custom object type to delete, with its backend id.
+struct PlannedTypeDelete {
+    type_name: String,
+    type_id: u64,
 }
 
 async fn native_fields_for_type(

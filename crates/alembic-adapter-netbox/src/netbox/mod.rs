@@ -1377,4 +1377,223 @@ mod tests {
         assert_eq!(type_create.calls(), 0, "preview must not create types");
         assert_eq!(field_create.calls(), 0, "preview must not create fields");
     }
+
+    fn string_field(required: bool) -> alembic_core::FieldSchema {
+        alembic_core::FieldSchema {
+            r#type: alembic_core::FieldType::String,
+            required,
+            nullable: !required,
+            description: None,
+            format: None,
+            pattern: None,
+        }
+    }
+
+    fn simple_type_schema(key: &[&str], fields: &[&str]) -> alembic_core::TypeSchema {
+        alembic_core::TypeSchema {
+            key: key
+                .iter()
+                .map(|name| (name.to_string(), string_field(true)))
+                .collect(),
+            fields: fields
+                .iter()
+                .map(|name| (name.to_string(), string_field(false)))
+                .collect(),
+        }
+    }
+
+    // one plan, two consumers: against a mock backend with no TOCTOU race the
+    // report `preview_schema` renders must equal the one `ensure_schema` produces
+    // executing the same plan. this structurally pins the anti-drift invariant.
+    #[tokio::test]
+    async fn preview_and_ensure_report_the_same_plan() {
+        let server = MockServer::start();
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
+
+        let _object_types = mock_list(
+            &server,
+            "/api/core/object-types/",
+            json!([{
+                "app_label": "dcim",
+                "model": "site",
+                "rest_api_endpoint": "/api/dcim/sites/",
+                "features": ["custom-fields", "tags"]
+            }]),
+        );
+        let _custom_fields = server.mock(|when, then| {
+            when.method(GET).path("/api/extras/custom-fields/");
+            then.status(200).json_body(page(json!([])));
+        });
+        let _sites = server.mock(|when, then| {
+            when.method(GET)
+                .path("/api/dcim/sites/")
+                .query_param("limit", "1");
+            then.status(200).json_body(page(json!([])));
+        });
+        let _custom_object_types = server.mock(|when, then| {
+            when.method(GET)
+                .path("/api/plugins/custom-objects/custom-object-types/")
+                .query_param("limit", "200")
+                .query_param("offset", "0");
+            then.status(200).json_body(page(json!([])));
+        });
+        let _custom_object_fields = server.mock(|when, then| {
+            when.method(GET)
+                .path("/api/plugins/custom-objects/custom-object-type-fields/")
+                .query_param("limit", "200")
+                .query_param("offset", "0");
+            then.status(200).json_body(page(json!([])));
+        });
+        let _cf_create = server.mock(|when, then| {
+            when.method(POST).path("/api/extras/custom-fields/");
+            then.status(201).json_body(json!({
+                "id": 1,
+                "name": "cf_test",
+                "object_types": ["dcim.site"],
+                "type": {"value": "text", "label": "Text"}
+            }));
+        });
+        let _type_create = server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/plugins/custom-objects/custom-object-types/");
+            then.status(201)
+                .json_body(json!({ "id": 42, "name": "custom-asset" }));
+        });
+        let _field_create = server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/plugins/custom-objects/custom-object-type-fields/");
+            then.status(201).json_body(json!({ "id": 100 }));
+        });
+
+        let schema = alembic_core::Schema {
+            types: std::collections::BTreeMap::from([
+                (
+                    "dcim.site".to_string(),
+                    simple_type_schema(&["slug"], &["cf_test"]),
+                ),
+                (
+                    "custom.asset".to_string(),
+                    simple_type_schema(&["name"], &["owner"]),
+                ),
+            ]),
+        };
+
+        let preview = adapter.preview_schema(&schema).await.unwrap().unwrap();
+        let ensure = adapter.ensure_schema(&schema).await.unwrap();
+
+        // serde equality pins every report field without ProvisionReport: PartialEq.
+        assert_eq!(
+            serde_json::to_value(&preview).unwrap(),
+            serde_json::to_value(&ensure).unwrap(),
+            "preview must report exactly what ensure provisions"
+        );
+        assert_eq!(
+            preview.created_fields,
+            vec!["dcim.site.cf_test".to_string()]
+        );
+        assert_eq!(
+            preview.created_object_types,
+            vec!["custom.asset".to_string()]
+        );
+        assert!(preview
+            .created_object_fields
+            .contains(&"custom.asset.name".to_string()));
+        assert!(preview
+            .created_object_fields
+            .contains(&"custom.asset.owner".to_string()));
+    }
+
+    // the delete branch (a still-present alembic-owned custom type/field the
+    // schema no longer declares) is exercised by neither the create tests nor the
+    // originals; preview and ensure must agree on it too.
+    #[tokio::test]
+    async fn preview_and_ensure_report_the_same_deletes() {
+        use httpmock::Method::DELETE;
+
+        let server = MockServer::start();
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
+
+        let _object_types = mock_list(
+            &server,
+            "/api/core/object-types/",
+            json!([{
+                "app_label": "dcim",
+                "model": "site",
+                "rest_api_endpoint": "/api/dcim/sites/",
+                "features": ["custom-fields", "tags"]
+            }]),
+        );
+        let _custom_fields = server.mock(|when, then| {
+            when.method(GET).path("/api/extras/custom-fields/");
+            then.status(200).json_body(page(json!([])));
+        });
+        let _custom_object_types = server.mock(|when, then| {
+            when.method(GET)
+                .path("/api/plugins/custom-objects/custom-object-types/")
+                .query_param("limit", "200")
+                .query_param("offset", "0");
+            then.status(200).json_body(page(json!([{
+                "id": 42,
+                "name": "custom_legacy",
+                "description": "alembic custom object for custom.legacy"
+            }])));
+        });
+        let _custom_object_fields = server.mock(|when, then| {
+            when.method(GET)
+                .path("/api/plugins/custom-objects/custom-object-type-fields/")
+                .query_param("limit", "200")
+                .query_param("offset", "0");
+            then.status(200).json_body(page(json!([{
+                "id": 100,
+                "custom_object_type": 42,
+                "name": "old_field"
+            }])));
+        });
+        let field_delete = server.mock(|when, then| {
+            when.method(DELETE)
+                .path("/api/plugins/custom-objects/custom-object-type-fields/100/");
+            then.status(204);
+        });
+        let type_delete = server.mock(|when, then| {
+            when.method(DELETE)
+                .path("/api/plugins/custom-objects/custom-object-types/42/");
+            then.status(204);
+        });
+
+        // the schema declares nothing, so the alembic-owned custom.legacy type and
+        // its field are both stale.
+        let schema = alembic_core::Schema {
+            types: std::collections::BTreeMap::new(),
+        };
+
+        let preview = adapter.preview_schema(&schema).await.unwrap().unwrap();
+        assert_eq!(
+            field_delete.calls(),
+            0,
+            "preview must not delete custom object fields"
+        );
+        assert_eq!(
+            type_delete.calls(),
+            0,
+            "preview must not delete custom object types"
+        );
+
+        let ensure = adapter.ensure_schema(&schema).await.unwrap();
+        assert_eq!(field_delete.calls(), 1, "ensure deletes the stale field");
+        assert_eq!(type_delete.calls(), 1, "ensure deletes the stale type");
+
+        assert_eq!(
+            serde_json::to_value(&preview).unwrap(),
+            serde_json::to_value(&ensure).unwrap(),
+            "preview must report exactly what ensure deletes"
+        );
+        assert_eq!(
+            preview.deleted_object_fields,
+            vec!["custom.legacy.old_field".to_string()]
+        );
+        assert_eq!(
+            preview.deleted_object_types,
+            vec!["custom.legacy".to_string()]
+        );
+    }
 }
