@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- cli: `plan` now prints a human-readable per-op summary of the plan it writes (create/update/delete grouped, with per-field `from -> to` for updates, truncated for large plans), instead of only a one-line count; the machine-readable copy is still the written json plan file
 - cli: `plan` now works against a write-only (emitter) backend such as `django`, producing an all-creates plan against an empty observation instead of failing with `backend is write-only; it cannot observe state`. this makes the documented `plan` then `apply` flow usable for emitters
 - cli: the installed binary is now `alembic` (not `alembic-cli`), matching every doc and its own `--help`; the crate is still published as `alembic-cli`. release tarballs are renamed to `alembic-<version>-<target>.tar.gz`
 - cli: add `--version`, and help text for every subcommand and flag (`--help` was previously almost blank)

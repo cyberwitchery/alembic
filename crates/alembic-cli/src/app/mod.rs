@@ -7,8 +7,8 @@ mod state;
 
 use alembic_adapter_registry::{create_backend, Plugin};
 use alembic_engine::{
-    apply_plan, build_plan, guard_schema_deletes, load_inventory, plan_write_only, ApplyReport,
-    Backend, DriftReport, Plan,
+    apply_plan, build_plan, guard_schema_deletes, load_inventory, plan_write_only, render_plan,
+    ApplyReport, Backend, DriftReport, Plan,
 };
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand};
@@ -275,13 +275,10 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                 }
                 write_plan(&output, &plan)?;
                 state.save_async().await?;
-                if let Some(s) = &plan.summary {
-                    println!(
-                        "plan: {} to create, {} to update, {} to delete",
-                        s.create, s.update, s.delete
-                    );
-                }
-                println!("plan written to {}", output.display());
+                // human-readable, per-op view of what apply would do (see before
+                // write); the machine-readable copy is the written plan file.
+                println!("{}", render_plan(&plan));
+                println!("\nplan written to {}", output.display());
             }
         }
         Command::Apply {
