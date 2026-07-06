@@ -50,9 +50,12 @@ command: ./bin/alembic-adapter-mybackend
 args: ["--verbose"]
 env:
   MY_BACKEND_URL: https://backend.example.com
-  MY_BACKEND_TOKEN: $TOKEN
 timeout_seconds: 60
 ```
+
+`env:` values are passed to the adapter verbatim; the adapter also inherits
+alembic's environment, so export secrets (e.g. `MY_BACKEND_TOKEN`) instead of
+putting them in the config file.
 
 if you don't want a config file, you can pass `--backend <name>` and
 supply credentials via environment variables.
