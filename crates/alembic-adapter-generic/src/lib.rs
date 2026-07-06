@@ -542,36 +542,19 @@ fn parse_backend_id(id_val: serde_json::Value) -> Result<BackendId> {
     }
 }
 
+/// builds the generic api request body from an object's attrs, encoding a
+/// resolved ref as the backend id (number or string) the generic api expects.
+///
+/// delegates to the shared engine `build_request_body`, which passes a null
+/// value straight through (clearing a nullable field) and recurses into refs
+/// nested inside `List` and `Map` fields, matching the netbox and nautobot
+/// adapters.
 fn resolve_attrs(
     attrs: &JsonMap,
     type_schema: &alembic_core::TypeSchema,
     resolved: &BTreeMap<Uid, BackendId>,
 ) -> Result<serde_json::Value> {
-    let mut map = serde_json::Map::new();
-    for (key, value) in attrs.iter() {
-        let field_schema = type_schema
-            .fields
-            .get(key)
-            .ok_or_else(|| anyhow!("missing schema for field {key}"))?;
-        map.insert(
-            key.clone(),
-            resolve_value_for_type(&field_schema.r#type, value.clone(), resolved)?,
-        );
-    }
-    Ok(serde_json::Value::Object(map))
-}
-
-/// resolves a single field value against the shared engine helper, encoding a
-/// resolved ref as the backend id (number or string) the generic api expects.
-///
-/// the shared helper recurses into refs nested inside `List` and `Map` fields,
-/// matching the netbox and nautobot adapters.
-fn resolve_value_for_type(
-    field_type: &alembic_core::FieldType,
-    value: serde_json::Value,
-    resolved: &BTreeMap<Uid, BackendId>,
-) -> Result<serde_json::Value> {
-    alembic_engine::resolve_value_for_type(field_type, value, resolved, |id| match id {
+    alembic_engine::build_request_body(type_schema, attrs, resolved, |id| match id {
         BackendId::Int(n) => serde_json::Value::Number((*n).into()),
         BackendId::String(s) => serde_json::Value::String(s.clone()),
     })

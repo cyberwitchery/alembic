@@ -214,36 +214,74 @@ fn test_resolved_ids_identity_with_mappings() {
     assert_eq!(resolved.get(&uid), Some(&BackendId::Int(42)));
 }
 
-// tests for resolve_value_for_type
+// these drive resolve_attrs (which delegates to the shared engine
+// build_request_body) with a one-field schema, exercising the generic encode
+// closure for int/string backend ids, the ref/list-ref resolution and MissingRef
+// path surfaced by the shared helper, and the null passthrough that clears a
+// nullable field.
+fn body_field(
+    field_type: FieldType,
+    nullable: bool,
+    value: serde_json::Value,
+    resolved: &BTreeMap<Uid, BackendId>,
+) -> Result<serde_json::Value> {
+    let mut fields = BTreeMap::new();
+    fields.insert(
+        "f".to_string(),
+        FieldSchema {
+            r#type: field_type,
+            required: false,
+            nullable,
+            description: None,
+            format: None,
+            pattern: None,
+        },
+    );
+    let type_schema = TypeSchema {
+        key: BTreeMap::new(),
+        fields,
+    };
+    let attrs: JsonMap = serde_json::json!({ "f": value })
+        .as_object()
+        .unwrap()
+        .clone()
+        .into_iter()
+        .collect::<BTreeMap<_, _>>()
+        .into();
+    resolve_attrs(&attrs, &type_schema, resolved)
+}
+
 #[test]
-fn test_resolve_value_for_type_ref() {
+fn test_resolve_attrs_encodes_ref_int_backend_id() {
     let mut resolved = BTreeMap::new();
     let uid = Uid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
     resolved.insert(uid, BackendId::Int(123));
 
-    let result = resolve_value_for_type(
-        &FieldType::Ref {
+    let body = body_field(
+        FieldType::Ref {
             target: "site".to_string(),
         },
+        false,
         serde_json::json!("550e8400-e29b-41d4-a716-446655440000"),
         &resolved,
     )
     .unwrap();
-    assert_eq!(result, serde_json::json!(123));
+    assert_eq!(body, serde_json::json!({ "f": 123 }));
 }
 
 #[test]
-fn test_resolve_value_for_type_list_ref() {
+fn test_resolve_attrs_encodes_list_ref() {
     let mut resolved = BTreeMap::new();
     let uid1 = Uid::parse_str("550e8400-e29b-41d4-a716-446655440001").unwrap();
     let uid2 = Uid::parse_str("550e8400-e29b-41d4-a716-446655440002").unwrap();
     resolved.insert(uid1, BackendId::Int(1));
     resolved.insert(uid2, BackendId::String("abc".to_string()));
 
-    let result = resolve_value_for_type(
-        &FieldType::ListRef {
+    let body = body_field(
+        FieldType::ListRef {
             target: "tag".to_string(),
         },
+        false,
         serde_json::json!([
             "550e8400-e29b-41d4-a716-446655440001",
             "550e8400-e29b-41d4-a716-446655440002"
@@ -251,40 +289,60 @@ fn test_resolve_value_for_type_list_ref() {
         &resolved,
     )
     .unwrap();
-    assert_eq!(result, serde_json::json!([1, "abc"]));
+    assert_eq!(body, serde_json::json!({ "f": [1, "abc"] }));
 }
 
-// these exercise the resolve_value_for_type wrapper's encode closure for string
-// backend ids and the error / MissingRef paths surfaced by the shared helper.
+// exercises the encode closure for a string backend id.
 #[test]
-fn test_resolve_value_for_type_ref_string_backend_id() {
+fn test_resolve_attrs_encodes_ref_string_backend_id() {
     let mut resolved = BTreeMap::new();
     let uid = Uid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
     resolved.insert(uid, BackendId::String("abc-123".to_string()));
 
-    let result = resolve_value_for_type(
-        &FieldType::Ref {
+    let body = body_field(
+        FieldType::Ref {
             target: "site".to_string(),
         },
+        false,
         serde_json::json!("550e8400-e29b-41d4-a716-446655440000"),
         &resolved,
     )
     .unwrap();
-    assert_eq!(result, serde_json::json!("abc-123"));
+    assert_eq!(body, serde_json::json!({ "f": "abc-123" }));
 }
 
+// an unresolved ref uid still surfaces the shared MissingRef error.
 #[test]
-fn test_resolve_value_for_type_ref_missing_uid() {
+fn test_resolve_attrs_ref_missing_uid_errors() {
     let resolved = BTreeMap::new();
-    let err = resolve_value_for_type(
-        &FieldType::Ref {
+    let err = body_field(
+        FieldType::Ref {
             target: "site".to_string(),
         },
+        false,
         serde_json::json!("550e8400-e29b-41d4-a716-446655440000"),
         &resolved,
     )
     .unwrap_err();
     assert!(err.to_string().contains("missing referenced uid"));
+}
+
+// a null value for a nullable ref must pass straight through as json null (to
+// clear the field on the backend), not reach the ref encoder and error with
+// "ref value must be a uuid string" — which previously aborted the whole write.
+#[test]
+fn test_resolve_attrs_passes_null_ref_through() {
+    let resolved = BTreeMap::new();
+    let body = body_field(
+        FieldType::Ref {
+            target: "site".to_string(),
+        },
+        true,
+        serde_json::Value::Null,
+        &resolved,
+    )
+    .unwrap();
+    assert_eq!(body, serde_json::json!({ "f": null }));
 }
 
 // tests for resolve_attrs
