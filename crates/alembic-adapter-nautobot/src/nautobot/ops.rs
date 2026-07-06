@@ -497,7 +497,11 @@ impl NautobotAdapter {
     ) -> Result<bool> {
         let field_type = custom_field_type_for_schema(field_schema);
         let mut payload = Map::new();
-        payload.insert("name".to_string(), Value::String(field_name.to_string()));
+        // nautobot 2.x identifies a custom field by `key`, not `name`: the writable
+        // serializer has no `name`, so sending it lets nautobot derive `key` from
+        // `label` (slugified), and a non-slug field name then never matches the
+        // `field.key` the read/detect/write paths key on. set `key` = field name.
+        payload.insert("key".to_string(), Value::String(field_name.to_string()));
         payload.insert("label".to_string(), Value::String(field_name.to_string()));
         payload.insert("type".to_string(), Value::String(field_type));
         payload.insert(

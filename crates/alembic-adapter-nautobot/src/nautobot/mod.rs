@@ -295,6 +295,56 @@ mod tests {
         );
     }
 
+    // regression: a non-slug custom field name must be created with `key` = the
+    // field name so the read/detect/write paths (which key on `field.key`) match
+    // it. nautobot has no writable `name`; sending `name` let it derive `key` by
+    // slugifying `label`, so `assetTag` became `assettag` and never matched again.
+    #[tokio::test]
+    async fn ensure_schema_creates_non_slug_custom_field_with_key() {
+        let server = MockServer::start();
+        mock_content_types(&server);
+        mock_empty_custom_fields(&server);
+        // native-field probe: one object, none present.
+        let _probe = server.mock(|when, then| {
+            when.method(GET).path("/api/dcim/sites/");
+            then.status(200).json_body(page(json!([])));
+        });
+        // the create must carry `key` (= the field name), not `name`: this mock
+        // only matches when the body includes `"key": "assetTag"`, so the pre-fix
+        // payload (which sent `name` and no `key`) leaves ensure_schema erroring.
+        let cf_create = server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/extras/custom-fields/")
+                .json_body_includes(r#"{"key": "assetTag", "label": "assetTag"}"#);
+            then.status(201).json_body(json!({
+                "id": "44444444-4444-4444-4444-444444444444",
+                "key": "assetTag",
+                "label": "assetTag",
+                "content_types": ["dcim.site"],
+                "type": {},
+            }));
+        });
+
+        let schema = Schema {
+            types: BTreeMap::from([(
+                "dcim.site".to_string(),
+                TypeSchema {
+                    key: BTreeMap::from([("name".to_string(), field(FieldType::String))]),
+                    fields: BTreeMap::from([("assetTag".to_string(), field(FieldType::String))]),
+                },
+            )]),
+        };
+
+        let adapter = NautobotAdapter::new(&server.base_url(), "token").unwrap();
+        let report = adapter.ensure_schema(&schema).await.unwrap();
+
+        assert_eq!(
+            report.created_fields,
+            vec!["dcim.site.assetTag".to_string()]
+        );
+        cf_create.assert_calls(1);
+    }
+
     #[tokio::test]
     async fn preview_schema_reports_without_creating() {
         let server = MockServer::start();
