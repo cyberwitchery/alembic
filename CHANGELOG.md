@@ -4,6 +4,7 @@
 
 - infrahub adapter: resolve a desired key's `ref`/`list_ref` fields to backend ids before matching it against an existing object, so a ref-keyed type (interfaces, cables, ip assignments) finds its existing object instead of never matching; most severely, a genuinely failing delete of such an object is no longer swallowed and reported as success
 - netbox adapter: `plan`'s schema preview rejects an invalid custom-object field name (outside `[A-Za-z0-9_]`) at plan time, matching what `apply` already enforces, instead of reporting a field creation `apply` then refuses
+- netbox adapter: classify custom fields by the django content-type form (`app_label.model`, e.g. `ipam.ipaddress`) everywhere, matching how netbox returns and keys them, instead of the endpoint-underscore form (`ipam.ip_address`). previously a custom field on any multi-word model (`ipam.ip_address`, `dcim.device_type`, `dcim.mac_address`, …) was misclassified: `apply` emitted it as a top-level field netbox silently drops, so the field never converged (every plan re-updated it), and `ensure_schema` posted an invalid content type and errored. single-word models were unaffected, so it was invisible until now
 
 ## [0.6.0] - 2026-07-05
 

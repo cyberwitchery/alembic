@@ -273,8 +273,14 @@ impl Adapter for NetBoxAdapter {
 
         // native custom fields on existing object types.
         for field in &plan.native_fields {
+            let content_type = content_type_of(&registry, field.type_name.as_str());
             if self
-                .create_custom_field(&field.type_name, field.field_name, field.field_schema)
+                .create_custom_field(
+                    &field.type_name,
+                    &content_type,
+                    field.field_name,
+                    field.field_schema,
+                )
                 .await?
             {
                 created_fields.push(format!("{}.{}", field.type_name, field.field_name));
@@ -574,7 +580,7 @@ impl NetBoxAdapter {
             .ok_or_else(|| anyhow!("missing schema for {}", type_name))?;
         let resource: Resource<Value> = self.client.resource(info.endpoint.clone());
         let custom_fields = custom_fields_by_type
-            .get(info.type_name.as_str())
+            .get(&content_type_of(registry, type_name.as_str()))
             .cloned()
             .unwrap_or_default();
         let body = build_request_body(
@@ -656,7 +662,7 @@ impl NetBoxAdapter {
         };
         let resource: Resource<Value> = self.client.resource(info.endpoint.clone());
         let custom_fields = custom_fields_by_type
-            .get(info.type_name.as_str())
+            .get(&content_type_of(registry, type_name.as_str()))
             .cloned()
             .unwrap_or_default();
         let body = build_request_body(
@@ -715,6 +721,7 @@ impl NetBoxAdapter {
     async fn create_custom_field(
         &self,
         type_name: &TypeName,
+        content_type: &str,
         field_name: &str,
         field_schema: &FieldSchema,
     ) -> Result<bool> {
@@ -723,9 +730,12 @@ impl NetBoxAdapter {
         payload.insert("name".to_string(), Value::String(field_name.to_string()));
         payload.insert("label".to_string(), Value::String(field_name.to_string()));
         payload.insert("type".to_string(), Value::String(field_type));
+        // netbox keys a custom field's object_types by the django content type
+        // (`ipam.ipaddress`), not the endpoint form (`ipam.ip_address`); the two
+        // diverge for every multi-word model, and posting the endpoint form 400s.
         payload.insert(
             "object_types".to_string(),
-            Value::Array(vec![Value::String(type_name.as_str().to_string())]),
+            Value::Array(vec![Value::String(content_type.to_string())]),
         );
         if field_schema.required {
             payload.insert("required".to_string(), Value::Bool(true));
@@ -742,7 +752,7 @@ impl NetBoxAdapter {
             Err(err) => {
                 let existing = self.client.fetch_custom_fields().await?;
                 if existing
-                    .get(type_name.as_str())
+                    .get(content_type)
                     .is_some_and(|fields| fields.contains(field_name))
                 {
                     tracing::warn!(
@@ -806,7 +816,7 @@ impl NetBoxAdapter {
                 }
                 let native = native_fields_for_type(self, &info, type_schema).await?;
                 let existing = custom_fields_by_type
-                    .get(type_name.as_str())
+                    .get(&content_type_of(registry, type_name.as_str()))
                     .cloned()
                     .unwrap_or_default();
                 for (field_name, field_schema) in &type_schema.fields {
