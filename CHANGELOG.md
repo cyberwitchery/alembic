@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- engine: index inventory uid source-lines in a single pass instead of rescanning the whole file per object, so loading is linear in file size; a 50k-object inventory that previously could not `validate` in ten minutes now loads in under a second. also resolves a uid to its own line by exact value rather than substring, so a uid that is a prefix of another no longer points at the wrong line
 - engine: journal hashes no longer depend on the rust version, so a partially-applied plan can be resumed by a different build; a journal from an older version is orphaned once
 - conformance runner: accept a `preview_schema` response with a null result (`ok=true`, no result, no error) as the canonical "cannot preview schema" signal, since the host's `call_optional` maps it to `Ok(None)`; a null result on read/write/ensure_schema stays rejected because those dispatch through `call`, which hard-errors on it, so the runner no longer fails a correct adapter the real registry accepts
 - generic adapter: `plan`'s schema preview reports nothing to provision (`schema_preview: {}`, no stderr line) instead of `schema preview: unavailable for this backend`, since the generic adapter provisions no schema (its `ensure_schema` is the no-op default), matching the preview==ensure invariant netbox/nautobot/infrahub already hold

@@ -4,7 +4,7 @@ use crate::{report_to_result_with_sources, validate};
 use alembic_core::{Inventory, Schema, SourceLocation};
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -72,11 +72,13 @@ fn load_recursive(
 
     merge_schema(schema, inventory.schema)?;
 
-    // set source location on each object from this file, with line numbers
+    // set source location on each object from this file, with line numbers.
+    // the uid->line index is built once per file (one pass), not rescanned per
+    // object, so loading is linear in file size rather than objects x lines.
+    let uid_lines = index_uid_lines(&content);
     for object in inventory.objects {
-        let line = find_uid_line(&content, &object.uid.to_string());
-        let source = match line {
-            Some(n) => SourceLocation::file_line(&canonical, n),
+        let source = match uid_lines.get(object.uid.to_string().as_str()) {
+            Some(&n) => SourceLocation::file_line(&canonical, n),
             None => SourceLocation::file(&canonical),
         };
         objects.push(object.with_source(source));
@@ -85,22 +87,34 @@ fn load_recursive(
     Ok(())
 }
 
-/// the 1-indexed line where `uid` is defined (its own `uid:` key), not a line
-/// that merely references it as an attr value.
-fn find_uid_line(content: &str, uid: &str) -> Option<usize> {
-    content
-        .lines()
-        .position(|line| line.contains(uid) && is_uid_key_line(line))
-        .map(|idx| idx + 1)
+/// map each object's `uid` value to the 1-indexed line where it is defined (its
+/// own `uid:` key), keeping the first occurrence. built in a single pass so the
+/// caller can resolve every object's source line without rescanning the file.
+fn index_uid_lines(content: &str) -> HashMap<&str, usize> {
+    let mut index = HashMap::new();
+    for (idx, line) in content.lines().enumerate() {
+        if let Some(uid) = uid_key_value(line) {
+            index.entry(uid).or_insert(idx + 1);
+        }
+    }
+    index
 }
 
-/// whether `line`'s key is `uid` (yaml `uid:` / `- uid:`, json `"uid":`).
-fn is_uid_key_line(line: &str) -> bool {
+/// if `line`'s key is `uid`, the declared value with surrounding quotes and a
+/// trailing json comma stripped; otherwise `None`. handles yaml `uid:` /
+/// `- uid:` and json `"uid":`.
+fn uid_key_value(line: &str) -> Option<&str> {
     let rest = line.trim_start();
     let rest = rest.strip_prefix('-').map_or(rest, str::trim_start);
     let rest = rest.strip_prefix('"').unwrap_or(rest);
-    rest.strip_prefix("uid")
-        .is_some_and(|after| after.starts_with([':', '"', ' ']))
+    let after = rest.strip_prefix("uid")?.trim_start();
+    let after = after.strip_prefix('"').unwrap_or(after).trim_start();
+    let value = after.strip_prefix(':')?.trim().trim_end_matches(',').trim();
+    let value = value
+        .strip_prefix('"')
+        .and_then(|v| v.strip_suffix('"'))
+        .unwrap_or(value);
+    Some(value)
 }
 
 fn merge_schema(current: &mut Option<Schema>, incoming: Option<Schema>) -> Result<()> {
@@ -125,7 +139,7 @@ fn merge_schema(current: &mut Option<Schema>, incoming: Option<Schema>) -> Resul
 
 #[cfg(test)]
 mod tests {
-    use super::{find_uid_line, merge_schema};
+    use super::{index_uid_lines, merge_schema};
     use alembic_core::{Schema, TypeSchema};
     use std::collections::BTreeMap;
 
@@ -137,7 +151,9 @@ mod tests {
       site: "site-1"
   - uid: "site-1"
 "#;
-        assert_eq!(find_uid_line(content, "site-1"), Some(5));
+        let index = index_uid_lines(content);
+        assert_eq!(index.get("site-1").copied(), Some(5));
+        assert_eq!(index.get("dev-1").copied(), Some(2));
     }
 
     #[test]
@@ -154,7 +170,21 @@ mod tests {
   ]
 }
 "#;
-        assert_eq!(find_uid_line(content, "site-1"), Some(8));
+        let index = index_uid_lines(content);
+        assert_eq!(index.get("site-1").copied(), Some(8));
+    }
+
+    #[test]
+    fn distinguishes_a_uid_that_is_a_prefix_of_another() {
+        // "dev-1" resolves to its own line, not the earlier "dev-10" line that
+        // contains it as a substring (the pre-index scan matched on `contains`).
+        let content = r#"objects:
+  - uid: "dev-10"
+  - uid: "dev-1"
+"#;
+        let index = index_uid_lines(content);
+        assert_eq!(index.get("dev-1").copied(), Some(3));
+        assert_eq!(index.get("dev-10").copied(), Some(2));
     }
 
     fn schema_with_type(name: &str) -> Schema {
