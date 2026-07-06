@@ -57,7 +57,10 @@ app: dcim_app
 ## commands
 
 ```bash
-alembic apply --backend-config ./django-config.yaml -f /path/to/inventory.yaml
+# django is a write-only backend: plan produces an all-creates plan (there is no
+# existing state to observe), then apply generates the app.
+alembic plan  --backend-config ./django-config.yaml -f /path/to/inventory.yaml -o plan.json
+alembic apply --backend-config ./django-config.yaml -p plan.json
 
 cd /tmp/alembic-adapter-django
 python manage.py makemigrations --dry-run --verbosity 2

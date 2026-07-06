@@ -86,6 +86,7 @@ NETBOX_URL=https://netbox.example.com NETBOX_TOKEN=$NETBOX_TOKEN \
 ```
 
 - creates a deterministic plan
+- against a write-only (emitter) backend such as `django`, which cannot report existing state, plan produces an all-creates plan against an empty observation
 - writes json plan to the `-o`/`--output` path (required only for this default write path)
 - honors `--allow-delete` if you want delete ops
 - `--provision` runs adapter provisioning (`ensure_schema`) before observing backend state; provisioning that would delete custom object types/fields the inventory no longer declares is blocked unless `--allow-delete` is also given (such deletes cascade to their objects on the backend)

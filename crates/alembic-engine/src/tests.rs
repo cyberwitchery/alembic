@@ -681,6 +681,31 @@ fn planner_includes_prefix_site_diff() {
 }
 
 #[test]
+fn plan_write_only_is_all_creates_even_with_state() {
+    let inventory = inv(vec![
+        obj(
+            uid(1),
+            "dcim.site",
+            "site=fra1",
+            serde_json::json!({"name": "FRA1"}),
+        ),
+        obj(
+            uid(2),
+            "dcim.site",
+            "site=ber1",
+            serde_json::json!({"name": "BER1"}),
+        ),
+    ]);
+    // even though state already maps uid(1) to a backend id, a write-only backend
+    // reports no observation, so every declared object is still a create.
+    let mut state = StateStore::new(None, StateData::default());
+    state.set_backend_id(t("dcim.site"), uid(1), BackendId::Int(5));
+    let plan = plan_write_only(&inventory, &state).unwrap();
+    assert_eq!(plan.ops.len(), 2);
+    assert!(plan.ops.iter().all(|op| matches!(op, Op::Create { .. })));
+}
+
+#[test]
 fn state_store_roundtrip() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("state.json");

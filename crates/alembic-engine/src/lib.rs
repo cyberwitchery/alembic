@@ -97,6 +97,20 @@ pub async fn build_plan(
     ))
 }
 
+/// produce a plan for a write-only backend, which cannot report existing state.
+/// the inventory is validated, then planned against an empty observation, so
+/// every declared object becomes a create (and nothing is updated or deleted).
+pub fn plan_write_only(inventory: &Inventory, state: &StateStore) -> Result<Plan> {
+    report_to_result(validate(inventory))?;
+    Ok(plan(
+        &inventory.objects,
+        &ObservedState::default(),
+        state,
+        &inventory.schema,
+        false,
+    ))
+}
+
 pub(crate) fn bootstrap_state_from_observed(
     state: &mut StateStore,
     desired: &[Object],

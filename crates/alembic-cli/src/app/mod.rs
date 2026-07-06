@@ -7,7 +7,8 @@ mod state;
 
 use alembic_adapter_registry::{create_backend, Plugin};
 use alembic_engine::{
-    apply_plan, build_plan, guard_schema_deletes, load_inventory, ApplyReport, DriftReport, Plan,
+    apply_plan, build_plan, guard_schema_deletes, load_inventory, plan_write_only, ApplyReport,
+    Backend, DriftReport, Plan,
 };
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand};
@@ -244,13 +245,19 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                 }
             }
 
-            let mut plan = build_plan(
-                backend.observer()?,
-                &inventory,
-                &mut state,
-                should_detect_deletes(allow_delete, report),
-            )
-            .await?;
+            let mut plan = if matches!(&backend, Backend::Emitter(_)) {
+                // write-only backend: it cannot observe existing state, so plan
+                // every declared object as a create rather than failing to observe.
+                plan_write_only(&inventory, &state)?
+            } else {
+                build_plan(
+                    backend.observer()?,
+                    &inventory,
+                    &mut state,
+                    should_detect_deletes(allow_delete, report),
+                )
+                .await?
+            };
             plan.schema_preview = schema_preview;
             if report {
                 // read-only: describe desired-vs-observed and exit without

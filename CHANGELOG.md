@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- cli: `plan` now works against a write-only (emitter) backend such as `django`, producing an all-creates plan against an empty observation instead of failing with `backend is write-only; it cannot observe state`. this makes the documented `plan` then `apply` flow usable for emitters
 - cli: the installed binary is now `alembic` (not `alembic-cli`), matching every doc and its own `--help`; the crate is still published as `alembic-cli`. release tarballs are renamed to `alembic-<version>-<target>.tar.gz`
 - cli: add `--version`, and help text for every subcommand and flag (`--help` was previously almost blank)
 - engine: the local state store now takes an exclusive advisory lock (a sidecar `<state>.lock` file) for a run's whole lifetime, so two concurrent runs against the same `state.json` can no longer both load it and race to save, silently clobbering each other's uid->backend-id mappings; a second run fails fast with `another alembic run holds the state lock`. the postgres backend already had optimistic locking. the lock is created at load, so a state path whose parent cannot be a directory now errors at load rather than save
