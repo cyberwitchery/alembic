@@ -4,9 +4,18 @@ on:
   push:
     tags:
       - "v*"
+  # rebuild and re-upload binaries for an existing release tag without
+  # re-publishing crates (e.g. after fixing a binary-build failure).
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "existing release tag to build binaries for (e.g. v0.7.0)"
+        required: true
 
 jobs:
   publish:
+    # crates are published only on the tag push, never on a manual binaries rebuild.
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -162,6 +171,12 @@ jobs:
     env:
       RUSTFLAGS: "-C debuginfo=0"
       CARGO_TARGET_DIR: target/ci
+      # the generated netbox/nautobot openapi crates are memory-hungry to compile
+      # and OOM the 7GB linux runners; serializing codegen lowers peak memory (the
+      # linux jobs also add swap below).
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "1"
+      # tag to build for: the pushed tag, or the workflow_dispatch input.
+      REF: ${{ inputs.tag || github.ref_name }}
     strategy:
       fail-fast: false
       matrix:
@@ -170,13 +185,25 @@ jobs:
             os: ubuntu-latest
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-24.04-arm
+          # both mac targets build on the apple-silicon runner (it cross-compiles
+          # x86_64 fine); the intel macos-13 runner is unreliable to schedule.
           - target: x86_64-apple-darwin
-            os: macos-13
+            os: macos-14
           - target: aarch64-apple-darwin
             os: macos-14
     steps:
       - name: checkout
         uses: actions/checkout@v7
+        with:
+          ref: ${{ env.REF }}
+
+      - name: add swap (linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo fallocate -l 8G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
 
       - name: set up rust
         uses: dtolnay/rust-toolchain@stable
@@ -198,7 +225,7 @@ jobs:
         run: |
           set -euo pipefail
           for bin in alembic alembic-adapter-test; do
-            dir="${bin}-${GITHUB_REF_NAME}-${{ matrix.target }}"
+            dir="${bin}-${REF}-${{ matrix.target }}"
             mkdir "$dir"
             cp "target/ci/${{ matrix.target }}/release/${bin}" "$dir/"
             cp README.md "$dir/"
@@ -208,4 +235,5 @@ jobs:
       - name: attach binaries to release
         uses: softprops/action-gh-release@v3
         with:
-          files: "*-${{ github.ref_name }}-${{ matrix.target }}.tar.gz"
+          tag_name: ${{ env.REF }}
+          files: "*-${{ env.REF }}-${{ matrix.target }}.tar.gz"
