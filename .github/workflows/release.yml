@@ -199,11 +199,14 @@ jobs:
 
       - name: add swap (linux)
         if: runner.os == 'Linux'
+        # the runner already has an active /swapfile, so add a second one on the
+        # larger /mnt disk for extra headroom during the openapi-crate compile.
         run: |
-          sudo fallocate -l 8G /swapfile
-          sudo chmod 600 /swapfile
-          sudo mkswap /swapfile
-          sudo swapon /swapfile
+          sudo fallocate -l 8G /mnt/swapfile
+          sudo chmod 600 /mnt/swapfile
+          sudo mkswap /mnt/swapfile
+          sudo swapon /mnt/swapfile
+          free -h
 
       - name: set up rust
         uses: dtolnay/rust-toolchain@stable
