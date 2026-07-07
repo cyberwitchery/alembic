@@ -3,12 +3,12 @@ use super::registry::ObjectTypeRegistry;
 use super::state::{resolved_from_state, state_mappings};
 use super::NautobotAdapter;
 use alembic_core::{
-    key_string, uid_v5, FieldSchema, FieldType, JsonMap, Key, Schema, TypeName, TypeSchema, Uid,
+    key_string, FieldSchema, FieldType, JsonMap, Key, Schema, TypeName, TypeSchema, Uid,
 };
 use alembic_engine::{
     apply_non_delete_journaled, build_key_from_schema, describe_missing_refs, is_missing_ref_error,
-    query_filters_from_key, Adapter, AppliedOp, ApplyReport, BackendId, Emitter, ObservedObject,
-    ObservedState, Observer, Op, ProvisionReport, RetryApplyDriver,
+    query_filters_from_key, resolve_nested_ref_uid, Adapter, AppliedOp, ApplyReport, BackendId,
+    Emitter, ObservedObject, ObservedState, Observer, Op, ProvisionReport, RetryApplyDriver,
 };
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
@@ -638,16 +638,10 @@ fn normalize_value(
         ),
         Value::Object(map) => {
             if let Some(id) = map.get("id").and_then(Value::as_str) {
-                // lookup via URL + mappings
-                if let Some(uid) = uid_for_nested_object(&map, registry, mappings) {
+                // resolve the nested brief back to its canonical uid via recorded
+                // mappings or the target's key fields.
+                if let Some(uid) = resolve_ref_uid(&map, target_hint, schema, registry, mappings) {
                     return Value::String(uid.to_string());
-                }
-                // if we know the target type from schema, try to generate UID from key fields
-                if let Some(target) = target_hint {
-                    if let Some(uid) = uid_from_key_fields(&map, target, schema, registry, mappings)
-                    {
-                        return Value::String(uid.to_string());
-                    }
                 }
                 // if it looks like a resource summary but isn't managed by us,
                 // fall back to the ID string to match desired state UUIDs.
@@ -682,66 +676,25 @@ fn as_string(value: &Value) -> Option<String> {
     }
 }
 
-fn uid_for_nested_object(
+/// resolve a nested reference brief to its canonical uid, binding nautobot's
+/// uuid-string id-space to the shared engine resolver.
+fn resolve_ref_uid(
     map: &Map<String, Value>,
-    registry: &ObjectTypeRegistry,
-    mappings: &super::state::StateMappings,
-) -> Option<Uid> {
-    let id = map.get("id")?.as_str()?;
-    let endpoint = map
-        .get("url")
-        .and_then(Value::as_str)
-        .and_then(|url| registry.type_name_for_endpoint(url))?;
-    mappings.uid_for(endpoint, id)
-}
-
-/// generate a UID from key fields when we know the target type but the object isn't in mappings.
-/// this handles the case where nested objects don't have URLs but we know the target type from schema.
-fn uid_from_key_fields(
-    map: &Map<String, Value>,
-    target: &str,
+    target_hint: Option<&str>,
     schema: &Schema,
     registry: &ObjectTypeRegistry,
     mappings: &super::state::StateMappings,
 ) -> Option<Uid> {
-    if let Some(type_from_url) = map
-        .get("url")
-        .and_then(Value::as_str)
-        .and_then(|url| registry.type_name_for_endpoint(url))
-    {
-        if let Some(id) = map.get("id").and_then(Value::as_str) {
-            if let Some(uid) = mappings.uid_for(type_from_url, id) {
-                return Some(uid);
-            }
-        }
-    }
-
-    let target_schema = schema.types.get(target)?;
-
-    // a ref-typed key field (e.g. an interface keyed by `(device, name)`)
-    // arrives as a nested brief, so resolve it to the referent's uid first,
-    // mirroring how the referent itself is keyed.
-    let mut key_map = BTreeMap::new();
-    for (key_field, field_schema) in &target_schema.key {
-        let value = map.get(key_field)?;
-        let resolved = match &field_schema.r#type {
-            FieldType::Ref { target: ref_target } | FieldType::ListRef { target: ref_target } => {
-                match value {
-                    Value::Object(brief) => {
-                        uid_from_key_fields(brief, ref_target, schema, registry, mappings)
-                            .map(|uid| Value::String(uid.to_string()))
-                            .unwrap_or_else(|| value.clone())
-                    }
-                    _ => value.clone(),
-                }
-            }
-            _ => value.clone(),
-        };
-        key_map.insert(key_field.clone(), resolved);
-    }
-
-    let key = Key::from(key_map);
-    Some(uid_v5(target, &key_string(&key)))
+    resolve_nested_ref_uid(
+        map,
+        target_hint,
+        schema,
+        |type_name, backend_id| match backend_id {
+            BackendId::String(id) => mappings.uid_for(type_name, id),
+            BackendId::Int(_) => None,
+        },
+        |url| registry.type_name_for_endpoint(url).map(str::to_string),
+    )
 }
 
 fn build_request_body(
@@ -989,11 +942,11 @@ mod tests {
             ("name".to_string(), json!("router-01")),
         ]);
 
-        let uid = uid_from_key_fields(&nested, "dcim.device", &schema, &registry, &mappings);
+        let uid = resolve_ref_uid(&nested, Some("dcim.device"), &schema, &registry, &mappings);
         assert!(uid.is_some());
 
         // the UID should be deterministic: same inputs = same output
-        let uid2 = uid_from_key_fields(&nested, "dcim.device", &schema, &registry, &mappings);
+        let uid2 = resolve_ref_uid(&nested, Some("dcim.device"), &schema, &registry, &mappings);
         assert_eq!(uid, uid2);
 
         // different key value should produce different UID
@@ -1001,7 +954,7 @@ mod tests {
             ("id".to_string(), json!("other-uuid")),
             ("name".to_string(), json!("router-02")),
         ]);
-        let uid3 = uid_from_key_fields(&nested2, "dcim.device", &schema, &registry, &mappings);
+        let uid3 = resolve_ref_uid(&nested2, Some("dcim.device"), &schema, &registry, &mappings);
         assert!(uid3.is_some());
         assert_ne!(uid, uid3);
     }
@@ -1070,18 +1023,23 @@ mod tests {
 
         // resolve the device's own uid from its key
         let device_map = serde_json::Map::from_iter([("name".to_string(), json!("router-01"))]);
-        let device_uid =
-            uid_from_key_fields(&device_map, "dcim.device", &schema, &registry, &mappings)
-                .expect("device uid");
+        let device_uid = resolve_ref_uid(
+            &device_map,
+            Some("dcim.device"),
+            &schema,
+            &registry,
+            &mappings,
+        )
+        .expect("device uid");
 
         // expected: interface uid with the device key already resolved to its uid string
         let expected_map = serde_json::Map::from_iter([
             ("device".to_string(), json!(device_uid.to_string())),
             ("name".to_string(), json!("eth1")),
         ]);
-        let expected = uid_from_key_fields(
+        let expected = resolve_ref_uid(
             &expected_map,
-            "dcim.interface",
+            Some("dcim.interface"),
             &schema,
             &registry,
             &mappings,
@@ -1092,8 +1050,13 @@ mod tests {
             ("device".to_string(), json!({ "name": "router-01" })),
             ("name".to_string(), json!("eth1")),
         ]);
-        let actual =
-            uid_from_key_fields(&actual_map, "dcim.interface", &schema, &registry, &mappings);
+        let actual = resolve_ref_uid(
+            &actual_map,
+            Some("dcim.interface"),
+            &schema,
+            &registry,
+            &mappings,
+        );
 
         // the nested device brief got resolved to the device uid
         assert!(actual.is_some());
@@ -1104,8 +1067,13 @@ mod tests {
             ("device".to_string(), json!({ "name": "router-02" })),
             ("name".to_string(), json!("eth1")),
         ]);
-        let other =
-            uid_from_key_fields(&other_map, "dcim.interface", &schema, &registry, &mappings);
+        let other = resolve_ref_uid(
+            &other_map,
+            Some("dcim.interface"),
+            &schema,
+            &registry,
+            &mappings,
+        );
         assert_ne!(actual, other);
     }
 

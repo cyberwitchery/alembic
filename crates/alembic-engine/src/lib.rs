@@ -30,8 +30,8 @@ mod tests;
 
 pub use adapter_ops::{
     backend_id_from_value, build_key_from_schema, build_request_body, normalize_attrs_refs,
-    query_filters_from_key, resolve_value_for_type, resolved_ids_from_state, resolved_ids_identity,
-    state_mappings_by_id, StateMappings,
+    query_filters_from_key, resolve_nested_ref_uid, resolve_value_for_type,
+    resolved_ids_from_state, resolved_ids_identity, state_mappings_by_id, StateMappings,
 };
 pub use apply_retry::{
     apply_non_delete_journaled, apply_non_delete_with_retries, describe_missing_refs,

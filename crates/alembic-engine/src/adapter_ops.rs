@@ -1,5 +1,5 @@
 use crate::{AdapterApplyError, BackendId, StateStore};
-use alembic_core::{FieldType, JsonMap, Key, TypeSchema, Uid};
+use alembic_core::{key_string, uid_v5, FieldType, JsonMap, Key, Schema, TypeSchema, Uid};
 use anyhow::{anyhow, Result};
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
@@ -375,6 +375,67 @@ pub fn backend_id_from_value(value: &Value) -> Option<BackendId> {
         Value::Object(map) => map.get("id").and_then(backend_id_from_value),
         _ => None,
     }
+}
+
+/// resolve a nested reference brief back to its canonical uid: first via the
+/// recorded `backend-id -> uid` mappings (keyed off the brief's `url` endpoint),
+/// then, when the target type is known, by deriving the uid from the target's
+/// key fields — recursing into ref-typed key fields, which arrive as nested
+/// briefs themselves.
+///
+/// `lookup` resolves a `(type_name, backend_id)` to a recorded uid and
+/// `type_for_endpoint` maps a brief's `url` to its type name; taking both as
+/// closures keeps the resolver blind to each adapter's id-space (netbox
+/// integers, nautobot uuids).
+pub fn resolve_nested_ref_uid<L, E>(
+    map: &Map<String, Value>,
+    target_hint: Option<&str>,
+    schema: &Schema,
+    lookup: L,
+    type_for_endpoint: E,
+) -> Option<Uid>
+where
+    L: Fn(&str, &BackendId) -> Option<Uid> + Copy,
+    E: Fn(&str) -> Option<String> + Copy,
+{
+    if let Some(endpoint) = map
+        .get("url")
+        .and_then(Value::as_str)
+        .and_then(type_for_endpoint)
+    {
+        if let Some(backend_id) = map.get("id").and_then(backend_id_from_value) {
+            if let Some(uid) = lookup(&endpoint, &backend_id) {
+                return Some(uid);
+            }
+        }
+    }
+
+    let target = target_hint?;
+    let target_schema = schema.types.get(target)?;
+    let mut key_map = BTreeMap::new();
+    for (key_field, field_schema) in &target_schema.key {
+        let value = map.get(key_field)?;
+        let resolved = match &field_schema.r#type {
+            FieldType::Ref { target: ref_target } | FieldType::ListRef { target: ref_target } => {
+                match value {
+                    Value::Object(brief) => resolve_nested_ref_uid(
+                        brief,
+                        Some(ref_target),
+                        schema,
+                        lookup,
+                        type_for_endpoint,
+                    )
+                    .map(|uid| Value::String(uid.to_string()))
+                    .unwrap_or_else(|| value.clone()),
+                    _ => value.clone(),
+                }
+            }
+            _ => value.clone(),
+        };
+        key_map.insert(key_field.clone(), resolved);
+    }
+    let key = Key::from(key_map);
+    Some(uid_v5(target, &key_string(&key)))
 }
 
 #[cfg(test)]
@@ -1001,6 +1062,158 @@ mod tests {
         assert_eq!(
             resolved.get(&Uid::from_u128(2)),
             Some(&BackendId::String("uuid-2".to_string()))
+        );
+    }
+
+    // --- resolve_nested_ref_uid ---
+
+    fn schema_with(types: Vec<(&str, TypeSchema)>) -> Schema {
+        Schema {
+            types: types
+                .into_iter()
+                .map(|(name, ts)| (name.to_string(), ts))
+                .collect(),
+        }
+    }
+
+    fn brief(value: Value) -> Map<String, Value> {
+        value.as_object().unwrap().clone()
+    }
+
+    fn no_endpoint(_: &str) -> Option<String> {
+        None
+    }
+
+    fn no_lookup(_: &str, _: &BackendId) -> Option<Uid> {
+        None
+    }
+
+    fn expected_uid(target: &str, pairs: Vec<(&str, Value)>) -> Uid {
+        let key = Key::from(
+            pairs
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v))
+                .collect::<BTreeMap<_, _>>(),
+        );
+        uid_v5(target, &key_string(&key))
+    }
+
+    #[test]
+    fn resolve_nested_ref_uid_int_backend_via_mappings() {
+        let uid = Uuid::from_u128(1);
+        let schema = schema_with(vec![("dcim.site", simple_type_schema())]);
+        let map = brief(json!({ "id": 5, "url": "/api/dcim/sites/5/" }));
+        let lookup = |type_name: &str, id: &BackendId| match id {
+            BackendId::Int(5) if type_name == "dcim.site" => Some(uid),
+            _ => None,
+        };
+        let endpoint = |url: &str| (url == "/api/dcim/sites/5/").then(|| "dcim.site".to_string());
+        assert_eq!(
+            resolve_nested_ref_uid(&map, None, &schema, lookup, endpoint),
+            Some(uid)
+        );
+    }
+
+    #[test]
+    fn resolve_nested_ref_uid_string_backend_via_mappings() {
+        let uid = Uuid::from_u128(2);
+        let schema = schema_with(vec![("dcim.site", simple_type_schema())]);
+        let map = brief(json!({ "id": "abc-uuid", "url": "/api/dcim/sites/abc-uuid/" }));
+        let lookup = |type_name: &str, id: &BackendId| match id {
+            BackendId::String(s) if type_name == "dcim.site" && s == "abc-uuid" => Some(uid),
+            _ => None,
+        };
+        let endpoint = |_: &str| Some("dcim.site".to_string());
+        assert_eq!(
+            resolve_nested_ref_uid(&map, None, &schema, lookup, endpoint),
+            Some(uid)
+        );
+    }
+
+    #[test]
+    fn resolve_nested_ref_uid_derives_same_uid_across_id_spaces() {
+        // both id-spaces derive the uid purely from the key, independent of the
+        // backend id shape.
+        let schema = schema_with(vec![("dcim.site", simple_type_schema())]);
+        let int_brief = brief(json!({ "id": 5, "slug": "fra1" }));
+        let str_brief = brief(json!({ "id": "abc", "slug": "fra1" }));
+        let expected = expected_uid("dcim.site", vec![("slug", json!("fra1"))]);
+        let from_int = resolve_nested_ref_uid(
+            &int_brief,
+            Some("dcim.site"),
+            &schema,
+            no_lookup,
+            no_endpoint,
+        );
+        let from_str = resolve_nested_ref_uid(
+            &str_brief,
+            Some("dcim.site"),
+            &schema,
+            no_lookup,
+            no_endpoint,
+        );
+        assert_eq!(from_int, Some(expected));
+        assert_eq!(from_int, from_str);
+    }
+
+    #[test]
+    fn resolve_nested_ref_uid_recurses_ref_typed_key_field() {
+        // an interface keyed by (device -> Ref, name): the device arrives as a
+        // nested brief and must resolve to the device's uid before the interface
+        // uid is derived from it.
+        let device = TypeSchema {
+            key: BTreeMap::from([("slug".to_string(), field_schema(FieldType::Slug))]),
+            fields: BTreeMap::new(),
+        };
+        let interface = TypeSchema {
+            key: BTreeMap::from([
+                (
+                    "device".to_string(),
+                    field_schema(FieldType::Ref {
+                        target: "dcim.device".to_string(),
+                    }),
+                ),
+                ("name".to_string(), field_schema(FieldType::String)),
+            ]),
+            fields: BTreeMap::new(),
+        };
+        let schema = schema_with(vec![("dcim.device", device), ("dcim.interface", interface)]);
+        let iface = brief(json!({ "device": { "slug": "sw1" }, "name": "eth0" }));
+
+        let device_uid = expected_uid("dcim.device", vec![("slug", json!("sw1"))]);
+        let expected = expected_uid(
+            "dcim.interface",
+            vec![
+                ("device", json!(device_uid.to_string())),
+                ("name", json!("eth0")),
+            ],
+        );
+        assert_eq!(
+            resolve_nested_ref_uid(
+                &iface,
+                Some("dcim.interface"),
+                &schema,
+                no_lookup,
+                no_endpoint
+            ),
+            Some(expected)
+        );
+    }
+
+    #[test]
+    fn resolve_nested_ref_uid_unknown_and_untyped_is_none() {
+        let schema = schema_with(vec![("dcim.site", simple_type_schema())]);
+        // no url match, no target hint -> nothing to resolve.
+        let map = brief(json!({ "id": 5, "slug": "fra1" }));
+        assert_eq!(
+            resolve_nested_ref_uid(&map, None, &schema, no_lookup, no_endpoint),
+            None
+        );
+        // target hint whose key field is absent from the brief -> None.
+        let partial = brief(json!({ "id": 5 }));
+        assert_eq!(
+            resolve_nested_ref_uid(&partial, Some("dcim.site"), &schema, no_lookup, no_endpoint),
+            None
         );
     }
 }
