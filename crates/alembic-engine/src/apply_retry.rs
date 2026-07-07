@@ -140,6 +140,9 @@ pub fn describe_missing_refs<V>(ops: &[Op], resolved: &BTreeMap<Uid, V>) -> Stri
             for value in desired.attrs.values() {
                 collect_missing_refs(value, resolved, &mut missing);
             }
+            for value in desired.key.values() {
+                collect_missing_refs(value, resolved, &mut missing);
+            }
         }
     }
     missing
@@ -226,6 +229,28 @@ mod tests {
         let described = describe_missing_refs(&[op], &resolved);
         assert!(described.contains(&missing.to_string()));
         assert!(!described.contains(&present.to_string()));
+    }
+
+    #[test]
+    fn describe_missing_refs_reports_unresolved_key_refs() {
+        let present = Uid::from_u128(1);
+        let missing = Uid::from_u128(3);
+        let mut key = Key::default();
+        key.insert("device".to_string(), json!(missing.to_string()));
+        let op = Op::Create {
+            uid: present,
+            type_name: TypeName::new("test.item"),
+            desired: Object {
+                uid: present,
+                type_name: TypeName::new("test.item"),
+                key,
+                attrs: JsonMap::default(),
+                source: None,
+            },
+        };
+        let resolved: BTreeMap<Uid, BackendId> = BTreeMap::new();
+        let described = describe_missing_refs(&[op], &resolved);
+        assert!(described.contains(&missing.to_string()));
     }
 
     fn create_op(uid: Uid) -> Op {

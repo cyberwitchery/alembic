@@ -296,7 +296,11 @@ pub fn normalize_attrs_refs(
     mappings: &StateMappings,
 ) -> JsonMap {
     let mut normalized = attrs.clone();
-    for (field, schema) in &type_schema.fields {
+    // key fields can be ref-typed too (validated as first-class refs, and read
+    // back out by `build_key_from_schema`), so normalize them alongside `fields`.
+    // a field declared in both is normalized idempotently (the `fields` pass wins
+    // with the same result).
+    for (field, schema) in type_schema.key.iter().chain(&type_schema.fields) {
         if let Some(value) = attrs.get(field) {
             normalized.insert(
                 field.clone(),
@@ -986,6 +990,19 @@ mod tests {
         let a = attrs(vec![("site", json!(12))]);
         let out = normalize_attrs_refs(&a, &schema, &m);
         assert_eq!(out.get("site"), Some(&json!(uid.to_string())));
+    }
+
+    #[test]
+    fn normalize_attrs_refs_resolves_ref_typed_key_field() {
+        let uid = Uuid::from_u128(7);
+        let m = mappings_with("dcim.device", BackendId::Int(42), uid);
+        let schema = TypeSchema {
+            key: BTreeMap::from([("device".to_string(), field_schema(ref_type("dcim.device")))]),
+            fields: BTreeMap::new(),
+        };
+        let a = attrs(vec![("device", json!(42))]);
+        let out = normalize_attrs_refs(&a, &schema, &m);
+        assert_eq!(out.get("device"), Some(&json!(uid.to_string())));
     }
 
     #[test]
