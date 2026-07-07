@@ -18,7 +18,7 @@ use tokio::process::Command;
 use tokio::time::timeout;
 
 #[cfg(feature = "django")]
-use alembic_adapter_django::cast_django::DjangoConfig;
+use alembic_adapter_django::emit::DjangoConfig;
 
 const SUPPORTED_BACKENDS: &[&str] = &[
     #[cfg(feature = "netbox")]

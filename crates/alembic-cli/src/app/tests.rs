@@ -1,6 +1,6 @@
 use super::test_support::*;
 use super::*;
-use alembic_adapter_django::cast_django::{run_cast_django, DjangoConfig};
+use alembic_adapter_django::emit::{run_emit, DjangoConfig};
 use alembic_adapter_registry::{AdapterConfig, ExternalConfig};
 use alembic_core::{Inventory, Schema};
 use alembic_engine::{Op, StateData, StateStore};
@@ -186,7 +186,7 @@ fn write_inventory_creates_missing_parent_dirs() {
 }
 
 #[test]
-fn cast_django_runs_migrations_by_default() {
+fn django_emit_runs_migrations_by_default() {
     let dir = tempdir().unwrap();
     let output = dir.path().join("out");
     std::fs::create_dir_all(&output).unwrap();
@@ -199,7 +199,7 @@ fn cast_django_runs_migrations_by_default() {
     let _inventory = write_minimal_inventory(dir.path());
 
     let runner = MockRunner::new();
-    run_cast_django(
+    run_emit(
         &runner,
         &minimal_inventory,
         &DjangoConfig {
@@ -254,7 +254,7 @@ fn cast_django_runs_migrations_by_default() {
 }
 
 #[test]
-fn cast_django_skips_migrate_with_flag() {
+fn django_emit_skips_migrate_with_flag() {
     let dir = tempdir().unwrap();
     let output = dir.path().join("out");
     std::fs::create_dir_all(&output).unwrap();
@@ -267,7 +267,7 @@ fn cast_django_skips_migrate_with_flag() {
     let _inventory = write_minimal_inventory(dir.path());
 
     let runner = MockRunner::new();
-    run_cast_django(
+    run_emit(
         &runner,
         &minimal_inventory,
         &DjangoConfig {
@@ -291,14 +291,14 @@ fn cast_django_skips_migrate_with_flag() {
 }
 
 #[test]
-fn cast_django_integration_writes_generated_files() {
+fn django_emit_integration_writes_generated_files() {
     let dir = tempdir().unwrap();
     let output = dir.path().join("out");
     let inventory = write_site_inventory(dir.path());
     let runner = FixtureRunner::new(output.clone());
     let site_inventory = load_inventory(inventory).unwrap();
 
-    run_cast_django(
+    run_emit(
         &runner,
         &site_inventory,
         &DjangoConfig {

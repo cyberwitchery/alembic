@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **breaking** django adapter: rename the `cast_django` module to `emit` and `run_cast_django` to `run_emit`, retiring the last code references to the `cast` command removed in 0.4.0; the test-only `ALEMBIC_CAST_PYTHON` env var becomes `ALEMBIC_DJANGO_PYTHON`
+
 ## [0.7.0] - 2026-07-07
 
 - map: `emit: passthrough` copies each matched source object through unchanged, carrying its source-schema type into the output, but only for objects no other rule emits. paired with `match: "*"` it is a terse "reshape the exceptions, pass the rest through" catch-all, so renaming one field no longer needs an identity rule per type; the target `schema` need only declare the types actually reshaped

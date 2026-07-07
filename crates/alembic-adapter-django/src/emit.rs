@@ -89,11 +89,7 @@ impl Default for DjangoConfig {
     }
 }
 
-pub fn run_cast_django(
-    runner: &dyn Runner,
-    inventory: &Inventory,
-    config: &DjangoConfig,
-) -> Result<()> {
+pub fn run_emit(runner: &dyn Runner, inventory: &Inventory, config: &DjangoConfig) -> Result<()> {
     let project_name = config.project.as_deref().unwrap_or("alembic_project");
     let app_name = config.app.as_deref().unwrap_or("alembic_app");
     validate_python_identifier(project_name, "project")?;

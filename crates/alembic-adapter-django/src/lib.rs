@@ -1,6 +1,6 @@
 //! django app generation from alembic ir.
 
-use crate::cast_django::{CommandRunner, DjangoConfig};
+use crate::emit::{CommandRunner, DjangoConfig};
 use alembic_core::{FieldFormat, FieldType, Inventory, Object, Schema, TypeName, TypeSchema};
 use alembic_engine::{pluralize, AppliedOp, ApplyReport, Emitter, Op, StateStore};
 use anyhow::{anyhow, Result};
@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 
-pub mod cast_django;
+pub mod emit;
 
 pub struct DjangoAdapter {
     config: DjangoConfig,
@@ -60,7 +60,7 @@ impl Emitter for DjangoAdapter {
         }
 
         let runner = CommandRunner::new();
-        cast_django::run_cast_django(&runner, &inventory, &self.config)?;
+        emit::run_emit(&runner, &inventory, &self.config)?;
         Ok(apply_report)
     }
 }

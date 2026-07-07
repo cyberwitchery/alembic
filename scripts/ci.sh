@@ -14,8 +14,8 @@ echo "Running clippy..."
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 
 echo "--- Tests ---"
-# Added env var used in CI for cast django tests
-export ALEMBIC_CAST_PYTHON=python3
+# env var used in CI for the django e2e tests
+export ALEMBIC_DJANGO_PYTHON=python3
 cargo test --workspace
 
 echo "--- Coverage ---"

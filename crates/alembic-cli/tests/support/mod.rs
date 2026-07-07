@@ -12,7 +12,7 @@ pub fn fixture_path(name: &str) -> PathBuf {
 }
 
 pub fn python_path() -> String {
-    std::env::var("ALEMBIC_CAST_PYTHON").unwrap_or_else(|_| "python3".to_string())
+    std::env::var("ALEMBIC_DJANGO_PYTHON").unwrap_or_else(|_| "python3".to_string())
 }
 
 pub fn bin_path() -> PathBuf {
@@ -60,9 +60,7 @@ pub fn django_available(python: &str) -> bool {
 pub fn run_apply_django(fixture: &str) {
     let python = python_path();
     if !django_available(&python) {
-        eprintln!(
-            "skipping cast django e2e; django + djangorestframework not available for {python}"
-        );
+        eprintln!("skipping django e2e; django + djangorestframework not available for {python}");
         return;
     }
 
