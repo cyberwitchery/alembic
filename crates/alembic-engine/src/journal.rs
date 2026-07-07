@@ -324,6 +324,47 @@ mod tests {
     }
 
     #[test]
+    fn resume_rejects_mismatched_journal_contents() {
+        // the resume-mismatch guard is unreachable through `load_or_create` (the
+        // file name is a stable hash over all ops, so a changed plan gets a fresh
+        // file). craft the collision directly: write a journal whose CONTENTS are
+        // `other` at the file name `expected` resolves to, then load it as
+        // `expected` and confirm the guard rejects it.
+        let dir = tempdir().unwrap();
+        let expected = test_ops();
+        let other = vec![Op::Create {
+            uid: Uid::from_u128(42),
+            type_name: TypeName::new("dcim.device"),
+            desired: Object {
+                uid: Uid::from_u128(42),
+                type_name: TypeName::new("dcim.device"),
+                key: Default::default(),
+                attrs: Default::default(),
+                source: None,
+            },
+        }];
+        let target = Journal::stable_file_name(dir.path(), "test", &expected);
+        let mut journal = Journal::new_ephemeral(&other);
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&target)
+            .unwrap();
+        journal.file = Some((file, target));
+        journal.save().unwrap();
+        drop(journal);
+
+        let err = Journal::new_from_existing_file(dir.path(), "test", &expected)
+            .expect_err("mismatched journal must be rejected");
+        assert!(
+            err.to_string().contains("don't match the expected ops"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
     fn mark_ops_as_done() {
         let ops = test_ops();
         let mut journal = Journal::new_with_file(tempdir().unwrap().path(), "test", &ops).unwrap();
