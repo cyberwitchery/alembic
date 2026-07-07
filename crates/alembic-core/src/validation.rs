@@ -79,7 +79,21 @@ impl ValidationError {
             ValidationError::DuplicateUid(uid) => Some(*uid),
             ValidationError::MissingReference { target, .. } => Some(*target),
             ValidationError::ReferenceTypeMismatch { target, .. } => Some(*target),
-            _ => None,
+            // exhaustive on purpose (no `_`): a new variant that carries a uid must
+            // be classified here rather than silently returning None.
+            ValidationError::DuplicateKey(_)
+            | ValidationError::MissingType
+            | ValidationError::MissingKey
+            | ValidationError::MissingKeyField { .. }
+            | ValidationError::ExtraKeyField { .. }
+            | ValidationError::MissingAttrField { .. }
+            | ValidationError::ExtraAttrField { .. }
+            | ValidationError::InvalidValue { .. }
+            | ValidationError::UnknownType(_)
+            | ValidationError::UnknownRefTarget { .. }
+            | ValidationError::InvalidSchemaPattern { .. }
+            | ValidationError::ConstraintOnNonStringField { .. }
+            | ValidationError::EmptyEnum { .. } => None,
         }
     }
 
@@ -93,7 +107,23 @@ impl ValidationError {
                     Some(key.clone())
                 }
             }
-            _ => None,
+            // exhaustive on purpose (no `_`): a new variant that carries a key must
+            // be classified here rather than silently returning None.
+            ValidationError::DuplicateUid(_)
+            | ValidationError::MissingType
+            | ValidationError::MissingKey
+            | ValidationError::MissingKeyField { .. }
+            | ValidationError::ExtraKeyField { .. }
+            | ValidationError::MissingAttrField { .. }
+            | ValidationError::ExtraAttrField { .. }
+            | ValidationError::InvalidValue { .. }
+            | ValidationError::UnknownType(_)
+            | ValidationError::MissingReference { .. }
+            | ValidationError::ReferenceTypeMismatch { .. }
+            | ValidationError::UnknownRefTarget { .. }
+            | ValidationError::InvalidSchemaPattern { .. }
+            | ValidationError::ConstraintOnNonStringField { .. }
+            | ValidationError::EmptyEnum { .. } => None,
         }
     }
 
@@ -117,7 +147,12 @@ impl ValidationError {
                 field.split('.').next().map(|s| s.to_string())
             }
             ValidationError::DuplicateKey(key) => key.split("::").next().map(|s| s.to_string()),
-            _ => None,
+            // exhaustive on purpose (no `_`): a new variant that carries a type name
+            // must be classified here rather than silently returning None, which is
+            // what dropped these four validators' source locations to begin with.
+            ValidationError::DuplicateUid(_)
+            | ValidationError::MissingType
+            | ValidationError::MissingKey => None,
         }
     }
 
@@ -127,7 +162,21 @@ impl ValidationError {
             ValidationError::InvalidValue { field, .. }
             | ValidationError::MissingReference { field, .. }
             | ValidationError::ReferenceTypeMismatch { field, .. } => Some(field),
-            _ => None,
+            // exhaustive on purpose (no `_`): a new variant that carries a dotted
+            // field path must be classified here rather than silently returning None.
+            ValidationError::DuplicateUid(_)
+            | ValidationError::DuplicateKey(_)
+            | ValidationError::MissingType
+            | ValidationError::MissingKey
+            | ValidationError::MissingKeyField { .. }
+            | ValidationError::ExtraKeyField { .. }
+            | ValidationError::MissingAttrField { .. }
+            | ValidationError::ExtraAttrField { .. }
+            | ValidationError::UnknownType(_)
+            | ValidationError::UnknownRefTarget { .. }
+            | ValidationError::InvalidSchemaPattern { .. }
+            | ValidationError::ConstraintOnNonStringField { .. }
+            | ValidationError::EmptyEnum { .. } => None,
         }
     }
 }
