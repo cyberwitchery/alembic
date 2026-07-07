@@ -1,4 +1,4 @@
-# case study: circuits
+# example: circuits
 
 ## goal
 

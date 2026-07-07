@@ -1,0 +1,42 @@
+# a trimmed vendor-neutral fabric for docs/case-studies/01-evaluate-dcim-systems.md:
+# one site, one device, one interface, one ip. the case study stands this same
+# model up into netbox and nautobot from one source of truth.
+schema:
+  types:
+    dcim.site:
+      key: {slug: {type: slug}}
+      fields: {name: {type: string}, slug: {type: slug}}
+    dcim.device:
+      key: {name: {type: slug}}
+      fields:
+        name: {type: string}
+        site: {type: ref, target: dcim.site}
+        role: {type: string}
+    dcim.interface:
+      key: {name: {type: slug}}
+      fields:
+        name: {type: string}
+        device: {type: ref, target: dcim.device}
+        type: {type: string}
+    ipam.ip_address:
+      key: {address: {type: ip_address}}
+      fields:
+        address: {type: ip_address}
+        assigned_interface: {type: ref, target: dcim.interface}
+objects:
+  - uid: "a4d6a0c3-4e73-4a76-b216-4d38f8c55f3d"
+    type: dcim.site
+    key: {slug: "fra1"}
+    attrs: {name: "Frankfurt DC1", slug: "fra1"}
+  - uid: "7b8f7a92-8fd0-4667-9a4b-9f3b5c9a4b1a"
+    type: dcim.device
+    key: {name: "leaf01"}
+    attrs: {name: "leaf01", site: "a4d6a0c3-4e73-4a76-b216-4d38f8c55f3d", role: "leaf"}
+  - uid: "5a1c43a4-4f52-4d07-8a2f-88ad1fbdf8c0"
+    type: dcim.interface
+    key: {name: "eth0"}
+    attrs: {name: "eth0", device: "7b8f7a92-8fd0-4667-9a4b-9f3b5c9a4b1a", type: "1000base-t"}
+  - uid: "c4a0c0f0-ef8a-4c7f-9b0a-2ff3a4d14fd1"
+    type: ipam.ip_address
+    key: {address: "10.0.0.10/24"}
+    attrs: {address: "10.0.0.10/24", assigned_interface: "5a1c43a4-4f52-4d07-8a2f-88ad1fbdf8c0"}

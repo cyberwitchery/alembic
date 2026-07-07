@@ -1,4 +1,4 @@
-# netbox map for docs/case-studies/01-basic-dcim-ipam.md: rename the neutral
+# netbox map for docs/examples/01-basic-dcim-ipam.md: rename the neutral
 # `assigned_interface` to netbox's `assigned_object`, pass every other type
 # through unchanged. run: alembic map -f 01-basic.yaml --spec 01-netbox-map.yaml
 schema:

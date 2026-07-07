@@ -1,4 +1,4 @@
-# case study: simple django-based dcim
+# example: simple django-based dcim
 
 ## goal
 

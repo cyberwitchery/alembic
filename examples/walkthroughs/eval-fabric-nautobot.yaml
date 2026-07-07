@@ -1,0 +1,38 @@
+# nautobot map for docs/case-studies/01-evaluate-dcim-systems.md.
+# nautobot 2.x models a site as `dcim.location` keyed by its human name (no slug),
+# and a device points at `location`, not `site`. it keeps `assigned_interface`,
+# so the interface and ip pass through unchanged.
+schema:
+  types:
+    dcim.location:
+      key: {name: {type: string}}
+      fields: {name: {type: string}}
+    dcim.device:
+      key: {name: {type: slug}}
+      fields:
+        name: {type: string}
+        location: {type: ref, target: dcim.location}
+        role: {type: string}
+rules:
+  # site -> location: nautobot keys a location by its human name, not a slug.
+  - name: sites-to-locations
+    match: dcim.site
+    emit:
+      type: dcim.location
+      key: {name: "${attrs.name}"}
+      attrs: {name: "${attrs.name}"}
+  # the device's `site` relation becomes `location`; the 1:1 site rule above lets
+  # map rewire the ref from the old site uid to the new location uid.
+  - name: devices
+    match: dcim.device
+    emit:
+      type: dcim.device
+      key: {name: "${key.name}"}
+      attrs:
+        name: "${attrs.name}"
+        location: "${attrs.site}"
+        role: "${attrs.role}"
+  # interface and ip use the same names nautobot does, so they pass through.
+  - name: rest
+    match: "*"
+    emit: passthrough

@@ -1,0 +1,22 @@
+# netbox map for docs/case-studies/01-evaluate-dcim-systems.md.
+# netbox names an ip's interface assignment `assigned_object`; rename it and pass
+# every other type through unchanged (the neutral names already match netbox).
+schema:
+  types:
+    ipam.ip_address:
+      key: {address: {type: ip_address}}
+      fields:
+        address: {type: ip_address}
+        assigned_object: {type: ref, target: dcim.interface}
+rules:
+  - name: rename-assignment
+    match: ipam.ip_address
+    emit:
+      type: ipam.ip_address
+      key: {address: "${key.address}"}
+      attrs:
+        address: "${attrs.address}"
+        assigned_object: "${attrs.assigned_interface}"
+  - name: rest
+    match: "*"
+    emit: passthrough

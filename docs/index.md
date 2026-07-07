@@ -17,4 +17,5 @@ this directory contains the reference documentation for alembic.
 - `docs/infrahub.md` - infrahub adapter mapping and constraints
 - `docs/external-adapters.md` - process-based external adapter protocol
 - `docs/development.md` - building, testing, and release flow
-- `docs/case-studies/README.md` - end-to-end examples and walkthroughs
+- `docs/case-studies/README.md` - worked end-to-end scenarios
+- `docs/examples/README.md` - minimal single-topic walkthroughs

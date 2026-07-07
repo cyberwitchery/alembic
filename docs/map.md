@@ -20,7 +20,7 @@ alembic map -f examples/map-input.yaml --spec examples/map.yaml -o ir.json
 - `--spec` is the map specification.
 - `-o` is the transformed ir.
 
-`docs/case-studies/07-nautobot-to-netbox.md` walks through a full cross-backend
+`docs/case-studies/02-nautobot-to-netbox.md` walks through a full cross-backend
 migration using these steps.
 
 ## shape

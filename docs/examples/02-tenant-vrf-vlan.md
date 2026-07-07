@@ -1,4 +1,4 @@
-# case study: tenant + vrf + vlan + prefix
+# example: tenant + vrf + vlan + prefix
 
 ## goal
 

@@ -1,4 +1,4 @@
-# vendor-neutral inventory for docs/case-studies/01-basic-dcim-ipam.md.
+# vendor-neutral inventory for docs/examples/01-basic-dcim-ipam.md.
 # names an ip's interface assignment `assigned_interface`; the case study's
 # netbox map renames it to netbox's `assigned_object`.
 schema:

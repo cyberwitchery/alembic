@@ -1,4 +1,4 @@
-# case study: basic dcim + ipam
+# example: basic dcim + ipam
 
 ## goal
 
@@ -16,7 +16,7 @@ the map is almost entirely a pass-through.
 ## the model
 
 the desired state, authored once as a vendor-neutral inventory. the full file is
-[`examples/case-studies/01-basic.yaml`](../../examples/case-studies/01-basic.yaml)
+[`examples/walkthroughs/01-basic.yaml`](../../examples/walkthroughs/01-basic.yaml)
 (eight types: manufacturer, device role and type, site, device, two interfaces,
 prefix, ip address). its one netbox-specific wrinkle is how the ip names its
 interface assignment:
@@ -56,7 +56,7 @@ to netbox's names: a rule that renames the field on `ipam.ip_address`, and a
 passthrough carries each source type's schema too, the target `schema` only
 declares the one type you reshape. refs are rewired automatically, so the ip
 still points at its interface even though `map` re-derives uids. the spec is
-[`examples/case-studies/01-netbox-map.yaml`](../../examples/case-studies/01-netbox-map.yaml):
+[`examples/walkthroughs/01-netbox-map.yaml`](../../examples/walkthroughs/01-netbox-map.yaml):
 
 ```yaml
 schema:
@@ -94,8 +94,8 @@ run from a checkout of this repo (or point `-f`/`--spec` at your own copies):
 BACKEND_CONFIG=/path/to/backend-netbox.yaml
 
 # 1. reshape the neutral model to netbox's field names.
-alembic map -f examples/case-studies/01-basic.yaml \
-  --spec examples/case-studies/01-netbox-map.yaml -o /tmp/netbox.json
+alembic map -f examples/walkthroughs/01-basic.yaml \
+  --spec examples/walkthroughs/01-netbox-map.yaml -o /tmp/netbox.json
 
 # 2. plan and apply the netbox-shaped inventory.
 alembic plan -f /tmp/netbox.json -o /tmp/plan.json \

@@ -150,4 +150,4 @@ relationships are validated strictly by schema and `uid` references.
 - `docs/infrahub.md`
 - `docs/external-adapters.md`
 - `docs/development.md`
-- `docs/case-studies/`
+- `docs/case-studies/` (worked scenarios) and `docs/examples/` (minimal walkthroughs)

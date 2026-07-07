@@ -1,13 +1,10 @@
 # case studies
 
-small end-to-end scenarios for alembic.
+worked scenarios that show alembic solving a problem end to end, not just running
+a command. for minimal single-topic walkthroughs, see [`../examples`](../examples).
 
-each case study includes a minimal inventory and commands.
-keys are structured maps; alembic canonicalizes them as JSON for matching and sorting.
-
-- `01-basic-dcim-ipam.md`: single site + device + interfaces + prefix + ip
-- `02-tenant-vrf-vlan.md`: tenant-scoped vrf/vlan/prefix
-- `03-circuits.md`: provider + circuit + termination
-- `04-model-to-netbox.md`: model data and apply to netbox
-- `06-django-dcim.md`: generate a simple django-based dcim
-- `07-nautobot-to-netbox.md`: migrate between backends with a `map` translation step
+- `01-evaluate-dcim-systems.md`: stand one vendor-neutral fabric up into both
+  netbox and nautobot from a single source of truth, to evaluate candidates
+  without prefilling each by hand.
+- `02-nautobot-to-netbox.md`: migrate an inventory between two backends whose
+  models do not match, using a `map` translation step in the middle.
