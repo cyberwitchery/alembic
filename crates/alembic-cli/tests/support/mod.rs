@@ -16,7 +16,7 @@ pub fn python_path() -> String {
 }
 
 pub fn bin_path() -> PathBuf {
-    let env_keys = ["CARGO_BIN_EXE_alembic_cli", "CARGO_BIN_EXE_alembic-cli"];
+    let env_keys = ["CARGO_BIN_EXE_alembic"];
     for key in env_keys {
         if let Ok(value) = std::env::var(key) {
             return PathBuf::from(value);
@@ -31,7 +31,7 @@ pub fn bin_path() -> PathBuf {
                 .join("..")
                 .join("target")
         });
-    target_dir.join("debug").join("alembic-cli")
+    target_dir.join("debug").join("alembic")
 }
 
 pub fn run_command(mut command: Command, context: &str) {
