@@ -1056,6 +1056,167 @@ mod tests {
             .any(|err| matches!(err, ValidationError::UnknownType(_))));
     }
 
+    fn slug_key_schema() -> TypeSchema {
+        TypeSchema {
+            key: BTreeMap::from([(
+                "slug".to_string(),
+                FieldSchema {
+                    r#type: FieldType::Slug,
+                    required: true,
+                    nullable: false,
+                    description: None,
+                    format: None,
+                    pattern: None,
+                },
+            )]),
+            fields: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn detects_duplicate_uid() {
+        // same uid, distinct keys -> DuplicateUid fires but DuplicateKey does not
+        let mk = |slug: &str| {
+            let mut k = BTreeMap::new();
+            k.insert("slug".to_string(), json!(slug));
+            Object::new(
+                uid(1),
+                TypeName::new("site"),
+                Key::from(k),
+                JsonMap::default(),
+            )
+            .unwrap()
+        };
+        let report = validate_inventory(&Inventory {
+            schema: Schema {
+                types: BTreeMap::from([("site".to_string(), slug_key_schema())]),
+            },
+            objects: vec![mk("fra1"), mk("ber1")],
+        });
+        assert!(report
+            .errors
+            .iter()
+            .any(|err| matches!(err, ValidationError::DuplicateUid(_))));
+    }
+
+    #[test]
+    fn detects_missing_key_field() {
+        // non-empty key (so MissingKey does not fire) that lacks the declared `slug`
+        let mut k = BTreeMap::new();
+        k.insert("other".to_string(), json!("x"));
+        let objects = vec![Object {
+            uid: uid(50),
+            type_name: TypeName::new("site"),
+            key: Key::from(k),
+            attrs: JsonMap::default(),
+            source: None,
+        }];
+        let report = validate_inventory(&Inventory {
+            schema: Schema {
+                types: BTreeMap::from([("site".to_string(), slug_key_schema())]),
+            },
+            objects,
+        });
+        assert!(report
+            .errors
+            .iter()
+            .any(|err| matches!(err, ValidationError::MissingKeyField { .. })));
+    }
+
+    #[test]
+    fn detects_extra_key_field() {
+        // schema declares no key fields; object carries one -> ExtraKeyField
+        let mut k = BTreeMap::new();
+        k.insert("slug".to_string(), json!("fra1"));
+        let objects = vec![Object {
+            uid: uid(51),
+            type_name: TypeName::new("site"),
+            key: Key::from(k),
+            attrs: JsonMap::default(),
+            source: None,
+        }];
+        let report = validate_inventory(&Inventory {
+            schema: Schema {
+                types: BTreeMap::from([(
+                    "site".to_string(),
+                    TypeSchema {
+                        key: BTreeMap::new(),
+                        fields: BTreeMap::new(),
+                    },
+                )]),
+            },
+            objects,
+        });
+        assert!(report
+            .errors
+            .iter()
+            .any(|err| matches!(err, ValidationError::ExtraKeyField { .. })));
+    }
+
+    #[test]
+    fn detects_missing_attr_field() {
+        // required attr `name` declared, absent from attrs -> MissingAttrField
+        let type_schema = TypeSchema {
+            key: slug_key_schema().key,
+            fields: BTreeMap::from([(
+                "name".to_string(),
+                FieldSchema {
+                    r#type: FieldType::String,
+                    required: true,
+                    nullable: false,
+                    description: None,
+                    format: None,
+                    pattern: None,
+                },
+            )]),
+        };
+        let mut k = BTreeMap::new();
+        k.insert("slug".to_string(), json!("fra1"));
+        let objects = vec![Object::new(
+            uid(52),
+            TypeName::new("site"),
+            Key::from(k),
+            JsonMap::default(),
+        )
+        .unwrap()];
+        let report = validate_inventory(&Inventory {
+            schema: Schema {
+                types: BTreeMap::from([("site".to_string(), type_schema)]),
+            },
+            objects,
+        });
+        assert!(report
+            .errors
+            .iter()
+            .any(|err| matches!(err, ValidationError::MissingAttrField { .. })));
+    }
+
+    #[test]
+    fn detects_extra_attr_field() {
+        // attr `color` not declared in schema.fields -> ExtraAttrField
+        let mut k = BTreeMap::new();
+        k.insert("slug".to_string(), json!("fra1"));
+        let mut attrs = BTreeMap::new();
+        attrs.insert("color".to_string(), json!("blue"));
+        let objects = vec![Object::new(
+            uid(53),
+            TypeName::new("site"),
+            Key::from(k),
+            JsonMap::from(attrs),
+        )
+        .unwrap()];
+        let report = validate_inventory(&Inventory {
+            schema: Schema {
+                types: BTreeMap::from([("site".to_string(), slug_key_schema())]),
+            },
+            objects,
+        });
+        assert!(report
+            .errors
+            .iter()
+            .any(|err| matches!(err, ValidationError::ExtraAttrField { .. })));
+    }
+
     #[test]
     fn detects_missing_references_with_schema() {
         let mut key_fields = BTreeMap::new();
