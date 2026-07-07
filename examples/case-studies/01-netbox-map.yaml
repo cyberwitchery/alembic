@@ -1,0 +1,24 @@
+# netbox map for docs/case-studies/01-basic-dcim-ipam.md: rename the neutral
+# `assigned_interface` to netbox's `assigned_object`, pass every other type
+# through unchanged. run: alembic map -f 01-basic.yaml --spec 01-netbox-map.yaml
+schema:
+  types:
+    ipam.ip_address:
+      key: {address: {type: ip_address}}
+      fields:
+        address: {type: ip_address}
+        assigned_object: {type: ref, target: dcim.interface}
+        description: {type: string}
+rules:
+  - name: rename-assignment
+    match: ipam.ip_address
+    emit:
+      type: ipam.ip_address
+      key: {address: "${key.address}"}
+      attrs:
+        address: "${attrs.address}"
+        assigned_object: "${attrs.assigned_interface}"
+        description: "${attrs.description}"
+  - name: rest
+    match: "*"
+    emit: passthrough
