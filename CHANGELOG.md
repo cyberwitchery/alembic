@@ -15,7 +15,6 @@
 - netbox adapter: classify custom fields by the django content-type form (`app_label.model`, e.g. `ipam.ipaddress`) everywhere, matching how netbox returns and keys them, instead of the endpoint-underscore form (`ipam.ip_address`). previously a custom field on any multi-word model (`ipam.ip_address`, `dcim.device_type`, `dcim.mac_address`, …) was misclassified: `apply` emitted it as a top-level field netbox silently drops, so the field never converged (every plan re-updated it), and `ensure_schema` posted an invalid content type and errored. single-word models were unaffected, so it was invisible until now
 - nautobot adapter: create a custom field with `key` (the nautobot 2.x writable identifier), not `name` (which the api has no field for and derives `key` from by slugifying `label`), so a non-slug field name like `assetTag` keeps its identity instead of becoming `assettag` — which the read/detect/write paths then never matched, silently dropping the field's value on write and erroring on the next `ensure_schema`
 - generic adapter: clearing a nullable ref (setting it to `null`) no longer aborts the write with `ref value must be a uuid string`; the write body-builder now delegates to the shared engine `build_request_body`, which passes a null straight through to clear the field, instead of re-implementing the loop without that guard
-- security: bump crossbeam-epoch 0.9.18 to 0.9.20 to clear RUSTSEC-2026-0204 (invalid pointer dereference, pulled in transitively behind the optional starlark feature)
 
 ## [0.6.0] - 2026-07-05
 
