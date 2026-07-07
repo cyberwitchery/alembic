@@ -99,14 +99,27 @@ pub(crate) async fn apply(
     }
     // schema provisioning can delete custom object types/fields the inventory no
     // longer declares, cascading to their objects on the backend; gate it behind
-    // the same flag using the plan's read-only schema preview, so apply refuses
-    // before writing anything (same plan-time basis as the op gate above).
+    // the same flag as object deletes. the plan's schema_preview is only a cheap
+    // early gate when a caller populated it: planner::plan hard-codes None and the
+    // interactive/library apply paths rebuild with None, so it cannot be the
+    // authoritative gate. the Backend::Adapter arm below self-previews instead.
     if let Some(preview) = &plan.schema_preview {
         guard_schema_deletes(preview, allow_delete)?;
     }
 
     let (emitter, provision): (&dyn Emitter, ProvisionReport) = match backend {
-        Backend::Adapter(adapter) => (adapter.as_ref(), adapter.ensure_schema(&plan.schema).await?),
+        Backend::Adapter(adapter) => {
+            // authoritative gate: self-preview at the chokepoint before
+            // ensure_schema, so no caller can forget (mirrors `plan --provision`).
+            // preview_schema defaults to Ok(None), leaving adapters that cannot
+            // preview unaffected; an Err fails closed rather than provision blind.
+            if !allow_delete {
+                if let Some(preview) = adapter.preview_schema(&plan.schema).await? {
+                    guard_schema_deletes(&preview, allow_delete)?;
+                }
+            }
+            (adapter.as_ref(), adapter.ensure_schema(&plan.schema).await?)
+        }
         Backend::Emitter(emitter) => (emitter.as_ref(), ProvisionReport::default()),
         Backend::Observer(_) => {
             return Err(anyhow!("backend is read-only; it cannot apply changes"))
