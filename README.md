@@ -51,8 +51,8 @@ under [releases](https://github.com/cyberwitchery/alembic/releases). download th
 tarball for your platform, extract it, and put `alembic` on your `PATH`:
 
 ```bash
-tar xzf alembic-<version>-<target>.tar.gz
-mv "alembic-<version>-<target>/alembic" /usr/local/bin/
+tar xzf alembic-v<version>-<target>.tar.gz
+mv "alembic-v<version>-<target>/alembic" /usr/local/bin/
 alembic --version
 ```
 
