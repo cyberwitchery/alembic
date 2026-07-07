@@ -1290,6 +1290,93 @@ fn apply_plan_allows_schema_deletes_with_flag() {
     futures::executor::block_on(apply_plan(&backend, &plan, &mut state, true)).unwrap();
 }
 
+/// adapter whose read-only schema preview reports pending deletions, exercising
+/// apply's self-preview gate on a plan that carries no precomputed schema_preview.
+struct PreviewAdapter {
+    preview: ProvisionReport,
+}
+
+#[async_trait::async_trait]
+impl Observer for PreviewAdapter {
+    async fn read(
+        &self,
+        _schema: &alembic_core::Schema,
+        _types: &[TypeName],
+        _state: &StateStore,
+    ) -> anyhow::Result<ObservedState> {
+        Ok(ObservedState::default())
+    }
+}
+
+#[async_trait::async_trait]
+impl Emitter for PreviewAdapter {
+    async fn write(
+        &self,
+        _schema: &alembic_core::Schema,
+        _ops: &[Op],
+        _state: &StateStore,
+    ) -> anyhow::Result<ApplyReport> {
+        Ok(ApplyReport::default())
+    }
+}
+
+#[async_trait::async_trait]
+impl Adapter for PreviewAdapter {
+    async fn preview_schema(
+        &self,
+        _schema: &alembic_core::Schema,
+    ) -> anyhow::Result<Option<ProvisionReport>> {
+        Ok(Some(self.preview.clone()))
+    }
+}
+
+#[test]
+fn apply_plan_self_previews_and_blocks_schema_deletes() {
+    // the plan carries no precomputed preview, as the interactive-apply and
+    // library plan()+apply_plan() paths produce; the gate must still fire by
+    // previewing the adapter's schema at apply time.
+    let adapter = PreviewAdapter {
+        preview: ProvisionReport {
+            deleted_object_types: vec!["dcim.widget".to_string()],
+            ..Default::default()
+        },
+    };
+    let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
+    let plan = Plan {
+        schema: Schema {
+            types: BTreeMap::new(),
+        },
+        ops: vec![],
+        summary: None,
+        schema_preview: None,
+    };
+    let backend = Backend::Adapter(Box::new(adapter));
+    let result = futures::executor::block_on(apply_plan(&backend, &plan, &mut state, false));
+    assert!(result.is_err());
+    assert!(result.unwrap_err().to_string().contains("--allow-delete"));
+}
+
+#[test]
+fn apply_plan_self_preview_allows_schema_deletes_with_flag() {
+    let adapter = PreviewAdapter {
+        preview: ProvisionReport {
+            deleted_object_fields: vec!["dcim.widget.color".to_string()],
+            ..Default::default()
+        },
+    };
+    let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
+    let plan = Plan {
+        schema: Schema {
+            types: BTreeMap::new(),
+        },
+        ops: vec![],
+        summary: None,
+        schema_preview: None,
+    };
+    let backend = Backend::Adapter(Box::new(adapter));
+    futures::executor::block_on(apply_plan(&backend, &plan, &mut state, true)).unwrap();
+}
+
 #[test]
 fn apply_plan_updates_state() {
     let adapter = TestAdapter {
