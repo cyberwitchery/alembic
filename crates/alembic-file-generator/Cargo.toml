@@ -1,0 +1,22 @@
+[package]
+name = "alembic-file-generator"
+version = "0.7.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/alembic-file-generator"
+description = "A tool for generating alembic files (for testing)."
+readme = "../../README.md"
+
+[dependencies]
+alembic-core.workspace = true
+alembic-engine.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

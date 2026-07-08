@@ -12,6 +12,7 @@ members = [
     "crates/alembic-adapter-peeringdb",
     "crates/alembic-adapter-django",
     "crates/alembic-adapter-test",
+    "crates/alembic-file-generator",
 ]
 
 [workspace.package]

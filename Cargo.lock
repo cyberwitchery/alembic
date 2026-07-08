@@ -212,6 +212,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "alembic-file-generator"
+version = "0.7.0"
+dependencies = [
+ "alembic-core",
+ "alembic-engine",
+ "anyhow",
+ "clap",
+ "serde_json",
+ "serde_yaml_ng",
+ "tempfile",
+]
+
+[[package]]
 name = "allocative"
 version = "0.3.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
