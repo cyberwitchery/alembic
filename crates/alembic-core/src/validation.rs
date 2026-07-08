@@ -79,7 +79,21 @@ impl ValidationError {
             ValidationError::DuplicateUid(uid) => Some(*uid),
             ValidationError::MissingReference { target, .. } => Some(*target),
             ValidationError::ReferenceTypeMismatch { target, .. } => Some(*target),
-            _ => None,
+            // exhaustive on purpose (no `_`): a new variant that carries a uid must
+            // be classified here rather than silently returning None.
+            ValidationError::DuplicateKey(_)
+            | ValidationError::MissingType
+            | ValidationError::MissingKey
+            | ValidationError::MissingKeyField { .. }
+            | ValidationError::ExtraKeyField { .. }
+            | ValidationError::MissingAttrField { .. }
+            | ValidationError::ExtraAttrField { .. }
+            | ValidationError::InvalidValue { .. }
+            | ValidationError::UnknownType(_)
+            | ValidationError::UnknownRefTarget { .. }
+            | ValidationError::InvalidSchemaPattern { .. }
+            | ValidationError::ConstraintOnNonStringField { .. }
+            | ValidationError::EmptyEnum { .. } => None,
         }
     }
 
@@ -93,7 +107,23 @@ impl ValidationError {
                     Some(key.clone())
                 }
             }
-            _ => None,
+            // exhaustive on purpose (no `_`): a new variant that carries a key must
+            // be classified here rather than silently returning None.
+            ValidationError::DuplicateUid(_)
+            | ValidationError::MissingType
+            | ValidationError::MissingKey
+            | ValidationError::MissingKeyField { .. }
+            | ValidationError::ExtraKeyField { .. }
+            | ValidationError::MissingAttrField { .. }
+            | ValidationError::ExtraAttrField { .. }
+            | ValidationError::InvalidValue { .. }
+            | ValidationError::UnknownType(_)
+            | ValidationError::MissingReference { .. }
+            | ValidationError::ReferenceTypeMismatch { .. }
+            | ValidationError::UnknownRefTarget { .. }
+            | ValidationError::InvalidSchemaPattern { .. }
+            | ValidationError::ConstraintOnNonStringField { .. }
+            | ValidationError::EmptyEnum { .. } => None,
         }
     }
 
@@ -104,7 +134,11 @@ impl ValidationError {
             ValidationError::MissingKeyField { type_name, .. }
             | ValidationError::ExtraKeyField { type_name, .. }
             | ValidationError::MissingAttrField { type_name, .. }
-            | ValidationError::ExtraAttrField { type_name, .. } => Some(type_name.clone()),
+            | ValidationError::ExtraAttrField { type_name, .. }
+            | ValidationError::UnknownRefTarget { type_name, .. }
+            | ValidationError::InvalidSchemaPattern { type_name, .. }
+            | ValidationError::ConstraintOnNonStringField { type_name, .. }
+            | ValidationError::EmptyEnum { type_name, .. } => Some(type_name.clone()),
             ValidationError::InvalidValue { field, .. } => {
                 field.split('.').next().map(|s| s.to_string())
             }
@@ -113,7 +147,12 @@ impl ValidationError {
                 field.split('.').next().map(|s| s.to_string())
             }
             ValidationError::DuplicateKey(key) => key.split("::").next().map(|s| s.to_string()),
-            _ => None,
+            // exhaustive on purpose (no `_`): a new variant that carries a type name
+            // must be classified here rather than silently returning None, which is
+            // what dropped these four validators' source locations to begin with.
+            ValidationError::DuplicateUid(_)
+            | ValidationError::MissingType
+            | ValidationError::MissingKey => None,
         }
     }
 
@@ -123,7 +162,21 @@ impl ValidationError {
             ValidationError::InvalidValue { field, .. }
             | ValidationError::MissingReference { field, .. }
             | ValidationError::ReferenceTypeMismatch { field, .. } => Some(field),
-            _ => None,
+            // exhaustive on purpose (no `_`): a new variant that carries a dotted
+            // field path must be classified here rather than silently returning None.
+            ValidationError::DuplicateUid(_)
+            | ValidationError::DuplicateKey(_)
+            | ValidationError::MissingType
+            | ValidationError::MissingKey
+            | ValidationError::MissingKeyField { .. }
+            | ValidationError::ExtraKeyField { .. }
+            | ValidationError::MissingAttrField { .. }
+            | ValidationError::ExtraAttrField { .. }
+            | ValidationError::UnknownType(_)
+            | ValidationError::UnknownRefTarget { .. }
+            | ValidationError::InvalidSchemaPattern { .. }
+            | ValidationError::ConstraintOnNonStringField { .. }
+            | ValidationError::EmptyEnum { .. } => None,
         }
     }
 }
@@ -1817,6 +1870,88 @@ mod tests {
         assert_eq!(
             located[0].source,
             Some(SourceLocation::file_line("inventory.yaml", 20))
+        );
+    }
+
+    #[test]
+    fn with_sources_attaches_location_for_empty_enum() {
+        // the four newest schema validators carry a `type_name`; with_sources must
+        // resolve it to the declaring type's source line, like every older error.
+        let device = TypeSchema {
+            key: BTreeMap::from([("name".to_string(), schema_field(FieldType::String))]),
+            fields: BTreeMap::from([(
+                "role".to_string(),
+                schema_field(FieldType::Enum { values: vec![] }),
+            )]),
+        };
+        let mut key = BTreeMap::new();
+        key.insert("name".to_string(), serde_json::json!("leaf1"));
+        let object = Object::new(
+            uid(1),
+            TypeName::new("device"),
+            Key::from(key),
+            JsonMap::default(),
+        )
+        .unwrap()
+        .with_source(SourceLocation::file_line("inventory.yaml", 7));
+
+        let inventory = Inventory {
+            schema: Schema {
+                types: BTreeMap::from([("device".to_string(), device)]),
+            },
+            objects: vec![object],
+        };
+        let located = validate_inventory(&inventory).with_sources(&inventory.objects);
+
+        let empty_enum = located
+            .iter()
+            .find(|l| matches!(l.error, ValidationError::EmptyEnum { .. }))
+            .expect("empty-enum error present");
+        assert_eq!(
+            empty_enum.source,
+            Some(SourceLocation::file_line("inventory.yaml", 7))
+        );
+    }
+
+    #[test]
+    fn with_sources_attaches_location_for_unknown_ref_target() {
+        // a second of the four newest validators, proving the arm resolves per
+        // variant and not just for empty-enum.
+        let device = TypeSchema {
+            key: BTreeMap::from([("name".to_string(), schema_field(FieldType::String))]),
+            fields: BTreeMap::from([(
+                "site".to_string(),
+                schema_field(FieldType::Ref {
+                    target: "dcim.site".to_string(),
+                }),
+            )]),
+        };
+        let mut key = BTreeMap::new();
+        key.insert("name".to_string(), serde_json::json!("leaf1"));
+        let object = Object::new(
+            uid(1),
+            TypeName::new("device"),
+            Key::from(key),
+            JsonMap::default(),
+        )
+        .unwrap()
+        .with_source(SourceLocation::file_line("inventory.yaml", 12));
+
+        let inventory = Inventory {
+            schema: Schema {
+                types: BTreeMap::from([("device".to_string(), device)]),
+            },
+            objects: vec![object],
+        };
+        let located = validate_inventory(&inventory).with_sources(&inventory.objects);
+
+        let unknown_ref = located
+            .iter()
+            .find(|l| matches!(l.error, ValidationError::UnknownRefTarget { .. }))
+            .expect("unknown-ref-target error present");
+        assert_eq!(
+            unknown_ref.source,
+            Some(SourceLocation::file_line("inventory.yaml", 12))
         );
     }
 
