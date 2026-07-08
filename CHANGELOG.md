@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- add `alembic-file-generator`, an internal tool that emits a synthetic `plan.json` of N create ops over a fixed dcim schema for scale/perf testing (#118)
 - external adapters: write the request to a child adapter's stdin concurrently with draining its output, all under the run timeout, so a child that floods its output or never reads its stdin can no longer deadlock the write outside the timeout guard and hang the cli forever
 - django adapter: error when urls.py has no `urlpatterns = [` list to wire the api route into, instead of writing the file and reporting success while the generated app's routes are silently never mounted; the closing bracket was already strict, so the opening landmark now matches every sibling scaffolding step
 
