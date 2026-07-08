@@ -580,9 +580,14 @@ fn normalize_attrs(
     let keys: Vec<String> = attrs.keys().cloned().collect();
     for key in keys {
         if let Some(value) = attrs.get(&key).cloned() {
+            // ref-typed key fields resolve to their canonical uid on read too, so
+            // consult `.key` alongside `.fields` (the adapter-side counterpart of
+            // the engine's `normalize_attrs_refs`, which walks `key.chain(fields)`).
+            // a field in both resolves from `.fields`.
             let target_hint = type_schema
                 .fields
                 .get(&key)
+                .or_else(|| type_schema.key.get(&key))
                 .map(|fs| &fs.r#type)
                 .and_then(|ft| match ft {
                     FieldType::Ref { target } => Some(target.as_str()),
@@ -1075,6 +1080,82 @@ mod tests {
             &mappings,
         );
         assert_ne!(actual, other);
+    }
+
+    #[test]
+    fn test_normalize_attrs_resolves_ref_typed_key_field() {
+        // a ref-typed field declared only in `.key` (not `.fields`) must resolve
+        // to its target's canonical uid on read, exactly like a ref-typed `.fields`
+        // field. this exercises the production `normalize_attrs` hint computation,
+        // which `test_uid_from_key_fields_resolves_ref_key` bypasses by passing the
+        // hint directly.
+        let registry = ObjectTypeRegistry::default();
+        let mappings = super::super::state::StateMappings::default();
+
+        // target: dcim.device, keyed by `name`.
+        let mut device_schema = TypeSchema {
+            key: BTreeMap::new(),
+            fields: BTreeMap::new(),
+        };
+        device_schema.key.insert(
+            "name".to_string(),
+            FieldSchema {
+                r#type: FieldType::String,
+                required: true,
+                nullable: false,
+                description: None,
+                format: None,
+                pattern: None,
+            },
+        );
+        let mut schema = Schema {
+            types: BTreeMap::new(),
+        };
+        schema
+            .types
+            .insert("dcim.device".to_string(), device_schema);
+
+        // parent object: a ref-typed key field `device` -> dcim.device, not
+        // duplicated into `.fields`.
+        let mut parent_schema = TypeSchema {
+            key: BTreeMap::new(),
+            fields: BTreeMap::new(),
+        };
+        parent_schema.key.insert(
+            "device".to_string(),
+            FieldSchema {
+                r#type: FieldType::Ref {
+                    target: "dcim.device".to_string(),
+                },
+                required: true,
+                nullable: false,
+                description: None,
+                format: None,
+                pattern: None,
+            },
+        );
+
+        // unmanaged brief: a resource summary (uuid id + object_type) carrying the
+        // target's key, but no recognized url, so the mappings lookup misses and
+        // only the key-derivation stage can resolve it.
+        let raw_id = "11111111-1111-1111-1111-111111111111";
+        let brief = json!({ "id": raw_id, "object_type": "dcim.device", "name": "router-01" });
+        let mut attrs = JsonMap::default();
+        attrs.insert("device".to_string(), brief.clone());
+
+        normalize_attrs(&mut attrs, &parent_schema, &schema, &registry, &mappings);
+
+        let expected = resolve_ref_uid(
+            brief.as_object().unwrap(),
+            Some("dcim.device"),
+            &schema,
+            &registry,
+            &mappings,
+        )
+        .expect("key-derived uid");
+        assert_eq!(attrs.get("device").unwrap(), &json!(expected.to_string()));
+        // without the fix this degrades to the raw backend id.
+        assert_ne!(attrs.get("device").unwrap(), &json!(raw_id));
     }
 
     #[test]
