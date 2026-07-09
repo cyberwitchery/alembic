@@ -103,18 +103,19 @@ fn diff_attrs(
     type_schema: Option<&TypeSchema>,
 ) -> Vec<FieldChange> {
     let mut changes = Vec::new();
+    let null = Value::Null; // borrowed for absent fields; no per-field allocation
     for (field, to) in desired.iter() {
-        let from = existing.get(field).cloned().unwrap_or(Value::Null);
+        let from = existing.get(field).unwrap_or(&null);
         let field_type = type_schema.and_then(|ts| {
             ts.fields
                 .get(field)
                 .or_else(|| ts.key.get(field))
                 .map(|fs| &fs.r#type)
         });
-        if !field_values_equal(field_type, &from, to) {
+        if !field_values_equal(field_type, from, to) {
             changes.push(FieldChange {
                 field: field.clone(),
-                from,
+                from: from.clone(),
                 to: to.clone(),
             });
         }
@@ -551,6 +552,95 @@ mod tests {
         let fields: Vec<&str> = changes.iter().map(|c| c.field.as_str()).collect();
         assert!(fields.contains(&"a"));
         assert!(fields.contains(&"b"));
+    }
+
+    fn map_of_int_schema(name: &str) -> TypeSchema {
+        TypeSchema {
+            key: BTreeMap::new(),
+            fields: BTreeMap::from([(
+                name.to_string(),
+                field(FieldType::Map {
+                    value: Box::new(FieldType::Int),
+                }),
+            )]),
+        }
+    }
+
+    #[test]
+    fn map_field_equal_ignores_numeric_representation() {
+        // Map { value: Int }: 1 vs 1.0 per value compares equal, so no change.
+        let ts = map_of_int_schema("labels");
+        let existing = make_attrs(&[("labels", json!({"a": 1, "b": 2}))]);
+        let desired = make_attrs(&[("labels", json!({"a": 1.0, "b": 2}))]);
+        let changes = diff_attrs(&existing, &desired, Some(&ts));
+        assert!(changes.is_empty(), "{changes:?}");
+    }
+
+    #[test]
+    fn map_field_length_mismatch_is_a_change() {
+        let ts = map_of_int_schema("labels");
+        let existing = make_attrs(&[("labels", json!({"a": 1, "b": 2}))]);
+        let desired = make_attrs(&[("labels", json!({"a": 1}))]);
+        let changes = diff_attrs(&existing, &desired, Some(&ts));
+        assert_eq!(changes.len(), 1);
+    }
+
+    #[test]
+    fn map_field_missing_key_is_a_change() {
+        // same length, differing key set: `b` present vs `c` present.
+        let ts = map_of_int_schema("labels");
+        let existing = make_attrs(&[("labels", json!({"a": 1, "b": 2}))]);
+        let desired = make_attrs(&[("labels", json!({"a": 1, "c": 2}))]);
+        let changes = diff_attrs(&existing, &desired, Some(&ts));
+        assert_eq!(changes.len(), 1);
+    }
+
+    #[test]
+    fn ref_field_equal_uid_is_no_change() {
+        let ts = TypeSchema {
+            key: BTreeMap::new(),
+            fields: BTreeMap::from([("parent".to_string(), field(ref_t()))]),
+        };
+        let existing = make_attrs(&[("parent", uref(7))]);
+        let desired = make_attrs(&[("parent", uref(7))]);
+        let changes = diff_attrs(&existing, &desired, Some(&ts));
+        assert!(changes.is_empty(), "{changes:?}");
+    }
+
+    #[test]
+    fn ref_field_different_uid_is_a_change() {
+        let ts = TypeSchema {
+            key: BTreeMap::new(),
+            fields: BTreeMap::from([("parent".to_string(), field(ref_t()))]),
+        };
+        let existing = make_attrs(&[("parent", uref(7))]);
+        let desired = make_attrs(&[("parent", uref(8))]);
+        let changes = diff_attrs(&existing, &desired, Some(&ts));
+        assert_eq!(changes.len(), 1);
+    }
+
+    #[test]
+    fn list_ref_field_equal_uids_is_no_change() {
+        let ts = TypeSchema {
+            key: BTreeMap::new(),
+            fields: BTreeMap::from([("members".to_string(), field(list_ref_t()))]),
+        };
+        let existing = make_attrs(&[("members", json!([uref(7), uref(8)]))]);
+        let desired = make_attrs(&[("members", json!([uref(7), uref(8)]))]);
+        let changes = diff_attrs(&existing, &desired, Some(&ts));
+        assert!(changes.is_empty(), "{changes:?}");
+    }
+
+    #[test]
+    fn list_ref_field_different_uid_is_a_change() {
+        let ts = TypeSchema {
+            key: BTreeMap::new(),
+            fields: BTreeMap::from([("members".to_string(), field(list_ref_t()))]),
+        };
+        let existing = make_attrs(&[("members", json!([uref(7), uref(8)]))]);
+        let desired = make_attrs(&[("members", json!([uref(7), uref(9)]))]);
+        let changes = diff_attrs(&existing, &desired, Some(&ts));
+        assert_eq!(changes.len(), 1);
     }
 
     // --- plan() ---
