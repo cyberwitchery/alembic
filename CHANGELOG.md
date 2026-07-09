@@ -9,6 +9,7 @@
 - **breaking** django adapter: rename the `cast_django` module to `emit` and `run_cast_django` to `run_emit`, retiring the last code references to the `cast` command removed in 0.4.0; the test-only `ALEMBIC_CAST_PYTHON` env var becomes `ALEMBIC_DJANGO_PYTHON`
 - core: `alembic validate` now prints the offending type's source `file:line` for the four newest schema validators (unknown ref target, uncompilable `pattern:`, `format:`/`pattern:` on a non-string field, empty `enum`), matching every other validation error, instead of dropping the location; their `type_name` now resolves to the declaring type's source line
 - netbox + nautobot adapters: resolve a ref-typed *key* field to its canonical uid on read, matching how a ref-typed regular field already resolves. `normalize_attrs` derived its per-field target hint from `.fields` only, so a nested brief under a ref-typed key field (an interface keyed by `(device, name)`, say) short-circuited the key-derivation resolver, and an unmanaged referent read back as its raw backend id rather than the uid; the hint now consults `.key` too, matching the engine's `normalize_attrs_refs` used by the generic/infrahub adapters
+- engine: stop cloning every observed field value while diffing; the steady-state (no-drift) path borrows each observed value for the equality check and only clones the values of fields that actually changed
 
 ## [0.7.0] - 2026-07-07
 
