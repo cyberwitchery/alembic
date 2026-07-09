@@ -510,4 +510,25 @@ mod tests {
         store.load_async().await.unwrap();
         assert_eq!(store.backend_id(t("x"), uid(1)), Some(BackendId::Int(1)));
     }
+
+    #[test]
+    fn state_lock_blocks_a_second_loader_and_releases_on_drop() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("state.json");
+
+        // first loader holds the exclusive lock for its whole lifetime.
+        let first = StateStore::load(&path).expect("first load acquires the lock");
+
+        // a second concurrent loader must fail fast, not silently clobber.
+        let err =
+            StateStore::load(&path).expect_err("second load must fail while the lock is held");
+        assert!(
+            err.to_string().contains("state lock"),
+            "expected a state-lock error, got: {err}"
+        );
+
+        // once the first store drops, the lock releases and a later run can load.
+        drop(first);
+        StateStore::load(&path).expect("lock should be free after the holder drops");
+    }
 }
