@@ -6,6 +6,7 @@ use crate::{BackendId, Op};
 use alembic_core::{TypeName, Uid};
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, Write};
@@ -17,6 +18,24 @@ pub struct Journal {
     #[serde(skip)]
     file: Option<(File, PathBuf)>,
     ops: Vec<OpWithMeta>,
+    // not-yet-done op positions, keyed by (uid, typename, hash), in plan order.
+    // derived from `ops` and rebuilt whenever `ops` is (re)loaded; lets
+    // `mark_op_as_done` be O(1) instead of a linear scan from the start.
+    #[serde(skip)]
+    pending_index: HashMap<(Uid, TypeName, u64), VecDeque<usize>>,
+}
+
+fn build_pending_index(ops: &[OpWithMeta]) -> HashMap<(Uid, TypeName, u64), VecDeque<usize>> {
+    let mut index: HashMap<(Uid, TypeName, u64), VecDeque<usize>> = HashMap::new();
+    for (i, owm) in ops.iter().enumerate() {
+        if !owm.done {
+            index
+                .entry((owm.op_uid, owm.op_typename.clone(), owm.op_hash))
+                .or_default()
+                .push_back(i);
+        }
+    }
+    index
 }
 
 impl Journal {
@@ -59,6 +78,7 @@ impl Journal {
         file.read_to_string(&mut contents)?;
 
         let mut journal: Journal = serde_yaml::from_str(&contents)?;
+        journal.pending_index = build_pending_index(&journal.ops);
 
         let journal_keys = journal
             .ops
@@ -112,13 +132,16 @@ impl Journal {
 
     /// creates a journal without a backing file set
     pub fn new_ephemeral(ops: &[Op]) -> Self {
+        let ops: Vec<OpWithMeta> = ops
+            .iter()
+            .filter(|op| !matches!(op, Op::Delete { .. }))
+            .map(OpWithMeta::new)
+            .collect();
+        let pending_index = build_pending_index(&ops);
         Self {
             file: None,
-            ops: ops
-                .iter()
-                .filter(|op| !matches!(op, Op::Delete { .. }))
-                .map(OpWithMeta::new)
-                .collect(),
+            ops,
+            pending_index,
         }
     }
 
@@ -138,27 +161,17 @@ impl Journal {
         self.ops.iter().all(|op| op.done)
     }
 
-    /// will mark the first op that is not done (will fail if there's no such op).
-    /// uses a linear search from the start.
+    /// marks the first not-done op matching `op`'s (uid, typename, hash).
+    /// O(1) via `pending_index`; errors if there's no such op.
     pub fn mark_op_as_done(&mut self, op: &Op) -> Result<()> {
-        let op_hash = op.hashed();
-        let op_uid = op.uid();
-        let op_typename = op.type_name();
-
-        let Some(op_index) = self.ops.iter().position(|op| {
-            !op.done
-                && op.op_hash == op_hash
-                && op.op_uid == op_uid
-                && &op.op_typename == op_typename
-        }) else {
-            return Err(anyhow!(
-                "no matching op found in journal, can't mark any as done"
-            ));
-        };
-
-        // index comes from call to `position` above, so it must be in range
+        let key = (op.uid(), op.type_name().clone(), op.hashed());
+        let op_index = self
+            .pending_index
+            .get_mut(&key)
+            .and_then(VecDeque::pop_front)
+            .ok_or_else(|| anyhow!("no matching op found in journal, can't mark any as done"))?;
+        // the position came from the pending index, so it is in range and not yet done
         self.ops[op_index].done = true;
-
         Ok(())
     }
 
@@ -414,6 +427,63 @@ mod tests {
         let mut journal = Journal::new_with_file(tempdir().unwrap().path(), "test", &ops).unwrap();
         journal.mark_op_as_done(&ops[1]).unwrap();
         journal.mark_op_as_done(&ops[1]).expect_err("should fail");
+    }
+
+    #[test]
+    fn mark_op_after_loading_partial_journal() {
+        // mark one op, save, then reload: the rebuilt pending index must respect the
+        // on-disk `done` flags, so the already-done op can't be re-marked and the
+        // remaining ops still mark and complete.
+        let dir = tempdir().unwrap();
+        let ops = test_ops();
+        {
+            let mut journal = Journal::new_with_file(dir.path(), "test", &ops).unwrap();
+            journal.mark_op_as_done(&ops[0]).unwrap();
+            journal.save().unwrap();
+        }
+
+        let mut journal = Journal::new_from_existing_file(dir.path(), "test", &ops).unwrap();
+        // (a) a still-pending op marks after reload
+        journal.mark_op_as_done(&ops[1]).unwrap();
+        assert!(!journal.is_completed());
+        // (b) the op done before the save is respected on reload: re-marking errors
+        let err = journal
+            .mark_op_as_done(&ops[0])
+            .expect_err("already-done op must not be markable again");
+        assert!(
+            err.to_string().contains("no matching op found"),
+            "got: {err}"
+        );
+        // (c) completed only once the last remaining op is marked
+        assert!(!journal.is_completed());
+        journal.mark_op_as_done(&ops[2]).unwrap();
+        assert!(journal.is_completed());
+    }
+
+    #[test]
+    fn mark_scales_to_a_large_plan() {
+        // marking every op in a large plan in order completes without a quadratic
+        // blowup (no wall-clock assert, just correctness at scale).
+        const N: u128 = 5000;
+        let ops: Vec<Op> = (0..N)
+            .map(|i| Op::Create {
+                uid: Uid::from_u128(i),
+                type_name: TypeName::new("dcim.device"),
+                desired: Object {
+                    uid: Uid::from_u128(i),
+                    type_name: TypeName::new("dcim.device"),
+                    key: Default::default(),
+                    attrs: Default::default(),
+                    source: None,
+                },
+            })
+            .collect();
+
+        let mut journal = Journal::new_ephemeral(&ops);
+        for op in &ops {
+            journal.mark_op_as_done(op).unwrap();
+        }
+        assert!(journal.is_completed());
     }
 
     #[test]
