@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- infrahub adapter: name an unresolved ref-typed *key* field in the `unresolved references` apply error. the adapter's local, shallow `describe_missing_refs` (forked in #174 because infrahub refs are flat) scanned only `desired.attrs`, so an apply left pending on a dangling key ref (an interface keyed by `(device, name)` whose device is unresolved) reported an empty message; it now scans `desired.key` too, matching the key-values scan the engine's shared copy gained in #221
 - engine: mark journal ops done in O(1) via an index, so applying an N-op plan is O(N) not O(N²) (a 50k-op plan spent ~0.9s, growing quadratically, in journal bookkeeping alone)
 - add `alembic-file-generator`, an internal tool that emits a synthetic `plan.json` of N create ops over a fixed dcim schema for scale/perf testing (#118)
 - external adapters: write the request to a child adapter's stdin concurrently with draining its output, all under the run timeout, so a child that floods its output or never reads its stdin can no longer deadlock the write outside the timeout guard and hang the cli forever
