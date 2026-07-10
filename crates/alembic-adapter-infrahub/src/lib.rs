@@ -2017,6 +2017,15 @@ fn describe_missing_refs(ops: &[Op], resolved: &BTreeMap<Uid, BackendId>) -> Str
                     }
                 }
             }
+            // ref-typed key fields dangle here too (infrahub keys by relationships,
+            // e.g. an interface keyed by (device, name)); scan them like the engine.
+            for value in desired.key.values() {
+                if let Some(uid) = extract_ref_uid(value) {
+                    if !resolved.contains_key(&uid) {
+                        missing.insert(uid);
+                    }
+                }
+            }
         }
     }
     missing
@@ -2744,6 +2753,40 @@ schema { query: Query }
 
         let err = anyhow::Error::new(AdapterApplyError::MissingRef { uid: uid_missing });
         assert!(is_missing_ref_error(&err));
+    }
+
+    #[test]
+    fn describe_missing_refs_reports_unresolved_key_ref() {
+        // an object keyed by a relationship field (e.g. an interface keyed by
+        // (device, name)) whose only dangling ref lives in the key: the diagnostic
+        // must still name it, mirroring the engine's key-values scan.
+        let uid_interface = Uid::parse_str("00000000-0000-0000-0000-000000000022").unwrap();
+        let uid_device = Uid::parse_str("00000000-0000-0000-0000-000000000023").unwrap();
+
+        let key = Key::from(BTreeMap::from([
+            ("device".to_string(), json!(uid_device.to_string())),
+            ("name".to_string(), json!("eth0")),
+        ]));
+        let obj = Object {
+            uid: uid_interface,
+            type_name: TypeName::new("dcim.interface"),
+            key,
+            attrs: JsonMap::default(),
+            source: None,
+        };
+
+        let op = Op::Create {
+            uid: uid_interface,
+            type_name: TypeName::new("dcim.interface"),
+            desired: obj,
+        };
+
+        let resolved: BTreeMap<Uid, BackendId> = BTreeMap::new();
+        let missing = describe_missing_refs(&[op], &resolved);
+        assert!(
+            missing.contains(&uid_device.to_string()),
+            "unresolved key ref should be named in the diagnostic, got {missing:?}"
+        );
     }
 
     #[test]
