@@ -70,6 +70,14 @@ pub enum ValidationError {
     },
     #[error("empty enum for {type_name}.{field}: an enum with no values is unsatisfiable")]
     EmptyEnum { type_name: String, field: String },
+    #[error(
+        "non-scalar key field {type_name}.{field}: a {field_type} key has no scalar identity form (docs/map.md)"
+    )]
+    NonScalarKeyField {
+        type_name: String,
+        field: String,
+        field_type: String,
+    },
 }
 
 impl ValidationError {
@@ -93,7 +101,8 @@ impl ValidationError {
             | ValidationError::UnknownRefTarget { .. }
             | ValidationError::InvalidSchemaPattern { .. }
             | ValidationError::ConstraintOnNonStringField { .. }
-            | ValidationError::EmptyEnum { .. } => None,
+            | ValidationError::EmptyEnum { .. }
+            | ValidationError::NonScalarKeyField { .. } => None,
         }
     }
 
@@ -123,7 +132,8 @@ impl ValidationError {
             | ValidationError::UnknownRefTarget { .. }
             | ValidationError::InvalidSchemaPattern { .. }
             | ValidationError::ConstraintOnNonStringField { .. }
-            | ValidationError::EmptyEnum { .. } => None,
+            | ValidationError::EmptyEnum { .. }
+            | ValidationError::NonScalarKeyField { .. } => None,
         }
     }
 
@@ -138,7 +148,8 @@ impl ValidationError {
             | ValidationError::UnknownRefTarget { type_name, .. }
             | ValidationError::InvalidSchemaPattern { type_name, .. }
             | ValidationError::ConstraintOnNonStringField { type_name, .. }
-            | ValidationError::EmptyEnum { type_name, .. } => Some(type_name.clone()),
+            | ValidationError::EmptyEnum { type_name, .. }
+            | ValidationError::NonScalarKeyField { type_name, .. } => Some(type_name.clone()),
             ValidationError::InvalidValue { field, .. } => {
                 field.split('.').next().map(|s| s.to_string())
             }
@@ -176,7 +187,8 @@ impl ValidationError {
             | ValidationError::UnknownRefTarget { .. }
             | ValidationError::InvalidSchemaPattern { .. }
             | ValidationError::ConstraintOnNonStringField { .. }
-            | ValidationError::EmptyEnum { .. } => None,
+            | ValidationError::EmptyEnum { .. }
+            | ValidationError::NonScalarKeyField { .. } => None,
         }
     }
 }
@@ -321,6 +333,7 @@ pub fn validate_inventory(inventory: &Inventory) -> ValidationReport {
     validate_schema_patterns(&inventory.schema, &mut report);
     validate_schema_constraint_types(&inventory.schema, &mut report);
     validate_schema_enums(&inventory.schema, &mut report);
+    validate_schema_key_scalar(&inventory.schema, &mut report);
     validate_schema_types(&inventory.schema, &inventory.objects, &mut report);
     for object in &inventory.objects {
         validate_object(object, &inventory.schema, &uid_to_type, &mut report);
@@ -581,6 +594,58 @@ fn validate_field_enum(
         | FieldType::Slug
         | FieldType::Ref { .. }
         | FieldType::ListRef { .. } => {}
+    }
+}
+
+/// reject a key field whose declared type is composite (`list`, `list_ref`, or
+/// `map`). a key component feeds uid derivation and must render to a scalar
+/// string, so `render_key`/`ensure_scalar` reject a composite value at map time
+/// (docs/map.md). validation enforced this per-value but not per-type, so a
+/// schema declaring a composite key field passed `alembic validate` clean yet
+/// was un-representable by the pipeline. catching the type at schema load keeps
+/// the invalid state unrepresentable before any object is authored.
+///
+/// only the top-level key field type matters: a key value is scalar or it is
+/// not, so nesting is irrelevant (unlike `ref`-target and `enum` checks, which
+/// descend into `list`/`map`). scalar-producing types stay allowed, including
+/// `ref` (a ref key renders to a scalar uid string) and every scalar built-in.
+fn validate_schema_key_scalar(schema: &Schema, report: &mut ValidationReport) {
+    for (type_name, type_schema) in &schema.types {
+        for (field, field_schema) in &type_schema.key {
+            if is_composite_type(&field_schema.r#type) {
+                report.errors.push(ValidationError::NonScalarKeyField {
+                    type_name: type_name.to_string(),
+                    field: format!("key.{field}"),
+                    field_type: field_type_label(&field_schema.r#type),
+                });
+            }
+        }
+    }
+}
+
+/// true when a field's type is composite (`list`, `list_ref`, or `map`) and so
+/// has no scalar string form. `ref` is scalar (a uid string); every other
+/// built-in is scalar or coerces to one.
+fn is_composite_type(field_type: &FieldType) -> bool {
+    match field_type {
+        FieldType::List { .. } | FieldType::ListRef { .. } | FieldType::Map { .. } => true,
+        FieldType::String
+        | FieldType::Text
+        | FieldType::Int
+        | FieldType::Float
+        | FieldType::Bool
+        | FieldType::Uuid
+        | FieldType::Date
+        | FieldType::Datetime
+        | FieldType::Time
+        | FieldType::Json
+        | FieldType::IpAddress
+        | FieldType::Cidr
+        | FieldType::Prefix
+        | FieldType::Mac
+        | FieldType::Slug
+        | FieldType::Enum { .. }
+        | FieldType::Ref { .. } => false,
     }
 }
 
@@ -1457,6 +1522,157 @@ mod tests {
     }
 
     #[test]
+    fn detects_composite_key_field_type() {
+        // a key component must render to a scalar to have an identity form
+        // (docs/map.md); a composite key type never can. schema-load validation
+        // catches all three composite types even with no objects present (the
+        // `validate_schema` helper passes none), before render would reject the
+        // value at map time.
+        let group = TypeSchema {
+            key: BTreeMap::from([(
+                "members".to_string(),
+                schema_field(FieldType::List {
+                    item: Box::new(FieldType::String),
+                }),
+            )]),
+            fields: BTreeMap::new(),
+        };
+        let dict = TypeSchema {
+            key: BTreeMap::from([(
+                "labels".to_string(),
+                schema_field(FieldType::Map {
+                    value: Box::new(FieldType::String),
+                }),
+            )]),
+            fields: BTreeMap::new(),
+        };
+        let device = TypeSchema {
+            key: BTreeMap::from([(
+                "peers".to_string(),
+                schema_field(FieldType::ListRef {
+                    target: "device".to_string(),
+                }),
+            )]),
+            fields: BTreeMap::new(),
+        };
+        let report = validate_schema(BTreeMap::from([
+            ("group".to_string(), group),
+            ("dict".to_string(), dict),
+            ("device".to_string(), device),
+        ]));
+        assert!(report.errors.iter().any(|e| matches!(
+            e,
+            ValidationError::NonScalarKeyField { type_name, field, field_type }
+                if type_name == "group" && field == "key.members" && field_type == "list"
+        )));
+        assert!(report.errors.iter().any(|e| matches!(
+            e,
+            ValidationError::NonScalarKeyField { type_name, field, field_type }
+                if type_name == "dict" && field == "key.labels" && field_type == "map"
+        )));
+        assert!(report.errors.iter().any(|e| matches!(
+            e,
+            ValidationError::NonScalarKeyField { type_name, field, field_type }
+                if type_name == "device"
+                    && field == "key.peers"
+                    && field_type == "list_ref(device)"
+        )));
+    }
+
+    #[test]
+    fn accepts_ref_key_field_type() {
+        // the critical carve-out: a `ref` key value renders to a scalar uid
+        // string, so a `ref` key is legal. infrahub keys an interface by
+        // (device: ref, name: string); both fields must validate clean.
+        let device = TypeSchema {
+            key: BTreeMap::from([("name".to_string(), schema_field(FieldType::String))]),
+            fields: BTreeMap::new(),
+        };
+        let interface = TypeSchema {
+            key: BTreeMap::from([
+                (
+                    "device".to_string(),
+                    schema_field(FieldType::Ref {
+                        target: "device".to_string(),
+                    }),
+                ),
+                ("name".to_string(), schema_field(FieldType::String)),
+            ]),
+            fields: BTreeMap::new(),
+        };
+        let report = validate_schema(BTreeMap::from([
+            ("device".to_string(), device),
+            ("interface".to_string(), interface),
+        ]));
+        assert!(!report
+            .errors
+            .iter()
+            .any(|e| matches!(e, ValidationError::NonScalarKeyField { .. })));
+    }
+
+    #[test]
+    fn accepts_scalar_key_field_types() {
+        // every scalar-producing built-in stays legal as a key field type.
+        let widget = TypeSchema {
+            key: BTreeMap::from([
+                ("s".to_string(), schema_field(FieldType::String)),
+                ("i".to_string(), schema_field(FieldType::Int)),
+                ("g".to_string(), schema_field(FieldType::Slug)),
+                ("u".to_string(), schema_field(FieldType::Uuid)),
+                (
+                    "e".to_string(),
+                    schema_field(FieldType::Enum {
+                        values: vec!["a".to_string()],
+                    }),
+                ),
+            ]),
+            fields: BTreeMap::new(),
+        };
+        let report = validate_schema(BTreeMap::from([("widget".to_string(), widget)]));
+        assert!(!report
+            .errors
+            .iter()
+            .any(|e| matches!(e, ValidationError::NonScalarKeyField { .. })));
+    }
+
+    #[test]
+    fn scalar_key_field_with_composite_value_is_rejected() {
+        // the type-level check is not the only guard: a scalar-typed key whose
+        // object supplies a composite VALUE is already rejected by per-object
+        // value-type validation, so a composite key VALUE never reaches uid
+        // derivation either. the schema is scalar-keyed, so no type-level error
+        // fires here — only the per-object value error.
+        let device = TypeSchema {
+            key: BTreeMap::from([("name".to_string(), schema_field(FieldType::String))]),
+            fields: BTreeMap::new(),
+        };
+        let mut key = BTreeMap::new();
+        key.insert("name".to_string(), serde_json::json!(["a", "b"]));
+        let object = Object::new(
+            uid(1),
+            TypeName::new("device"),
+            Key::from(key),
+            JsonMap::default(),
+        )
+        .unwrap();
+        let report = validate_inventory(&Inventory {
+            schema: Schema {
+                types: BTreeMap::from([("device".to_string(), device)]),
+            },
+            objects: vec![object],
+        });
+        assert!(report.errors.iter().any(|e| matches!(
+            e,
+            ValidationError::InvalidValue { field, expected, actual }
+                if field == "device.key.name" && expected == "string" && actual == "array"
+        )));
+        assert!(!report
+            .errors
+            .iter()
+            .any(|e| matches!(e, ValidationError::NonScalarKeyField { .. })));
+    }
+
+    #[test]
     fn detects_invalid_pattern_in_attr_field() {
         let device = TypeSchema {
             key: BTreeMap::new(),
@@ -1952,6 +2168,49 @@ mod tests {
         assert_eq!(
             unknown_ref.source,
             Some(SourceLocation::file_line("inventory.yaml", 12))
+        );
+    }
+
+    #[test]
+    fn with_sources_attaches_location_for_non_scalar_key() {
+        // the newest schema validator also carries a `type_name`; with_sources
+        // must resolve it to the declaring type's source line, like every older
+        // schema-load error.
+        let device = TypeSchema {
+            key: BTreeMap::from([(
+                "members".to_string(),
+                schema_field(FieldType::List {
+                    item: Box::new(FieldType::String),
+                }),
+            )]),
+            fields: BTreeMap::new(),
+        };
+        let mut key = BTreeMap::new();
+        key.insert("members".to_string(), serde_json::json!(["leaf1"]));
+        let object = Object::new(
+            uid(1),
+            TypeName::new("device"),
+            Key::from(key),
+            JsonMap::default(),
+        )
+        .unwrap()
+        .with_source(SourceLocation::file_line("inventory.yaml", 5));
+
+        let inventory = Inventory {
+            schema: Schema {
+                types: BTreeMap::from([("device".to_string(), device)]),
+            },
+            objects: vec![object],
+        };
+        let located = validate_inventory(&inventory).with_sources(&inventory.objects);
+
+        let non_scalar = located
+            .iter()
+            .find(|l| matches!(l.error, ValidationError::NonScalarKeyField { .. }))
+            .expect("non-scalar-key error present");
+        assert_eq!(
+            non_scalar.source,
+            Some(SourceLocation::file_line("inventory.yaml", 5))
         );
     }
 
