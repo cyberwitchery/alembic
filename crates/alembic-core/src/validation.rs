@@ -78,6 +78,10 @@ pub enum ValidationError {
         field: String,
         field_type: String,
     },
+    #[error(
+        "nullable key field {type_name}.{field}: a null identity component has no stable identity (docs/map.md)"
+    )]
+    NullableKeyField { type_name: String, field: String },
 }
 
 impl ValidationError {
@@ -102,7 +106,8 @@ impl ValidationError {
             | ValidationError::InvalidSchemaPattern { .. }
             | ValidationError::ConstraintOnNonStringField { .. }
             | ValidationError::EmptyEnum { .. }
-            | ValidationError::NonScalarKeyField { .. } => None,
+            | ValidationError::NonScalarKeyField { .. }
+            | ValidationError::NullableKeyField { .. } => None,
         }
     }
 
@@ -133,7 +138,8 @@ impl ValidationError {
             | ValidationError::InvalidSchemaPattern { .. }
             | ValidationError::ConstraintOnNonStringField { .. }
             | ValidationError::EmptyEnum { .. }
-            | ValidationError::NonScalarKeyField { .. } => None,
+            | ValidationError::NonScalarKeyField { .. }
+            | ValidationError::NullableKeyField { .. } => None,
         }
     }
 
@@ -149,7 +155,8 @@ impl ValidationError {
             | ValidationError::InvalidSchemaPattern { type_name, .. }
             | ValidationError::ConstraintOnNonStringField { type_name, .. }
             | ValidationError::EmptyEnum { type_name, .. }
-            | ValidationError::NonScalarKeyField { type_name, .. } => Some(type_name.clone()),
+            | ValidationError::NonScalarKeyField { type_name, .. }
+            | ValidationError::NullableKeyField { type_name, .. } => Some(type_name.clone()),
             ValidationError::InvalidValue { field, .. } => {
                 field.split('.').next().map(|s| s.to_string())
             }
@@ -188,7 +195,8 @@ impl ValidationError {
             | ValidationError::InvalidSchemaPattern { .. }
             | ValidationError::ConstraintOnNonStringField { .. }
             | ValidationError::EmptyEnum { .. }
-            | ValidationError::NonScalarKeyField { .. } => None,
+            | ValidationError::NonScalarKeyField { .. }
+            | ValidationError::NullableKeyField { .. } => None,
         }
     }
 }
@@ -334,6 +342,7 @@ pub fn validate_inventory(inventory: &Inventory) -> ValidationReport {
     validate_schema_constraint_types(&inventory.schema, &mut report);
     validate_schema_enums(&inventory.schema, &mut report);
     validate_schema_key_scalar(&inventory.schema, &mut report);
+    validate_schema_key_nullable(&inventory.schema, &mut report);
     validate_schema_types(&inventory.schema, &inventory.objects, &mut report);
     for object in &inventory.objects {
         validate_object(object, &inventory.schema, &uid_to_type, &mut report);
@@ -646,6 +655,28 @@ fn is_composite_type(field_type: &FieldType) -> bool {
         | FieldType::Slug
         | FieldType::Enum { .. }
         | FieldType::Ref { .. } => false,
+    }
+}
+
+/// reject a key field declared `nullable: true`. a key component feeds uid
+/// derivation and must render to a scalar string, and a null value has no
+/// identity form, so `render_key`/`ensure_scalar` reject a null key at map time
+/// (docs/map.md). the per-object null check honours `nullable` uniformly for
+/// every field, so an object supplying a null value under a nullable key field
+/// passed `alembic validate` clean yet was un-representable by the pipeline.
+/// rejecting the declaration at schema load keeps the invalid state
+/// unrepresentable before any object is authored, mirroring the composite
+/// key-type check above.
+fn validate_schema_key_nullable(schema: &Schema, report: &mut ValidationReport) {
+    for (type_name, type_schema) in &schema.types {
+        for (field, field_schema) in &type_schema.key {
+            if field_schema.nullable {
+                report.errors.push(ValidationError::NullableKeyField {
+                    type_name: type_name.to_string(),
+                    field: format!("key.{field}"),
+                });
+            }
+        }
     }
 }
 
@@ -1406,6 +1437,13 @@ mod tests {
         }
     }
 
+    fn nullable_field(r#type: FieldType) -> FieldSchema {
+        FieldSchema {
+            nullable: true,
+            ..schema_field(r#type)
+        }
+    }
+
     /// run schema-only validation (no objects) and return the report.
     fn validate_schema(types: BTreeMap<String, TypeSchema>) -> ValidationReport {
         validate_inventory(&Inventory {
@@ -1670,6 +1708,73 @@ mod tests {
             .errors
             .iter()
             .any(|e| matches!(e, ValidationError::NonScalarKeyField { .. })));
+    }
+
+    #[test]
+    fn detects_nullable_key_field() {
+        // a key component must render to a scalar to have a stable identity
+        // (docs/map.md); a null value has none. schema-load validation catches a
+        // key field declared `nullable: true` even with no objects present (the
+        // `validate_schema` helper passes none), before render would reject a
+        // null value at map time.
+        let device = TypeSchema {
+            key: BTreeMap::from([("slug".to_string(), nullable_field(FieldType::String))]),
+            fields: BTreeMap::new(),
+        };
+        let report = validate_schema(BTreeMap::from([("device".to_string(), device)]));
+        assert!(report.errors.iter().any(|e| matches!(
+            e,
+            ValidationError::NullableKeyField { type_name, field }
+                if type_name == "device" && field == "key.slug"
+        )));
+    }
+
+    #[test]
+    fn accepts_nullable_non_key_field() {
+        // `nullable: true` stays legal on a regular (non-key) field: only a key
+        // component must render to a scalar identity, so a nullable attr is fine.
+        let device = TypeSchema {
+            key: BTreeMap::from([("name".to_string(), schema_field(FieldType::String))]),
+            fields: BTreeMap::from([("label".to_string(), nullable_field(FieldType::String))]),
+        };
+        let report = validate_schema(BTreeMap::from([("device".to_string(), device)]));
+        assert!(!report
+            .errors
+            .iter()
+            .any(|e| matches!(e, ValidationError::NullableKeyField { .. })));
+    }
+
+    #[test]
+    fn accepts_non_nullable_key_fields() {
+        // a `ref` key and every scalar key stay legal when not nullable: their
+        // values render to a scalar identity string. infrahub keys an interface
+        // by (device: ref, name: string); neither field may fire a nullable-key
+        // error.
+        let device = TypeSchema {
+            key: BTreeMap::from([("name".to_string(), schema_field(FieldType::String))]),
+            fields: BTreeMap::new(),
+        };
+        let interface = TypeSchema {
+            key: BTreeMap::from([
+                (
+                    "device".to_string(),
+                    schema_field(FieldType::Ref {
+                        target: "device".to_string(),
+                    }),
+                ),
+                ("name".to_string(), schema_field(FieldType::String)),
+                ("index".to_string(), schema_field(FieldType::Int)),
+            ]),
+            fields: BTreeMap::new(),
+        };
+        let report = validate_schema(BTreeMap::from([
+            ("device".to_string(), device),
+            ("interface".to_string(), interface),
+        ]));
+        assert!(!report
+            .errors
+            .iter()
+            .any(|e| matches!(e, ValidationError::NullableKeyField { .. })));
     }
 
     #[test]
@@ -2211,6 +2316,44 @@ mod tests {
         assert_eq!(
             non_scalar.source,
             Some(SourceLocation::file_line("inventory.yaml", 5))
+        );
+    }
+
+    #[test]
+    fn with_sources_attaches_location_for_nullable_key() {
+        // the nullable-key validator carries a `type_name`; with_sources must
+        // resolve it to the declaring type's source line, like every other
+        // schema-load error.
+        let device = TypeSchema {
+            key: BTreeMap::from([("slug".to_string(), nullable_field(FieldType::String))]),
+            fields: BTreeMap::new(),
+        };
+        let mut key = BTreeMap::new();
+        key.insert("slug".to_string(), serde_json::json!("leaf1"));
+        let object = Object::new(
+            uid(1),
+            TypeName::new("device"),
+            Key::from(key),
+            JsonMap::default(),
+        )
+        .unwrap()
+        .with_source(SourceLocation::file_line("inventory.yaml", 7));
+
+        let inventory = Inventory {
+            schema: Schema {
+                types: BTreeMap::from([("device".to_string(), device)]),
+            },
+            objects: vec![object],
+        };
+        let located = validate_inventory(&inventory).with_sources(&inventory.objects);
+
+        let nullable_key = located
+            .iter()
+            .find(|l| matches!(l.error, ValidationError::NullableKeyField { .. }))
+            .expect("nullable-key error present");
+        assert_eq!(
+            nullable_key.source,
+            Some(SourceLocation::file_line("inventory.yaml", 7))
         );
     }
 
