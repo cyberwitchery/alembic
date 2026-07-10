@@ -291,12 +291,7 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             let mut state = load_state().await?;
             let plugins = search_for_plugins(&config);
             let backend = create_backend(&plugins, backend.as_deref(), backend_config)?;
-            // fail fast on a backend that cannot apply (a read-only observer such
-            // as peeringdb), before reading the plan or (under --interactive)
-            // prompting `create/update/delete ...? [y/N]` for every op, matching
-            // how plan/import gate capability up front. apply_plan stays the
-            // authoritative gate for library callers; this only moves the same
-            // check ahead of the prompt loop so both paths fail at one point.
+            // reject a backend that cannot apply before reading the plan or prompting
             backend.emitter()?;
             let plan = read_plan(&plan)?;
 

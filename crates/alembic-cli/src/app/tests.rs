@@ -728,10 +728,7 @@ async fn run_apply_interactive_delete_requires_allow_delete() {
     let cwd = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
 
-    // django (a write-only emitter) is used so apply reaches the interactive
-    // delete-gate: the capability gate now rejects a read-only backend before
-    // this point, so a read-only backend would fail with the read-only error
-    // instead (see `run_apply_read_only_backend_fails_before_prompting`).
+    // django (write-only): a read-only backend now fails the capability gate before this delete-gate
     let cli = Cli {
         command: Command::Apply {
             plan: plan_path,
@@ -750,20 +747,9 @@ async fn run_apply_interactive_delete_requires_allow_delete() {
 
 #[tokio::test]
 async fn run_apply_read_only_backend_fails_before_prompting() {
-    // `apply` against a read-only (observer) backend cannot write, so it must
-    // reject the backend up front, right after constructing it (the way
-    // `plan`/`import` already gate capability), rather than reading the plan
-    // and, under `--interactive`, prompting `create/update/delete ...? [y/N]`
-    // for every op only to fail deep inside `apply_plan`.
-    //
-    // the plan path deliberately does not exist: before the capability gate was
-    // hoisted ahead of `read_plan`, this failed with a `read plan: ...` error
-    // (and interactive first ran the whole prompt loop); now the read-only error
-    // fires before the plan is read on both the interactive and non-interactive
-    // paths, proving the prompt loop (which lives after `read_plan`) is
-    // unreachable. (scanning stdout for the absence of a prompt needs a
-    // subprocess, since `confirm` writes straight to the process stdout; that is
-    // covered end-to-end in `tests/apply_capability.rs`.)
+    // the plan path is missing on purpose: the read-only error must fire before
+    // read_plan (hence before the post-read_plan prompt loop) on both paths.
+    // absence-of-prompt is checked out-of-process in tests/apply_capability.rs.
     let _guard = cwd_lock().lock().await;
     let dir = tempdir().unwrap();
     let state_path = dir.path().join(".alembic").join("state.json");

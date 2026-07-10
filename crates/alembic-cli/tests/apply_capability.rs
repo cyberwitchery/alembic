@@ -1,11 +1,6 @@
-//! end-to-end proof that `apply` against a read-only (observer) backend fails
-//! fast, without first prompting for every op under `--interactive`.
-//!
-//! driving the real binary is the only faithful way to observe the prompt:
-//! `confirm` writes `create ...? [y/N]` straight to the process stdout, which
-//! libtest's in-process capture does not intercept. the in-process companion in
-//! `src/app/tests.rs` (`run_apply_read_only_backend_fails_before_prompting`)
-//! proves the same ordering via the error message instead.
+//! drives the real `alembic` binary to prove `apply` against a read-only backend
+//! fails fast without prompting. needs a subprocess because `confirm` writes the
+//! prompt straight to process stdout, which libtest's capture can't intercept.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -19,23 +14,20 @@ fn fixture_path(name: &str) -> PathBuf {
         .join(name)
 }
 
-/// run `alembic apply --backend peeringdb [--interactive] --plan <fixture>` with
-/// no stdin, against an isolated temp state path, and return (success, stdout,
-/// stderr). `minimal_plan.json` holds only create ops, so nothing else
-/// short-circuits the interactive prompt loop.
+/// run `apply --backend peeringdb [--interactive]` over a create-only plan,
+/// returning (success, stdout, stderr).
 fn run_apply_peeringdb(interactive: bool) -> (bool, String, String) {
     let out = tempdir().expect("create temp dir");
     let plan = fixture_path("minimal_plan.json");
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_alembic"));
-    // isolate state per run so nothing races on (or pollutes) the source tree.
     cmd.env("ALEMBIC_STATE_PATH", out.path().join("state.json"));
     cmd.arg("apply").arg("--backend").arg("peeringdb");
     if interactive {
         cmd.arg("--interactive");
     }
     cmd.arg("--plan").arg(&plan);
-    // a null stdin means that if the (buggy) prompt loop ever runs, `confirm`
-    // reads EOF and declines rather than hanging the test forever.
+    // null stdin: if the prompt loop ever runs, `confirm` reads EOF and declines
+    // instead of hanging the test.
     cmd.stdin(Stdio::null());
     let output = cmd.output().expect("run alembic apply");
     (
@@ -56,8 +48,7 @@ fn apply_read_only_interactive_prints_no_prompt() {
         stderr.contains("backend is read-only; it cannot apply changes"),
         "expected the read-only capability error; stderr:\n{stderr}"
     );
-    // the bug this guards: before failing fast, interactive apply prompted
-    // `create ...? [y/N]` for every op, wasting the user's answers.
+    // the bug: interactive apply used to prompt for every op before failing.
     assert!(
         !stdout.contains("[y/N]"),
         "interactive apply must not prompt before failing fast; stdout:\n{stdout}"
