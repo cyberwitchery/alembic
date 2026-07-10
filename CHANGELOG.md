@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- core: `alembic validate` now rejects a schema that declares a key field as `nullable: true`. a key component feeds uid derivation and must render to a scalar, so render already rejected a null key value at map time (a null has no identity form), but validation passed the schema clean, leaving a type whose objects were un-representable by the pipeline. the check runs at schema load, before any object is authored; a nullable non-key field stays legal, as does every scalar or `ref` key
 - cli: `plan --provision` now fails closed when the schema preview errors, aborting instead of provisioning blind; a preview error previously slipped past the `--allow-delete` gate and let `ensure_schema` delete unmanaged schema, unlike apply which already failed closed
 - infrahub adapter: name an unresolved ref-typed *key* field in the `unresolved references` apply error. the adapter's local, shallow `describe_missing_refs` (forked in #174 because infrahub refs are flat) scanned only `desired.attrs`, so an apply left pending on a dangling key ref (an interface keyed by `(device, name)` whose device is unresolved) reported an empty message; it now scans `desired.key` too, matching the key-values scan the engine's shared copy gained in #221
 - engine: mark journal ops done in O(1) via an index, so applying an N-op plan is O(N) not O(N²) (a 50k-op plan spent ~0.9s, growing quadratically, in journal bookkeeping alone)
