@@ -1202,7 +1202,12 @@ fn build_request_body(
             continue;
         }
 
-        let encoded = resolve_value_for_type(&field_schema.r#type, value.clone(), resolved)?;
+        // a null clears the field; pass it through instead of resolving as a ref
+        let encoded = if value.is_null() {
+            Value::Null
+        } else {
+            resolve_value_for_type(&field_schema.r#type, value.clone(), resolved)?
+        };
 
         if custom_fields.contains(key) {
             if !supports_feature(features, &["custom-fields"]) {
@@ -1245,6 +1250,23 @@ fn encode_generic_fk(
     resolved: &BTreeMap<Uid, u64>,
     registry: &ObjectTypeRegistry,
 ) -> Result<()> {
+    if value.is_null() {
+        // clear the generic fk: null both split components, the nested field, or
+        // an empty array for a nested list
+        match encoding {
+            netbox::GenericFkEncoding::Split => {
+                body.insert(format!("{key}_type"), Value::Null);
+                body.insert(format!("{key}_id"), Value::Null);
+            }
+            netbox::GenericFkEncoding::Nested => {
+                body.insert(key.to_string(), Value::Null);
+            }
+            netbox::GenericFkEncoding::NestedList => {
+                body.insert(key.to_string(), Value::Array(Vec::new()));
+            }
+        }
+        return Ok(());
+    }
     let target = match field_type {
         FieldType::Ref { target } | FieldType::ListRef { target } => target.as_str(),
         other => {
@@ -2065,6 +2087,86 @@ mod test_normalization {
     }
 
     #[test]
+    fn test_build_request_body_passes_null_ref_through_to_clear_it() {
+        // clearing a nullable ref: a null must pass straight through as null,
+        // not error as a non-uuid ref value.
+        let mut fields = BTreeMap::new();
+        fields.insert(
+            "rack".to_string(),
+            FieldSchema {
+                r#type: alembic_core::FieldType::Ref {
+                    target: "dcim.rack".to_string(),
+                },
+                required: false,
+                nullable: true,
+                description: None,
+                format: None,
+                pattern: None,
+            },
+        );
+        let type_schema = TypeSchema {
+            key: BTreeMap::new(),
+            fields,
+        };
+        let mut attrs = JsonMap::default();
+        attrs.insert("rack".to_string(), json!(null));
+
+        let body = build_request_body(
+            &TypeName::new("dcim.device"),
+            &type_schema,
+            &attrs,
+            &BTreeMap::new(),
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+            &ObjectTypeRegistry::default(),
+        )
+        .unwrap();
+        assert_eq!(body.get("rack").unwrap(), &json!(null));
+    }
+
+    #[test]
+    fn test_build_request_body_null_custom_field_clears_via_custom_data() {
+        // a null custom field clears through `custom_fields`, not the top-level body.
+        let mut fields = BTreeMap::new();
+        fields.insert(
+            "owner".to_string(),
+            FieldSchema {
+                r#type: alembic_core::FieldType::Ref {
+                    target: "dcim.device".to_string(),
+                },
+                required: false,
+                nullable: true,
+                description: None,
+                format: None,
+                pattern: None,
+            },
+        );
+        let type_schema = TypeSchema {
+            key: BTreeMap::new(),
+            fields,
+        };
+        let mut attrs = JsonMap::default();
+        attrs.insert("owner".to_string(), json!(null));
+
+        let body = build_request_body(
+            &TypeName::new("dcim.device"),
+            &type_schema,
+            &attrs,
+            &BTreeMap::new(),
+            &BTreeSet::from(["owner".to_string()]),
+            &BTreeSet::from(["custom-fields".to_string()]),
+            &ObjectTypeRegistry::default(),
+        )
+        .unwrap();
+        let custom = body
+            .get("custom_fields")
+            .and_then(Value::as_object)
+            .unwrap();
+        assert_eq!(custom.get("owner").unwrap(), &json!(null));
+        assert!(body.get("owner").is_none());
+    }
+
+    #[test]
     fn test_resolve_value_for_type() {
         let resolved = BTreeMap::from([(Uid::from_u128(1), 5u64)]);
 
@@ -2121,6 +2223,59 @@ mod test_normalization {
             &json!("dcim.interface")
         );
         assert_eq!(body.get("assigned_object_id").unwrap(), &json!(42));
+    }
+
+    #[test]
+    fn test_encode_generic_fk_null_clears() {
+        // a null generic fk clears: both split components null, the nested field
+        // null, or an empty array for a nested list.
+        let registry = ObjectTypeRegistry::default();
+        let resolved: BTreeMap<Uid, u64> = BTreeMap::new();
+        let ref_type = FieldType::Ref {
+            target: "dcim.interface".to_string(),
+        };
+
+        let mut body = Map::new();
+        encode_generic_fk(
+            &mut body,
+            "assigned_object",
+            netbox::GenericFkEncoding::Split,
+            &ref_type,
+            json!(null),
+            &resolved,
+            &registry,
+        )
+        .unwrap();
+        assert_eq!(body.get("assigned_object_type").unwrap(), &json!(null));
+        assert_eq!(body.get("assigned_object_id").unwrap(), &json!(null));
+
+        let mut body = Map::new();
+        encode_generic_fk(
+            &mut body,
+            "scope",
+            netbox::GenericFkEncoding::Nested,
+            &ref_type,
+            json!(null),
+            &resolved,
+            &registry,
+        )
+        .unwrap();
+        assert_eq!(body.get("scope").unwrap(), &json!(null));
+
+        let mut body = Map::new();
+        encode_generic_fk(
+            &mut body,
+            "a_terminations",
+            netbox::GenericFkEncoding::NestedList,
+            &FieldType::ListRef {
+                target: "dcim.interface".to_string(),
+            },
+            json!(null),
+            &resolved,
+            &registry,
+        )
+        .unwrap();
+        assert_eq!(body.get("a_terminations").unwrap(), &json!([]));
     }
 
     #[test]

@@ -728,7 +728,12 @@ fn build_request_body(
             .fields
             .get(key)
             .ok_or_else(|| anyhow!("missing schema for field {key}"))?;
-        let encoded = resolve_value_for_type(&field_schema.r#type, value.clone(), resolved)?;
+        // a null clears the field; pass it through instead of resolving as a ref
+        let encoded = if value.is_null() {
+            Value::Null
+        } else {
+            resolve_value_for_type(&field_schema.r#type, value.clone(), resolved)?
+        };
 
         if custom_fields.contains(key) {
             if !supports_feature(features, &["custom-fields"]) {
@@ -1195,6 +1200,84 @@ mod tests {
         )
         .unwrap();
         assert_eq!(body.get("site").unwrap(), &json!("site-uuid"));
+    }
+
+    #[test]
+    fn test_build_request_body_passes_null_ref_through_to_clear_it() {
+        // clearing a nullable ref: a null must pass straight through as null,
+        // not error as a non-uuid ref value.
+        let mut fields = BTreeMap::new();
+        fields.insert(
+            "rack".to_string(),
+            FieldSchema {
+                r#type: alembic_core::FieldType::Ref {
+                    target: "dcim.rack".to_string(),
+                },
+                required: false,
+                nullable: true,
+                description: None,
+                format: None,
+                pattern: None,
+            },
+        );
+        let type_schema = TypeSchema {
+            key: BTreeMap::new(),
+            fields,
+        };
+        let mut attrs = JsonMap::default();
+        attrs.insert("rack".to_string(), json!(null));
+
+        let body = build_request_body(
+            &TypeName::new("dcim.device"),
+            &type_schema,
+            &attrs,
+            &BTreeMap::new(),
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+        )
+        .unwrap();
+        assert_eq!(body.get("rack").unwrap(), &json!(null));
+    }
+
+    #[test]
+    fn test_build_request_body_null_custom_field_clears_via_custom_data() {
+        // a null custom field clears through `_custom_field_data`, not the body.
+        let mut fields = BTreeMap::new();
+        fields.insert(
+            "owner".to_string(),
+            FieldSchema {
+                r#type: alembic_core::FieldType::Ref {
+                    target: "dcim.device".to_string(),
+                },
+                required: false,
+                nullable: true,
+                description: None,
+                format: None,
+                pattern: None,
+            },
+        );
+        let type_schema = TypeSchema {
+            key: BTreeMap::new(),
+            fields,
+        };
+        let mut attrs = JsonMap::default();
+        attrs.insert("owner".to_string(), json!(null));
+
+        let body = build_request_body(
+            &TypeName::new("dcim.device"),
+            &type_schema,
+            &attrs,
+            &BTreeMap::new(),
+            &BTreeSet::from(["owner".to_string()]),
+            &BTreeSet::from(["custom-fields".to_string()]),
+        )
+        .unwrap();
+        let custom = body
+            .get("_custom_field_data")
+            .and_then(Value::as_object)
+            .unwrap();
+        assert_eq!(custom.get("owner").unwrap(), &json!(null));
+        assert!(body.get("owner").is_none());
     }
 
     #[test]
