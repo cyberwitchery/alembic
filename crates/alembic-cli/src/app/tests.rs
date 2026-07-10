@@ -728,10 +728,14 @@ async fn run_apply_interactive_delete_requires_allow_delete() {
     let cwd = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
 
+    // django (a write-only emitter) is used so apply reaches the interactive
+    // delete-gate: the capability gate now rejects a read-only backend before
+    // this point, so a read-only backend would fail with the read-only error
+    // instead (see `run_apply_read_only_backend_fails_before_prompting`).
     let cli = Cli {
         command: Command::Apply {
             plan: plan_path,
-            backend: Some("peeringdb".to_string()),
+            backend: Some("django".to_string()),
             backend_config: None,
             allow_delete: false,
             interactive: true,
@@ -741,6 +745,55 @@ async fn run_apply_interactive_delete_requires_allow_delete() {
     assert!(err
         .to_string()
         .contains("plan contains delete operations; re-run with --allow-delete"));
+    std::env::set_current_dir(cwd).unwrap();
+}
+
+#[tokio::test]
+async fn run_apply_read_only_backend_fails_before_prompting() {
+    // `apply` against a read-only (observer) backend cannot write, so it must
+    // reject the backend up front, right after constructing it (the way
+    // `plan`/`import` already gate capability), rather than reading the plan
+    // and, under `--interactive`, prompting `create/update/delete ...? [y/N]`
+    // for every op only to fail deep inside `apply_plan`.
+    //
+    // the plan path deliberately does not exist: before the capability gate was
+    // hoisted ahead of `read_plan`, this failed with a `read plan: ...` error
+    // (and interactive first ran the whole prompt loop); now the read-only error
+    // fires before the plan is read on both the interactive and non-interactive
+    // paths, proving the prompt loop (which lives after `read_plan`) is
+    // unreachable. (scanning stdout for the absence of a prompt needs a
+    // subprocess, since `confirm` writes straight to the process stdout; that is
+    // covered end-to-end in `tests/apply_capability.rs`.)
+    let _guard = cwd_lock().lock().await;
+    let dir = tempdir().unwrap();
+    let state_path = dir.path().join(".alembic").join("state.json");
+    let _env = EnvVarGuard::acquire_async(&[
+        ("ALEMBIC_STATE_BACKEND", Some("local")),
+        ("ALEMBIC_STATE_PATH", Some(state_path.to_str().unwrap())),
+    ])
+    .await;
+    let missing_plan = dir.path().join("does-not-exist.json");
+    let cwd = std::env::current_dir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
+
+    for interactive in [true, false] {
+        let cli = Cli {
+            command: Command::Apply {
+                plan: missing_plan.clone(),
+                backend: Some("peeringdb".to_string()),
+                backend_config: None,
+                allow_delete: false,
+                interactive,
+            },
+        };
+        let err = run(cli, AppConfig::load().unwrap()).await.unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("backend is read-only; it cannot apply changes"),
+            "interactive={interactive}: expected the read-only capability error \
+             before the plan is read, got: {err}"
+        );
+    }
     std::env::set_current_dir(cwd).unwrap();
 }
 
