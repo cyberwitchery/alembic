@@ -351,6 +351,24 @@ pub fn validate_inventory(inventory: &Inventory) -> ValidationReport {
     report
 }
 
+/// walk every declared field in the schema, visiting each type's key fields
+/// (labeled `key.<field>`) then its attribute fields. the schema-level
+/// validators share this traversal; centralizing it keeps the key-field
+/// labeling convention in one place.
+fn for_each_schema_field(
+    schema: &Schema,
+    mut visit: impl FnMut(&str, &str, &crate::ir::FieldSchema),
+) {
+    for (type_name, type_schema) in &schema.types {
+        for (field, field_schema) in &type_schema.key {
+            visit(type_name, &format!("key.{field}"), field_schema);
+        }
+        for (field, field_schema) in &type_schema.fields {
+            visit(type_name, field, field_schema);
+        }
+    }
+}
+
 /// validate that every `ref`/`list_ref` target declared in the schema names a
 /// declared type.
 ///
@@ -359,20 +377,9 @@ pub fn validate_inventory(inventory: &Inventory) -> ValidationReport {
 /// per-object reference errors. this catches the mistake at the schema level,
 /// attributed to the declaring type and field.
 fn validate_schema_ref_targets(schema: &Schema, report: &mut ValidationReport) {
-    for (type_name, type_schema) in &schema.types {
-        for (field, field_schema) in &type_schema.key {
-            validate_field_ref_targets(
-                schema,
-                type_name,
-                &format!("key.{field}"),
-                &field_schema.r#type,
-                report,
-            );
-        }
-        for (field, field_schema) in &type_schema.fields {
-            validate_field_ref_targets(schema, type_name, field, &field_schema.r#type, report);
-        }
-    }
+    for_each_schema_field(schema, |type_name, field, field_schema| {
+        validate_field_ref_targets(schema, type_name, field, &field_schema.r#type, report);
+    });
 }
 
 /// recursively check ref targets within a field type, descending into `list`
@@ -430,14 +437,9 @@ fn validate_field_ref_targets(
 /// it is never nested inside `list`/`map` item types, so a flat iteration over
 /// key and attr fields is complete.
 fn validate_schema_patterns(schema: &Schema, report: &mut ValidationReport) {
-    for (type_name, type_schema) in &schema.types {
-        for (field, field_schema) in &type_schema.key {
-            validate_field_pattern(type_name, &format!("key.{field}"), field_schema, report);
-        }
-        for (field, field_schema) in &type_schema.fields {
-            validate_field_pattern(type_name, field, field_schema, report);
-        }
-    }
+    for_each_schema_field(schema, |type_name, field, field_schema| {
+        validate_field_pattern(type_name, field, field_schema, report);
+    });
 }
 
 /// compile a single field's `pattern:`, recording an error if it is malformed.
@@ -467,19 +469,9 @@ fn validate_field_pattern(
 /// `format`/`pattern` live only on the top-level `FieldSchema`, so a flat walk
 /// over key and attr fields is complete.
 fn validate_schema_constraint_types(schema: &Schema, report: &mut ValidationReport) {
-    for (type_name, type_schema) in &schema.types {
-        for (field, field_schema) in &type_schema.key {
-            validate_field_constraint_type(
-                type_name,
-                &format!("key.{field}"),
-                field_schema,
-                report,
-            );
-        }
-        for (field, field_schema) in &type_schema.fields {
-            validate_field_constraint_type(type_name, field, field_schema, report);
-        }
-    }
+    for_each_schema_field(schema, |type_name, field, field_schema| {
+        validate_field_constraint_type(type_name, field, field_schema, report);
+    });
 }
 
 /// flag each `format:`/`pattern:` present on a never-string field, one error per
@@ -548,19 +540,9 @@ fn is_never_string_type(field_type: &FieldType) -> bool {
 /// `list`/`map` item types can nest an enum, and per-object validation recurses
 /// into them keeping the same field label, so this walk recurses the same way.
 fn validate_schema_enums(schema: &Schema, report: &mut ValidationReport) {
-    for (type_name, type_schema) in &schema.types {
-        for (field, field_schema) in &type_schema.key {
-            validate_field_enum(
-                type_name,
-                &format!("key.{field}"),
-                &field_schema.r#type,
-                report,
-            );
-        }
-        for (field, field_schema) in &type_schema.fields {
-            validate_field_enum(type_name, field, &field_schema.r#type, report);
-        }
-    }
+    for_each_schema_field(schema, |type_name, field, field_schema| {
+        validate_field_enum(type_name, field, &field_schema.r#type, report);
+    });
 }
 
 /// recursively check for an empty-values enum within a field type, descending
