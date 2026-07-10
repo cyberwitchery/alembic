@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- cli: `plan --provision` now fails closed when the schema preview errors, aborting instead of provisioning blind; a preview error previously slipped past the `--allow-delete` gate and let `ensure_schema` delete unmanaged schema, unlike apply which already failed closed
 - infrahub adapter: name an unresolved ref-typed *key* field in the `unresolved references` apply error. the adapter's local, shallow `describe_missing_refs` (forked in #174 because infrahub refs are flat) scanned only `desired.attrs`, so an apply left pending on a dangling key ref (an interface keyed by `(device, name)` whose device is unresolved) reported an empty message; it now scans `desired.key` too, matching the key-values scan the engine's shared copy gained in #221
 - engine: mark journal ops done in O(1) via an index, so applying an N-op plan is O(N) not O(N²) (a 50k-op plan spent ~0.9s, growing quadratically, in journal bookkeeping alone)
 - add `alembic-file-generator`, an internal tool that emits a synthetic `plan.json` of N create ops over a fixed dcim schema for scale/perf testing (#118)

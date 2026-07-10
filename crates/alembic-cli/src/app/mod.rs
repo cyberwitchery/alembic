@@ -223,7 +223,7 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                 // no longer declares; gate it behind --allow-delete like apply,
                 // checking the read-only preview before writing schema.
                 if !allow_delete {
-                    if let Ok(Some(preview)) = adapter.preview_schema(&inventory.schema).await {
+                    if let Some(preview) = adapter.preview_schema(&inventory.schema).await? {
                         guard_schema_deletes(&preview, allow_delete)?;
                     }
                 }

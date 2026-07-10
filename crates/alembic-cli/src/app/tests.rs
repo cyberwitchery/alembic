@@ -1195,6 +1195,60 @@ async fn minimal_external_adapter() {
     }
 }
 
+// drives the real run() for `plan --provision` against an external adapter whose
+// preview_schema errors (ensure_schema stays defaulted/Ok). the provision guard
+// must propagate that Err and abort before ensure_schema, so a preview hiccup
+// cannot slip past the --allow-delete gate and provision blind. this fails
+// against the old `if let Ok(Some(..))` swallow (run completes Ok) and passes
+// once the guard uses `?` to fail closed, mirroring the engine apply path.
+#[tokio::test(flavor = "multi_thread")]
+async fn run_plan_provision_fails_closed_on_preview_error() {
+    let _guard = cwd_lock().lock().await;
+    let dir = tempdir().unwrap();
+    let state_path = dir.path().join(".alembic").join("state.json");
+    let _env = EnvVarGuard::acquire_async(&[
+        ("ALEMBIC_STATE_BACKEND", Some("local")),
+        ("ALEMBIC_STATE_PATH", Some(state_path.to_str().unwrap())),
+    ])
+    .await;
+
+    let example_binary = find_example_binary("preview_error_adapter");
+    let inventory = write_minimal_inventory(dir.path());
+    let out_path = dir.path().join("plan.json");
+    let config_path = dir.path().join("backend.yaml");
+    std::fs::write(
+        &config_path,
+        format!(
+            "backend: external\ncommand: \"{}\"\ntimeout-seconds: 5\n",
+            example_binary.to_str().unwrap()
+        ),
+    )
+    .unwrap();
+
+    let cwd = std::env::current_dir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
+    let cli = Cli {
+        command: Command::Plan {
+            file: inventory,
+            output: Some(out_path),
+            backend: Some("external".to_string()),
+            backend_config: Some(config_path),
+            provision: true,
+            dry_run: false,
+            report: false,
+            allow_delete: false,
+        },
+    };
+    let result = run(cli, AppConfig::load().unwrap()).await;
+    std::env::set_current_dir(cwd).unwrap();
+
+    let err = result.expect_err("a preview error must abort provisioning, not fall through");
+    assert!(
+        err.to_string().contains("preview failed for test"),
+        "expected the propagated preview error, got: {err:#}"
+    );
+}
+
 fn find_example_binary(name: &str) -> PathBuf {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let target_dir = manifest_dir
