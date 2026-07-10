@@ -56,7 +56,24 @@ where
         FieldType::ListRef { .. } => resolve_list_ref_value(value, resolved, encode_ref),
         FieldType::List { item } => resolve_list_value(item, value, resolved, encode_ref),
         FieldType::Map { value: inner } => resolve_map_value(inner, value, resolved, encode_ref),
-        _ => Ok(value),
+        // scalar leaves pass through unchanged; enumerated explicitly so a new
+        // ref-bearing FieldType variant forces a compile error here.
+        FieldType::String
+        | FieldType::Text
+        | FieldType::Int
+        | FieldType::Float
+        | FieldType::Bool
+        | FieldType::Uuid
+        | FieldType::Date
+        | FieldType::Datetime
+        | FieldType::Time
+        | FieldType::Json
+        | FieldType::IpAddress
+        | FieldType::Cidr
+        | FieldType::Prefix
+        | FieldType::Mac
+        | FieldType::Slug
+        | FieldType::Enum { .. } => Ok(value),
     }
 }
 
@@ -184,7 +201,29 @@ where
             }
             Ok(())
         }
-        _ => {
+        // every non-ref field is filtered as a scalar. unlike the sibling
+        // walkers, List/Map are NOT recursed into here: this path only handles
+        // key fields, and validation forbids composite (list/map) key types, so
+        // those variants are unreachable. they are listed explicitly with the
+        // scalars so a new FieldType variant forces a compile error here too.
+        FieldType::String
+        | FieldType::Text
+        | FieldType::Int
+        | FieldType::Float
+        | FieldType::Bool
+        | FieldType::Uuid
+        | FieldType::Date
+        | FieldType::Datetime
+        | FieldType::Time
+        | FieldType::Json
+        | FieldType::IpAddress
+        | FieldType::Cidr
+        | FieldType::Prefix
+        | FieldType::Mac
+        | FieldType::Slug
+        | FieldType::Enum { .. }
+        | FieldType::List { .. }
+        | FieldType::Map { .. } => {
             let scalar = value_to_query_value(value)?;
             filters.push((field.to_string(), scalar));
             Ok(())
@@ -346,7 +385,24 @@ fn normalize_value_for_type(
             ),
             other => other,
         },
-        _ => value,
+        // scalar leaves pass through unchanged; enumerated explicitly so a new
+        // ref-bearing FieldType variant forces a compile error here.
+        FieldType::String
+        | FieldType::Text
+        | FieldType::Int
+        | FieldType::Float
+        | FieldType::Bool
+        | FieldType::Uuid
+        | FieldType::Date
+        | FieldType::Datetime
+        | FieldType::Time
+        | FieldType::Json
+        | FieldType::IpAddress
+        | FieldType::Cidr
+        | FieldType::Prefix
+        | FieldType::Mac
+        | FieldType::Slug
+        | FieldType::Enum { .. } => value,
     }
 }
 

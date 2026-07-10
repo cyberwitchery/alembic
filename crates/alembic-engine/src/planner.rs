@@ -250,7 +250,24 @@ fn collect_refs_in_value(field_type: &FieldType, value: &Value, out: &mut BTreeS
                 }
             }
         }
-        _ => {}
+        // scalar leaves carry no refs; enumerated explicitly so a new
+        // ref-bearing FieldType variant forces a compile error here.
+        FieldType::String
+        | FieldType::Text
+        | FieldType::Int
+        | FieldType::Float
+        | FieldType::Bool
+        | FieldType::Uuid
+        | FieldType::Date
+        | FieldType::Datetime
+        | FieldType::Time
+        | FieldType::Json
+        | FieldType::IpAddress
+        | FieldType::Cidr
+        | FieldType::Prefix
+        | FieldType::Mac
+        | FieldType::Slug
+        | FieldType::Enum { .. } => {}
     }
 }
 
