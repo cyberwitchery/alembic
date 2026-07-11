@@ -1760,7 +1760,15 @@ fn custom_object_field_type(field_type: &FieldType) -> &'static str {
         FieldType::Json | FieldType::List { .. } | FieldType::Map { .. } => "json",
         FieldType::Ref { .. } => "object",
         FieldType::ListRef { .. } => "multiobject",
-        _ => "text",
+        FieldType::String
+        | FieldType::Uuid
+        | FieldType::Time
+        | FieldType::IpAddress
+        | FieldType::Cidr
+        | FieldType::Prefix
+        | FieldType::Mac
+        | FieldType::Slug
+        | FieldType::Enum { .. } => "text",
     }
 }
 
