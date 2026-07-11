@@ -291,6 +291,8 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             let mut state = load_state().await?;
             let plugins = search_for_plugins(&config);
             let backend = create_backend(&plugins, backend.as_deref(), backend_config)?;
+            // reject a backend that cannot apply before reading the plan or prompting
+            backend.emitter()?;
             let plan = read_plan(&plan)?;
 
             if interactive {
