@@ -1202,7 +1202,7 @@ fn build_request_body(
             continue;
         }
 
-        // a null clears the field; pass it through instead of resolving as a ref
+        // a null clears the field
         let encoded = if value.is_null() {
             Value::Null
         } else {
@@ -1251,8 +1251,7 @@ fn encode_generic_fk(
     registry: &ObjectTypeRegistry,
 ) -> Result<()> {
     if value.is_null() {
-        // clear the generic fk: null both split components, the nested field, or
-        // an empty array for a nested list
+        // clear the generic fk
         match encoding {
             netbox::GenericFkEncoding::Split => {
                 body.insert(format!("{key}_type"), Value::Null);
@@ -2088,8 +2087,6 @@ mod test_normalization {
 
     #[test]
     fn test_build_request_body_passes_null_ref_through_to_clear_it() {
-        // clearing a nullable ref: a null must pass straight through as null,
-        // not error as a non-uuid ref value.
         let mut fields = BTreeMap::new();
         fields.insert(
             "rack".to_string(),
@@ -2126,7 +2123,6 @@ mod test_normalization {
 
     #[test]
     fn test_build_request_body_null_custom_field_clears_via_custom_data() {
-        // a null custom field clears through `custom_fields`, not the top-level body.
         let mut fields = BTreeMap::new();
         fields.insert(
             "owner".to_string(),
