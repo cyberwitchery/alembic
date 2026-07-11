@@ -838,7 +838,7 @@ fn supports_feature(features: &BTreeSet<String>, candidates: &[&str]) -> bool {
 }
 
 fn is_404_error(err: &nautobot::Error) -> bool {
-    err.to_string().contains("status 404")
+    matches!(err, nautobot::Error::ApiError { status: 404, .. })
 }
 
 fn is_conflict_error(err: &nautobot::Error) -> bool {
