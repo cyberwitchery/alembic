@@ -57,17 +57,19 @@ pub fn django_available(python: &str) -> bool {
     }
 }
 
-pub fn run_apply_django(fixture: &str) {
-    let python = python_path();
-    if !django_available(&python) {
-        eprintln!("skipping django e2e; django + djangorestframework not available for {python}");
-        return;
-    }
+/// path to a documented example walkthrough inventory (examples/walkthroughs/<name>).
+pub fn walkthrough_path(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("examples")
+        .join("walkthroughs")
+        .join(name)
+}
 
-    let bin = bin_path();
-    let out = tempdir().expect("create temp dir");
-    let config_file_path = out.path().join("django.yaml");
-
+/// write a django backend config into `dir`, emitting the generated app under `output`.
+pub fn write_django_config(dir: &Path, output: &Path) -> PathBuf {
+    let path = dir.join("django.yaml");
     let data = format!(
         r"backend: django
 output: {}
@@ -76,11 +78,23 @@ app: alembic_app
 python: python3
 no_migrate: false
 no_admin: false",
-        out.path().to_str().unwrap(),
+        output.to_str().unwrap(),
     );
-    fs::write(&config_file_path, data).expect("write config file to temp dir");
+    fs::write(&path, data).expect("write django config to temp dir");
+    path
+}
 
-    let mut cmd = Command::new(&bin);
+pub fn run_apply_django(fixture: &str) {
+    let python = python_path();
+    if !django_available(&python) {
+        eprintln!("skipping django e2e; django + djangorestframework not available for {python}");
+        return;
+    }
+
+    let out = tempdir().expect("create temp dir");
+    let config_file_path = write_django_config(out.path(), out.path());
+
+    let mut cmd = Command::new(bin_path());
     // isolate state per test: the default `./.alembic/state.json` is cwd-relative,
     // so parallel runs race on a shared path (and pollute the source tree).
     cmd.env("ALEMBIC_STATE_PATH", out.path().join("state.json"));
