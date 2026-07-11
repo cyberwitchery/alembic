@@ -31,7 +31,9 @@ pub fn slugify(input: &str) -> String {
     out
 }
 
-/// map an Alembic field type to the backend custom-field type string.
+/// map an Alembic field type to the backend custom-field type string. shared by
+/// netbox and nautobot, so it stays on the types both accept as plain fields;
+/// richer per-backend mappings (e.g. netbox object/longtext) live in the adapter.
 pub fn custom_field_type_for_schema(field: &FieldSchema) -> String {
     match field.r#type {
         FieldType::Int => "integer".to_string(),
@@ -40,7 +42,20 @@ pub fn custom_field_type_for_schema(field: &FieldSchema) -> String {
         FieldType::Date => "date".to_string(),
         FieldType::Datetime => "datetime".to_string(),
         FieldType::Json | FieldType::List { .. } | FieldType::Map { .. } => "json".to_string(),
-        _ => "text".to_string(),
+        // string-like scalars become plain text. ref/listref can't reach here
+        // (adapters skip them before custom-field creation); listed for exhaustiveness.
+        FieldType::String
+        | FieldType::Text
+        | FieldType::Uuid
+        | FieldType::Time
+        | FieldType::IpAddress
+        | FieldType::Cidr
+        | FieldType::Prefix
+        | FieldType::Mac
+        | FieldType::Slug
+        | FieldType::Enum { .. }
+        | FieldType::Ref { .. }
+        | FieldType::ListRef { .. } => "text".to_string(),
     }
 }
 
@@ -129,6 +144,22 @@ mod tests {
         assert_eq!(
             custom_field_type_for_schema(&schema(FieldType::Datetime)),
             "datetime"
+        );
+        assert_eq!(
+            custom_field_type_for_schema(&schema(FieldType::Text)),
+            "text"
+        );
+        assert_eq!(
+            custom_field_type_for_schema(&schema(FieldType::List {
+                item: Box::new(FieldType::String)
+            })),
+            "json"
+        );
+        assert_eq!(
+            custom_field_type_for_schema(&schema(FieldType::Map {
+                value: Box::new(FieldType::String)
+            })),
+            "json"
         );
     }
 
