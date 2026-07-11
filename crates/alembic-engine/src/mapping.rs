@@ -3,6 +3,7 @@
 use alembic_core::{FieldSchema, FieldType};
 use anyhow::{anyhow, Result};
 use serde_json::Value;
+use std::collections::BTreeSet;
 
 /// convert a human-readable label into a URL-safe slug.
 ///
@@ -74,6 +75,11 @@ pub fn tags_from_value(value: &Value) -> Result<Vec<String>> {
     Ok(tags)
 }
 
+/// return whether the feature set contains any of the candidate feature flags.
+pub fn supports_feature(features: &BTreeSet<String>, candidates: &[&str]) -> bool {
+    candidates.iter().any(|name| features.contains(*name))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -124,6 +130,14 @@ mod tests {
             custom_field_type_for_schema(&schema(FieldType::Datetime)),
             "datetime"
         );
+    }
+
+    #[test]
+    fn test_supports_feature() {
+        let mut features = BTreeSet::new();
+        features.insert("tags".to_string());
+        assert!(supports_feature(&features, &["tags"]));
+        assert!(!supports_feature(&features, &["custom-fields"]));
     }
 
     #[test]

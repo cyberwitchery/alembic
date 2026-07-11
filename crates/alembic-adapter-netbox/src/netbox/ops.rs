@@ -1,5 +1,7 @@
 use super::client::{CustomObjectField, CustomObjectType};
-use super::mapping::{build_tag_inputs, custom_field_type_for_schema, slugify, tags_from_value};
+use super::mapping::{
+    build_tag_inputs, custom_field_type_for_schema, slugify, supports_feature, tags_from_value,
+};
 use super::registry::ObjectTypeRegistry;
 use super::state::{resolved_from_state, state_mappings};
 use super::NetBoxAdapter;
@@ -1772,10 +1774,6 @@ fn custom_object_field_type(field_type: &FieldType) -> &'static str {
     }
 }
 
-fn supports_feature(features: &BTreeSet<String>, candidates: &[&str]) -> bool {
-    candidates.iter().any(|name| features.contains(*name))
-}
-
 fn is_404_error(err: &netbox::Error) -> bool {
     matches!(err, netbox::Error::ApiError { status: 404, .. })
 }
@@ -2360,14 +2358,6 @@ mod test_normalization {
         assert_eq!(attrs["scope"], json!(uid.to_string()));
         assert!(attrs.get("scope_type").is_none());
         assert!(attrs.get("scope_id").is_none());
-    }
-
-    #[test]
-    fn test_supports_feature() {
-        let mut features = BTreeSet::new();
-        features.insert("tags".to_string());
-        assert!(supports_feature(&features, &["tags"]));
-        assert!(!supports_feature(&features, &["custom-fields"]));
     }
 
     #[test]

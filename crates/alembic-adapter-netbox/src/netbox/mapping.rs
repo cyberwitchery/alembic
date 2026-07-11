@@ -1,4 +1,6 @@
-pub(super) use alembic_engine::mapping::{custom_field_type_for_schema, slugify, tags_from_value};
+pub(super) use alembic_engine::mapping::{
+    custom_field_type_for_schema, slugify, supports_feature, tags_from_value,
+};
 
 pub(super) fn build_tag_inputs(tags: &[String]) -> Vec<netbox::models::NestedTag> {
     tags.iter()
