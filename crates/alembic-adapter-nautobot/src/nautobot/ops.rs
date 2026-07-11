@@ -1,4 +1,6 @@
-use super::mapping::{build_tag_inputs, custom_field_type_for_schema, slugify, tags_from_value};
+use super::mapping::{
+    build_tag_inputs, custom_field_type_for_schema, slugify, supports_feature, tags_from_value,
+};
 use super::registry::ObjectTypeRegistry;
 use super::state::{resolved_from_state, state_mappings};
 use super::NautobotAdapter;
@@ -836,10 +838,6 @@ async fn native_fields_for_type(
     }
 
     Ok(native)
-}
-
-fn supports_feature(features: &BTreeSet<String>, candidates: &[&str]) -> bool {
-    candidates.iter().any(|name| features.contains(*name))
 }
 
 fn is_404_error(err: &nautobot::Error) -> bool {
