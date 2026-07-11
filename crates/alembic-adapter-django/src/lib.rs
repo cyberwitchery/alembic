@@ -667,8 +667,21 @@ fn format_for_field_type(field_type: &FieldType) -> FieldFormat {
         FieldType::Prefix => FieldFormat::Prefix,
         FieldType::Mac => FieldFormat::Mac,
         FieldType::Uuid => FieldFormat::Uuid,
-        FieldType::Slug => FieldFormat::Slug,
-        _ => FieldFormat::Slug,
+        FieldType::String
+        | FieldType::Text
+        | FieldType::Int
+        | FieldType::Float
+        | FieldType::Bool
+        | FieldType::Date
+        | FieldType::Datetime
+        | FieldType::Time
+        | FieldType::Json
+        | FieldType::Slug
+        | FieldType::Enum { .. }
+        | FieldType::List { .. }
+        | FieldType::Map { .. }
+        | FieldType::Ref { .. }
+        | FieldType::ListRef { .. } => FieldFormat::Slug,
     }
 }
 
