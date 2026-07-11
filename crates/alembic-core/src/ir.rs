@@ -329,6 +329,68 @@ impl<'de> Deserialize<'de> for FieldType {
     }
 }
 
+/// parse the five composite field-type tags (`list`/`map`/`enum`/`ref`/`list_ref`), whose
+/// sibling params live in `map` alongside the `type` tag. returns `Ok(None)` for any other
+/// tag, so each caller keeps its own simple-type fall-through.
+fn parse_composite_field_type(
+    tag: &str,
+    map: &serde_json::Map<String, serde_json::Value>,
+) -> Result<Option<FieldType>, String> {
+    let field_type = match tag {
+        "list" => {
+            let item = map
+                .get("item")
+                .ok_or_else(|| "list type requires item".to_string())?;
+            FieldType::List {
+                item: Box::new(parse_field_type_value(item)?),
+            }
+        }
+        "map" => {
+            let value = map
+                .get("value")
+                .ok_or_else(|| "map type requires value".to_string())?;
+            FieldType::Map {
+                value: Box::new(parse_field_type_value(value)?),
+            }
+        }
+        "enum" => {
+            let values = map
+                .get("values")
+                .and_then(serde_json::Value::as_array)
+                .ok_or_else(|| "enum type requires values".to_string())?
+                .iter()
+                .map(|value| {
+                    value
+                        .as_str()
+                        .map(str::to_string)
+                        .ok_or_else(|| "enum values must be strings".to_string())
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            FieldType::Enum { values }
+        }
+        "ref" => {
+            let target = map
+                .get("target")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "ref type requires target".to_string())?;
+            FieldType::Ref {
+                target: target.to_string(),
+            }
+        }
+        "list_ref" => {
+            let target = map
+                .get("target")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "list_ref type requires target".to_string())?;
+            FieldType::ListRef {
+                target: target.to_string(),
+            }
+        }
+        _ => return Ok(None),
+    };
+    Ok(Some(field_type))
+}
+
 fn parse_field_type_value(value: &serde_json::Value) -> Result<FieldType, String> {
     match value {
         serde_json::Value::String(raw) => parse_simple_field_type(raw),
@@ -337,63 +399,15 @@ fn parse_field_type_value(value: &serde_json::Value) -> Result<FieldType, String
                 .get("type")
                 .and_then(serde_json::Value::as_str)
                 .ok_or_else(|| "field type requires a string 'type' key".to_string())?;
-            match raw_type {
-                "enum" => {
-                    let values = map
-                        .get("values")
-                        .and_then(serde_json::Value::as_array)
-                        .ok_or_else(|| "enum type requires values array".to_string())?
-                        .iter()
-                        .map(|value| {
-                            value
-                                .as_str()
-                                .map(str::to_string)
-                                .ok_or_else(|| "enum values must be strings".to_string())
-                        })
-                        .collect::<Result<Vec<_>, _>>()?;
-                    Ok(FieldType::Enum { values })
-                }
-                "list" => {
-                    let item = map
-                        .get("item")
-                        .ok_or_else(|| "list type requires item".to_string())?;
-                    Ok(FieldType::List {
-                        item: Box::new(parse_field_type_value(item)?),
-                    })
-                }
-                "map" => {
-                    let value = map
-                        .get("value")
-                        .ok_or_else(|| "map type requires value".to_string())?;
-                    Ok(FieldType::Map {
-                        value: Box::new(parse_field_type_value(value)?),
-                    })
-                }
-                "ref" => {
-                    let target = map
-                        .get("target")
-                        .and_then(serde_json::Value::as_str)
-                        .ok_or_else(|| "ref type requires target".to_string())?;
-                    Ok(FieldType::Ref {
-                        target: target.to_string(),
-                    })
-                }
-                "list_ref" => {
-                    let target = map
-                        .get("target")
-                        .and_then(serde_json::Value::as_str)
-                        .ok_or_else(|| "list_ref type requires target".to_string())?;
-                    Ok(FieldType::ListRef {
-                        target: target.to_string(),
-                    })
-                }
-                _ => {
-                    if map.len() != 1 {
-                        return Err(format!("unknown field type {raw_type}"));
-                    }
-                    parse_simple_field_type(raw_type)
-                }
+            if let Some(field_type) = parse_composite_field_type(raw_type, map)? {
+                return Ok(field_type);
             }
+            // not a composite tag: a lone `{type: <scalar>}` is a simple type,
+            // anything else with extra keys is unknown
+            if map.len() != 1 {
+                return Err(format!("unknown field type {raw_type}"));
+            }
+            parse_simple_field_type(raw_type)
         }
         _ => Err("field type must be a string or map".to_string()),
     }
@@ -487,61 +501,12 @@ impl<'de> Deserialize<'de> for FieldSchema {
             .get("type")
             .ok_or_else(|| serde::de::Error::custom("field schema requires type"))?;
         let field_type = match type_value {
-            serde_json::Value::String(raw) => match raw.as_str() {
-                "list" => {
-                    let item = map
-                        .get("item")
-                        .ok_or_else(|| serde::de::Error::custom("list type requires item"))?;
-                    FieldType::List {
-                        item: Box::new(
-                            parse_field_type_value(item).map_err(serde::de::Error::custom)?,
-                        ),
-                    }
+            serde_json::Value::String(raw) => {
+                match parse_composite_field_type(raw, map).map_err(serde::de::Error::custom)? {
+                    Some(field_type) => field_type,
+                    None => parse_simple_field_type(raw).map_err(serde::de::Error::custom)?,
                 }
-                "map" => {
-                    let value = map
-                        .get("value")
-                        .ok_or_else(|| serde::de::Error::custom("map type requires value"))?;
-                    FieldType::Map {
-                        value: Box::new(
-                            parse_field_type_value(value).map_err(serde::de::Error::custom)?,
-                        ),
-                    }
-                }
-                "enum" => {
-                    let values = map
-                        .get("values")
-                        .and_then(serde_json::Value::as_array)
-                        .ok_or_else(|| serde::de::Error::custom("enum type requires values"))?
-                        .iter()
-                        .map(|value| {
-                            value.as_str().map(str::to_string).ok_or_else(|| {
-                                serde::de::Error::custom("enum values must be strings")
-                            })
-                        })
-                        .collect::<Result<Vec<_>, _>>()?;
-                    FieldType::Enum { values }
-                }
-                "ref" => {
-                    let target = map
-                        .get("target")
-                        .and_then(serde_json::Value::as_str)
-                        .ok_or_else(|| serde::de::Error::custom("ref type requires target"))?;
-                    FieldType::Ref {
-                        target: target.to_string(),
-                    }
-                }
-                "list_ref" => {
-                    let target = map
-                        .get("target")
-                        .and_then(serde_json::Value::as_str)
-                        .ok_or_else(|| serde::de::Error::custom("list_ref type requires target"))?;
-                    FieldType::ListRef {
-                        target: target.to_string(),
-                    }
-                }
-                _ => parse_simple_field_type(raw).map_err(serde::de::Error::custom)?,
-            },
+            }
             _ => parse_field_type_value(type_value).map_err(serde::de::Error::custom)?,
         };
 
@@ -866,6 +831,19 @@ mod tests {
         let json = serde_json::json!({ "type": "enum" });
         let result: Result<FieldSchema, _> = serde_json::from_value(json);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn field_type_enum_missing_values_error_is_consistent_across_encodings() {
+        // the nested (FieldType) and flattened (FieldSchema) encodings drifted before
+        // sharing one dispatch; pin that a missing `values` now reports one message
+        let nested = parse_field_type_value(&serde_json::json!({ "type": "enum" })).unwrap_err();
+        let flattened =
+            serde_json::from_value::<FieldSchema>(serde_json::json!({ "type": "enum" }))
+                .unwrap_err()
+                .to_string();
+        assert_eq!(nested, "enum type requires values");
+        assert_eq!(flattened, nested);
     }
 
     #[test]
