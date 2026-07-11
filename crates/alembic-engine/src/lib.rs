@@ -29,8 +29,8 @@ use anyhow::{anyhow, Result};
 mod tests;
 
 pub use adapter_ops::{
-    backend_id_from_value, build_key_from_schema, build_request_body, normalize_attrs_refs,
-    query_filters_from_key, resolve_nested_ref_uid, resolve_value_for_type,
+    backend_id_from_value, build_key_from_schema, build_request_body, collect_tag_names,
+    normalize_attrs_refs, query_filters_from_key, resolve_nested_ref_uid, resolve_value_for_type,
     resolved_ids_from_state, resolved_ids_identity, state_mappings_by_id, StateMappings,
 };
 pub use apply_retry::{

@@ -1,8 +1,11 @@
-use crate::{AdapterApplyError, BackendId, StateStore};
-use alembic_core::{key_string, uid_v5, FieldType, JsonMap, Key, Schema, TypeSchema, Uid};
+use crate::mapping::{supports_feature, tags_from_value};
+use crate::{AdapterApplyError, BackendId, Op, StateStore};
+use alembic_core::{
+    key_string, uid_v5, FieldType, JsonMap, Key, Schema, TypeName, TypeSchema, Uid,
+};
 use anyhow::{anyhow, Result};
 use serde_json::{Map, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub fn build_key_from_schema(type_schema: &TypeSchema, attrs: &JsonMap) -> Result<Key> {
     let mut map = BTreeMap::new();
@@ -13,6 +16,39 @@ pub fn build_key_from_schema(type_schema: &TypeSchema, attrs: &JsonMap) -> Resul
         map.insert(field.clone(), value.clone());
     }
     Ok(Key::from(map))
+}
+
+/// collect the distinct tag names referenced by a batch of ops, erroring if a
+/// type is unknown or does not support tags. `features_for` returns a type's
+/// backend feature set (`None` = unknown type), keeping the adapter's registry
+/// type out of the engine.
+pub fn collect_tag_names(
+    ops: &[Op],
+    features_for: impl Fn(&TypeName) -> Option<BTreeSet<String>>,
+) -> Result<BTreeSet<String>> {
+    let mut tags = BTreeSet::new();
+    for op in ops {
+        let (type_name, desired) = match op {
+            Op::Create {
+                type_name, desired, ..
+            } => (type_name, desired),
+            Op::Update {
+                type_name, desired, ..
+            } => (type_name, desired),
+            Op::Delete { .. } => continue,
+        };
+        if let Some(tag_value) = desired.attrs.get("tags") {
+            let features =
+                features_for(type_name).ok_or_else(|| anyhow!("unsupported type {}", type_name))?;
+            if !supports_feature(&features, &["tags"]) {
+                return Err(anyhow!("{} does not support tags", type_name));
+            }
+            for tag in tags_from_value(tag_value)? {
+                tags.insert(tag);
+            }
+        }
+    }
+    Ok(tags)
 }
 
 pub fn build_request_body<Id, F>(
@@ -501,7 +537,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alembic_core::{FieldSchema, FieldType, JsonMap, Key, TypeSchema};
+    use alembic_core::{FieldSchema, FieldType, JsonMap, Key, Object, TypeSchema};
     use serde_json::json;
     use uuid::Uuid;
 
@@ -1288,5 +1324,48 @@ mod tests {
             resolve_nested_ref_uid(&partial, Some("dcim.site"), &schema, no_lookup, no_endpoint),
             None
         );
+    }
+
+    // --- collect_tag_names ---
+
+    fn tagged_create(uid: u128, type_name: &str, tags: Value) -> Op {
+        Op::Create {
+            uid: Uid::from_u128(uid),
+            type_name: TypeName::new(type_name),
+            desired: Object {
+                uid: Uid::from_u128(uid),
+                type_name: TypeName::new(type_name),
+                key: Default::default(),
+                attrs: attrs(vec![("tags", tags)]),
+                source: None,
+            },
+        }
+    }
+
+    #[test]
+    fn collect_tag_names_dedups_across_ops() {
+        let ops = vec![
+            tagged_create(1, "dcim.device", json!(["red", "blue"])),
+            tagged_create(2, "dcim.device", json!(["blue", "green"])),
+        ];
+        let tags = collect_tag_names(&ops, |_| Some(BTreeSet::from(["tags".to_string()]))).unwrap();
+        assert_eq!(
+            tags,
+            BTreeSet::from(["blue".to_string(), "green".to_string(), "red".to_string()])
+        );
+    }
+
+    #[test]
+    fn collect_tag_names_errors_on_unknown_type() {
+        let ops = vec![tagged_create(1, "dcim.device", json!(["red"]))];
+        let err = collect_tag_names(&ops, |_| None).unwrap_err();
+        assert!(err.to_string().contains("unsupported type"));
+    }
+
+    #[test]
+    fn collect_tag_names_errors_when_tags_unsupported() {
+        let ops = vec![tagged_create(1, "dcim.device", json!(["red"]))];
+        let err = collect_tag_names(&ops, |_| Some(BTreeSet::new())).unwrap_err();
+        assert!(err.to_string().contains("does not support tags"));
     }
 }
