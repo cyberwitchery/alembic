@@ -132,6 +132,21 @@ where
     Ok(filters)
 }
 
+/// resolve a ref field value (a uuid string) to the backend id it maps to in
+/// `resolved`. the single source of the ref-parse + missing-ref contract shared by
+/// `resolve_ref_value` (write bodies) and `resolve_query_ref` (query filters); each
+/// only differs in how it renders the resolved id. a missing mapping yields
+/// `AdapterApplyError::MissingRef`, which the apply-retry loop downcasts on.
+fn resolve_ref_id<'a, Id>(value: &Value, resolved: &'a BTreeMap<Uid, Id>) -> Result<&'a Id> {
+    let Value::String(raw) = value else {
+        return Err(anyhow!("ref value must be a uuid string"));
+    };
+    let uid = Uid::parse_str(raw).map_err(|_| anyhow!("ref value is not a uuid: {raw}"))?;
+    resolved
+        .get(&uid)
+        .ok_or_else(|| AdapterApplyError::MissingRef { uid }.into())
+}
+
 fn resolve_ref_value<Id, F>(
     value: Value,
     resolved: &BTreeMap<Uid, Id>,
@@ -140,14 +155,7 @@ fn resolve_ref_value<Id, F>(
 where
     F: Fn(&Id) -> Value + Copy,
 {
-    let Value::String(raw) = value else {
-        return Err(anyhow!("ref value must be a uuid string"));
-    };
-    let uid = Uid::parse_str(&raw).map_err(|_| anyhow!("ref value is not a uuid: {raw}"))?;
-    let id = resolved
-        .get(&uid)
-        .ok_or(AdapterApplyError::MissingRef { uid })?;
-    Ok(encode_ref(id))
+    Ok(encode_ref(resolve_ref_id(&value, resolved)?))
 }
 
 fn resolve_list_ref_value<Id, F>(
@@ -271,14 +279,7 @@ fn resolve_query_ref<Id>(value: &Value, resolved: &BTreeMap<Uid, Id>) -> Result<
 where
     Id: ToString,
 {
-    let Value::String(raw) = value else {
-        return Err(anyhow!("ref value must be a uuid string"));
-    };
-    let uid = Uid::parse_str(raw).map_err(|_| anyhow!("ref value is not a uuid: {raw}"))?;
-    let id = resolved
-        .get(&uid)
-        .ok_or(AdapterApplyError::MissingRef { uid })?;
-    Ok(id.to_string())
+    Ok(resolve_ref_id(value, resolved)?.to_string())
 }
 
 fn value_to_query_value(value: &Value) -> Result<String> {
