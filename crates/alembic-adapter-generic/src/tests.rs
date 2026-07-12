@@ -1379,6 +1379,63 @@ async fn test_apply_create_conflict_reuses_existing() {
 }
 
 #[tokio::test]
+async fn test_apply_create_conflict_recovers_through_results_path() {
+    // recovery must extract the list identically to observation, including the
+    // `results_path`-wrapped shape: device wraps its list in "results" (unlike
+    // the bare-array site above), so this drives the shared extraction's other
+    // branch on the 409-recovery path.
+    let server = MockServer::start();
+    let create = server.mock(|when, then| {
+        when.method(POST).path("/api/devices");
+        then.status(409);
+    });
+    let lookup = server.mock(|when, then| {
+        when.method(GET).path("/api/devices");
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(serde_json::json!({"results": [{"id": 5, "name": "leaf01", "site": 1}]}));
+    });
+
+    // device carries a required site ref; seed it so the create body resolves.
+    let mut state = new_state_store();
+    let site_uid = Uid::new_v4();
+    state.set_backend_id(
+        TypeName::new("site".to_string()),
+        site_uid,
+        BackendId::Int(1),
+    );
+
+    let config = test_config(&server.base_url());
+    let adapter = GenericAdapter::new(config).unwrap();
+    let schema = test_schema();
+
+    let uid = Uid::new_v4();
+    let mut key = BTreeMap::new();
+    key.insert("name".to_string(), serde_json::json!("leaf01"));
+    let mut attrs = BTreeMap::new();
+    attrs.insert("name".to_string(), serde_json::json!("leaf01"));
+    attrs.insert("site".to_string(), serde_json::json!(site_uid.to_string()));
+
+    let ops = vec![Op::Create {
+        uid,
+        type_name: TypeName::new("device".to_string()),
+        desired: alembic_core::Object {
+            uid,
+            type_name: TypeName::new("device".to_string()),
+            key: Key::from(key),
+            attrs: attrs.into(),
+            source: None,
+        },
+    }];
+
+    let report = adapter.write(&schema, &ops, &state).await.unwrap();
+    create.assert();
+    lookup.assert();
+    assert_eq!(report.applied.len(), 1);
+    assert_eq!(report.applied[0].backend_id, Some(BackendId::Int(5)));
+}
+
+#[tokio::test]
 async fn test_apply_delete_tolerates_not_found() {
     // deletes are re-issued on every run (they are not journaled), so deleting an
     // already-gone object (404) must be a no-op rather than an error.

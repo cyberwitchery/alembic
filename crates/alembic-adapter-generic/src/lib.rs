@@ -170,24 +170,8 @@ impl GenericAdapter {
         mappings: &StateMappings,
         key: &Key,
     ) -> Result<Option<BackendId>> {
-        let url = format!(
-            "{}/{}",
-            self.config.base_url.trim_end_matches('/'),
-            endpoint.path.trim_start_matches('/')
-        );
-        let resp = self.client.get(&url).send().await?.error_for_status()?;
-        let body: serde_json::Value = resp.json().await?;
-
-        let results = if let Some(path) = &endpoint.results_path {
-            resolve_path(&body, path)?
-                .as_array()
-                .ok_or_else(|| anyhow!("expected array at path {} for {}", path, type_name))?
-                .clone()
-        } else if let Some(arr) = body.as_array() {
-            arr.clone()
-        } else {
-            return Err(anyhow!("expected array in list response for {}", type_name));
-        };
+        let results =
+            list_endpoint_results(&self.client, &self.config.base_url, endpoint, type_name).await?;
 
         for item in results {
             let attrs: JsonMap = match &item {
@@ -326,26 +310,8 @@ impl Observer for GenericAdapter {
             let mappings = mappings.clone();
 
             tasks.push(tokio::spawn(async move {
-                let url = format!(
-                    "{}/{}",
-                    base_url.trim_end_matches('/'),
-                    endpoint.path.trim_start_matches('/')
-                );
-                let resp = client.get(&url).send().await?.error_for_status()?;
-                let body: serde_json::Value = resp.json().await?;
-
-                let results = if let Some(path) = &endpoint.results_path {
-                    let val = resolve_path(&body, path)?;
-                    val.as_array()
-                        .ok_or_else(|| {
-                            anyhow!("expected array at path {} for {}", path, type_name)
-                        })?
-                        .clone()
-                } else if let Some(arr) = body.as_array() {
-                    arr.clone()
-                } else {
-                    return Err(anyhow!("expected array in list response for {}", type_name));
-                };
+                let results =
+                    list_endpoint_results(&client, &base_url, &endpoint, &type_name).await?;
 
                 let mut observed = Vec::new();
                 for item in results {
@@ -515,6 +481,35 @@ impl Adapter for GenericAdapter {
     // unavailable for this backend" — a capability limit generic does not have.
     async fn preview_schema(&self, _schema: &Schema) -> Result<Option<ProvisionReport>> {
         Ok(Some(ProvisionReport::default()))
+    }
+}
+
+/// list an endpoint and return its results array (from `results_path` when set,
+/// else the response root). shared by `read` and `lookup_backend_id` so the
+/// 409-recovery path fetches and extracts identically to observation.
+async fn list_endpoint_results(
+    client: &reqwest::Client,
+    base_url: &str,
+    endpoint: &EndpointConfig,
+    type_name: &TypeName,
+) -> Result<Vec<serde_json::Value>> {
+    let url = format!(
+        "{}/{}",
+        base_url.trim_end_matches('/'),
+        endpoint.path.trim_start_matches('/')
+    );
+    let resp = client.get(&url).send().await?.error_for_status()?;
+    let body: serde_json::Value = resp.json().await?;
+
+    if let Some(path) = &endpoint.results_path {
+        Ok(resolve_path(&body, path)?
+            .as_array()
+            .ok_or_else(|| anyhow!("expected array at path {} for {}", path, type_name))?
+            .clone())
+    } else if let Some(arr) = body.as_array() {
+        Ok(arr.clone())
+    } else {
+        Err(anyhow!("expected array in list response for {}", type_name))
     }
 }
 
