@@ -338,14 +338,20 @@ pub fn validate_inventory(inventory: &Inventory) -> ValidationReport {
     }
 
     validate_schema_ref_targets(&inventory.schema, &mut report);
-    validate_schema_patterns(&inventory.schema, &mut report);
+    let pattern_cache = compile_schema_patterns(&inventory.schema, &mut report);
     validate_schema_constraint_types(&inventory.schema, &mut report);
     validate_schema_enums(&inventory.schema, &mut report);
     validate_schema_key_scalar(&inventory.schema, &mut report);
     validate_schema_key_nullable(&inventory.schema, &mut report);
     validate_schema_types(&inventory.schema, &inventory.objects, &mut report);
     for object in &inventory.objects {
-        validate_object(object, &inventory.schema, &uid_to_type, &mut report);
+        validate_object(
+            object,
+            &inventory.schema,
+            &uid_to_type,
+            &pattern_cache,
+            &mut report,
+        );
     }
 
     report
@@ -426,40 +432,36 @@ fn validate_field_ref_targets(
     }
 }
 
-/// validate that every `pattern:` regex declared in the schema compiles.
-///
-/// a typo'd pattern would otherwise only surface when some object happens to
-/// use the field (and never at all for a type that has no objects yet), as a
-/// confusing per-object error. this catches the mistake at the schema level,
-/// attributed to the declaring type and field.
-///
-/// `pattern` lives only on the top-level `FieldSchema` of each key/attr field;
-/// it is never nested inside `list`/`map` item types, so a flat iteration over
-/// key and attr fields is complete.
-fn validate_schema_patterns(schema: &Schema, report: &mut ValidationReport) {
-    for_each_schema_field(schema, |type_name, field, field_schema| {
-        validate_field_pattern(type_name, field, field_schema, report);
-    });
-}
-
-/// compile a single field's `pattern:`, recording an error if it is malformed.
-fn validate_field_pattern(
-    type_name: &str,
-    field: &str,
-    field_schema: &crate::ir::FieldSchema,
+/// compile every field `pattern:` once, recording an `InvalidSchemaPattern` for
+/// each malformed one and returning the good regexes keyed by pattern string (a
+/// pattern shared by several fields compiles once). the per-object pass reuses
+/// these instead of recompiling; an absent entry means already-reported-malformed
+/// at the schema level, so it is not re-reported per value.
+fn compile_schema_patterns(
+    schema: &Schema,
     report: &mut ValidationReport,
-) {
-    let Some(pattern) = &field_schema.pattern else {
-        return;
-    };
-    if let Err(err) = Regex::new(pattern) {
-        report.errors.push(ValidationError::InvalidSchemaPattern {
-            type_name: type_name.to_string(),
-            field: field.to_string(),
-            pattern: pattern.to_string(),
-            error: err.to_string(),
-        });
-    }
+) -> BTreeMap<String, Regex> {
+    let mut cache = BTreeMap::new();
+    for_each_schema_field(schema, |type_name, field, field_schema| {
+        let Some(pattern) = &field_schema.pattern else {
+            return;
+        };
+        if cache.contains_key(pattern) {
+            return;
+        }
+        match Regex::new(pattern) {
+            Ok(regex) => {
+                cache.insert(pattern.clone(), regex);
+            }
+            Err(err) => report.errors.push(ValidationError::InvalidSchemaPattern {
+                type_name: type_name.to_string(),
+                field: field.to_string(),
+                pattern: pattern.to_string(),
+                error: err.to_string(),
+            }),
+        }
+    });
+    cache
 }
 
 /// reject a top-level `format:`/`pattern:` on a field whose type can never hold
@@ -676,20 +678,22 @@ fn validate_object(
     object: &Object,
     schema: &Schema,
     uid_to_type: &BTreeMap<Uid, TypeName>,
+    pattern_cache: &BTreeMap<String, Regex>,
     report: &mut ValidationReport,
 ) {
     let Some(type_schema) = schema.types.get(object.type_name.as_str()) else {
         return;
     };
 
-    validate_key_fields(object, type_schema, uid_to_type, report);
-    validate_attr_fields(object, type_schema, uid_to_type, report);
+    validate_key_fields(object, type_schema, uid_to_type, pattern_cache, report);
+    validate_attr_fields(object, type_schema, uid_to_type, pattern_cache, report);
 }
 
 fn validate_key_fields(
     object: &Object,
     type_schema: &crate::ir::TypeSchema,
     uid_to_type: &BTreeMap<Uid, TypeName>,
+    pattern_cache: &BTreeMap<String, Regex>,
     report: &mut ValidationReport,
 ) {
     for (field, field_schema) in &type_schema.key {
@@ -706,6 +710,7 @@ fn validate_key_fields(
             field_schema,
             value,
             uid_to_type,
+            pattern_cache,
             report,
         );
     }
@@ -724,6 +729,7 @@ fn validate_attr_fields(
     object: &Object,
     type_schema: &crate::ir::TypeSchema,
     uid_to_type: &BTreeMap<Uid, TypeName>,
+    pattern_cache: &BTreeMap<String, Regex>,
     report: &mut ValidationReport,
 ) {
     for (field, field_schema) in &type_schema.fields {
@@ -742,6 +748,7 @@ fn validate_attr_fields(
             field_schema,
             value,
             uid_to_type,
+            pattern_cache,
             report,
         );
     }
@@ -775,6 +782,7 @@ fn validate_field_value(
     field_schema: &crate::ir::FieldSchema,
     value: &Value,
     uid_to_type: &BTreeMap<Uid, TypeName>,
+    pattern_cache: &BTreeMap<String, Regex>,
     report: &mut ValidationReport,
 ) {
     if value.is_null() {
@@ -810,7 +818,15 @@ fn validate_field_value(
             if let Some(entries) = value.as_array() {
                 let schema = element_schema(item);
                 for entry in entries {
-                    validate_field_value(type_name, field, &schema, entry, uid_to_type, report);
+                    validate_field_value(
+                        type_name,
+                        field,
+                        &schema,
+                        entry,
+                        uid_to_type,
+                        pattern_cache,
+                        report,
+                    );
                 }
             } else {
                 report.errors.push(ValidationError::InvalidValue {
@@ -824,7 +840,15 @@ fn validate_field_value(
             if let Some(entries) = value.as_object() {
                 let schema = element_schema(inner);
                 for entry in entries.values() {
-                    validate_field_value(type_name, field, &schema, entry, uid_to_type, report);
+                    validate_field_value(
+                        type_name,
+                        field,
+                        &schema,
+                        entry,
+                        uid_to_type,
+                        pattern_cache,
+                        report,
+                    );
                 }
             } else {
                 report.errors.push(ValidationError::InvalidValue {
@@ -862,7 +886,7 @@ fn validate_field_value(
         }
     }
 
-    validate_string_constraints(type_name, field, field_schema, value, report);
+    validate_string_constraints(type_name, field, field_schema, value, pattern_cache, report);
 }
 
 fn parse_uid(value: &Value) -> Option<Uid> {
@@ -908,6 +932,7 @@ fn validate_string_constraints(
     field: &str,
     field_schema: &crate::ir::FieldSchema,
     value: &Value,
+    pattern_cache: &BTreeMap<String, Regex>,
     report: &mut ValidationReport,
 ) {
     if field_schema.format.is_none() && field_schema.pattern.is_none() {
@@ -934,21 +959,15 @@ fn validate_string_constraints(
     }
 
     if let Some(pattern) = &field_schema.pattern {
-        match Regex::new(pattern) {
-            Ok(regex) => {
-                if !regex.is_match(raw) {
-                    report.errors.push(ValidationError::InvalidValue {
-                        field: format!("{type_name}.{field}"),
-                        expected: format!("pattern({pattern})"),
-                        actual: raw.to_string(),
-                    });
-                }
-            }
-            Err(err) => {
+        // a malformed pattern is a schema defect, already reported once by
+        // compile_schema_patterns; it is simply absent from the cache, so skip it
+        // here instead of re-reporting it per value.
+        if let Some(regex) = pattern_cache.get(pattern) {
+            if !regex.is_match(raw) {
                 report.errors.push(ValidationError::InvalidValue {
                     field: format!("{type_name}.{field}"),
                     expected: format!("pattern({pattern})"),
-                    actual: format!("invalid pattern: {err}"),
+                    actual: raw.to_string(),
                 });
             }
         }
@@ -2358,6 +2377,7 @@ mod tests {
             &schema,
             &json!("not-int"),
             &uid_to_type,
+            &BTreeMap::new(),
             &mut report,
         );
         assert!(report
@@ -2383,6 +2403,7 @@ mod tests {
             &schema,
             &json!("c"),
             &uid_to_type,
+            &BTreeMap::new(),
             &mut report,
         );
         assert!(report
@@ -2408,6 +2429,7 @@ mod tests {
             &schema,
             &json!(uid(1).to_string()),
             &uid_to_type,
+            &BTreeMap::new(),
             &mut report,
         );
         assert!(report
@@ -2433,6 +2455,7 @@ mod tests {
             &schema,
             &json!([uid(1).to_string()]),
             &uid_to_type,
+            &BTreeMap::new(),
             &mut report,
         );
         assert!(report.errors.is_empty());
@@ -2455,6 +2478,7 @@ mod tests {
             &schema,
             &json!({"a": 1, "b": "not-int"}),
             &uid_to_type,
+            &BTreeMap::new(),
             &mut report,
         );
         assert!(report
@@ -2478,6 +2502,7 @@ mod tests {
             &schema,
             &json!("not-a-uuid"),
             &uid_to_type,
+            &BTreeMap::new(),
             &mut report,
         );
         assert!(report
@@ -2505,6 +2530,7 @@ mod tests {
             &schema,
             &json!([uid(1).to_string()]),
             &uid_to_type,
+            &BTreeMap::new(),
             &mut report,
         );
         assert!(report.errors.is_empty());
@@ -2582,12 +2608,27 @@ mod tests {
     fn check(schema: &FieldSchema, value: &serde_json::Value) -> ValidationReport {
         let uid_to_type: BTreeMap<Uid, TypeName> = BTreeMap::new();
         let mut report = ValidationReport::default();
+        let mut pattern_cache = BTreeMap::new();
+        if let Some(pattern) = &schema.pattern {
+            match Regex::new(pattern) {
+                Ok(regex) => {
+                    pattern_cache.insert(pattern.clone(), regex);
+                }
+                Err(err) => report.errors.push(ValidationError::InvalidSchemaPattern {
+                    type_name: "test".to_string(),
+                    field: "field".to_string(),
+                    pattern: pattern.clone(),
+                    error: err.to_string(),
+                }),
+            }
+        }
         validate_field_value(
             &TypeName::new("test"),
             "field",
             schema,
             value,
             &uid_to_type,
+            &pattern_cache,
             &mut report,
         );
         report
@@ -2760,13 +2801,66 @@ mod tests {
     }
 
     #[test]
-    fn invalid_pattern_reports_error_without_panicking() {
-        // an unparsable regex must surface a clean InvalidValue, not panic.
+    fn invalid_pattern_reports_schema_error_not_per_value() {
+        // a malformed pattern is a schema defect: reported once as
+        // InvalidSchemaPattern, never re-reported per value.
         let report = check(&pattern_field("["), &json!("anything"));
-        assert!(report.errors.iter().any(|e| matches!(
+        assert!(report
+            .errors
+            .iter()
+            .any(|e| matches!(e, ValidationError::InvalidSchemaPattern { .. })));
+        assert!(!report.errors.iter().any(|e| matches!(
             e,
             ValidationError::InvalidValue { actual, .. } if actual.contains("invalid pattern")
         )));
+    }
+
+    #[test]
+    fn malformed_pattern_reported_once_across_many_objects() {
+        // end-to-end: a malformed schema pattern is reported once at the schema
+        // level, not once per object carrying the field (previously 1 + 3).
+        let device = TypeSchema {
+            key: BTreeMap::from([("name".to_string(), schema_field(FieldType::String))]),
+            fields: BTreeMap::from([("code".to_string(), pattern_field("["))]),
+        };
+        let objects: Vec<Object> = (0..3u128)
+            .map(|i| {
+                let key = BTreeMap::from([("name".to_string(), json!(format!("leaf{i}")))]);
+                let attrs = BTreeMap::from([("code".to_string(), json!(format!("c{i}")))]);
+                Object::new(
+                    uid(i + 1),
+                    TypeName::new("device"),
+                    Key::from(key),
+                    JsonMap::from(attrs),
+                )
+                .unwrap()
+            })
+            .collect();
+        let report = validate_inventory(&Inventory {
+            schema: Schema {
+                types: BTreeMap::from([("device".to_string(), device)]),
+            },
+            objects,
+        });
+        assert_eq!(
+            report
+                .errors
+                .iter()
+                .filter(|e| matches!(e, ValidationError::InvalidSchemaPattern { .. }))
+                .count(),
+            1
+        );
+        assert_eq!(
+            report
+                .errors
+                .iter()
+                .filter(|e| matches!(
+                    e,
+                    ValidationError::InvalidValue { actual, .. } if actual.contains("invalid pattern")
+                ))
+                .count(),
+            0
+        );
     }
 
     #[test]
