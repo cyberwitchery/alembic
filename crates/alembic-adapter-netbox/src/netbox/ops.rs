@@ -9,9 +9,10 @@ use alembic_core::{
     key_string, FieldSchema, FieldType, JsonMap, Key, Schema, TypeName, TypeSchema, Uid,
 };
 use alembic_engine::{
-    apply_non_delete_journaled, build_key_from_schema, describe_missing_refs, is_missing_ref_error,
-    query_filters_from_key, resolve_nested_ref_uid, Adapter, AppliedOp, ApplyReport, BackendId,
-    Emitter, ObservedObject, ObservedState, Observer, Op, ProvisionReport, RetryApplyDriver,
+    apply_non_delete_journaled, build_key_from_schema, collect_tag_names, describe_missing_refs,
+    is_missing_ref_error, query_filters_from_key, resolve_nested_ref_uid, Adapter, AppliedOp,
+    ApplyReport, BackendId, Emitter, ObservedObject, ObservedState, Observer, Op, ProvisionReport,
+    RetryApplyDriver,
 };
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
@@ -100,7 +101,7 @@ impl Emitter for NetBoxAdapter {
             }
         }
 
-        let tag_names = collect_tag_names(ops, &registry)?;
+        let tag_names = collect_tag_names(ops, |tn| registry.info_for(tn).map(|i| i.features))?;
         if !tag_names.is_empty() {
             let mut existing = self.client.fetch_tags().await?;
             let missing: Vec<String> = tag_names.difference(&existing).cloned().collect();
@@ -1323,33 +1324,6 @@ fn query_from_key(
         query = query.filter(field, value);
     }
     Ok(query)
-}
-
-fn collect_tag_names(ops: &[Op], registry: &ObjectTypeRegistry) -> Result<BTreeSet<String>> {
-    let mut tags = BTreeSet::new();
-    for op in ops {
-        let (type_name, desired) = match op {
-            Op::Create {
-                type_name, desired, ..
-            } => (type_name, desired),
-            Op::Update {
-                type_name, desired, ..
-            } => (type_name, desired),
-            Op::Delete { .. } => continue,
-        };
-        if let Some(tag_value) = desired.attrs.get("tags") {
-            let info = registry
-                .info_for(type_name)
-                .ok_or_else(|| anyhow!("unsupported type {}", type_name))?;
-            if !supports_feature(&info.features, &["tags"]) {
-                return Err(anyhow!("{} does not support tags", type_name));
-            }
-            for tag in tags_from_value(tag_value)? {
-                tags.insert(tag);
-            }
-        }
-    }
-    Ok(tags)
 }
 
 async fn build_registry_for_schema(
