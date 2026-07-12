@@ -19,16 +19,9 @@ pub fn plan(
 ) -> Plan {
     let mut ops = Vec::new();
     let mut matched = BTreeSet::new();
-    let mut backend_to_uid = BTreeMap::new();
-
-    for (type_name, mapping) in state.all_mappings() {
-        for (uid, backend_id) in mapping {
-            backend_to_uid.insert((type_name.clone(), backend_id.clone()), *uid);
-        }
-    }
 
     let mut desired_sorted: Vec<&Object> = desired.iter().collect();
-    desired_sorted.sort_by_key(|a| op_sort_key(&a.type_name, &a.key));
+    desired_sorted.sort_by_cached_key(|a| op_sort_key(&a.type_name, &a.key));
 
     for object in desired_sorted {
         let observed_object = state
@@ -65,6 +58,12 @@ pub fn plan(
     }
 
     if allow_delete {
+        let mut backend_to_uid = BTreeMap::new();
+        for (type_name, mapping) in state.all_mappings() {
+            for (uid, backend_id) in mapping {
+                backend_to_uid.insert((type_name.clone(), backend_id.clone()), *uid);
+            }
+        }
         for ((type_name, backend_id), obs) in &observed.by_backend_id {
             if matched.contains(&(type_name.clone(), backend_id.clone())) {
                 continue;
@@ -82,7 +81,7 @@ pub fn plan(
         }
     }
 
-    ops.sort_by_key(op_order_key);
+    ops.sort_by_cached_key(op_order_key);
 
     let mut plan = Plan {
         schema: schema.clone(),
@@ -209,11 +208,11 @@ fn op_order_key(op: &Op) -> OrderKey {
     let (type_name, key, weight) = match op {
         Op::Create {
             type_name, desired, ..
-        } => (type_name.clone(), key_string(&desired.key), 0u8),
+        } => (type_name, key_string(&desired.key), 0u8),
         Op::Update {
             type_name, desired, ..
-        } => (type_name.clone(), key_string(&desired.key), 1u8),
-        Op::Delete { type_name, key, .. } => (type_name.clone(), key_string(key), 2u8),
+        } => (type_name, key_string(&desired.key), 1u8),
+        Op::Delete { type_name, key, .. } => (type_name, key_string(key), 2u8),
     };
     (type_name.as_str().to_string(), weight, key)
 }
