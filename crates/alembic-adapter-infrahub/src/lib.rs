@@ -1517,8 +1517,11 @@ fn collect_field_defs(
             if !seen.insert(field.to_string()) {
                 return Ok(());
             }
-            match &schema.r#type {
-                FieldType::Ref { target } => {
+            match field_relation(&schema.r#type) {
+                FieldRelation::Single => {
+                    let FieldType::Ref { target } = &schema.r#type else {
+                        unreachable!("field_relation classified a single relation")
+                    };
                     let mut rel = relationship_def(field, target, schema, "one", &source_kind)?;
                     if is_key {
                         // a key component is part of the identity, so it must be
@@ -1529,7 +1532,10 @@ fn collect_field_defs(
                     }
                     relationships.push(rel);
                 }
-                FieldType::ListRef { target } => {
+                FieldRelation::List => {
+                    let FieldType::ListRef { target } = &schema.r#type else {
+                        unreachable!("field_relation classified a list relation")
+                    };
                     relationships.push(relationship_def(
                         field,
                         target,
@@ -1538,7 +1544,7 @@ fn collect_field_defs(
                         &source_kind,
                     )?);
                 }
-                _ => {
+                FieldRelation::Attribute => {
                     attributes.push(attribute_def(field, schema, is_key && !composite_key)?);
                     if is_key {
                         key_attrs.push(field.to_string());
@@ -1673,6 +1679,43 @@ fn identifier_part(raw: &str) -> String {
         .collect()
 }
 
+/// how a field's type participates in the schema: single relation (`Ref`),
+/// list relation (`ListRef`), or plain attribute (everything else).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FieldRelation {
+    Single,
+    List,
+    Attribute,
+}
+
+/// the one exhaustive classifier every field dispatch routes through, so a new
+/// ref-bearing `FieldType` variant breaks the build here instead of silently
+/// taking the attribute path (mis-validated, mis-written, mis-provisioned).
+fn field_relation(field_type: &FieldType) -> FieldRelation {
+    match field_type {
+        FieldType::Ref { .. } => FieldRelation::Single,
+        FieldType::ListRef { .. } => FieldRelation::List,
+        FieldType::String
+        | FieldType::Text
+        | FieldType::Int
+        | FieldType::Float
+        | FieldType::Bool
+        | FieldType::Uuid
+        | FieldType::Date
+        | FieldType::Datetime
+        | FieldType::Time
+        | FieldType::Json
+        | FieldType::IpAddress
+        | FieldType::Cidr
+        | FieldType::Prefix
+        | FieldType::Mac
+        | FieldType::Slug
+        | FieldType::Enum { .. }
+        | FieldType::List { .. }
+        | FieldType::Map { .. } => FieldRelation::Attribute,
+    }
+}
+
 fn attribute_kind_for_field(field_type: &FieldType) -> String {
     match field_type {
         FieldType::String | FieldType::Text | FieldType::Uuid | FieldType::Slug => {
@@ -1793,8 +1836,8 @@ fn validate_kind(
     field_type: &FieldType,
     kind: &FieldKind,
 ) -> Result<()> {
-    match field_type {
-        FieldType::Ref { .. } => match kind {
+    match field_relation(field_type) {
+        FieldRelation::Single => match kind {
             FieldKind::RelationSingle(_) => Ok(()),
             _ => Err(anyhow!(
                 "expected {}.{} to be a single relation in infrahub",
@@ -1802,7 +1845,7 @@ fn validate_kind(
                 field
             )),
         },
-        FieldType::ListRef { .. } => match kind {
+        FieldRelation::List => match kind {
             FieldKind::RelationList(_) => Ok(()),
             _ => Err(anyhow!(
                 "expected {}.{} to be a list relation in infrahub",
@@ -1810,7 +1853,7 @@ fn validate_kind(
                 field
             )),
         },
-        _ => match kind {
+        FieldRelation::Attribute => match kind {
             FieldKind::Attribute => Ok(()),
             _ => Err(anyhow!(
                 "expected {}.{} to be an attribute in infrahub",
@@ -1842,11 +1885,11 @@ fn build_input(
             .ok_or_else(|| anyhow!("missing schema for field {field}"))?;
         if value.is_null() {
             // a null attribute keeps the `{ "value": … }` wrapper like every non-null attribute; only a null ref/list_ref goes out bare, to clear the relationship.
-            match field_schema.r#type {
-                FieldType::Ref { .. } | FieldType::ListRef { .. } => {
+            match field_relation(&field_schema.r#type) {
+                FieldRelation::Single | FieldRelation::List => {
                     map.insert(field.clone(), Value::Null);
                 }
-                _ => {
+                FieldRelation::Attribute => {
                     map.insert(field.clone(), json!({ "value": Value::Null }));
                 }
             }
@@ -1862,11 +1905,11 @@ fn build_input(
                 BackendId::String(s) => json!({ "id": s }),
             },
         )?;
-        match field_schema.r#type {
-            FieldType::Ref { .. } | FieldType::ListRef { .. } => {
+        match field_relation(&field_schema.r#type) {
+            FieldRelation::Single | FieldRelation::List => {
                 map.insert(field.clone(), resolved_value);
             }
-            _ => {
+            FieldRelation::Attribute => {
                 map.insert(field.clone(), json!({ "value": resolved_value }));
             }
         }
@@ -2842,6 +2885,23 @@ schema { query: Query }
         for (field_type, expected) in cases {
             assert_eq!(attribute_kind_for_field(&field_type), expected);
         }
+    }
+
+    #[test]
+    fn field_relation_classifies_refs_and_attributes() {
+        assert_eq!(
+            field_relation(&FieldType::Ref {
+                target: "dcim.site".to_string(),
+            }),
+            FieldRelation::Single
+        );
+        assert_eq!(
+            field_relation(&FieldType::ListRef {
+                target: "dcim.tag".to_string(),
+            }),
+            FieldRelation::List
+        );
+        assert_eq!(field_relation(&FieldType::Int), FieldRelation::Attribute);
     }
 
     #[test]
