@@ -756,6 +756,22 @@ fn validate_attr_fields(
     }
 }
 
+/// the synthetic `FieldSchema` each element of a `list`/`map` value is validated
+/// against: the container's item type, always required and non-nullable (a present
+/// element is always checked, and per-element nullability isn't expressible). shared
+/// by the `List` and `Map` arms of `validate_field_value`, hoisted out of the element
+/// loop since it does not vary per element.
+fn element_schema(item: &FieldType) -> crate::ir::FieldSchema {
+    crate::ir::FieldSchema {
+        r#type: item.clone(),
+        required: true,
+        nullable: false,
+        description: None,
+        format: None,
+        pattern: None,
+    }
+}
+
 fn validate_field_value(
     type_name: &TypeName,
     field: &str,
@@ -795,15 +811,8 @@ fn validate_field_value(
         }
         FieldType::List { item } => {
             if let Some(entries) = value.as_array() {
+                let schema = element_schema(item);
                 for entry in entries {
-                    let schema = crate::ir::FieldSchema {
-                        r#type: (**item).clone(),
-                        required: true,
-                        nullable: false,
-                        description: None,
-                        format: None,
-                        pattern: None,
-                    };
                     validate_field_value(type_name, field, &schema, entry, uid_to_type, report);
                 }
             } else {
@@ -816,15 +825,8 @@ fn validate_field_value(
         }
         FieldType::Map { value: inner } => {
             if let Some(entries) = value.as_object() {
+                let schema = element_schema(inner);
                 for entry in entries.values() {
-                    let schema = crate::ir::FieldSchema {
-                        r#type: (**inner).clone(),
-                        required: true,
-                        nullable: false,
-                        description: None,
-                        format: None,
-                        pattern: None,
-                    };
                     validate_field_value(type_name, field, &schema, entry, uid_to_type, report);
                 }
             } else {
