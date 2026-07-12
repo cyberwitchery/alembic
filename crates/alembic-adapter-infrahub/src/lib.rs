@@ -401,15 +401,25 @@ impl InfrahubAdapter {
             .await
         {
             // the object may have been removed already (e.g. by a prior run); tolerate
-            // that, but surface any error where the object is still present.
+            // that, surface a genuine delete failure, and don't mask a failure of the
+            // re-check itself.
             match self
                 .find_backend_id(type_name, type_schema, key, resolved)
                 .await
             {
+                // already gone: the delete is effectively done.
                 Ok(None) => {
                     tracing::warn!(type_name = %type_name, "delete target already gone");
                 }
-                _ => return Err(anyhow::Error::new(err).context("execute infrahub delete")),
+                // still present: the delete genuinely failed.
+                Ok(Some(_)) => {
+                    return Err(anyhow::Error::new(err).context("execute infrahub delete"));
+                }
+                // could not verify: surface the re-check failure rather than the delete error.
+                Err(recheck_err) => {
+                    return Err(recheck_err
+                        .context(format!("verify infrahub delete after delete error: {err}")));
+                }
             }
         }
 
@@ -3238,6 +3248,56 @@ schema { query: Query }
         let report = adapter.write(&schema, &ops, &state).await.unwrap();
         assert_eq!(report.applied.len(), 1);
         assert_eq!(report.applied[0].backend_id, None);
+    }
+
+    #[tokio::test]
+    async fn write_delete_surfaces_recheck_failure() {
+        // when the delete mutation fails AND the follow-up existence re-check also
+        // fails, the re-check failure must be surfaced (the operator could not verify
+        // the delete) rather than masked as the delete error.
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/schema.graphql");
+            then.status(200).body(GRAPHQL_SCHEMA);
+        });
+        // the delete mutation fails.
+        server.mock(|when, then| {
+            when.method(POST).path("/graphql").body_includes("Delete");
+            then.status(200).json_body(json!({
+                "data": null,
+                "errors": [{ "message": "boom" }]
+            }));
+        });
+        // the existence re-check itself also fails (e.g. token expired mid-run).
+        server.mock(|when, then| {
+            when.method(POST).path("/graphql").body_includes("DcimSite");
+            then.status(500);
+        });
+
+        let adapter = InfrahubAdapter::new(&server.base_url(), "token", None).unwrap();
+        let schema = schema_with(vec![(
+            "dcim.site",
+            type_schema(
+                vec![("name", field_schema(FieldType::String, true))],
+                vec![],
+            ),
+        )]);
+        let uid = Uid::parse_str("00000000-0000-0000-0000-000000000202").unwrap();
+        let key = Key::from(BTreeMap::from([("name".to_string(), json!("Site A"))]));
+        let ops = vec![Op::Delete {
+            uid,
+            type_name: TypeName::new("dcim.site"),
+            key,
+            backend_id: Some(BackendId::String("site-1".to_string())),
+        }];
+
+        let state = StateStore::new(None, StateData::default());
+        let err = adapter.write(&schema, &ops, &state).await.unwrap_err();
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("verify infrahub delete"),
+            "expected the re-check failure to surface, got: {chain}"
+        );
     }
 
     #[tokio::test]
