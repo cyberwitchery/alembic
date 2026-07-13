@@ -132,6 +132,18 @@ where
     Ok(filters)
 }
 
+/// resolve a ref value (a uuid string) to its backend id in `resolved`, shared by
+/// `resolve_ref_value` and `resolve_query_ref`; a missing mapping yields `MissingRef`.
+fn resolve_ref_id<'a, Id>(value: &Value, resolved: &'a BTreeMap<Uid, Id>) -> Result<&'a Id> {
+    let Value::String(raw) = value else {
+        return Err(anyhow!("ref value must be a uuid string"));
+    };
+    let uid = Uid::parse_str(raw).map_err(|_| anyhow!("ref value is not a uuid: {raw}"))?;
+    resolved
+        .get(&uid)
+        .ok_or_else(|| AdapterApplyError::MissingRef { uid }.into())
+}
+
 fn resolve_ref_value<Id, F>(
     value: Value,
     resolved: &BTreeMap<Uid, Id>,
@@ -140,14 +152,7 @@ fn resolve_ref_value<Id, F>(
 where
     F: Fn(&Id) -> Value + Copy,
 {
-    let Value::String(raw) = value else {
-        return Err(anyhow!("ref value must be a uuid string"));
-    };
-    let uid = Uid::parse_str(&raw).map_err(|_| anyhow!("ref value is not a uuid: {raw}"))?;
-    let id = resolved
-        .get(&uid)
-        .ok_or(AdapterApplyError::MissingRef { uid })?;
-    Ok(encode_ref(id))
+    Ok(encode_ref(resolve_ref_id(&value, resolved)?))
 }
 
 fn resolve_list_ref_value<Id, F>(
@@ -271,14 +276,7 @@ fn resolve_query_ref<Id>(value: &Value, resolved: &BTreeMap<Uid, Id>) -> Result<
 where
     Id: ToString,
 {
-    let Value::String(raw) = value else {
-        return Err(anyhow!("ref value must be a uuid string"));
-    };
-    let uid = Uid::parse_str(raw).map_err(|_| anyhow!("ref value is not a uuid: {raw}"))?;
-    let id = resolved
-        .get(&uid)
-        .ok_or(AdapterApplyError::MissingRef { uid })?;
-    Ok(id.to_string())
+    Ok(resolve_ref_id(value, resolved)?.to_string())
 }
 
 fn value_to_query_value(value: &Value) -> Result<String> {
