@@ -176,7 +176,7 @@ fn canonicalize_number(v: Value) -> Value {
                 if f64::abs(i as f64 - f) < 1e-5 {
                     Value::Number(i.into())
                 } else {
-                    Value::Number(serde_json::Number::from_f64(f).unwrap())
+                    Value::Number(n)
                 }
             } else {
                 Value::Number(n)
