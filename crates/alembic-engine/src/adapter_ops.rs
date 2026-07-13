@@ -132,11 +132,8 @@ where
     Ok(filters)
 }
 
-/// resolve a ref field value (a uuid string) to the backend id it maps to in
-/// `resolved`. the single source of the ref-parse + missing-ref contract shared by
-/// `resolve_ref_value` (write bodies) and `resolve_query_ref` (query filters); each
-/// only differs in how it renders the resolved id. a missing mapping yields
-/// `AdapterApplyError::MissingRef`, which the apply-retry loop downcasts on.
+/// resolve a ref value (a uuid string) to its backend id in `resolved`, shared by
+/// `resolve_ref_value` and `resolve_query_ref`; a missing mapping yields `MissingRef`.
 fn resolve_ref_id<'a, Id>(value: &Value, resolved: &'a BTreeMap<Uid, Id>) -> Result<&'a Id> {
     let Value::String(raw) = value else {
         return Err(anyhow!("ref value must be a uuid string"));
