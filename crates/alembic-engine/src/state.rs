@@ -80,14 +80,7 @@ impl StateStore {
         let backend: Option<Arc<Mutex<dyn StateBackend>>> =
             Some(Arc::new(Mutex::new(LocalBackend { path: path.clone() }))
                 as Arc<Mutex<dyn StateBackend>>);
-        let data = if path.exists() {
-            let raw = fs::read_to_string(&path)
-                .with_context(|| format!("read state: {}", path.display()))?;
-            serde_json::from_str::<StateData>(&raw)
-                .with_context(|| format!("parse state: {}", path.display()))?
-        } else {
-            StateData::default()
-        };
+        let data = read_state_file(&path)?;
         let mut store = Self::new(backend, data);
         store.lock = Some(lock);
         Ok(store)
@@ -191,6 +184,18 @@ fn acquire_state_lock(path: &Path) -> Result<Arc<File>> {
     }
 }
 
+/// read a local state file at `path`, returning defaults when it does not exist.
+fn read_state_file(path: &Path) -> Result<StateData> {
+    if path.exists() {
+        let raw =
+            fs::read_to_string(path).with_context(|| format!("read state: {}", path.display()))?;
+        serde_json::from_str::<StateData>(&raw)
+            .with_context(|| format!("parse state: {}", path.display()))
+    } else {
+        Ok(StateData::default())
+    }
+}
+
 impl From<&StateStore> for StateData {
     fn from(store: &StateStore) -> Self {
         Self {
@@ -207,15 +212,7 @@ struct LocalBackend {
 #[async_trait::async_trait]
 impl StateBackend for LocalBackend {
     async fn load(&mut self) -> Result<StateData> {
-        if self.path.exists() {
-            let raw = fs::read_to_string(&self.path)
-                .with_context(|| format!("read state: {}", self.path.display()))?;
-            let data = serde_json::from_str::<StateData>(&raw)
-                .with_context(|| format!("parse state: {}", self.path.display()))?;
-            Ok(data)
-        } else {
-            Ok(StateData::default())
-        }
+        read_state_file(&self.path)
     }
 
     async fn save(&mut self, data: &StateData) -> Result<()> {
@@ -300,6 +297,20 @@ impl StateBackend for PostgresBackend {
     }
 }
 
+/// spawn the background task that drives a postgres connection to completion,
+/// logging the error if the connection fails.
+fn spawn_connection_driver<E, C>(connection: C)
+where
+    E: std::fmt::Display,
+    C: std::future::Future<Output = Result<(), E>> + Send + 'static,
+{
+    tokio::spawn(async move {
+        if let Err(err) = connection.await {
+            tracing::warn!("postgres state backend connection error: {err}");
+        }
+    });
+}
+
 impl PostgresBackend {
     async fn ensure_table(&mut self, client: &Client) -> Result<()> {
         if self.table_ensured {
@@ -333,19 +344,14 @@ impl PostgresBackend {
     }
 
     async fn connect(&mut self) -> Result<tokio_postgres::Client> {
-        match self.tls_mode {
+        let client = match self.tls_mode {
             PostgresTlsMode::Disable => {
                 let (client, connection) =
                     tokio_postgres::connect(&self.url, tokio_postgres::NoTls)
                         .await
                         .with_context(|| "connect postgres state backend")?;
-                tokio::spawn(async move {
-                    if let Err(err) = connection.await {
-                        tracing::warn!("postgres state backend connection error: {err}");
-                    }
-                });
-                self.ensure_table(&client).await?;
-                Ok(client)
+                spawn_connection_driver(connection);
+                client
             }
             PostgresTlsMode::Require => {
                 let connector = native_tls::TlsConnector::builder()
@@ -355,15 +361,12 @@ impl PostgresBackend {
                 let (client, connection) = tokio_postgres::connect(&self.url, connector)
                     .await
                     .with_context(|| "connect postgres state backend")?;
-                tokio::spawn(async move {
-                    if let Err(err) = connection.await {
-                        tracing::warn!("postgres state backend connection error: {err}");
-                    }
-                });
-                self.ensure_table(&client).await?;
-                Ok(client)
+                spawn_connection_driver(connection);
+                client
             }
-        }
+        };
+        self.ensure_table(&client).await?;
+        Ok(client)
     }
 }
 
