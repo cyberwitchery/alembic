@@ -429,9 +429,7 @@ pub fn compile_map(input: &Inventory, spec: &MapSpec) -> Result<Inventory> {
 
     rewrite_refs(&mut objects, &out_schema, &remap);
 
-    objects.sort_by(|a, b| {
-        (a.type_name.as_str(), key_string(&a.key)).cmp(&(b.type_name.as_str(), key_string(&b.key)))
-    });
+    objects.sort_by_cached_key(|o| (o.type_name.as_str().to_string(), key_string(&o.key)));
 
     let inventory = Inventory {
         schema: out_schema,
