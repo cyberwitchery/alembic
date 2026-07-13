@@ -756,11 +756,8 @@ fn validate_attr_fields(
     }
 }
 
-/// the synthetic `FieldSchema` each element of a `list`/`map` value is validated
-/// against: the container's item type, always required and non-nullable (a present
-/// element is always checked, and per-element nullability isn't expressible). shared
-/// by the `List` and `Map` arms of `validate_field_value`, hoisted out of the element
-/// loop since it does not vary per element.
+/// the synthetic `FieldSchema` a `list`/`map` element is validated against: its item
+/// type, required and non-nullable. shared by the `List` and `Map` arms.
 fn element_schema(item: &FieldType) -> crate::ir::FieldSchema {
     crate::ir::FieldSchema {
         r#type: item.clone(),
