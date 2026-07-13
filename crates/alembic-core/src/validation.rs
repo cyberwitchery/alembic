@@ -756,6 +756,19 @@ fn validate_attr_fields(
     }
 }
 
+/// the synthetic `FieldSchema` a `list`/`map` element is validated against: its item
+/// type, required and non-nullable. shared by the `List` and `Map` arms.
+fn element_schema(item: &FieldType) -> crate::ir::FieldSchema {
+    crate::ir::FieldSchema {
+        r#type: item.clone(),
+        required: true,
+        nullable: false,
+        description: None,
+        format: None,
+        pattern: None,
+    }
+}
+
 fn validate_field_value(
     type_name: &TypeName,
     field: &str,
@@ -795,15 +808,8 @@ fn validate_field_value(
         }
         FieldType::List { item } => {
             if let Some(entries) = value.as_array() {
+                let schema = element_schema(item);
                 for entry in entries {
-                    let schema = crate::ir::FieldSchema {
-                        r#type: (**item).clone(),
-                        required: true,
-                        nullable: false,
-                        description: None,
-                        format: None,
-                        pattern: None,
-                    };
                     validate_field_value(type_name, field, &schema, entry, uid_to_type, report);
                 }
             } else {
@@ -816,15 +822,8 @@ fn validate_field_value(
         }
         FieldType::Map { value: inner } => {
             if let Some(entries) = value.as_object() {
+                let schema = element_schema(inner);
                 for entry in entries.values() {
-                    let schema = crate::ir::FieldSchema {
-                        r#type: (**inner).clone(),
-                        required: true,
-                        nullable: false,
-                        description: None,
-                        format: None,
-                        pattern: None,
-                    };
                     validate_field_value(type_name, field, &schema, entry, uid_to_type, report);
                 }
             } else {
