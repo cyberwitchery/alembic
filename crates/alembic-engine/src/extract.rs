@@ -19,10 +19,7 @@ pub async fn import_inventory(
     let observed = adapter.read(schema, types, state).await?;
 
     let mut objects: Vec<_> = observed.by_key.into_values().collect();
-    objects.sort_by(|a, b| {
-        (a.type_name.as_str().to_string(), key_string(&a.key))
-            .cmp(&(b.type_name.as_str().to_string(), key_string(&b.key)))
-    });
+    objects.sort_by_cached_key(|o| (o.type_name.as_str().to_string(), key_string(&o.key)));
 
     let mut inventory_objects = Vec::new();
     for mut object in objects {
