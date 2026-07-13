@@ -432,11 +432,8 @@ fn validate_field_ref_targets(
     }
 }
 
-/// compile every field `pattern:` once, recording an `InvalidSchemaPattern` for
-/// each malformed one and returning the good regexes keyed by pattern string (a
-/// pattern shared by several fields compiles once). the per-object pass reuses
-/// these instead of recompiling; an absent entry means already-reported-malformed
-/// at the schema level, so it is not re-reported per value.
+/// compile every field `pattern:` once, keyed by pattern string. a malformed one is
+/// reported here as `InvalidSchemaPattern` and left out, so the per-object pass skips it.
 fn compile_schema_patterns(
     schema: &Schema,
     report: &mut ValidationReport,
@@ -959,9 +956,7 @@ fn validate_string_constraints(
     }
 
     if let Some(pattern) = &field_schema.pattern {
-        // a malformed pattern is a schema defect, already reported once by
-        // compile_schema_patterns; it is simply absent from the cache, so skip it
-        // here instead of re-reporting it per value.
+        // malformed patterns are absent from the cache (already reported); skip.
         if let Some(regex) = pattern_cache.get(pattern) {
             if !regex.is_match(raw) {
                 report.errors.push(ValidationError::InvalidValue {
@@ -2802,8 +2797,7 @@ mod tests {
 
     #[test]
     fn invalid_pattern_reports_schema_error_not_per_value() {
-        // a malformed pattern is a schema defect: reported once as
-        // InvalidSchemaPattern, never re-reported per value.
+        // malformed pattern -> one InvalidSchemaPattern, never a per-value InvalidValue.
         let report = check(&pattern_field("["), &json!("anything"));
         assert!(report
             .errors
@@ -2817,8 +2811,7 @@ mod tests {
 
     #[test]
     fn malformed_pattern_reported_once_across_many_objects() {
-        // end-to-end: a malformed schema pattern is reported once at the schema
-        // level, not once per object carrying the field (previously 1 + 3).
+        // reported once at the schema level, not once per object (was 1 + 3).
         let device = TypeSchema {
             key: BTreeMap::from([("name".to_string(), schema_field(FieldType::String))]),
             fields: BTreeMap::from([("code".to_string(), pattern_field("["))]),
