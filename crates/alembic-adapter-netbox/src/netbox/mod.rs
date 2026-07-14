@@ -928,12 +928,20 @@ mod tests {
         let _object_types = mock_list(
             &server,
             "/api/core/object-types/",
-            json!([{
-                "app_label": "dcim",
-                "model": "site",
-                "rest_api_endpoint": "/api/dcim/sites/",
-                "features": ["custom-fields", "tags"]
-            }]),
+            json!([
+                {
+                    "app_label": "dcim",
+                    "model": "site",
+                    "rest_api_endpoint": "/api/dcim/sites/",
+                    "features": ["custom-fields", "tags"]
+                },
+                {
+                    "app_label": "dcim",
+                    "model": "device",
+                    "rest_api_endpoint": "/api/dcim/devices/",
+                    "features": ["custom-fields", "tags"]
+                }
+            ]),
         );
         let _sites = mock_list(&server, "/api/dcim/sites/", json!([]));
         let _custom_fields = server.mock(|when, then| {
@@ -967,7 +975,7 @@ mod tests {
                 },
             )]),
         };
-        // empty types list should observe all types from registry
+        // dcim.device is in the registry but not the schema, so it is skipped, not an error.
         let observed = adapter.read(&schema, &[], &state).await.unwrap();
         assert!(observed.by_key.is_empty());
     }

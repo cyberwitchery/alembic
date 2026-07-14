@@ -147,6 +147,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn observe_handles_empty_types_list() {
+        let server = MockServer::start();
+        let dir = tempdir().unwrap();
+        // dcim.device is in the registry but not the schema, so it is skipped, not an error.
+        let _content_types = server.mock(|when, then| {
+            when.method(GET).path("/api/extras/content-types/");
+            then.status(200).json_body(page(json!([
+                { "app_label": "dcim", "model": "site" },
+                { "app_label": "dcim", "model": "device" },
+            ])));
+        });
+        let _sites = server.mock(|when, then| {
+            when.method(GET).path("/api/dcim/sites/");
+            then.status(200).json_body(page(json!([])));
+        });
+
+        let adapter = NautobotAdapter::new(&server.base_url(), "token").unwrap();
+        let observed = adapter
+            .read(&site_schema(), &[], &state(dir.path()))
+            .await
+            .unwrap();
+        assert!(observed.by_key.is_empty());
+    }
+
+    #[tokio::test]
     async fn apply_creates_object() {
         let server = MockServer::start();
         let dir = tempdir().unwrap();
