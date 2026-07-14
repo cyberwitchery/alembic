@@ -361,6 +361,11 @@ impl Emitter for GenericAdapter {
     ) -> Result<ApplyReport> {
         let mut applied = Vec::new();
         let mut resolved = resolved_ids_identity(state);
+        for op in ops {
+            if let Op::Create { uid, .. } = op {
+                resolved.remove(uid);
+            }
+        }
         let mappings = StateMappings::from_state(state);
 
         let mut creates_updates = Vec::new();
