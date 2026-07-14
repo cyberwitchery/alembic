@@ -1,4 +1,4 @@
-use super::client::{CustomObjectField, CustomObjectType};
+use super::client::{is_404_anyhow, CustomObjectField, CustomObjectType};
 use super::mapping::{
     build_tag_inputs, custom_field_type_for_schema, slugify, supports_feature, tags_from_value,
 };
@@ -1750,11 +1750,6 @@ fn custom_object_field_type(field_type: &FieldType) -> &'static str {
 
 fn is_404_error(err: &netbox::Error) -> bool {
     matches!(err, netbox::Error::ApiError { status: 404, .. })
-}
-
-fn is_404_anyhow(err: &anyhow::Error) -> bool {
-    err.downcast_ref::<netbox::Error>()
-        .is_some_and(|e| matches!(e, netbox::Error::ApiError { status: 404, .. }))
 }
 
 fn is_conflict_error(err: &netbox::Error) -> bool {
