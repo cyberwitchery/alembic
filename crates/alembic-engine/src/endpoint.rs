@@ -1,4 +1,4 @@
-//! rest-api endpoint path normalization shared by the dcim/ipam adapters.
+//! rest-api endpoint path normalization.
 
 /// normalize a rest-api endpoint to its canonical `app/resource/` path, dropping
 /// a trailing object-id segment when `is_object_id` matches it. netbox and

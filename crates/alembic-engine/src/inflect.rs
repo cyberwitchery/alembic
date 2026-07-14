@@ -1,4 +1,4 @@
-//! string inflection shared by the django/drf adapters.
+//! string inflection for rest-api endpoint segments.
 
 /// pluralize a django/drf endpoint segment, the way django's url router does.
 /// shared by the netbox, nautobot, and django adapters.
