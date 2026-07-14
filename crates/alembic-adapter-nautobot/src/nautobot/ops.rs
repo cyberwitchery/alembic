@@ -32,7 +32,12 @@ impl Observer for NautobotAdapter {
         let mappings = state_mappings(state_store);
 
         let requested: BTreeSet<TypeName> = if types.is_empty() {
-            registry.type_names().into_iter().collect()
+            // empty means every schema-declared type; skip backend types the schema omits.
+            registry
+                .type_names()
+                .into_iter()
+                .filter(|tn| schema.types.contains_key(tn.as_str()))
+                .collect()
         } else {
             types.iter().cloned().collect()
         };
