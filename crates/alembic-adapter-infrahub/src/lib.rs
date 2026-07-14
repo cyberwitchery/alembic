@@ -664,6 +664,11 @@ impl Emitter for InfrahubAdapter {
 
         let mut applied = Vec::new();
         let mut resolved = resolved_ids_identity(state);
+        for op in ops {
+            if let Op::Create { uid, .. } = op {
+                resolved.remove(uid);
+            }
+        }
         let mut creates_updates = Vec::new();
         let mut deletes = Vec::new();
         for op in ops {
