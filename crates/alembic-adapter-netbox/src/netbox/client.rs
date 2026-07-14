@@ -107,7 +107,7 @@ impl NetBoxClient {
             .resource("plugins/custom-objects/custom-object-types/");
         let items = match self.list_all(&resource, None).await {
             Ok(items) => items,
-            Err(err) if is_404_error(&err) => return Ok(None),
+            Err(err) if is_404_anyhow(&err) => return Ok(None),
             Err(err) => return Err(err),
         };
         let mut types = Vec::new();
@@ -125,7 +125,7 @@ impl NetBoxClient {
             .resource("plugins/custom-objects/custom-object-type-fields/");
         let items = match self.list_all(&resource, None).await {
             Ok(items) => items,
-            Err(err) if is_404_error(&err) => return Ok(None),
+            Err(err) if is_404_anyhow(&err) => return Ok(None),
             Err(err) => return Err(err),
         };
         let mut fields = Vec::new();
@@ -144,7 +144,7 @@ impl std::ops::Deref for NetBoxClient {
     }
 }
 
-fn is_404_error(err: &anyhow::Error) -> bool {
+pub(super) fn is_404_anyhow(err: &anyhow::Error) -> bool {
     err.downcast_ref::<netbox::Error>()
         .is_some_and(|e| matches!(e, netbox::Error::ApiError { status: 404, .. }))
 }
