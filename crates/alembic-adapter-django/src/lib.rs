@@ -540,7 +540,10 @@ fn import_line<T: AsRef<str>>(prefix: &str, names: &[T]) -> String {
 fn admin_list_display(model: &ModelSpec) -> Vec<&str> {
     let mut fields = vec!["key", "uid"];
     for field in &model.fields {
-        fields.push(field_name(field));
+        // ManyToManyField is invalid in a Django admin list_display (admin.E109).
+        if !matches!(field.field_type, DjangoFieldType::ManyToMany { .. }) {
+            fields.push(field_name(field));
+        }
     }
     fields
 }
@@ -1028,6 +1031,71 @@ mod tests {
         assert!(models.contains("device = models.ForeignKey(\"DcimDevice\""));
         assert!(models.contains("uid = models.UUIDField"));
         assert!(models.contains("attrs = models.JSONField"));
+    }
+
+    #[test]
+    fn admin_list_display_excludes_many_to_many_fields() {
+        // a ManyToManyField in admin list_display trips admin.E109 under `manage.py check`,
+        // so a list_ref field must not leak into it. it must still exist as a model field.
+        let mut types = BTreeMap::new();
+        types.insert(
+            "dcim.device".to_string(),
+            TypeSchema {
+                key: BTreeMap::from([(
+                    "name".to_string(),
+                    FieldSchema {
+                        r#type: FieldType::Slug,
+                        required: true,
+                        nullable: false,
+                        description: None,
+                        format: None,
+                        pattern: None,
+                    },
+                )]),
+                fields: BTreeMap::from([
+                    (
+                        "name".to_string(),
+                        FieldSchema {
+                            r#type: FieldType::String,
+                            required: true,
+                            nullable: false,
+                            description: None,
+                            format: None,
+                            pattern: None,
+                        },
+                    ),
+                    (
+                        "tags".to_string(),
+                        FieldSchema {
+                            r#type: FieldType::ListRef {
+                                target: "dcim.tag".to_string(),
+                            },
+                            required: false,
+                            nullable: false,
+                            description: None,
+                            format: None,
+                            pattern: None,
+                        },
+                    ),
+                ]),
+            },
+        );
+        let inventory = Inventory {
+            schema: Schema { types },
+            objects: vec![],
+        };
+
+        let dir = tempdir().unwrap();
+        emit_django_app(dir.path(), &inventory, DjangoEmitOptions::default()).unwrap();
+
+        // the field is still generated as a real M2M relation on the model...
+        let models = fs::read_to_string(dir.path().join(GENERATED_MODELS)).unwrap();
+        assert!(models.contains("tags = models.ManyToManyField("));
+
+        // ...but it must not appear in the admin list_display (its only path into admin.py).
+        let admin = fs::read_to_string(dir.path().join(GENERATED_ADMIN)).unwrap();
+        assert!(admin.contains("list_display"));
+        assert!(!admin.contains("\"tags\""));
     }
 
     #[test]
