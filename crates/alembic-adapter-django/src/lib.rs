@@ -83,6 +83,9 @@ const SERIALIZERS_TEMPLATE: &str = include_str!("../templates/serializers.py.tpl
 const VIEWS_TEMPLATE: &str = include_str!("../templates/views.py.tpl");
 const URLS_TEMPLATE: &str = include_str!("../templates/urls.py.tpl");
 const ADMIN_SEARCH_FIELDS: &[&str] = &["key", "uid"];
+// relations are emitted hidden: nothing generated navigates one backwards, and named
+// accessors clash (fields.E304) once a type has two relations to the same target.
+const RELATED_NAME: &str = "related_name=\"+\"";
 
 #[derive(Debug)]
 struct ModelSpec {
@@ -376,12 +379,13 @@ fn render_field(field: &FieldSpec) -> String {
             let mut fk_args = vec![
                 format!("\"{}\"", target),
                 "on_delete=models.PROTECT".to_string(),
+                RELATED_NAME.to_string(),
             ];
             fk_args.extend(args);
             format!("{} = models.ForeignKey({})", field.name, fk_args.join(", "))
         }
         DjangoFieldType::ManyToMany { target } => {
-            let mut m2m_args = vec![format!("\"{}\"", target)];
+            let mut m2m_args = vec![format!("\"{}\"", target), RELATED_NAME.to_string()];
             m2m_args.extend(args.into_iter().filter(|arg| arg != "null=True"));
             format!(
                 "{} = models.ManyToManyField({})",
@@ -1024,8 +1028,12 @@ mod tests {
 
         let models = fs::read_to_string(dir.path().join(GENERATED_MODELS)).unwrap();
         assert!(models.contains("class DcimSite"));
-        assert!(models.contains("site = models.ForeignKey(\"DcimSite\""));
-        assert!(models.contains("device = models.ForeignKey(\"DcimDevice\""));
+        assert!(models.contains(
+            "site = models.ForeignKey(\"DcimSite\", on_delete=models.PROTECT, related_name=\"+\""
+        ));
+        assert!(models.contains(
+            "device = models.ForeignKey(\"DcimDevice\", on_delete=models.PROTECT, related_name=\"+\""
+        ));
         assert!(models.contains("uid = models.UUIDField"));
         assert!(models.contains("attrs = models.JSONField"));
     }
