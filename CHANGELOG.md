@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- conformance runner: a case that pins an `expect.result` now fails when the adapter answers `result: null`, instead of passing without comparing anything. `preview_schema` is the only method allowed to answer null ("cannot preview schema"), so a preview case pinning a `ProvisionReport` used to pass against an adapter that reported it could not preview at all; a case that pins no result still accepts null as before
 - django adapter: emit relations with `related_name="+"`, so a type with two relations to the same target (two refs, two list_refs, or a ref and a list_ref) no longer fails django's system check with `fields.E304` and aborts the apply. the generated app no longer exposes the reverse accessor (`site.dcimdevice_set`), which nothing it emits used
 - core: a malformed field `pattern:` in a schema is now reported once at the schema level (as an uncompilable-pattern error) instead of once per object value; the per-object pass reuses the regex compiled at schema load rather than recompiling it for every value
 - cli: `apply` now fails fast on a backend that cannot apply (a read-only observer such as `peeringdb`), rejecting it right after constructing the backend like `plan`/`import` already do, instead of reading the plan and (under `--interactive`) prompting `create/update/delete ...? [y/N]` for every op before failing deep in the pipeline; the user-visible error is unchanged, only the wasted prompting is removed
