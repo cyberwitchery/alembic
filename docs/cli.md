@@ -175,7 +175,7 @@ alembic map transform --spec examples/map.yaml site_code '"fra1"'
 observe a backend's live state into the data model.
 
 ```bash
-alembic import -f examples/inventory.yaml -o observed.yaml \
+alembic import -f examples/inventory.yaml -o observed.json \
   --backend-config examples/backend-nautobot.yaml
 ```
 

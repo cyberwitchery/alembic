@@ -15,14 +15,14 @@ the flow is `import` (nautobot to ir), `map` (ir to ir), `plan` + `apply`
 ## 1) import from nautobot
 
 ```bash
-alembic import -o nautobot-ir.yaml \
+alembic import -o nautobot-ir.json \
   --backend-config backend-nautobot.yaml \
   -f schema-nautobot.yaml
 ```
 
 `-f` is an inventory whose `schema` declares the nautobot-shaped types to observe;
-import writes the observed objects to `nautobot-ir.yaml`. a trimmed example of the
-result:
+import writes the observed objects to `nautobot-ir.json`. the same ir, trimmed and
+shown as yaml for readability:
 
 ```yaml
 schema:
@@ -125,7 +125,7 @@ rules:
 run it:
 
 ```bash
-alembic map -f nautobot-ir.yaml --spec map-nautobot-to-netbox.yaml -o netbox-ir.json
+alembic map -f nautobot-ir.json --spec map-nautobot-to-netbox.yaml -o netbox-ir.json
 ```
 
 the result is in netbox's vocabulary. the location's name `Frankfurt DC1` becomes
