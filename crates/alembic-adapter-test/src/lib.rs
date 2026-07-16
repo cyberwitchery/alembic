@@ -295,7 +295,11 @@ fn validate(run: &RunResult, method: &str, expectation: &Expectation) -> Result<
                         }
                     }
                 }
-                (None, None) => {}
+                (None, None) => {
+                    if let Some(want) = &expect.result {
+                        return Err(format!("result did not match: expected {want}, got null"));
+                    }
+                }
             }
         }
     }

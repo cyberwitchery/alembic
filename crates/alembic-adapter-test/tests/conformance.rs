@@ -274,6 +274,38 @@ fn case_result_mismatch_reported() {
     );
 }
 
+#[test]
+fn case_result_pinned_against_null_reported() {
+    // a case that pins a report must not pass against "cannot preview".
+    let case = Case {
+        name: "pinned vs null".into(),
+        request: json!({
+            "version": 1, "setup": {}, "method": "preview_schema",
+            "schema": { "types": {} }
+        }),
+        expect: Expect {
+            ok: true,
+            result: Some(json!({
+                "created_fields": [],
+                "created_tags": [],
+                "created_object_types": ["dcim.site"],
+                "created_object_fields": []
+            })),
+            error: None,
+        },
+    };
+    let outcomes = run_cases(
+        &sh(r#"cat >/dev/null; printf '{"ok":true,"result":null}\n'"#),
+        TIMEOUT,
+        std::slice::from_ref(&case),
+    );
+    assert!(
+        message(&outcomes[0]).contains("result did not match"),
+        "{}",
+        message(&outcomes[0])
+    );
+}
+
 // the fixtures under fixtures/external_protocol/ are documented as the
 // cross-language protocol contract, so they must stay shape-compatible with the
 // real envelope and payload types. nothing else loads them, so guard them here.
