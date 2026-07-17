@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- conformance runner: write a case's request on its own thread, after the drains start and under the run timeout, so a request larger than the pipe buffer against an adapter that never reads its stdin trips the timeout instead of blocking the runner in `write_all` (or deadlocking outright against a chatty adapter); matches the fix `ProcessAdapter::run` got in #213
 - core: reject an unknown key in a schema block instead of silently discarding it, so a file whose `schema:` is not an inventory schema (`examples/backend-infrahub.yaml`, where it is the infrahub schema-push config) now fails to load instead of validating clean as a schema with zero types
 - engine: a non-canonically written `uid` (uppercase, or uuid's simple/braced/urn forms) no longer loses its source line in validation errors; the uid→line index is keyed by the parsed uid, not the raw token
 - engine: `import` warned once per dropped attr *per object*, so importing N objects of a type repeated the same `dropping undeclared attr` line N times (a real netbox import carries ~3 dozen undeclared server-computed attrs per object, so a 1000-object import emitted tens of thousands of identical lines at the default `warn` level, burying everything else the import printed); it now warns once per type+field for the whole import
