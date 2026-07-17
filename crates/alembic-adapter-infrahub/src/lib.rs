@@ -2063,13 +2063,13 @@ fn key_refs_resolved(
 }
 
 // kept local, not the engine's deep collector: infrahub graphql refs are flat
-// uid strings/arrays, so this stays a shallow first-match extractor (see #174).
+// uid strings/arrays, so this stays shallow (see #174).
 fn describe_missing_refs(ops: &[Op], resolved: &BTreeMap<Uid, BackendId>) -> String {
     let mut missing = BTreeSet::new();
     for op in ops {
         if let Op::Create { desired, .. } | Op::Update { desired, .. } = op {
             for value in desired.attrs.values() {
-                if let Some(uid) = extract_ref_uid(value) {
+                for uid in extract_ref_uids(value) {
                     if !resolved.contains_key(&uid) {
                         missing.insert(uid);
                     }
@@ -2078,7 +2078,7 @@ fn describe_missing_refs(ops: &[Op], resolved: &BTreeMap<Uid, BackendId>) -> Str
             // ref-typed key fields dangle here too (infrahub keys by relationships,
             // e.g. an interface keyed by (device, name)); scan them like the engine.
             for value in desired.key.values() {
-                if let Some(uid) = extract_ref_uid(value) {
+                for uid in extract_ref_uids(value) {
                     if !resolved.contains_key(&uid) {
                         missing.insert(uid);
                     }
@@ -2093,11 +2093,11 @@ fn describe_missing_refs(ops: &[Op], resolved: &BTreeMap<Uid, BackendId>) -> Str
         .join(", ")
 }
 
-fn extract_ref_uid(value: &Value) -> Option<Uid> {
+fn extract_ref_uids(value: &Value) -> Vec<Uid> {
     match value {
-        Value::String(raw) => Uid::parse_str(raw).ok(),
-        Value::Array(items) => items.iter().find_map(extract_ref_uid),
-        _ => None,
+        Value::String(raw) => Uid::parse_str(raw).ok().into_iter().collect(),
+        Value::Array(items) => items.iter().flat_map(extract_ref_uids).collect(),
+        _ => Vec::new(),
     }
 }
 
@@ -2783,10 +2783,11 @@ schema { query: Query }
         let uid_present = Uid::parse_str("00000000-0000-0000-0000-000000000020").unwrap();
         let uid_missing = Uid::parse_str("00000000-0000-0000-0000-000000000021").unwrap();
 
-        let attrs = JsonMap::from(BTreeMap::from([
-            ("ref".to_string(), json!(uid_missing.to_string())),
-            ("refs".to_string(), json!([uid_present.to_string()])),
-        ]));
+        // the dangling uid is reachable only through the array, and not as its first element.
+        let attrs = JsonMap::from(BTreeMap::from([(
+            "refs".to_string(),
+            json!([uid_present.to_string(), uid_missing.to_string()]),
+        )]));
 
         let key = Key::from(BTreeMap::from([("name".to_string(), json!("site"))]));
         let obj = Object {
@@ -2807,7 +2808,10 @@ schema { query: Query }
         resolved.insert(uid_present, BackendId::String("ok".to_string()));
 
         let missing = describe_missing_refs(&[op], &resolved);
-        assert!(missing.contains(&uid_missing.to_string()));
+        assert!(
+            missing.contains(&uid_missing.to_string()),
+            "every unresolved uid in a list ref should be named in the diagnostic, got {missing:?}"
+        );
 
         let err = anyhow::Error::new(AdapterApplyError::MissingRef { uid: uid_missing });
         assert!(is_missing_ref_error(&err));
