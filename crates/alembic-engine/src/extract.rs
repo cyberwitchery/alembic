@@ -4,6 +4,7 @@ use crate::state::StateStore;
 use crate::types::Observer;
 use alembic_core::{key_string, uid_v5, Inventory, JsonMap, Object, Schema, TypeName};
 use anyhow::Result;
+use std::collections::BTreeSet;
 
 #[derive(Debug)]
 pub struct ImportReport {
@@ -22,8 +23,9 @@ pub async fn import_inventory(
     objects.sort_by_cached_key(|o| (o.type_name.as_str().to_string(), key_string(&o.key)));
 
     let mut inventory_objects = Vec::new();
+    let mut warned: BTreeSet<(String, String)> = BTreeSet::new();
     for mut object in objects {
-        project_attrs(schema, &object.type_name, &mut object.attrs);
+        project_attrs(schema, &object.type_name, &mut object.attrs, &mut warned);
         let uid = uid_v5(object.type_name.as_str(), &key_string(&object.key));
         inventory_objects.push(Object {
             uid,
@@ -49,31 +51,31 @@ pub async fn import_inventory(
 /// are not in the schema and could never be managed. left in place they make the
 /// imported inventory fail `validate_inventory` with `ExtraAttrField`, so we
 /// mirror that check here (validation.rs: `type_schema.fields.contains_key`) and
-/// drop the offending keys, warning once per key. types absent from the schema
-/// are left untouched, matching validation's early return for unknown types
-/// (this preserves the flat / custom-schema tier). key fields are never touched;
-/// they validate separately against `type_schema.key`.
-fn project_attrs(schema: &Schema, type_name: &TypeName, attrs: &mut JsonMap) {
+/// drop the offending keys, warning once per key for the import. types absent
+/// from the schema are left untouched, matching validation's early return for
+/// unknown types (this preserves the flat / custom-schema tier). key fields are
+/// never touched; they validate separately against `type_schema.key`.
+fn project_attrs(
+    schema: &Schema,
+    type_name: &TypeName,
+    attrs: &mut JsonMap,
+    warned: &mut BTreeSet<(String, String)>,
+) {
     let Some(type_schema) = schema.types.get(type_name.as_str()) else {
         return;
     };
 
-    let mut dropped = Vec::new();
-    for field in attrs.keys() {
-        if !type_schema.fields.contains_key(field) {
-            dropped.push(field.clone());
+    attrs.retain(|field, _| {
+        let declared = type_schema.fields.contains_key(field);
+        if !declared && warned.insert((type_name.as_str().to_string(), field.clone())) {
+            tracing::warn!(
+                "import: dropping undeclared attr {}.{}; server-computed field is not in the schema and cannot be managed",
+                type_name.as_str(),
+                field
+            );
         }
-    }
-
-    for field in &dropped {
-        tracing::warn!(
-            "import: dropping undeclared attr {}.{}; server-computed field is not in the schema and cannot be managed",
-            type_name.as_str(),
-            field
-        );
-    }
-
-    attrs.retain(|field, _| type_schema.fields.contains_key(field));
+        declared
+    });
 }
 
 #[cfg(test)]
@@ -88,6 +90,7 @@ mod tests {
     use futures::executor::block_on;
     use serde_json::json;
     use std::collections::BTreeMap;
+    use std::sync::{Arc, Mutex};
 
     struct MockAdapter {
         observed: ObservedState,
@@ -341,5 +344,67 @@ mod tests {
             .expect("site imported");
         assert!(site.attrs.contains_key("name"));
         assert!(!site.attrs.contains_key("created"));
+    }
+
+    #[derive(Clone, Default)]
+    struct LogBuffer(Arc<Mutex<Vec<u8>>>);
+
+    impl LogBuffer {
+        fn logged(&self) -> String {
+            String::from_utf8(self.0.lock().unwrap().clone()).unwrap()
+        }
+    }
+
+    impl std::io::Write for LogBuffer {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogBuffer {
+        type Writer = Self;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    #[test]
+    fn import_warns_once_per_undeclared_attr_across_objects() {
+        let observed = observed_of(&[
+            (
+                "dcim.cable",
+                "cable=c1",
+                json!({ "label": "uplink", "last_updated": "t" }),
+            ),
+            (
+                "dcim.cable",
+                "cable=c2",
+                json!({ "label": "downlink", "last_updated": "t" }),
+            ),
+        ]);
+        let schema = schema_of(&[("dcim.cable", &["cable"], &["label"])]);
+
+        let buffer = LogBuffer::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(buffer.clone())
+            .with_ansi(false)
+            .finish();
+        let report = tracing::subscriber::with_default(subscriber, || import(observed, &schema));
+
+        assert_eq!(report.inventory.objects.len(), 2);
+        assert_eq!(
+            buffer
+                .logged()
+                .matches("dropping undeclared attr dcim.cable.last_updated")
+                .count(),
+            1,
+            "the same undeclared attr warns once for the whole import, not once per object"
+        );
     }
 }
