@@ -387,8 +387,16 @@ mod tests {
                 "cable=c2",
                 json!({ "label": "downlink", "last_updated": "t" }),
             ),
+            (
+                "dcim.site",
+                "site=s1",
+                json!({ "name": "hq", "last_updated": "t" }),
+            ),
         ]);
-        let schema = schema_of(&[("dcim.cable", &["cable"], &["label"])]);
+        let schema = schema_of(&[
+            ("dcim.cable", &["cable"], &["label"]),
+            ("dcim.site", &["site"], &["name"]),
+        ]);
 
         let buffer = LogBuffer::default();
         let subscriber = tracing_subscriber::fmt()
@@ -397,7 +405,7 @@ mod tests {
             .finish();
         let report = tracing::subscriber::with_default(subscriber, || import(observed, &schema));
 
-        assert_eq!(report.inventory.objects.len(), 2);
+        assert_eq!(report.inventory.objects.len(), 3);
         assert_eq!(
             buffer
                 .logged()
@@ -405,6 +413,14 @@ mod tests {
                 .count(),
             1,
             "the same undeclared attr warns once for the whole import, not once per object"
+        );
+        assert_eq!(
+            buffer
+                .logged()
+                .matches("dropping undeclared attr dcim.site.last_updated")
+                .count(),
+            1,
+            "each undeclared (type, field) warns once for the whole import, across types"
         );
     }
 }
