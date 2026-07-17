@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- cli: a malformed `RUST_LOG` is now reported instead of silently ignored. `EnvFilter::try_from_default_env` errors for an unset and a rejected value alike and the fallback discarded which, so a typo (`info,alembic_engine=trce`) fell back to the default `warn` filter with no message, producing output identical to setting nothing and looking like alembic had nothing to say; a rejected value now prints a warning to stderr naming it and the parse error, and still falls back to `warn`, so the command itself is unaffected
 - conformance runner: a case that pins an `expect.result` now fails when the adapter answers `result: null`, instead of passing without comparing anything. `preview_schema` is the only method allowed to answer null ("cannot preview schema"), so a preview case pinning a `ProvisionReport` used to pass against an adapter that reported it could not preview at all; a case that pins no result still accepts null as before
 - django adapter: emit relations with `related_name="+"`, so a type with two relations to the same target (two refs, two list_refs, or a ref and a list_ref) no longer fails django's system check with `fields.E304` and aborts the apply. the generated app no longer exposes the reverse accessor (`site.dcimdevice_set`), which nothing it emits used
 - core: a malformed field `pattern:` in a schema is now reported once at the schema level (as an uncompilable-pattern error) instead of once per object value; the per-object pass reuses the regex compiled at schema load rather than recompiling it for every value
