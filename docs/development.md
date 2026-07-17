@@ -7,10 +7,15 @@ alembic/
   crates/
     alembic-core
     alembic-engine
+    alembic-adapter-registry
     alembic-adapter-netbox
     alembic-adapter-nautobot
+    alembic-adapter-infrahub
     alembic-adapter-generic
     alembic-adapter-peeringdb
+    alembic-adapter-django
+    alembic-adapter-test
+    alembic-file-generator
     alembic-cli
 ```
 
@@ -18,6 +23,7 @@ alembic/
 
 - **netbox**: stable
 - **nautobot**: stable
+- **infrahub**: graphql (adapter), optional schema push
 - **generic rest**: initial release (spec-driven)
 - **peeringdb**: read-only (observer)
 - **django**: write-only (emitter)
