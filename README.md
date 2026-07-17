@@ -127,6 +127,9 @@ relationships are validated strictly by schema and `uid` references.
 - `crates/alembic-adapter-infrahub`: infrahub graphql adapter
 - `crates/alembic-adapter-generic`: generic rest adapter
 - `crates/alembic-adapter-peeringdb`: peeringdb adapter
+- `crates/alembic-adapter-django`: django app emitter
+- `crates/alembic-adapter-test`: conformance runner for external adapters
+- `crates/alembic-file-generator`: test file generator
 - `crates/alembic-cli`: cli binary
 
 ## notes

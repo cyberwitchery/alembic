@@ -170,7 +170,8 @@ response:
 the host calls this at plan time to show what `ensure_schema` would provision,
 without writing anything. return the same `ProvisionReport` shape `ensure_schema`
 would, or a `null` result if the adapter cannot preview (which the host reports as
-`schema preview: unavailable for this backend`).
+`schema preview: unavailable for this backend`). answer it either way: leaving it to
+the unknown-method branch fails the built-in `protocol/preview-schema-empty` check.
 
 request:
 
@@ -225,8 +226,8 @@ behaviour: malformed json, an unsupported version, and an unknown method each
 produce a structured error; the process exits 0 within the timeout after writing
 exactly one json document (surrounding whitespace and multi-line json are fine,
 logs on stdout are not); the envelope is consistent; and a valid read of an empty
-inventory succeeds with a right-shaped payload, so an adapter that errors on every
-request does not pass.
+inventory and a schema preview each succeed with a right-shaped payload, so an
+adapter that errors on every request does not pass.
 
 to exercise `read`, `write`, and `ensure_schema` against your own fake or
 disposable backend, pass `--cases` a file or directory of cases. a case is a

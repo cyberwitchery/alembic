@@ -241,7 +241,7 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                     }
                     Ok(None) => eprintln!("schema preview: unavailable for this backend"),
                     // a preview hiccup must not sink the read-only plan; report and continue.
-                    Err(err) => eprintln!("schema preview: unavailable for this backend ({err:#})"),
+                    Err(err) => eprintln!("schema preview failed: {err:#}"),
                 }
             }
 
