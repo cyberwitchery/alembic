@@ -1108,6 +1108,24 @@ fn insert_with_duplicate_backend_id() {
 }
 
 #[test]
+fn insert_with_duplicate_natural_key() {
+    // same (type, key) with no backend id: the by_key guard must reject the
+    // second insert. insert_with_duplicate_backend_id (different keys) returns
+    // at the backend-id branch and never reaches this guard.
+    let mut observed = ObservedState::default();
+    let mk = |name: &str| ObservedObject {
+        type_name: t("dcim.site"),
+        key: key_str("site=fra1"),
+        attrs: attrs_map(json!({ "name": name, "slug": "fra1" })),
+        backend_id: None,
+    };
+    observed.insert(mk("FRA1")).unwrap();
+    observed
+        .insert(mk("FRA1-dup"))
+        .expect_err("duplicate natural key not detected");
+}
+
+#[test]
 fn build_plan_reobserves_after_bootstrap() {
     #[derive(Clone)]
     struct ReobserveAdapter {
@@ -1405,4 +1423,34 @@ fn apply_plan_updates_state() {
         state.backend_id(t("dcim.site"), uid(1)),
         Some(BackendId::Int(55))
     );
+}
+
+#[test]
+fn apply_plan_clears_state_for_deleted_op() {
+    // a delete surfaces as an AppliedOp with no backend id; apply must drop the
+    // object's state mapping so the next plan no longer tracks it.
+    let adapter = TestAdapter {
+        observed: ObservedState::default(),
+        report: ApplyReport {
+            applied: vec![AppliedOp {
+                uid: uid(1),
+                type_name: t("dcim.site"),
+                backend_id: None,
+            }],
+            ..Default::default()
+        },
+    };
+    let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
+    state.set_backend_id(t("dcim.site"), uid(1), BackendId::Int(55));
+    let plan = Plan {
+        schema: Schema {
+            types: BTreeMap::new(),
+        },
+        ops: vec![],
+        summary: None,
+        schema_preview: None,
+    };
+    let backend = Backend::Adapter(Box::new(adapter));
+    futures::executor::block_on(apply_plan(&backend, &plan, &mut state, true)).unwrap();
+    assert_eq!(state.backend_id(t("dcim.site"), uid(1)), None);
 }

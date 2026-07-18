@@ -991,6 +991,31 @@ mod tests {
         }
     }
 
+    #[test]
+    fn plan_delete_untracked_uses_v5_fallback() {
+        // no state mapping (empty_state): the delete uid falls back to the
+        // deterministic key-derived v5 uid. the untracked twin of
+        // plan_delete_uses_tracked_uid.
+        let mut observed = ObservedState::default();
+        observed
+            .insert(ObservedObject {
+                type_name: TypeName::new("dcim.site"),
+                key: make_key("fra1"),
+                attrs: make_attrs(&[]),
+                backend_id: Some(BackendId::Int(100)),
+            })
+            .unwrap();
+
+        let result = plan(&[], &observed, &empty_state(), &empty_schema(), true);
+        assert_eq!(result.ops.len(), 1);
+        match &result.ops[0] {
+            Op::Delete { uid, .. } => {
+                assert_eq!(*uid, uid_v5("dcim.site", &key_string(&make_key("fra1"))));
+            }
+            other => panic!("expected delete, got {other:?}"),
+        }
+    }
+
     // --- sort_ops_for_apply ---
 
     #[test]
