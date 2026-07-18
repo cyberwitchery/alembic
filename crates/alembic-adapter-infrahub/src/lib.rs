@@ -252,26 +252,38 @@ impl InfrahubAdapter {
             Ok(response) => response,
             Err(err) => {
                 // a prior (possibly interrupted) run may already have created this
-                // object; treat a matching existing object as success, otherwise
-                // surface the original error.
+                // object; adopt a matching existing object, surface a genuine create
+                // failure, and don't mask a failure of the lookup itself.
                 let key = build_key_from_schema(type_schema, &desired.attrs)?;
-                if let Ok(Some(existing)) = self
+                match self
                     .find_backend_id(type_name, type_schema, &key, resolved)
                     .await
                 {
-                    tracing::warn!(
-                        type_name = %type_name,
-                        "create already exists; using existing object"
-                    );
-                    let backend_id = BackendId::String(existing);
-                    resolved.insert(uid, backend_id.clone());
-                    return Ok(AppliedOp {
-                        uid,
-                        type_name: type_name.clone(),
-                        backend_id: Some(backend_id),
-                    });
+                    // already there: adopt the existing object.
+                    Ok(Some(existing)) => {
+                        tracing::warn!(
+                            type_name = %type_name,
+                            "create already exists; using existing object"
+                        );
+                        let backend_id = BackendId::String(existing);
+                        resolved.insert(uid, backend_id.clone());
+                        return Ok(AppliedOp {
+                            uid,
+                            type_name: type_name.clone(),
+                            backend_id: Some(backend_id),
+                        });
+                    }
+                    // genuinely absent: surface the original create error.
+                    Ok(None) => {
+                        return Err(anyhow::Error::new(err).context("execute infrahub create"));
+                    }
+                    // could not verify: surface the lookup failure rather than the create error.
+                    Err(lookup_err) => {
+                        return Err(lookup_err.context(format!(
+                            "look up existing object after infrahub create error: {err}"
+                        )));
+                    }
                 }
-                return Err(anyhow::Error::new(err).context("execute infrahub create"));
             }
         };
         let data = response
@@ -3207,6 +3219,66 @@ schema { query: Query }
         assert_eq!(
             report.applied[0].backend_id,
             Some(BackendId::String("site-existing".to_string()))
+        );
+    }
+
+    #[tokio::test]
+    async fn write_create_conflict_surfaces_lookup_failure() {
+        // when the create fails AND the follow-up existing-object lookup also fails,
+        // the lookup failure must be surfaced (the operator could not verify the
+        // conflict) rather than masked as the create error.
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/schema.graphql");
+            then.status(200).body(GRAPHQL_SCHEMA);
+        });
+        // create fails with a graphql error. registered before the generic DcimSite
+        // read mock so the create mutation (body contains "Create") matches here.
+        server.mock(|when, then| {
+            when.method(POST).path("/graphql").body_includes("Create");
+            then.status(200).json_body(json!({
+                "data": null,
+                "errors": [{ "message": "An object already exists" }]
+            }));
+        });
+        // the existing-object lookup itself also fails (e.g. token expired mid-run).
+        server.mock(|when, then| {
+            when.method(POST).path("/graphql").body_includes("DcimSite");
+            then.status(500);
+        });
+
+        let adapter = InfrahubAdapter::new(&server.base_url(), "token", None).unwrap();
+        let schema = schema_with(vec![(
+            "dcim.site",
+            type_schema(
+                vec![("name", field_schema(FieldType::String, true))],
+                vec![],
+            ),
+        )]);
+        let uid = Uid::parse_str("00000000-0000-0000-0000-000000000203").unwrap();
+        let key = Key::from(BTreeMap::from([("name".to_string(), json!("Site A"))]));
+        let ops = vec![Op::Create {
+            uid,
+            type_name: TypeName::new("dcim.site"),
+            desired: Object {
+                uid,
+                type_name: TypeName::new("dcim.site"),
+                key,
+                attrs: JsonMap::from(BTreeMap::from([("name".to_string(), json!("Site A"))])),
+                source: None,
+            },
+        }];
+
+        let state = StateStore::new(None, StateData::default());
+        let err = adapter.write(&schema, &ops, &state).await.unwrap_err();
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("look up existing object"),
+            "expected the lookup failure to surface, got: {chain}"
+        );
+        assert!(
+            !chain.contains("execute infrahub create"),
+            "the lookup failure must not be masked as the create error, got: {chain}"
         );
     }
 
