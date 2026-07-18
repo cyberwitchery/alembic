@@ -222,6 +222,11 @@ impl Emitter for NetBoxAdapter {
                         .ok_or_else(|| anyhow!("missing schema for {}", type_name))?;
                     self.lookup_backend_id(&type_name, &info, type_schema, &key, &resolved)
                         .await
+                        .and_then(|found| {
+                            found.ok_or_else(|| {
+                                anyhow!("{} not found for key {}", type_name, key_string(&key))
+                            })
+                        })
                         .with_context(|| {
                             format!("resolve backend id for delete: {}", key_string(&key))
                         })?
@@ -603,9 +608,9 @@ impl NetBoxAdapter {
         let response: Value = match resource.create(&body).await {
             Ok(response) => response,
             Err(err) if is_conflict_error(&err) => {
-                if let Ok(existing) = self
+                if let Some(existing) = self
                     .lookup_backend_id(type_name, &info, type_schema, &desired.key, resolved)
-                    .await
+                    .await?
                 {
                     tracing::warn!(
                         type_name = %type_name,
@@ -666,6 +671,15 @@ impl NetBoxAdapter {
         } else {
             self.lookup_backend_id(type_name, &info, type_schema, &desired.key, resolved)
                 .await
+                .and_then(|found| {
+                    found.ok_or_else(|| {
+                        anyhow!(
+                            "{} not found for key {}",
+                            type_name,
+                            key_string(&desired.key)
+                        )
+                    })
+                })
                 .with_context(|| format!("resolve backend id for {}", type_name))?
         };
         let resource: Resource<Value> = self.client.resource(info.endpoint.clone());
@@ -686,6 +700,8 @@ impl NetBoxAdapter {
         Ok(id)
     }
 
+    /// list the endpoint and return the backend id of the object whose key matches,
+    /// or `None` when no such object exists. used to recover from a create conflict.
     async fn lookup_backend_id(
         &self,
         type_name: &TypeName,
@@ -693,18 +709,18 @@ impl NetBoxAdapter {
         type_schema: &TypeSchema,
         key: &Key,
         resolved: &BTreeMap<Uid, u64>,
-    ) -> Result<u64> {
+    ) -> Result<Option<u64>> {
         let query = query_from_key(type_schema, key, resolved)?;
         let resource: Resource<Value> = self.client.resource(info.endpoint.clone());
         let page = resource.list(Some(query)).await?;
-        let item = page
-            .results
-            .into_iter()
-            .next()
-            .ok_or_else(|| anyhow!("{} not found for key {}", type_name, key_string(key)))?;
-        item.get("id")
+        let Some(item) = page.results.into_iter().next() else {
+            return Ok(None);
+        };
+        let id = item
+            .get("id")
             .and_then(Value::as_u64)
-            .ok_or_else(|| anyhow!("{} lookup missing id", type_name))
+            .ok_or_else(|| anyhow!("{} lookup missing id", type_name))?;
+        Ok(Some(id))
     }
 
     async fn create_tags(&self, tags: &[String]) -> Result<()> {
