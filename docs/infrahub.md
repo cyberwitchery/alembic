@@ -28,7 +28,7 @@ schema:
 ## attrs mapping
 
 - attribute routing is schema-driven:
-  - string-like types (`string`, `text`, `uuid`, `date`, `datetime`, `time`, `ip`, `cidr`,
+  - string-like types (`string`, `text`, `uuid`, `date`, `datetime`, `time`, `ip_address`, `cidr`,
     `prefix`, `mac`, `slug`, `enum`) map to `TextAttribute` inputs.
   - `int`/`float` map to `NumberAttribute` inputs.
   - `bool` maps to `CheckboxAttribute` inputs.
