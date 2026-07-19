@@ -30,7 +30,7 @@ token: nautobot_xxx_replace_me
   bundled under `_custom_field_data`.
 - `tags` in `attrs` should be a list of strings; the adapter expands them to nautobot tag inputs.
 - nested references should be provided as alembic uids (string UUIDs). the adapter resolves those
-  to nautobot UUIDs before sending requests.
+  to nautobot UUIDs before sending requests, including refs nested in list and map fields.
 
 ## custom fields and tags
 
