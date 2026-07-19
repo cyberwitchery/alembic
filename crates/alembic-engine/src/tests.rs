@@ -1454,3 +1454,59 @@ fn apply_plan_clears_state_for_deleted_op() {
     futures::executor::block_on(apply_plan(&backend, &plan, &mut state, true)).unwrap();
     assert_eq!(state.backend_id(t("dcim.site"), uid(1)), None);
 }
+
+#[test]
+fn apply_plan_emitter_writes_and_provisions_nothing() {
+    let adapter = TestAdapter {
+        observed: ObservedState::default(),
+        report: ApplyReport {
+            applied: vec![AppliedOp {
+                uid: uid(1),
+                type_name: t("dcim.site"),
+                backend_id: Some(BackendId::Int(77)),
+            }],
+            ..Default::default()
+        },
+    };
+    let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
+    let plan = Plan {
+        schema: Schema {
+            types: BTreeMap::new(),
+        },
+        ops: vec![],
+        summary: None,
+        schema_preview: None,
+    };
+    let backend = Backend::Emitter(Box::new(adapter));
+    let report =
+        futures::executor::block_on(apply_plan(&backend, &plan, &mut state, true)).unwrap();
+    // emitters write but never provision.
+    assert!(report.provision.is_empty());
+    // the write report still updates the state mapping.
+    assert_eq!(
+        state.backend_id(t("dcim.site"), uid(1)),
+        Some(BackendId::Int(77))
+    );
+}
+
+#[test]
+fn apply_plan_rejects_read_only_observer() {
+    let adapter = TestAdapter {
+        observed: ObservedState::default(),
+        report: ApplyReport::default(),
+    };
+    let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
+    let plan = Plan {
+        schema: Schema {
+            types: BTreeMap::new(),
+        },
+        ops: vec![],
+        summary: None,
+        schema_preview: None,
+    };
+    let backend = Backend::Observer(Box::new(adapter));
+    let err = futures::executor::block_on(apply_plan(&backend, &plan, &mut state, true))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("read-only"));
+}
