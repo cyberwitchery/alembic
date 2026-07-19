@@ -48,9 +48,12 @@ external process adapter:
 backend: external
 command: ./bin/alembic-adapter-mybackend
 args: ["--verbose"]
+working_dir: ./adapters/mybackend
 env:
   MY_BACKEND_URL: https://backend.example.com
 timeout_seconds: 60
+setup:
+  my_backend_variable_x: 37.0
 ```
 
 `env:` values are passed to the adapter verbatim; the adapter also inherits

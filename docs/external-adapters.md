@@ -11,12 +11,16 @@ json response to stdout.
 backend: external
 command: ./bin/alembic-adapter-mybackend
 args: ["--verbose"]
+working_dir: ./adapters/mybackend
 env:
   MY_BACKEND_URL: https://backend.example.com
 timeout_seconds: 60
 setup:
   my_backend_variable_x: 37.0
 ```
+
+`working_dir:` sets the directory the adapter process runs in (its cwd); when
+unset the adapter inherits alembic's own.
 
 `env:` values are passed to the adapter verbatim. the adapter also inherits
 alembic's environment, so secrets don't belong in the config file: export them
