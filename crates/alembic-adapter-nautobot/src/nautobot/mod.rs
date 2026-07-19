@@ -280,6 +280,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn apply_tolerates_already_deleted_404() {
+        // re-issued deletes must tolerate an already-gone object (404) as a no-op.
+        let server = MockServer::start();
+        let dir = tempdir().unwrap();
+        mock_content_types(&server);
+        mock_empty_custom_fields(&server);
+        let site_id = "33333333-3333-3333-3333-333333333333";
+        let _delete = server.mock(|when, then| {
+            when.method(DELETE)
+                .path(format!("/api/dcim/sites/{site_id}/"));
+            then.status(404);
+        });
+
+        let ops = vec![Op::Delete {
+            uid: uid(1),
+            type_name: TypeName::new("dcim.site"),
+            key: key("name", json!("FRA1")),
+            backend_id: Some(BackendId::String(site_id.to_string())),
+        }];
+
+        let adapter = NautobotAdapter::new(&server.base_url(), "token").unwrap();
+        let report = adapter
+            .write(&site_schema(), &ops, &state(dir.path()))
+            .await
+            .unwrap();
+
+        assert_eq!(report.applied.len(), 1);
+        assert_eq!(report.applied[0].backend_id, None);
+    }
+
+    #[tokio::test]
     async fn ensure_schema_creates_custom_fields() {
         let server = MockServer::start();
         mock_content_types(&server);
