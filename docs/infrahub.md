@@ -19,11 +19,33 @@ schema provisioning is configured in the backend config file, for example:
 backend: infrahub
 url: https://infrahub.example.com
 token: infrahub_xxx_replace_me
+branch: main
 schema:
   mode: infrahubctl
   schema_path: ./schema/alembic.generated.yaml
   infrahubctl_path: ./scripts/infrahubctl
 ```
+
+- `branch` (optional) - branch used for all reads and writes; unset lets infrahub pick
+  its default.
+- `schema.mode` (optional, default `none`) - `none`, `infrahubctl`, or `repository`; the
+  other two modes require `schema_path`.
+- `schema.branch` (optional) - distinct from the top-level `branch`; only passed to
+  `infrahubctl --branch`.
+
+repository mode instead writes the schema into a git repository infrahub tracks and
+triggers a re-process:
+
+```yaml
+schema:
+  mode: repository
+  schema_path: ./infra-repo/schema/alembic.generated.yaml
+  repository_root: ./infra-repo
+  repository_name: infra-repo
+```
+
+- `repository_root` (required) - `schema_path` must be inside it.
+- `repository_id` or `repository_name` (one required) - a name is resolved to an id.
 
 ## attrs mapping
 
