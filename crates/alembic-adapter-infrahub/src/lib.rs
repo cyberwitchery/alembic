@@ -3310,6 +3310,64 @@ schema { query: Query }
     }
 
     #[tokio::test]
+    async fn write_delete_surfaces_genuine_failure() {
+        // delete failed and the object is still present: a genuine failure must surface, not be swallowed.
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/schema.graphql");
+            then.status(200).body(GRAPHQL_SCHEMA);
+        });
+        // the delete mutation fails.
+        server.mock(|when, then| {
+            when.method(POST).path("/graphql").body_includes("Delete");
+            then.status(200).json_body(json!({
+                "data": null,
+                "errors": [{ "message": "boom" }]
+            }));
+        });
+        // the existence re-check finds the object still present.
+        server.mock(|when, then| {
+            when.method(POST).path("/graphql").body_includes("DcimSite");
+            then.status(200).json_body(json!({
+                "data": {
+                    "DcimSite": {
+                        "count": 1,
+                        "edges": [
+                            { "node": { "id": "site-1", "hfid": "site-1", "name": { "value": "Site A" } } }
+                        ]
+                    }
+                },
+                "errors": []
+            }));
+        });
+
+        let adapter = InfrahubAdapter::new(&server.base_url(), "token", None).unwrap();
+        let schema = schema_with(vec![(
+            "dcim.site",
+            type_schema(
+                vec![("name", field_schema(FieldType::String, true))],
+                vec![],
+            ),
+        )]);
+        let uid = Uid::parse_str("00000000-0000-0000-0000-000000000203").unwrap();
+        let key = Key::from(BTreeMap::from([("name".to_string(), json!("Site A"))]));
+        let ops = vec![Op::Delete {
+            uid,
+            type_name: TypeName::new("dcim.site"),
+            key,
+            backend_id: Some(BackendId::String("site-1".to_string())),
+        }];
+
+        let state = StateStore::new(None, StateData::default());
+        let err = adapter.write(&schema, &ops, &state).await.unwrap_err();
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("execute infrahub delete"),
+            "expected the genuine delete failure to surface, got: {chain}"
+        );
+    }
+
+    #[tokio::test]
     async fn lookup_backend_id_resolves() {
         let server = MockServer::start();
         server.mock(|when, then| {
