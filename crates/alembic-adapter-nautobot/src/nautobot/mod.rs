@@ -210,6 +210,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn create_conflict_surfaces_lookup_failure() {
+        // a create conflict whose recovery lookup itself fails (here the list
+        // returns 500) must surface the lookup failure, not mask it as the
+        // conflict, so the operator chases the real blocker.
+        let server = MockServer::start();
+        let dir = tempdir().unwrap();
+        mock_content_types(&server);
+        mock_empty_custom_fields(&server);
+        let _create = server.mock(|when, then| {
+            when.method(POST).path("/api/dcim/sites/");
+            then.status(409)
+                .json_body(json!({ "detail": "site with this name already exists." }));
+        });
+        let _lookup = server.mock(|when, then| {
+            when.method(GET).path("/api/dcim/sites/");
+            then.status(500).body("boom");
+        });
+
+        let ops = vec![Op::Create {
+            uid: uid(1),
+            type_name: TypeName::new("dcim.site"),
+            desired: Object::new(
+                uid(1),
+                TypeName::new("dcim.site"),
+                key("name", json!("FRA1")),
+                attrs(json!({ "name": "FRA1", "slug": "fra1" })),
+            )
+            .unwrap(),
+        }];
+
+        let adapter = NautobotAdapter::new(&server.base_url(), "token").unwrap();
+        let err = adapter
+            .write(&site_schema(), &ops, &state(dir.path()))
+            .await
+            .unwrap_err();
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("500"),
+            "expected the lookup (list) failure to surface, got: {chain}"
+        );
+        assert!(
+            !chain.contains("already exists"),
+            "the conflict must not mask the lookup failure, got: {chain}"
+        );
+    }
+
+    #[tokio::test]
     async fn apply_updates_object() {
         let server = MockServer::start();
         let dir = tempdir().unwrap();
