@@ -123,7 +123,7 @@ only for the default write path.
 note that combining `--report` with `--provision` is not fully read-only:
 `--provision` still runs adapter provisioning (`ensure_schema`) against the
 backend before the report is computed, which can issue schema writes (e.g.
-creating netbox custom fields/tags). the report itself remains read-only; the
+creating netbox custom fields). the report itself remains read-only; the
 schema writes come from `--provision`, not from the report.
 
 ## apply
@@ -144,7 +144,7 @@ alembic apply -p plan.json \
   through the same engine path used by non-interactive apply
 - the `peeringdb` backend is read-only; apply will return an error
 - apply runs adapter provisioning (`ensure_schema`) before writes on read+write
-  backends; for netbox this can create custom fields/tags and custom object
+  backends; for netbox this can create custom fields and custom object
   types when supported. write-only emitter backends (django) skip provisioning
 - infrahub provisioning can generate and load a schema file when
   configured in the backend config
