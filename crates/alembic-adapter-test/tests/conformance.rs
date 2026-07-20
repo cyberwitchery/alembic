@@ -347,8 +347,15 @@ fn fixtures_match_the_protocol_types() {
                     serde_json::from_value::<ProvisionReport>(result)
                         .unwrap_or_else(|e| panic!("{name}: bad ensure_schema result: {e}")),
                 ),
+                "preview_schema" => drop(
+                    serde_json::from_value::<ProvisionReport>(result)
+                        .unwrap_or_else(|e| panic!("{name}: bad preview_schema result: {e}")),
+                ),
                 other => panic!("{name}: unknown method {other}"),
             },
+            // a null preview result means "cannot preview schema", which the runner
+            // accepts (src/lib.rs) and call_optional maps to Ok(None).
+            (true, None, None) if method == "preview_schema" => {}
             (false, None, Some(error)) => assert!(!error.is_empty(), "{name}: empty error"),
             (ok, result, error) => panic!(
                 "{name}: inconsistent envelope: ok={ok}, has_result={}, has_error={}",
@@ -358,5 +365,5 @@ fn fixtures_match_the_protocol_types() {
         }
         checked += 1;
     }
-    assert_eq!(checked, 5, "expected 5 fixtures, checked {checked}");
+    assert_eq!(checked, 7, "expected 7 fixtures, checked {checked}");
 }

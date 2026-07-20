@@ -11,8 +11,9 @@ protocol](../../docs/external-adapters.md). each file describes one exchange:
 }
 ```
 
-there is one fixture per protocol case: `read`, `write`, `ensure_schema`, an
-adapter `error`, and a `version_mismatch`.
+there is one fixture per protocol case: `read`, `write`, `ensure_schema`,
+`preview_schema`, a `preview_schema` that reports it cannot preview (a null
+result), an adapter `error`, and a `version_mismatch`.
 
 these fixtures are the compatibility contract for adapter implementations in any
 language: feed each `request` on stdin and emit the matching `response` on stdout.
