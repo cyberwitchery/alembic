@@ -1,7 +1,7 @@
 //! inventory file loading with include/import support.
 
 use crate::{report_to_result_with_sources, validate};
-use alembic_core::{Inventory, Schema, SourceLocation};
+use alembic_core::{Inventory, Schema, SourceLocation, Uid};
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
 use std::collections::{BTreeSet, HashMap};
@@ -77,7 +77,7 @@ fn load_recursive(
     // object, so loading is linear in file size rather than objects x lines.
     let uid_lines = index_uid_lines(&content);
     for object in inventory.objects {
-        let source = match uid_lines.get(object.uid.to_string().as_str()) {
+        let source = match uid_lines.get(&object.uid) {
             Some(&n) => SourceLocation::file_line(&canonical, n),
             None => SourceLocation::file(&canonical),
         };
@@ -90,10 +90,10 @@ fn load_recursive(
 /// map each object's `uid` value to the 1-indexed line where it is defined (its
 /// own `uid:` key), keeping the first occurrence. built in a single pass so the
 /// caller can resolve every object's source line without rescanning the file.
-fn index_uid_lines(content: &str) -> HashMap<&str, usize> {
+fn index_uid_lines(content: &str) -> HashMap<Uid, usize> {
     let mut index = HashMap::new();
     for (idx, line) in content.lines().enumerate() {
-        if let Some(uid) = uid_key_value(line) {
+        if let Some(uid) = uid_key_value(line).and_then(|value| Uid::parse_str(value).ok()) {
             index.entry(uid).or_insert(idx + 1);
         }
     }
@@ -139,21 +139,25 @@ fn merge_schema(current: &mut Option<Schema>, incoming: Option<Schema>) -> Resul
 
 #[cfg(test)]
 mod tests {
-    use super::{index_uid_lines, merge_schema};
-    use alembic_core::{Schema, TypeSchema};
+    use super::{index_uid_lines, load_inventory, merge_schema};
+    use alembic_core::{Schema, TypeSchema, Uid};
     use std::collections::BTreeMap;
+    use tempfile::tempdir;
 
     #[test]
     fn locates_uid_definition_not_an_earlier_reference() {
         let content = r#"objects:
-  - uid: "dev-1"
+  - uid: "11111111-1111-1111-1111-111111111111"
     attrs:
-      site: "site-1"
-  - uid: "site-1"
+      site: "22222222-2222-2222-2222-222222222222"
+  - uid: "22222222-2222-2222-2222-222222222222"
 "#;
         let index = index_uid_lines(content);
-        assert_eq!(index.get("site-1").copied(), Some(5));
-        assert_eq!(index.get("dev-1").copied(), Some(2));
+        let dev = Uid::parse_str("11111111-1111-1111-1111-111111111111").unwrap();
+        let site = Uid::parse_str("22222222-2222-2222-2222-222222222222").unwrap();
+        // site resolves to its own `uid:` line (5), not the attr line (4) above it.
+        assert_eq!(index.get(&site).copied(), Some(5));
+        assert_eq!(index.get(&dev).copied(), Some(2));
     }
 
     #[test]
@@ -161,30 +165,73 @@ mod tests {
         let content = r#"{
   "objects": [
     {
-      "uid": "dev-1",
-      "attrs": { "site": "site-1" }
+      "uid": "11111111-1111-1111-1111-111111111111",
+      "attrs": { "site": "22222222-2222-2222-2222-222222222222" }
     },
     {
-      "uid": "site-1"
+      "uid": "22222222-2222-2222-2222-222222222222"
     }
   ]
 }
 "#;
         let index = index_uid_lines(content);
-        assert_eq!(index.get("site-1").copied(), Some(8));
+        let site = Uid::parse_str("22222222-2222-2222-2222-222222222222").unwrap();
+        assert_eq!(index.get(&site).copied(), Some(8));
     }
 
     #[test]
-    fn distinguishes_a_uid_that_is_a_prefix_of_another() {
-        // "dev-1" resolves to its own line, not the earlier "dev-10" line that
-        // contains it as a substring (the pre-index scan matched on `contains`).
+    fn skips_a_non_uuid_uid_value() {
+        // keyed by parsed uid, a `uid:` line whose value is not a uuid is not indexed.
         let content = r#"objects:
-  - uid: "dev-10"
-  - uid: "dev-1"
+  - uid: "not-a-uuid"
 "#;
-        let index = index_uid_lines(content);
-        assert_eq!(index.get("dev-1").copied(), Some(3));
-        assert_eq!(index.get("dev-10").copied(), Some(2));
+        assert!(index_uid_lines(content).is_empty());
+    }
+
+    #[test]
+    fn non_canonical_uid_keeps_its_error_line() {
+        // an uppercase uid is legal but not canonical; its validation errors must
+        // still carry its definition line, like the lowercase control.
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("inv.yaml");
+        let content = r#"schema:
+  types:
+    dcim.site:
+      key:
+        site:
+          type: slug
+      fields:
+        name:
+          type: string
+    dcim.rack:
+      key:
+        rack:
+          type: slug
+      fields:
+        name:
+          type: string
+objects:
+  - uid: "3F2504E0-4F89-11D3-9A0C-0305E82C3301"
+    type: dcim.site
+    key:
+      site: "fra1"
+    attrs:
+      name: "FRA1"
+      extra: "boom"
+  - uid: "6ba7b810-9dad-11d1-80b4-00c04fd430c8"
+    type: dcim.rack
+    key:
+      rack: "r1"
+    attrs:
+      name: "R1"
+      extra: "boom"
+"#;
+        std::fs::write(&path, content).unwrap();
+
+        let err = load_inventory(&path).unwrap_err().to_string();
+        // uppercase uid on line 18, lowercase control on line 25.
+        assert!(err.contains(":18:"), "uppercase uid lost its line: {err}");
+        assert!(err.contains(":25:"), "lowercase uid lost its line: {err}");
     }
 
     fn schema_with_type(name: &str) -> Schema {
