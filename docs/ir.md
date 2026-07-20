@@ -44,17 +44,37 @@ schema:
 
 supported field types include scalar types (string, text, int, float, bool, uuid, date, datetime, time), network types (ip_address, cidr, prefix, mac, slug), structured types (list, map, json, enum), and typed references (`ref`, `list_ref`).
 
-### format constraints
+### field schema
 
-string fields can optionally declare `format` and/or `pattern` constraints:
+a field declares `type` plus optional metadata:
+
+- `required`: the field must be present.
+- `nullable`: a null value is accepted; without it a null is an error.
+- `format`, `pattern`: string constraints.
+- `description`: passed through when an adapter provisions the field (netbox and nautobot custom fields, infrahub attributes and relationships).
 
 ```yaml
 fields:
   slug: { type: string, format: slug }
   hostname: { type: string, pattern: "^[a-z0-9-]+$" }
+  comment: { type: text, nullable: true, description: "operator note" }
 ```
 
 `format` supports: `slug`, `ip_address`, `cidr`, `prefix`, `mac`, `uuid`.
+
+`nullable` also shapes provisioned schema: the django adapter emits `null=True`.
+
+list and map elements are validated as required and non-nullable, so a null inside a list is rejected whatever the field declares.
+
+### key field rules
+
+a key field feeds uid derivation (see `docs/map.md`, uid), which constrains its declaration:
+
+- it may not be `nullable`: a null has no identity form.
+- it may not be a composite type (`list`, `list_ref`, `map`): there is no scalar identity form.
+- `required` is not consulted; key fields are mandatory.
+
+the first two are schema-load errors, raised before any object is read.
 
 ## relationships
 

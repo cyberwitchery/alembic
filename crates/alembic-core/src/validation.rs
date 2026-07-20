@@ -71,7 +71,7 @@ pub enum ValidationError {
     #[error("empty enum for {type_name}.{field}: an enum with no values is unsatisfiable")]
     EmptyEnum { type_name: String, field: String },
     #[error(
-        "non-scalar key field {type_name}.{field}: a {field_type} key has no scalar identity form (docs/map.md)"
+        "non-scalar key field {type_name}.{field}: a {field_type} key has no scalar identity form (docs/ir.md)"
     )]
     NonScalarKeyField {
         type_name: String,
@@ -79,7 +79,7 @@ pub enum ValidationError {
         field_type: String,
     },
     #[error(
-        "nullable key field {type_name}.{field}: a null identity component has no stable identity (docs/map.md)"
+        "nullable key field {type_name}.{field}: a null identity component has no stable identity (docs/ir.md)"
     )]
     NullableKeyField { type_name: String, field: String },
 }
