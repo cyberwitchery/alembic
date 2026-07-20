@@ -16,7 +16,7 @@ and supported feature set.
   bundled under `custom_fields`.
 - `tags` in `attrs` should be a list of strings; the adapter expands them to netbox tag inputs.
 - nested references should be provided as alembic uids (string UUIDs). the adapter resolves those
-  to backend integer ids before sending requests.
+  to backend integer ids before sending requests, including refs nested in list and map fields.
 - if a referenced uid cannot be resolved (not in state or created earlier in the same apply),
   apply fails with a missing reference error.
 
@@ -46,5 +46,4 @@ this requires the `netbox-custom-objects` plugin and its REST API endpoints to b
 
 ## known limitations
 
-- only fields typed as `ref`/`list_ref` are resolved to backend ids during apply.
 - netbox endpoints that do not accept patch or custom field payloads will return errors on apply.

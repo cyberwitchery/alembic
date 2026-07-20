@@ -42,7 +42,7 @@ schema:
         device_type: { type: string }
 ```
 
-supported field types include primitives (string, int, float, bool, uuid), structured types (list, map, json), and typed references (`ref`, `list_ref`).
+supported field types include scalar types (string, text, int, float, bool, uuid, date, datetime, time), network types (ip_address, cidr, prefix, mac, slug), structured types (list, map, json, enum), and typed references (`ref`, `list_ref`).
 
 ### format constraints
 

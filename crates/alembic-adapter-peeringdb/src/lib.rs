@@ -44,7 +44,12 @@ impl Observer for PeeringDBAdapter {
         _state: &alembic_engine::StateStore,
     ) -> Result<ObservedState> {
         let requested: BTreeSet<TypeName> = if types.is_empty() {
-            SUPPORTED_TYPES.iter().map(|s| TypeName::new(*s)).collect()
+            // empty means every schema-declared supported type; skip types the schema omits.
+            SUPPORTED_TYPES
+                .iter()
+                .map(|s| TypeName::new(*s))
+                .filter(|tn| schema.types.contains_key(tn.as_str()))
+                .collect()
         } else {
             types.iter().cloned().collect()
         };
@@ -269,6 +274,19 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("missing schema"));
+    }
+
+    #[tokio::test]
+    async fn observe_empty_types_skips_undeclared_types() {
+        // empty types + a schema that declares none of them must skip (not error);
+        // the explicit-type path still errors (observe_errors_on_missing_schema).
+        let adapter = PeeringDBAdapter::new();
+        let schema = Schema {
+            types: BTreeMap::new(),
+        };
+        let state = alembic_engine::StateStore::new(None, alembic_engine::StateData::default());
+        let observed = adapter.read(&schema, &[], &state).await.unwrap();
+        assert!(observed.by_key.is_empty());
     }
 
     #[tokio::test]

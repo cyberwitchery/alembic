@@ -148,9 +148,11 @@ relationships are validated strictly by schema and `uid` references.
 - `docs/plan.md`
 - `docs/state.md`
 - `docs/cli.md`
+- `docs/configuration.md`
 - `docs/netbox.md`
 - `docs/nautobot.md`
 - `docs/infrahub.md`
+- `docs/generic.md`
 - `docs/external-adapters.md`
 - `docs/development.md`
 - `docs/case-studies/` (worked scenarios) and `docs/examples/` (minimal walkthroughs)

@@ -380,6 +380,13 @@ mod tests {
 
     impl ExternalAdapter for TestExternalAdapter {
         fn setup(&mut self, configuration: &Value) -> anyhow::Result<()> {
+            if configuration
+                .get("fail_setup")
+                .and_then(serde_yaml::Value::as_bool)
+                == Some(true)
+            {
+                anyhow::bail!("rejected by test adapter");
+            }
             if let Some(x) = configuration.get("x").and_then(serde_yaml::Value::as_i64) {
                 self.x = x;
             }
@@ -574,6 +581,66 @@ mod tests {
         let response: ExternalResponse<ProvisionReport> = serde_json::from_str(&response).unwrap();
         assert!(response.error.is_some());
         assert!(!response.ok);
+
+        t.join().unwrap();
+    }
+
+    #[test]
+    fn external_adapter_rejects_invalid_request() {
+        let adapter = TestExternalAdapter::default();
+
+        let (in_reader, mut in_writer) = std::io::pipe().unwrap();
+        let (out_reader, out_writer) = std::io::pipe().unwrap();
+
+        let t = std::thread::spawn(move || {
+            assert!(run_external_adapter(adapter, (in_reader, out_writer)).is_ok());
+        });
+
+        writeln!(in_writer, "this is not json").unwrap();
+        drop(in_writer);
+
+        let mut response = String::new();
+        BufReader::new(out_reader).read_line(&mut response).unwrap();
+
+        let response: ExternalResponse<serde_json::Value> =
+            serde_json::from_str(&response).unwrap();
+        assert!(!response.ok);
+        assert!(response.error.unwrap().contains("invalid request"));
+
+        t.join().unwrap();
+    }
+
+    #[test]
+    fn external_adapter_rejects_invalid_setup() {
+        let adapter = TestExternalAdapter::default();
+
+        let (in_reader, mut in_writer) = std::io::pipe().unwrap();
+        let (out_reader, out_writer) = std::io::pipe().unwrap();
+
+        let t = std::thread::spawn(move || {
+            assert!(run_external_adapter(adapter, (in_reader, out_writer)).is_ok());
+        });
+
+        let envelope = ExternalEnvelope {
+            version: EXTERNAL_PROTOCOL_VERSION,
+            setup: serde_yaml::from_str("fail_setup: true").unwrap(),
+            request: ExternalRequest::Read {
+                schema: Default::default(),
+                types: vec![],
+                state: Default::default(),
+            },
+        };
+
+        writeln!(in_writer, "{}", serde_json::to_string(&envelope).unwrap()).unwrap();
+        drop(in_writer);
+
+        let mut response = String::new();
+        BufReader::new(out_reader).read_line(&mut response).unwrap();
+
+        let response: ExternalResponse<Vec<ExternalObject>> =
+            serde_json::from_str(&response).unwrap();
+        assert!(!response.ok);
+        assert!(response.error.unwrap().contains("invalid setup"));
 
         t.join().unwrap();
     }
