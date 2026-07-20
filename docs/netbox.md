@@ -32,6 +32,8 @@ and supported feature set.
 - observe flattens `custom_fields` and `tags` into `attrs` for diffing and import.
 - on apply, custom fields and tags are only sent when the object type advertises support
   via the `features` set.
+- tags the applied objects reference but the backend lacks are created at apply, not
+  during schema provisioning.
 
 ## custom objects (netbox custom objects plugin)
 
