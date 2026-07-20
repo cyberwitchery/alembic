@@ -474,7 +474,7 @@ pub fn backend_id_from_value(value: &Value) -> Option<BackendId> {
 /// resolve a nested reference brief back to its canonical uid: first via the
 /// recorded `backend-id -> uid` mappings (keyed off the brief's `url` endpoint),
 /// then, when the target type is known, by deriving the uid from the target's
-/// key fields — recursing into ref-typed key fields, which arrive as nested
+/// key fields -- recursing into ref-typed key fields, which arrive as nested
 /// briefs themselves.
 ///
 /// `lookup` resolves a `(type_name, backend_id)` to a recorded uid and

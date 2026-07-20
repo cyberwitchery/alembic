@@ -1674,7 +1674,7 @@ mod tests {
         // object supplies a composite VALUE is already rejected by per-object
         // value-type validation, so a composite key VALUE never reaches uid
         // derivation either. the schema is scalar-keyed, so no type-level error
-        // fires here — only the per-object value error.
+        // fires here -- only the per-object value error.
         let device = TypeSchema {
             key: BTreeMap::from([("name".to_string(), schema_field(FieldType::String))]),
             fields: BTreeMap::new(),

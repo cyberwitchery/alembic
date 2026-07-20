@@ -329,7 +329,7 @@ fn test_resolve_attrs_ref_missing_uid_errors() {
 
 // a null value for a nullable ref must pass straight through as json null (to
 // clear the field on the backend), not reach the ref encoder and error with
-// "ref value must be a uuid string" — which previously aborted the whole write.
+// "ref value must be a uuid string" -- which previously aborted the whole write.
 #[test]
 fn test_resolve_attrs_passes_null_ref_through() {
     let resolved = BTreeMap::new();
@@ -1471,7 +1471,7 @@ async fn test_apply_delete_tolerates_not_found() {
 async fn test_preview_schema_reports_nothing_to_provision() {
     // the generic adapter never provisions schema, so preview_schema must
     // honestly report Some(empty) ("nothing to provision"), not None ("cannot
-    // preview") — the latter the cli surfaces as "preview unavailable for this
+    // preview") -- the latter the cli surfaces as "preview unavailable for this
     // backend". this mirrors its no-op ensure_schema.
     let adapter = GenericAdapter::new(test_config("http://localhost")).unwrap();
     let schema = test_schema();

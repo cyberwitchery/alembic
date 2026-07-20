@@ -339,7 +339,7 @@ impl Adapter for NetBoxAdapter {
         // create the planned fields for each custom object type. ensure reports
         // only real creates: a create that turns out to already exist (returns
         // false / refetches) is not reported, though the plan lists it and preview
-        // renders it — the deliberate TOCTOU divergence.
+        // renders it -- the deliberate TOCTOU divergence.
         for (object_type, &type_id) in plan.object_types.iter().zip(&type_ids) {
             let mut existing_fields = object_type.existing_field_ids.clone();
             let mut provisioner = CustomObjectFieldProvisioner {
@@ -410,7 +410,7 @@ impl Adapter for NetBoxAdapter {
 
     /// read-only counterpart to `ensure_schema`: reports what `ensure_schema`
     /// would create and delete, from the same backend reads, writing nothing.
-    /// both share one decision — `plan_schema` — so the preview cannot claim a
+    /// both share one decision -- `plan_schema` -- so the preview cannot claim a
     /// change apply would not make, nor miss one. preview renders the plan; ensure
     /// executes it. netbox interleaves those decisions with its writes only
     /// because attaching fields needs a created type's backend id, an execution
@@ -474,8 +474,8 @@ impl Adapter for NetBoxAdapter {
 
 /// decodes every generic foreign key on `type_name` from its NetBox read shape
 /// into the alembic uid(s) it references. both wire forms expose a content type
-/// and a backend id — a nested `{ object_type, object_id }` (single or array) or
-/// a split `<field>_type` / `<field>_id` pair — which the recorded id->uid
+/// and a backend id -- a nested `{ object_type, object_id }` (single or array) or
+/// a split `<field>_type` / `<field>_id` pair -- which the recorded id->uid
 /// mappings turn back into uids. a reference to an object alembic does not manage
 /// (no mapping) is dropped rather than surfaced as an opaque id.
 fn decode_generic_fks(
@@ -1486,7 +1486,7 @@ impl<'a> CustomObjectFieldProvisioner<'a> {
 /// the create/delete decision `ensure_schema` and `preview_schema` share,
 /// computed purely from the four backend reads and the schema without writing.
 /// preview renders it into a `ProvisionReport`; ensure executes it and reports
-/// what actually changed. one plan, two consumers — so a preview can never claim
+/// what actually changed. one plan, two consumers -- so a preview can never claim
 /// a change apply would not make, nor miss one.
 struct ProvisionPlan<'a> {
     native_fields: Vec<PlannedNativeField<'a>>,
@@ -1683,7 +1683,7 @@ fn validate_custom_object_field_name(name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Whether a declared custom-object field needs creating (`false` if reserved or
+/// whether a declared custom-object field needs creating (`false` if reserved or
 /// already present), erroring on a name netbox rejects so `preview_schema` and
 /// `ensure_schema` make the identical create/skip/reject decision.
 fn custom_object_field_needs_create(field_name: &str, field_exists: bool) -> Result<bool> {

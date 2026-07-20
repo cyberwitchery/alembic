@@ -330,7 +330,7 @@ impl ProcessAdapter {
     }
 
     /// like [`ProcessAdapter::call`] but tolerates a null/absent result, mapping it to
-    /// `None` — used for optional responses such as schema preview.
+    /// `None` -- used for optional responses such as schema preview.
     async fn call_optional<R: DeserializeOwned>(
         &self,
         request: ExternalRequestRef<'_>,
@@ -587,11 +587,11 @@ mod tests {
         LOCK.get_or_init(|| Mutex::new(()))
     }
 
-    /// Serializes the tests that spawn a child process (via [`ProcessAdapter`] or
+    /// serializes the tests that spawn a child process (via [`ProcessAdapter`] or
     /// an external backend). exec-ing a just-written script can race a sibling
     /// test thread's `fork` and fail to spawn with `ETXTBSY`; holding this lock
     /// for the whole spawn keeps no two of these tests running concurrently, so
-    /// no fork can observe a half-written-then-exec'd file. It is a
+    /// no fork can observe a half-written-then-exec'd file. it is a
     /// `tokio::sync::Mutex` so the async spawn tests can hold the guard across
     /// `.await` without tripping `clippy::await_holding_lock`.
     fn spawn_lock() -> &'static tokio::sync::Mutex<()> {

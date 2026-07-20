@@ -2546,7 +2546,7 @@ schema { query: Query }
             .created_object_fields
             .contains(&"dcim.site.region".to_string()));
 
-        // the write path refuses without provisioning config, from the same reads —
+        // the write path refuses without provisioning config, from the same reads --
         // proving preview surfaced the changes without performing them.
         assert!(adapter.ensure_schema(&schema).await.is_err());
     }

@@ -308,7 +308,7 @@ fn op_referenced_uids(op: &Op, schema: &Schema) -> BTreeSet<Uid> {
 }
 
 /// Kahn's algorithm with `op_order_key` as a deterministic tie-breaker.
-/// `edges[a]` holds the nodes that must come *after* node `a`. Nodes that
+/// `edges[a]` holds the nodes that must come *after* node `a`. nodes that
 /// remain in a reference cycle never reach in-degree zero; they are appended in
 /// stable `op_order_key` order so the result is always a total order (the
 /// apply_retry fixpoint resolves any residual ordering for them at apply time).
