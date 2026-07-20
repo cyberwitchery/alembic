@@ -531,6 +531,7 @@ pub struct TypeSchema {
 
 /// collection of schema definitions.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Schema {
     #[serde(default)]
     pub types: BTreeMap<String, TypeSchema>,
@@ -1110,6 +1111,14 @@ mod tests {
         assert!(serde_json::from_value::<FieldSchema>(format).is_err());
         let pattern = serde_json::json!({ "type": "string", "pattern": true });
         assert!(serde_json::from_value::<FieldSchema>(pattern).is_err());
+    }
+
+    #[test]
+    fn schema_unknown_field_errors() {
+        let unknown = serde_json::json!({ "mode": "infrahubctl" });
+        assert!(serde_json::from_value::<Schema>(unknown).is_err());
+        let types = serde_json::json!({ "types": {} });
+        assert!(serde_json::from_value::<Schema>(types).is_ok());
     }
 
     #[test]

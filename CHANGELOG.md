@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- core: reject an unknown key in a schema block instead of silently discarding it, so a file whose `schema:` is not an inventory schema (`examples/backend-infrahub.yaml`, where it is the infrahub schema-push config) now fails to load instead of validating clean as a schema with zero types
 - engine: a non-canonically written `uid` (uppercase, or uuid's simple/braced/urn forms) no longer loses its source line in validation errors; the uid→line index is keyed by the parsed uid, not the raw token
 - engine: `import` warned once per dropped attr *per object*, so importing N objects of a type repeated the same `dropping undeclared attr` line N times (a real netbox import carries ~3 dozen undeclared server-computed attrs per object, so a 1000-object import emitted tens of thousands of identical lines at the default `warn` level, burying everything else the import printed); it now warns once per type+field for the whole import
 - cli: a malformed `RUST_LOG` is now reported instead of silently ignored. `EnvFilter::try_from_default_env` errors for an unset and a rejected value alike and the fallback discarded which, so a typo (`info,alembic_engine=trce`) fell back to the default `warn` filter with no message, producing output identical to setting nothing and looking like alembic had nothing to say; a rejected value now prints a warning to stderr naming it and the parse error, and still falls back to `warn`, so the command itself is unaffected
