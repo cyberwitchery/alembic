@@ -6,6 +6,14 @@ plans are json files that can be re-applied. the plan is deterministic for a giv
 
 ```json
 {
+  "schema": {
+    "types": {
+      "dcim.site": {
+        "key": { "...": "..." },
+        "fields": { "...": "..." }
+      }
+    }
+  },
   "ops": [
     {
       "op": "create",
@@ -35,13 +43,17 @@ plans are json files that can be re-applied. the plan is deterministic for a giv
       "key": { "address": "10.0.0.10/24" },
       "backend_id": 456
     }
-  ]
+  ],
+  "summary": { "create": 1, "update": 1, "delete": 1 },
+  "schema_preview": { "...": "..." }
 }
 ```
 
 ## notes
 
 - `type_name` may be any custom string.
-- `backend_id` is optional and may be absent for creates or if not known.
+- creates carry no `backend_id`; on updates and deletes it is optional and may be absent when not known.
 - deletes are only applied when `--allow-delete` is set.
-- the plan embeds the schema used during planning to drive apply-time reference resolution.
+- the plan embeds the schema used during planning to drive apply-time reference resolution; see `docs/ir.md` for the field schema.
+- `summary` is optional, counts of each op kind.
+- `schema_preview` is optional, the read-only schema preview plan records (shape in `docs/external-adapters.md`, when it is populated in `docs/cli.md`).
