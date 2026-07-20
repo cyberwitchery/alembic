@@ -64,6 +64,16 @@ fields:
 
 `nullable` also shapes provisioned schema: the django adapter emits `null=True`.
 
+composite types take a further mandatory key alongside `type`: `list` takes `item`, `map` takes `value`, `enum` takes `values`, `ref` and `list_ref` take `target`.
+
+```yaml
+fields:
+  peers: { type: list, item: { type: json } }
+  labels: { type: map, value: { type: string } }
+  status: { type: enum, values: [active, planned, staged] }
+  site: { type: ref, target: dcim.site }
+```
+
 list and map elements are validated as required and non-nullable, so a null inside a list is rejected whatever the field declares.
 
 ### key field rules
