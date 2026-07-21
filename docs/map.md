@@ -151,8 +151,7 @@ syntax: `${attrs.primary_ip|cidr_host}`. semantics:
 - `${var|name(arg, ...)}` passes literal arguments after the piped value;
   chaining is unchanged, so `${x|f|g(2)}` is `g(f(x), 2)`. literals are quoted
   strings (single or double, with `\\`, `\'`, `\"`, `\n`, `\t` escapes),
-  integers, floats, and `true`/`false` — no variable references, and `${` cannot
-  appear inside an argument.
+  integers, floats, and `true`/`false` — no variable references.
 - typed returns: in `attrs:` templates a transformed value keeps its starlark
   type (str/int/bool/list/dict mapped to json), so a transform returning a dict
   lands in a `json`-typed attr as structured data. `key:` templates feed uid
