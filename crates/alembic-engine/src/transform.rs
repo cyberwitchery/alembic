@@ -1,15 +1,15 @@
-//! map: ir → ir transformation.
+//! map: ir -> ir transformation.
 //!
-//! map takes a canonical inventory and re-emits it under a different vocabulary —
-//! renaming types and fields, dropping or deriving values, rewiring references —
+//! map takes a canonical inventory and re-emits it under a different vocabulary --
+//! renaming types and fields, dropping or deriving values, rewiring references --
 //! using the shared render/emit half (`render_key`, `render_attrs`, templates +
 //! transforms). a `uid` is a derived projection of `(type, key)`, so references
 //! between objects are resolved internally and the emitted `uid`s (and the ref
 //! values that point at them) are re-derived at the boundary in a second pass.
 //!
 //! a rule selects source objects by a type-name pattern with optional field
-//! predicates and emits one or more target objects per match (fan-out), or — with
-//! `group_by` — buckets the matched objects and emits once per group (N->1
+//! predicates and emits one or more target objects per match (fan-out), or -- with
+//! `group_by` -- buckets the matched objects and emits once per group (N->1
 //! aggregation). `lookups` follow a ref to read a field from the object it points
 //! at, so an emit can pull a value off a related object.
 
@@ -69,9 +69,9 @@ pub struct TransformsSpec {
     pub inline: Option<String>,
 }
 
-/// a single ir→ir rule: select source objects, emit one or more target objects
+/// a single ir->ir rule: select source objects, emit one or more target objects
 /// each. `uids` declares named uids (computed once per matched source) referenced
-/// as `${uids.name}` in emits — the mechanism for wiring cross-object refs in a
+/// as `${uids.name}` in emits -- the mechanism for wiring cross-object refs in a
 /// multi-emit restructure.
 #[derive(Debug, Deserialize)]
 pub struct MapRule {
@@ -602,8 +602,8 @@ fn resolve_emit_uid(
     }
 }
 
-/// resolve an explicit uid spec — a `v5: {type, stable}` pair or a uuid-string
-/// template — against the current vars. shared by emit uids and named `uids`.
+/// resolve an explicit uid spec -- a `v5: {type, stable}` pair or a uuid-string
+/// template -- against the current vars. shared by emit uids and named `uids`.
 fn resolve_uid_spec(spec: &EmitUid, ctx: &RenderCtx, context: &str) -> Result<Uid> {
     let rule = ctx.rule;
     match spec {
@@ -621,7 +621,7 @@ fn resolve_uid_spec(spec: &EmitUid, ctx: &RenderCtx, context: &str) -> Result<Ui
     }
 }
 
-/// rewrite the references in each object's attrs through the source→target uid
+/// rewrite the references in each object's attrs through the source->target uid
 /// remap, using the target schema to find which fields hold them.
 fn rewrite_refs(objects: &mut [Object], schema: &Schema, remap: &BTreeMap<Uid, Uid>) {
     for obj in objects.iter_mut() {

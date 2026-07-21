@@ -510,10 +510,10 @@ fn parse_string_literal(token: &str, quote: char, rule: &str, context: &str) -> 
     Ok(JsonValue::String(out))
 }
 
-/// Run the transform pipeline typed, left to right. A user-defined transform
+/// run the transform pipeline typed, left to right. a user-defined transform
 /// receives and returns typed values; a built-in coerces its input scalar to a
 /// string (preserving the established `${num|upper}` behavior) and returns a
-/// string. User transforms are consulted first, so they may shadow built-ins.
+/// string. user transforms are consulted first, so they may shadow built-ins.
 fn apply_placeholder_typed(
     value: &JsonValue,
     placeholder: &Placeholder,
@@ -607,8 +607,8 @@ fn apply_builtin(
     })
 }
 
-/// Run a single named transform (with literal args) against a value, typed.
-/// Backs `alembic map transform`, the cli iteration loop for user transforms.
+/// run a single named transform (with literal args) against a value, typed.
+/// backs `alembic map transform`, the cli iteration loop for user transforms.
 pub(crate) fn apply_single_transform(
     registry: &TransformRegistry,
     name: &str,
@@ -631,7 +631,7 @@ pub(crate) fn apply_single_transform(
     apply_placeholder_typed(value, &placeholder, &ctx, "cli")
 }
 
-/// String-context pipeline: run typed, then coerce the result with the scalar
+/// string-context pipeline: run typed, then coerce the result with the scalar
 /// rules.
 fn apply_placeholder(
     value: &JsonValue,
@@ -651,7 +651,7 @@ fn is_scalar(value: &JsonValue) -> bool {
     )
 }
 
-/// the scalar→string partition shared by predicate comparison, template
+/// the scalar->string partition shared by predicate comparison, template
 /// coercion, and key/uid scalar gating: strings clone through, numbers and bools
 /// take their natural form (`42`, `true`); null, arrays, and objects have no
 /// scalar string form.
@@ -1472,7 +1472,7 @@ uid:
         }
 
         /// the built-in four reimplemented in starlark must agree with the
-        /// native implementations across a corpus — a standing proof the
+        /// native implementations across a corpus -- a standing proof the
         /// substrate is sufficient to express them.
         #[test]
         fn builtin_four_reimplemented_in_starlark_agree() {

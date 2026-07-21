@@ -15,10 +15,10 @@ const DEVICE_TYPE: &str = "dcim.device";
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
 struct Args {
-    /// The number of operations (objects) to include in the plan.
+    /// the number of operations (objects) to include in the plan.
     #[clap(short, long, default_value = "10")]
     num_ops: u128,
-    /// Output file
+    /// output file.
     #[clap(short, long, default_value = "plan.json")]
     output: PathBuf,
 }

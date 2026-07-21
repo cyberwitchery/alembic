@@ -483,7 +483,7 @@ impl Adapter for GenericAdapter {
     // schema already exists, so ensure_schema is the no-op default (an empty
     // report). preview must mirror that honestly as "nothing to provision"
     // rather than the default None, which the cli renders as "preview
-    // unavailable for this backend" — a capability limit generic does not have.
+    // unavailable for this backend" -- a capability limit generic does not have.
     async fn preview_schema(&self, _schema: &Schema) -> Result<Option<ProvisionReport>> {
         Ok(Some(ProvisionReport::default()))
     }

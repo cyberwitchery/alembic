@@ -172,7 +172,7 @@ objects:
     inventory
 }
 
-/// Serializes tests that read or mutate the process environment. It is a
+/// serializes tests that read or mutate the process environment. it is a
 /// `tokio::sync::Mutex` (acquired through [`EnvVarGuard`]) so the async
 /// full-path tests can hold the guard across `.await` without tripping
 /// `clippy::await_holding_lock`.
@@ -189,14 +189,14 @@ pub(crate) fn cwd_lock() -> &'static tokio::sync::Mutex<()> {
 /// RAII guard that pins a set of environment variables for the lifetime of a
 /// test, restoring their prior values on drop.
 ///
-/// Construction takes [`env_lock`], so env-mutating tests (the synchronous
+/// construction takes [`env_lock`], so env-mutating tests (the synchronous
 /// `resolve_state_backend_*` tests) and env-reading tests (the async full-path
 /// tests that resolve a state backend) serialize on the same lock and never
-/// race on the process environment. Use [`EnvVarGuard::acquire`] from `#[test]`
+/// race on the process environment. use [`EnvVarGuard::acquire`] from `#[test]`
 /// functions and [`EnvVarGuard::acquire_async`] from `#[tokio::test]` functions.
 ///
-/// Each override is `(name, value)`: `Some(v)` sets the variable to `v` and
-/// `None` removes it. The prior value of every named variable is restored when
+/// each override is `(name, value)`: `Some(v)` sets the variable to `v` and
+/// `None` removes it. the prior value of every named variable is restored when
 /// the guard drops, even on panic.
 pub(crate) struct EnvVarGuard {
     _lock: tokio::sync::MutexGuard<'static, ()>,
@@ -204,14 +204,14 @@ pub(crate) struct EnvVarGuard {
 }
 
 impl EnvVarGuard {
-    /// Acquire the env lock synchronously (for non-async tests) and apply
+    /// acquire the env lock synchronously (for non-async tests) and apply
     /// `overrides`.
     pub(crate) fn acquire(overrides: &[(&str, Option<&str>)]) -> Self {
         Self::with_lock(env_lock().blocking_lock(), overrides)
     }
 
-    /// Acquire the env lock from an async context (for `#[tokio::test]` tests)
-    /// and apply `overrides`. The async-aware guard is safe to hold across
+    /// acquire the env lock from an async context (for `#[tokio::test]` tests)
+    /// and apply `overrides`. the async-aware guard is safe to hold across
     /// `.await`, unlike a `std::sync::MutexGuard`.
     pub(crate) async fn acquire_async(overrides: &[(&str, Option<&str>)]) -> Self {
         Self::with_lock(env_lock().lock().await, overrides)
