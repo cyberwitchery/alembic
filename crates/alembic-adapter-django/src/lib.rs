@@ -134,11 +134,81 @@ impl Default for DjangoEmitOptions {
     }
 }
 
+// python hard keywords; soft keywords (match, case, type, _) are legal
+// identifiers and stay allowed.
+const PYTHON_KEYWORDS: &[&str] = &[
+    "False", "None", "True", "and", "as", "assert", "async", "await", "break", "class", "continue",
+    "def", "del", "elif", "else", "except", "finally", "for", "from", "global", "if", "import",
+    "in", "is", "lambda", "nonlocal", "not", "or", "pass", "raise", "return", "try", "while",
+    "with", "yield",
+];
+
+// field names the emitter assigns on every generated model; a schema field of
+// the same name would silently override them (the `uid` case drops the uuid
+// primary key without any error from `manage.py check`).
+const RESERVED_FIELD_NAMES: &[&str] = &["uid", "key", "attrs"];
+
+fn is_python_identifier(name: &str) -> bool {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !(first.is_ascii_alphabetic() || first == '_') {
+        return false;
+    }
+    if !chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_') {
+        return false;
+    }
+    !PYTHON_KEYWORDS.contains(&name)
+}
+
+// field and type names are interpolated into python source verbatim, so a name
+// that is not a usable python identifier must fail the emit instead of
+// producing a broken or silently wrong app. all violations are collected into
+// one error.
+fn validate_schema_names(schema: &Schema) -> Result<()> {
+    let mut problems = Vec::new();
+    for (type_name, type_schema) in &schema.types {
+        let class_name = class_name_for_type(type_name);
+        if !is_python_identifier(&class_name) {
+            problems.push(format!(
+                "type '{type_name}' renders to class name '{class_name}', which is not a valid python identifier"
+            ));
+        }
+        let field_names = type_schema.key.keys().chain(
+            type_schema
+                .fields
+                .keys()
+                .filter(|field| !type_schema.key.contains_key(*field)),
+        );
+        for field in field_names {
+            if RESERVED_FIELD_NAMES.contains(&field.as_str()) {
+                problems.push(format!(
+                    "field '{field}' of type '{type_name}' is reserved: it would shadow the generated model attribute of the same name"
+                ));
+            } else if !is_python_identifier(field) {
+                problems.push(format!(
+                    "field '{field}' of type '{type_name}' is not a valid python identifier"
+                ));
+            }
+        }
+    }
+    if problems.is_empty() {
+        Ok(())
+    } else {
+        Err(anyhow!(
+            "cannot emit django app, invalid names in schema:\n  {}",
+            problems.join("\n  ")
+        ))
+    }
+}
+
 pub fn emit_django_app(
     app_dir: &Path,
     inventory: &Inventory,
     options: DjangoEmitOptions,
 ) -> Result<()> {
+    validate_schema_names(&inventory.schema)?;
     fs::create_dir_all(app_dir)?;
     let app_name = app_dir
         .file_name()
@@ -1204,6 +1274,196 @@ mod tests {
         let site_pos = models.find("class DcimSite").unwrap();
         assert!(device_pos < interface_pos);
         assert!(interface_pos < site_pos);
+    }
+
+    fn plain_field(r#type: FieldType) -> FieldSchema {
+        FieldSchema {
+            r#type,
+            required: false,
+            nullable: false,
+            description: None,
+            format: None,
+            pattern: None,
+        }
+    }
+
+    fn inventory_with_field(field_name: &str) -> Inventory {
+        let mut types = BTreeMap::new();
+        types.insert(
+            "dcim.site".to_string(),
+            TypeSchema {
+                key: BTreeMap::from([("name".to_string(), plain_field(FieldType::Slug))]),
+                fields: BTreeMap::from([(field_name.to_string(), plain_field(FieldType::String))]),
+            },
+        );
+        Inventory {
+            schema: Schema { types },
+            objects: vec![],
+        }
+    }
+
+    fn emit_error(inventory: &Inventory) -> String {
+        let dir = tempdir().unwrap();
+        let result = emit_django_app(dir.path(), inventory, DjangoEmitOptions::default());
+        result
+            .expect_err("expected emit to reject the schema")
+            .to_string()
+    }
+
+    #[test]
+    fn rejects_field_named_uid() {
+        // the silent one: a schema field `uid` would override the generated
+        // `uid = models.UUIDField(primary_key=True)`, dropping the uuid primary key
+        // without any error from `manage.py check`.
+        let err = emit_error(&inventory_with_field("uid"));
+        assert!(
+            err.contains("uid"),
+            "error should name the field, got: {err}"
+        );
+        assert!(
+            err.contains("reserved"),
+            "error should say reserved, got: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_field_named_key() {
+        let err = emit_error(&inventory_with_field("key"));
+        assert!(
+            err.contains("'key'"),
+            "error should name the field, got: {err}"
+        );
+        assert!(
+            err.contains("reserved"),
+            "error should say reserved, got: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_field_named_attrs() {
+        let err = emit_error(&inventory_with_field("attrs"));
+        assert!(
+            err.contains("'attrs'"),
+            "error should name the field, got: {err}"
+        );
+        assert!(
+            err.contains("reserved"),
+            "error should say reserved, got: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_python_keyword_field_name() {
+        let err = emit_error(&inventory_with_field("from"));
+        assert!(
+            err.contains("'from'"),
+            "error should name the field, got: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_leading_digit_field_name() {
+        let err = emit_error(&inventory_with_field("10g_port"));
+        assert!(
+            err.contains("'10g_port'"),
+            "error should name the field, got: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_key_field_name() {
+        // key fields are rendered as model fields too, so the identifier
+        // check must cover them.
+        let mut types = BTreeMap::new();
+        types.insert(
+            "dcim.site".to_string(),
+            TypeSchema {
+                key: BTreeMap::from([("class".to_string(), plain_field(FieldType::Slug))]),
+                fields: BTreeMap::new(),
+            },
+        );
+        let inventory = Inventory {
+            schema: Schema { types },
+            objects: vec![],
+        };
+        let err = emit_error(&inventory);
+        assert!(
+            err.contains("'class'"),
+            "error should name the key field, got: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_type_name_that_renders_to_invalid_class_name() {
+        // class_name_for_type("10g.port") yields "10gPort", which cannot be a
+        // python class name.
+        let mut types = BTreeMap::new();
+        types.insert(
+            "10g.port".to_string(),
+            TypeSchema {
+                key: BTreeMap::from([("name".to_string(), plain_field(FieldType::Slug))]),
+                fields: BTreeMap::new(),
+            },
+        );
+        let inventory = Inventory {
+            schema: Schema { types },
+            objects: vec![],
+        };
+        let err = emit_error(&inventory);
+        assert!(
+            err.contains("10g.port"),
+            "error should name the type, got: {err}"
+        );
+        assert!(
+            err.contains("10gPort"),
+            "error should show the class name, got: {err}"
+        );
+    }
+
+    #[test]
+    fn reports_all_offending_names_at_once() {
+        let mut types = BTreeMap::new();
+        types.insert(
+            "dcim.site".to_string(),
+            TypeSchema {
+                key: BTreeMap::from([("name".to_string(), plain_field(FieldType::Slug))]),
+                fields: BTreeMap::from([
+                    ("uid".to_string(), plain_field(FieldType::String)),
+                    ("from".to_string(), plain_field(FieldType::String)),
+                    ("2fa".to_string(), plain_field(FieldType::String)),
+                ]),
+            },
+        );
+        let inventory = Inventory {
+            schema: Schema { types },
+            objects: vec![],
+        };
+        let err = emit_error(&inventory);
+        for name in ["'uid'", "'from'", "'2fa'"] {
+            assert!(err.contains(name), "error should list {name}, got: {err}");
+        }
+    }
+
+    #[test]
+    fn accepts_soft_keyword_field_names() {
+        // `match` and `type` are soft keywords, legal as python identifiers.
+        let dir = tempdir().unwrap();
+        let mut types = BTreeMap::new();
+        types.insert(
+            "dcim.site".to_string(),
+            TypeSchema {
+                key: BTreeMap::from([("name".to_string(), plain_field(FieldType::Slug))]),
+                fields: BTreeMap::from([
+                    ("match".to_string(), plain_field(FieldType::String)),
+                    ("type".to_string(), plain_field(FieldType::String)),
+                ]),
+            },
+        );
+        let inventory = Inventory {
+            schema: Schema { types },
+            objects: vec![],
+        };
+        emit_django_app(dir.path(), &inventory, DjangoEmitOptions::default()).unwrap();
     }
 
     #[test]

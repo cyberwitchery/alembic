@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- django adapter: reject a schema whose field or type names cannot be python identifiers, or whose field names collide with the generated `uid`/`key`/`attrs` model attributes, listing every offender in one error instead of emitting a broken or silently wrong app. a field named `uid` used to override the generated uuid primary key without any error from `manage.py check`; a keyword or leading-digit name emitted python that does not parse
 - conformance runner: write a case's request on its own thread, after the drains start and under the run timeout, so a request larger than the pipe buffer against an adapter that never reads its stdin trips the timeout instead of blocking the runner in `write_all` (or deadlocking outright against a chatty adapter); matches the fix `ProcessAdapter::run` got in #213
 - core: reject an unknown key in a schema block instead of silently discarding it, so a file whose `schema:` is not an inventory schema (`examples/backend-infrahub.yaml`, where it is the infrahub schema-push config) now fails to load instead of validating clean as a schema with zero types
 - engine: a non-canonically written `uid` (uppercase, or uuid's simple/braced/urn forms) no longer loses its source line in validation errors; the uid→line index is keyed by the parsed uid, not the raw token
