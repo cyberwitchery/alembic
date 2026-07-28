@@ -290,6 +290,14 @@ struct MapRun<'a> {
     index: BTreeMap<Uid, &'a Object>,
 }
 
+/// an emitted object plus whether its uid was derived from its key (the
+/// default), which decides whether the key-ref rewrite pass re-derives it
+/// after rewiring the key.
+struct Emitted {
+    object: Object,
+    uid_from_key: bool,
+}
+
 /// transform an ir inventory into another ir inventory under the target schema.
 pub fn compile_map(input: &Inventory, spec: &MapSpec) -> Result<Inventory> {
     let run = MapRun {
@@ -297,7 +305,7 @@ pub fn compile_map(input: &Inventory, spec: &MapSpec) -> Result<Inventory> {
         // source uid -> object, for resolving reference lookups.
         index: input.objects.iter().map(|o| (o.uid, o)).collect(),
     };
-    let mut objects = Vec::new();
+    let mut emitted: Vec<Emitted> = Vec::new();
     // source uid -> emitted uid, used to re-derive ref values in pass 2.
     let mut remap: BTreeMap<Uid, Uid> = BTreeMap::new();
     // source objects a non-passthrough rule matched; passthrough only covers the
@@ -340,7 +348,7 @@ pub fn compile_map(input: &Inventory, spec: &MapSpec) -> Result<Inventory> {
                         vars,
                         &run,
                         remap_source,
-                        &mut objects,
+                        &mut emitted,
                         &mut remap,
                     )?;
                 }
@@ -373,7 +381,7 @@ pub fn compile_map(input: &Inventory, spec: &MapSpec) -> Result<Inventory> {
                 }
                 for (group_key, members) in &groups {
                     let vars = group_vars(group_key, members);
-                    emit_objects(rule, emits, vars, &run, None, &mut objects, &mut remap)?;
+                    emit_objects(rule, emits, vars, &run, None, &mut emitted, &mut remap)?;
                 }
             }
         }
@@ -404,12 +412,15 @@ pub fn compile_map(input: &Inventory, spec: &MapSpec) -> Result<Inventory> {
             let uid = uid_v5(src.type_name.as_str(), &key_string(&src.key));
             remap.insert(src.uid, uid);
             passthrough_types.insert(src.type_name.as_str().to_string());
-            objects.push(Object::new(
-                uid,
-                src.type_name.clone(),
-                src.key.clone(),
-                src.attrs.clone(),
-            )?);
+            emitted.push(Emitted {
+                object: Object::new(
+                    uid,
+                    src.type_name.clone(),
+                    src.key.clone(),
+                    src.attrs.clone(),
+                )?,
+                uid_from_key: true,
+            });
         }
     }
 
@@ -427,6 +438,8 @@ pub fn compile_map(input: &Inventory, spec: &MapSpec) -> Result<Inventory> {
         }
     }
 
+    rewrite_key_refs(&mut emitted, &out_schema, &mut remap)?;
+    let mut objects: Vec<Object> = emitted.into_iter().map(|e| e.object).collect();
     rewrite_refs(&mut objects, &out_schema, &remap);
 
     objects.sort_by_cached_key(|o| (o.type_name.as_str().to_string(), key_string(&o.key)));
@@ -448,7 +461,7 @@ fn emit_objects(
     mut vars: BTreeMap<String, JsonValue>,
     run: &MapRun,
     remap_source: Option<Uid>,
-    objects: &mut Vec<Object>,
+    objects: &mut Vec<Emitted>,
     remap: &mut BTreeMap<Uid, Uid>,
 ) -> Result<()> {
     // resolve reference lookups first, so named uids and emits can use them.
@@ -495,7 +508,10 @@ fn emit_objects(
                 }
             }
         }
-        objects.push(Object::new(uid, type_name, key, attrs)?);
+        objects.push(Emitted {
+            object: Object::new(uid, type_name, key, attrs)?,
+            uid_from_key: emit.uid.is_none(),
+        });
     }
     Ok(())
 }
@@ -619,6 +635,190 @@ fn resolve_uid_spec(spec: &EmitUid, ctx: &RenderCtx, context: &str) -> Result<Ui
             crate::render::derive_v5_uid(&kind, &stable, rule)
         }
     }
+}
+
+/// rewire ref-typed key fields through the remap and re-derive each key-derived
+/// uid from the rewritten key, so `uid == uid_v5(type, key)` holds on the
+/// output key. objects are processed in key-ref dependency order (kahn over key
+/// refs only), so a chain -- an interface keyed by a port keyed by a node --
+/// cascades regardless of rule order in the spec. each re-derivation adds a
+/// stale-uid -> new-uid entry to the remap, and the table is compacted to its
+/// fixpoint afterwards, so both attr refs and other keys pointing at the object
+/// (by source uid or by its stale pass-1 uid) follow with a single lookup in
+/// `rewrite_refs`. a cycle among key-derived key refs has no converging uid
+/// assignment (core validation does not reject it, the planner merely tolerates
+/// ref cycles), so it is reported as an error naming the cycle.
+fn rewrite_key_refs(
+    emitted: &mut [Emitted],
+    schema: &Schema,
+    remap: &mut BTreeMap<Uid, Uid>,
+) -> Result<()> {
+    // the ref-typed key fields per object, per the output schema. key fields
+    // are schema-validated scalar, so `ref` is the only ref-bearing key type
+    // (no list_ref, list, or map in a key).
+    let ref_fields: Vec<Vec<String>> = emitted
+        .iter()
+        .map(|e| match schema.types.get(e.object.type_name.as_str()) {
+            Some(type_schema) => type_schema
+                .key
+                .iter()
+                .filter(|(_, field_schema)| matches!(field_schema.r#type, FieldType::Ref { .. }))
+                .map(|(field, _)| field.clone())
+                .collect(),
+            None => Vec::new(),
+        })
+        .collect();
+    if ref_fields.iter().all(|fields| fields.is_empty()) {
+        return Ok(());
+    }
+
+    // pass-1 uid -> object index; the remap chases from any key ref value into
+    // this table while the target still carries its pass-1 uid.
+    let by_uid: BTreeMap<Uid, usize> = emitted
+        .iter()
+        .enumerate()
+        .map(|(idx, e)| (e.object.uid, idx))
+        .collect();
+
+    // dependency edges over key refs only: i depends on j when a ref-typed key
+    // field of i points at j and j's uid can still change (key-derived and
+    // itself carrying key refs). an explicit uid never changes, so it breaks
+    // any chain running through it.
+    let mut deps: Vec<Vec<usize>> = vec![Vec::new(); emitted.len()];
+    let mut dependents: Vec<Vec<usize>> = vec![Vec::new(); emitted.len()];
+    let mut pending: Vec<usize> = vec![0; emitted.len()];
+    for (i, e) in emitted.iter().enumerate() {
+        for field in &ref_fields[i] {
+            let Some(JsonValue::String(raw)) = e.object.key.get(field) else {
+                continue;
+            };
+            let Ok(value) = Uuid::parse_str(raw) else {
+                continue;
+            };
+            let Some(&j) = by_uid.get(&chase(remap, value)) else {
+                continue;
+            };
+            if emitted[j].uid_from_key && !ref_fields[j].is_empty() {
+                deps[i].push(j);
+                dependents[j].push(i);
+                pending[i] += 1;
+            }
+        }
+    }
+
+    let mut queue: Vec<usize> = (0..emitted.len()).filter(|&i| pending[i] == 0).collect();
+    let mut processed = vec![false; emitted.len()];
+    let mut done = 0;
+    while let Some(i) = queue.pop() {
+        processed[i] = true;
+        done += 1;
+        // rewire the key refs; every dependency is final, so the chase lands
+        // on the final uid.
+        for field in &ref_fields[i] {
+            let Some(value) = emitted[i].object.key.get_mut(field) else {
+                continue;
+            };
+            let JsonValue::String(raw) = value else {
+                continue;
+            };
+            let Ok(old) = Uuid::parse_str(raw) else {
+                continue;
+            };
+            let new = chase(remap, old);
+            if new != old {
+                *value = JsonValue::String(new.to_string());
+            }
+        }
+        // a key-derived uid follows its rewritten key; the stale uid is left in
+        // the remap so anything pointing at it follows too. an explicit uid is
+        // pinned by the rule and stays.
+        if emitted[i].uid_from_key {
+            let old_uid = emitted[i].object.uid;
+            let new_uid = uid_v5(
+                emitted[i].object.type_name.as_str(),
+                &key_string(&emitted[i].object.key),
+            );
+            if new_uid != old_uid {
+                emitted[i].object.uid = new_uid;
+                remap.insert(old_uid, new_uid);
+            }
+        }
+        for &dependent in &dependents[i] {
+            pending[dependent] -= 1;
+            if pending[dependent] == 0 {
+                queue.push(dependent);
+            }
+        }
+    }
+
+    if done < emitted.len() {
+        return Err(key_ref_cycle_error(emitted, &deps, &processed));
+    }
+
+    // compact chains (source uid -> pass-1 uid -> final uid) so the attr
+    // rewrite in `rewrite_refs` stays a single lookup.
+    let compacted: Vec<(Uid, Uid)> = remap
+        .iter()
+        .map(|(&from, &to)| (from, chase(remap, to)))
+        .collect();
+    remap.extend(compacted);
+    Ok(())
+}
+
+/// name the key-ref cycle that stopped the kahn pass: walk unresolved
+/// dependencies from any unprocessed object until one repeats, and report the
+/// closed loop with each member's type and key.
+fn key_ref_cycle_error(
+    emitted: &[Emitted],
+    deps: &[Vec<usize>],
+    processed: &[bool],
+) -> anyhow::Error {
+    let label = |i: usize| {
+        format!(
+            "{}{}",
+            emitted[i].object.type_name,
+            key_string(&emitted[i].object.key)
+        )
+    };
+    let mut path: Vec<usize> = Vec::new();
+    let mut current = match (0..emitted.len()).find(|&i| !processed[i]) {
+        Some(start) => start,
+        // unreachable: the caller only reports a cycle when objects remain.
+        None => return anyhow!("key refs form a cycle"),
+    };
+    loop {
+        if let Some(pos) = path.iter().position(|&seen| seen == current) {
+            let names: Vec<String> = path[pos..].iter().map(|&i| label(i)).collect();
+            return anyhow!(
+                "key refs form a cycle, so no uid assignment can converge: {} -> {}; break it with an explicit `uid:` on one of the emits",
+                names.join(" -> "),
+                names[0]
+            );
+        }
+        path.push(current);
+        // every unprocessed object kept at least one unprocessed dependency,
+        // so the walk always continues until it closes a loop.
+        match deps[current].iter().copied().find(|&j| !processed[j]) {
+            Some(next) => current = next,
+            None => return anyhow!("key refs form a cycle"),
+        }
+    }
+}
+
+/// follow a uid through the remap to its fixpoint. pass 1 fills the table with
+/// source -> emitted entries and the key-ref pass adds stale -> re-derived
+/// entries on top, so a value can need more than one hop. identity entries (an
+/// already-converged mapping of its own output) and the hop cap keep a
+/// pathological table from looping.
+fn chase(remap: &BTreeMap<Uid, Uid>, uid: Uid) -> Uid {
+    let mut current = uid;
+    for _ in 0..=remap.len() {
+        match remap.get(&current) {
+            Some(&next) if next != current => current = next,
+            _ => break,
+        }
+    }
+    current
 }
 
 /// rewrite the references in each object's attrs through the source->target uid
@@ -1015,6 +1215,411 @@ rules:
             b.attrs.get("peers").unwrap(),
             &json!({ "primary": a.uid.to_string() })
         );
+    }
+
+    /// the issue #225 repro: a ref-typed key field is rewired through the
+    /// remap like an attr ref, and the referrer's key-derived uid follows the
+    /// rewritten key, so the output validates instead of dangling.
+    #[test]
+    fn rewires_refs_inside_a_key_and_rederives_the_uid() {
+        let node_src = Uuid::from_u128(1).to_string();
+        let input = input_inventory(json!([
+            { "uid": node_src, "type": "src.node",
+              "key": { "name": "leaf01" }, "attrs": {} },
+            { "uid": Uuid::from_u128(2).to_string(), "type": "src.port",
+              "key": { "device": node_src, "name": "eth0" }, "attrs": {} }
+        ]));
+        let out = compile_map(
+            &input,
+            &spec(
+                r#"
+schema:
+  types:
+    net.node:
+      key:
+        name: { type: slug }
+    net.port:
+      key:
+        device: { type: ref, target: net.node }
+        name: { type: slug }
+rules:
+  - name: nodes
+    match: "src.node"
+    emit:
+      type: net.node
+      key:
+        name: "${key.name}"
+  - name: ports
+    match: "src.port"
+    emit:
+      type: net.port
+      key:
+        device: "${key.device}"
+        name: "${key.name}"
+"#,
+            ),
+        )
+        .unwrap();
+
+        let node = out
+            .objects
+            .iter()
+            .find(|o| o.type_name.as_str() == "net.node")
+            .unwrap();
+        let port = out
+            .objects
+            .iter()
+            .find(|o| o.type_name.as_str() == "net.port")
+            .unwrap();
+        // the key ref follows the node's new uid, not the source one.
+        assert_eq!(
+            port.key.get("device").unwrap(),
+            &json!(node.uid.to_string())
+        );
+        assert_ne!(port.key.get("device").unwrap(), &json!(node_src));
+        // the port's uid is derived from the *rewritten* key.
+        assert_eq!(port.uid, uid_v5("net.port", &key_string(&port.key)));
+    }
+
+    /// the two-hop chain spec used by the rule-order test: iface keyed by
+    /// port keyed by node, with the three rules in the given order.
+    fn chain_spec(rule_order: [&str; 3]) -> String {
+        let rule = |name: &str| match name {
+            "nodes" => {
+                r#"
+  - name: nodes
+    match: "src.node"
+    emit:
+      type: net.node
+      key:
+        name: "${key.name}"
+"#
+            }
+            "ports" => {
+                r#"
+  - name: ports
+    match: "src.port"
+    emit:
+      type: net.port
+      key:
+        device: "${key.device}"
+        name: "${key.name}"
+"#
+            }
+            _ => {
+                r#"
+  - name: ifaces
+    match: "src.iface"
+    emit:
+      type: net.iface
+      key:
+        port: "${key.port}"
+        name: "${key.name}"
+"#
+            }
+        };
+        format!(
+            r#"
+schema:
+  types:
+    net.node:
+      key:
+        name: {{ type: slug }}
+    net.port:
+      key:
+        device: {{ type: ref, target: net.node }}
+        name: {{ type: slug }}
+    net.iface:
+      key:
+        port: {{ type: ref, target: net.port }}
+        name: {{ type: slug }}
+rules:{}{}{}"#,
+            rule(rule_order[0]),
+            rule(rule_order[1]),
+            rule(rule_order[2])
+        )
+    }
+
+    /// remapping the node cascades through the port's re-derived uid into the
+    /// interface's key and uid, and the final rewrite pass is ordered by key
+    /// refs, not by rule order in the spec.
+    #[test]
+    fn key_ref_chains_cascade_in_both_rule_orders() {
+        let node_src = Uuid::from_u128(1).to_string();
+        let port_src = Uuid::from_u128(2).to_string();
+        let input = input_inventory(json!([
+            { "uid": node_src, "type": "src.node",
+              "key": { "name": "leaf01" }, "attrs": {} },
+            { "uid": port_src, "type": "src.port",
+              "key": { "device": node_src, "name": "eth0" }, "attrs": {} },
+            { "uid": Uuid::from_u128(3).to_string(), "type": "src.iface",
+              "key": { "port": port_src, "name": "vlan10" }, "attrs": {} }
+        ]));
+        let forward =
+            compile_map(&input, &spec(&chain_spec(["nodes", "ports", "ifaces"]))).unwrap();
+        let reverse =
+            compile_map(&input, &spec(&chain_spec(["ifaces", "ports", "nodes"]))).unwrap();
+        assert_eq!(forward.objects, reverse.objects);
+
+        let by_type = |type_name: &str| {
+            forward
+                .objects
+                .iter()
+                .find(|o| o.type_name.as_str() == type_name)
+                .unwrap()
+        };
+        let node = by_type("net.node");
+        let port = by_type("net.port");
+        let iface = by_type("net.iface");
+        assert_eq!(
+            port.key.get("device").unwrap(),
+            &json!(node.uid.to_string())
+        );
+        assert_eq!(port.uid, uid_v5("net.port", &key_string(&port.key)));
+        assert_eq!(iface.key.get("port").unwrap(), &json!(port.uid.to_string()));
+        assert_eq!(iface.uid, uid_v5("net.iface", &key_string(&iface.key)));
+    }
+
+    /// an explicit `uid:` is pinned by the rule: the ref inside the key is
+    /// still rewired, but the uid is not re-derived from the rewritten key.
+    #[test]
+    fn explicit_uid_survives_a_key_rewire() {
+        let node_src = Uuid::from_u128(1).to_string();
+        let pinned = Uuid::from_u128(77);
+        let input = input_inventory(json!([
+            { "uid": node_src, "type": "src.node",
+              "key": { "name": "leaf01" }, "attrs": {} },
+            { "uid": Uuid::from_u128(2).to_string(), "type": "src.port",
+              "key": { "device": node_src, "name": "eth0" }, "attrs": {} }
+        ]));
+        let out = compile_map(
+            &input,
+            &spec(&format!(
+                r#"
+schema:
+  types:
+    net.node:
+      key:
+        name: {{ type: slug }}
+    net.port:
+      key:
+        device: {{ type: ref, target: net.node }}
+        name: {{ type: slug }}
+rules:
+  - name: nodes
+    match: "src.node"
+    emit:
+      type: net.node
+      key:
+        name: "${{key.name}}"
+  - name: ports
+    match: "src.port"
+    emit:
+      type: net.port
+      key:
+        device: "${{key.device}}"
+        name: "${{key.name}}"
+      uid: "{pinned}"
+"#
+            )),
+        )
+        .unwrap();
+
+        let node = out
+            .objects
+            .iter()
+            .find(|o| o.type_name.as_str() == "net.node")
+            .unwrap();
+        let port = out
+            .objects
+            .iter()
+            .find(|o| o.type_name.as_str() == "net.port")
+            .unwrap();
+        assert_eq!(
+            port.key.get("device").unwrap(),
+            &json!(node.uid.to_string())
+        );
+        assert_eq!(port.uid, pinned);
+    }
+
+    /// an attr ref elsewhere pointing at an object whose uid was re-derived
+    /// from its rewritten key follows the final uid, not the stale pass-1 one.
+    #[test]
+    fn attr_refs_follow_a_rederived_key_uid() {
+        let node_src = Uuid::from_u128(1).to_string();
+        let port_src = Uuid::from_u128(2).to_string();
+        let input = input_inventory(json!([
+            { "uid": node_src, "type": "src.node",
+              "key": { "name": "leaf01" }, "attrs": {} },
+            { "uid": port_src, "type": "src.port",
+              "key": { "device": node_src, "name": "eth0" }, "attrs": {} },
+            { "uid": Uuid::from_u128(3).to_string(), "type": "src.link",
+              "key": { "name": "uplink" }, "attrs": { "port": port_src } }
+        ]));
+        let out = compile_map(
+            &input,
+            &spec(
+                r#"
+schema:
+  types:
+    net.node:
+      key:
+        name: { type: slug }
+    net.port:
+      key:
+        device: { type: ref, target: net.node }
+        name: { type: slug }
+    net.link:
+      key:
+        name: { type: slug }
+      fields:
+        port: { type: ref, target: net.port }
+rules:
+  - name: nodes
+    match: "src.node"
+    emit:
+      type: net.node
+      key:
+        name: "${key.name}"
+  - name: ports
+    match: "src.port"
+    emit:
+      type: net.port
+      key:
+        device: "${key.device}"
+        name: "${key.name}"
+  - name: links
+    match: "src.link"
+    emit:
+      type: net.link
+      key:
+        name: "${key.name}"
+      attrs:
+        port: "${attrs.port}"
+"#,
+            ),
+        )
+        .unwrap();
+
+        let port = out
+            .objects
+            .iter()
+            .find(|o| o.type_name.as_str() == "net.port")
+            .unwrap();
+        let link = out
+            .objects
+            .iter()
+            .find(|o| o.type_name.as_str() == "net.link")
+            .unwrap();
+        assert_eq!(
+            link.attrs.get("port").unwrap(),
+            &json!(port.uid.to_string())
+        );
+    }
+
+    /// mapping the output of a key-rewiring map through identity rules is a
+    /// no-op: keys, uids, and refs are already at their fixpoint.
+    #[test]
+    fn mapping_the_output_again_is_a_fixpoint() {
+        let node_src = Uuid::from_u128(1).to_string();
+        let input = input_inventory(json!([
+            { "uid": node_src, "type": "src.node",
+              "key": { "name": "leaf01" }, "attrs": {} },
+            { "uid": Uuid::from_u128(2).to_string(), "type": "src.port",
+              "key": { "device": node_src, "name": "eth0" }, "attrs": {} }
+        ]));
+        let reshape = r#"
+schema:
+  types:
+    net.node:
+      key:
+        name: { type: slug }
+    net.port:
+      key:
+        device: { type: ref, target: net.node }
+        name: { type: slug }
+rules:
+  - name: nodes
+    match: "src.node"
+    emit:
+      type: net.node
+      key:
+        name: "${key.name}"
+  - name: ports
+    match: "src.port"
+    emit:
+      type: net.port
+      key:
+        device: "${key.device}"
+        name: "${key.name}"
+"#;
+        let identity = r#"
+schema:
+  types:
+    net.node:
+      key:
+        name: { type: slug }
+    net.port:
+      key:
+        device: { type: ref, target: net.node }
+        name: { type: slug }
+rules:
+  - name: nodes
+    match: "net.node"
+    emit:
+      type: net.node
+      key:
+        name: "${key.name}"
+  - name: ports
+    match: "net.port"
+    emit:
+      type: net.port
+      key:
+        device: "${key.device}"
+        name: "${key.name}"
+"#;
+        let first = compile_map(&input, &spec(reshape)).unwrap();
+        let second = compile_map(&first, &spec(identity)).unwrap();
+        assert_eq!(first.objects, second.objects);
+    }
+
+    /// a cycle among key-derived key refs has no converging uid assignment.
+    /// core validation does not reject it (the planner merely tolerates ref
+    /// cycles), so map reports it as an error naming the cycle.
+    #[test]
+    fn key_ref_cycle_is_a_clear_error() {
+        let a_src = Uuid::from_u128(1).to_string();
+        let b_src = Uuid::from_u128(2).to_string();
+        let input = input_inventory(json!([
+            { "uid": a_src, "type": "src.thing",
+              "key": { "peer": b_src, "name": "a" }, "attrs": {} },
+            { "uid": b_src, "type": "src.thing",
+              "key": { "peer": a_src, "name": "b" }, "attrs": {} }
+        ]));
+        let err = compile_map(
+            &input,
+            &spec(
+                r#"
+schema:
+  types:
+    net.thing:
+      key:
+        peer: { type: ref, target: net.thing }
+        name: { type: slug }
+rules:
+  - name: things
+    match: "src.thing"
+    emit:
+      type: net.thing
+      key:
+        peer: "${key.peer}"
+        name: "${key.name}"
+"#,
+            ),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("key refs form a cycle"), "{err:#}");
+        assert!(err.to_string().contains("net.thing"), "{err:#}");
     }
 
     #[test]
