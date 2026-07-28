@@ -117,8 +117,7 @@ pub(crate) fn bootstrap_state_from_observed(
     state: &mut StateStore,
     desired: &[Object],
     observed: &ObservedState,
-) -> bool {
-    let mut updated = false;
+) {
     for object in desired {
         if state
             .backend_id(object.type_name.clone(), object.uid)
@@ -130,16 +129,11 @@ pub(crate) fn bootstrap_state_from_observed(
             .by_key
             .get(&(object.type_name.clone(), key_string(&object.key)))
         {
-            if obs.type_name != object.type_name {
-                continue;
-            }
             if let Some(backend_id) = &obs.backend_id {
                 state.set_backend_id(object.type_name.clone(), object.uid, backend_id.clone());
-                updated = true;
             }
         }
     }
-    updated
 }
 
 /// apply a plan and update the state store. full adapters provision schema
