@@ -164,10 +164,20 @@ response:
     "created_fields": ["field1"],
     "created_tags": [],
     "created_object_types": ["dcim.site"],
-    "created_object_fields": ["dcim.site.name"]
+    "created_object_fields": ["dcim.site.name"],
+    "deprecated_object_types": [],
+    "deprecated_object_fields": [],
+    "deleted_object_types": [],
+    "deleted_object_fields": []
   }
 }
 ```
+
+the report has eight keys, all optional and defaulting to an empty list, so an
+adapter that only ever creates can send the four `created_*` keys alone. all eight
+are counted back to the operator on a provisioning run (`provision: 1 object types
+created, 1 object fields deleted`). the two `deleted_*` lists are also read by the
+host: see the gate under `preview_schema`.
 
 ### preview_schema
 
@@ -176,6 +186,18 @@ without writing anything. return the same `ProvisionReport` shape `ensure_schema
 would, or a `null` result if the adapter cannot preview (which the host reports as
 `schema preview: unavailable for this backend`). answer it either way: leaving it to
 the unknown-method branch fails the built-in `protocol/preview-schema-empty` check.
+
+this report is also the destructive-provisioning gate. before `plan --provision` or
+`apply` calls `ensure_schema`, the host previews and refuses the run with
+`provisioning would delete schema (N type(s), M field(s)); re-run with --allow-delete`
+when `deleted_object_types` or `deleted_object_fields` is non-empty. schema deletes
+cascade to their objects on the backend, so an adapter that drops a type without
+listing it here takes the objects with it and never prompts. list what you would
+delete, even if the same call also creates.
+
+a `null` result skips the gate rather than failing it, so an adapter that cannot
+preview provisions unchecked. that is deliberate, and it is the trade for not
+implementing the method: if your adapter can delete schema, preview it.
 
 request:
 
@@ -188,16 +210,16 @@ request:
 }
 ```
 
-response (a report, or `"result": null` when preview is unsupported):
+response (a report, or `"result": null` when preview is unsupported). this one
+would provision one new type and drop one field, so it trips the gate unless the
+operator passed `--allow-delete`, and it omits the six keys that are empty:
 
 ```json
 {
   "ok": true,
   "result": {
-    "created_fields": [],
-    "created_tags": [],
     "created_object_types": ["dcim.site"],
-    "created_object_fields": []
+    "deleted_object_fields": ["dcim.rack.legacy_id"]
   }
 }
 ```
