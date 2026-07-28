@@ -37,6 +37,7 @@ token: nautobot_xxx_replace_me
 - observe flattens `_custom_field_data` and `tags` into `attrs` for diffing and import.
 - on apply, custom fields and tags are only sent when the object type advertises support
   via the `features` set.
+- provisioning creates missing custom fields on apply; the schema preview reports them.
 
 ## custom objects
 

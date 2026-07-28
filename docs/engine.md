@@ -9,7 +9,7 @@ the engine is responsible for loading, validating, planning, and applying change
 3) observe backend state via adapter (default scope: desired + schema types)
 4) bootstrap state mappings by key when missing
 5) plan deterministic operations
-6) provision schema primitives on apply (custom fields/tags/custom objects where supported)
+6) provision schema primitives on apply (custom fields/custom objects where supported)
 7) apply operations in dependency order
 8) optionally import canonical inventory from backend state
 
