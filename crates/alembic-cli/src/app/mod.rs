@@ -406,15 +406,10 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             let inventory = load_inventory(&file)?;
             let plugins = search_for_plugins(&config);
             let backend = create_backend(&plugins, backend.as_deref(), backend_config)?;
-            let state = load_state().await?;
             let types: Vec<TypeName> = inventory.schema.types.keys().map(TypeName::new).collect();
-            let report = alembic_engine::import_inventory(
-                backend.observer()?,
-                &inventory.schema,
-                &types,
-                &state,
-            )
-            .await?;
+            let report =
+                alembic_engine::import_inventory(backend.observer()?, &inventory.schema, &types)
+                    .await?;
             if let Some(msg) = warn_misleading_output_extension(&output) {
                 eprintln!("{msg}");
             }

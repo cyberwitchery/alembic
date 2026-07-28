@@ -210,6 +210,177 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn import_resolves_refs_in_canonical_uid_space() {
+        let server = MockServer::start();
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
+
+        let _object_types = mock_list(
+            &server,
+            "/api/core/object-types/",
+            json!([
+                {
+                    "app_label": "dcim",
+                    "model": "device",
+                    "rest_api_endpoint": "/api/dcim/devices/",
+                    "features": ["custom-fields", "tags"]
+                },
+                {
+                    "app_label": "dcim",
+                    "model": "site",
+                    "rest_api_endpoint": "/api/dcim/sites/",
+                    "features": ["custom-fields", "tags"]
+                }
+            ]),
+        );
+        let _devices = mock_list(
+            &server,
+            "/api/dcim/devices/",
+            json!([
+                {
+                    "id": 2,
+                    "name": "leaf01",
+                    "site": {
+                        "id": 1,
+                        "url": "https://netbox.example.com/api/dcim/sites/1/",
+                        "name": "FRA1",
+                        "slug": "fra1"
+                    }
+                }
+            ]),
+        );
+        let _sites = mock_list(
+            &server,
+            "/api/dcim/sites/",
+            json!([{ "id": 1, "name": "FRA1", "slug": "fra1" }]),
+        );
+        let _custom_fields = server.mock(|when, then| {
+            when.method(GET).path("/api/extras/custom-fields/");
+            then.status(200).json_body(page(json!([])));
+        });
+        let _tags = server.mock(|when, then| {
+            when.method(GET)
+                .path("/api/extras/tags/")
+                .query_param("limit", "200")
+                .query_param("offset", "0");
+            then.status(200).json_body(page(json!([])));
+        });
+
+        let schema = alembic_core::Schema {
+            types: std::collections::BTreeMap::from([
+                (
+                    "dcim.device".to_string(),
+                    alembic_core::TypeSchema {
+                        key: std::collections::BTreeMap::from([(
+                            "name".to_string(),
+                            alembic_core::FieldSchema {
+                                r#type: alembic_core::FieldType::String,
+                                required: true,
+                                nullable: false,
+                                description: None,
+                                format: None,
+                                pattern: None,
+                            },
+                        )]),
+                        fields: std::collections::BTreeMap::from([
+                            (
+                                "name".to_string(),
+                                alembic_core::FieldSchema {
+                                    r#type: alembic_core::FieldType::String,
+                                    required: true,
+                                    nullable: false,
+                                    description: None,
+                                    format: None,
+                                    pattern: None,
+                                },
+                            ),
+                            (
+                                "site".to_string(),
+                                alembic_core::FieldSchema {
+                                    r#type: alembic_core::FieldType::Ref {
+                                        target: "dcim.site".to_string(),
+                                    },
+                                    required: true,
+                                    nullable: false,
+                                    description: None,
+                                    format: None,
+                                    pattern: None,
+                                },
+                            ),
+                        ]),
+                    },
+                ),
+                (
+                    "dcim.site".to_string(),
+                    alembic_core::TypeSchema {
+                        key: std::collections::BTreeMap::from([(
+                            "name".to_string(),
+                            alembic_core::FieldSchema {
+                                r#type: alembic_core::FieldType::String,
+                                required: true,
+                                nullable: false,
+                                description: None,
+                                format: None,
+                                pattern: None,
+                            },
+                        )]),
+                        fields: std::collections::BTreeMap::from([
+                            (
+                                "name".to_string(),
+                                alembic_core::FieldSchema {
+                                    r#type: alembic_core::FieldType::String,
+                                    required: true,
+                                    nullable: false,
+                                    description: None,
+                                    format: None,
+                                    pattern: None,
+                                },
+                            ),
+                            (
+                                "slug".to_string(),
+                                alembic_core::FieldSchema {
+                                    r#type: alembic_core::FieldType::String,
+                                    required: false,
+                                    nullable: true,
+                                    description: None,
+                                    format: None,
+                                    pattern: None,
+                                },
+                            ),
+                        ]),
+                    },
+                ),
+            ]),
+        };
+
+        let report = alembic_engine::import_inventory(&adapter, &schema, &[])
+            .await
+            .unwrap();
+
+        let validation = alembic_core::validate_inventory(&report.inventory);
+        assert!(
+            validation.errors.is_empty(),
+            "imported inventory must validate: {:?}",
+            validation.errors
+        );
+
+        // the site ref resolves to the site's canonical uid, the same one the
+        // imported site object carries. observe alone would state-map it (see
+        // observe_maps_nested_refs_to_uids) and the inventory would dangle.
+        let device = report
+            .inventory
+            .objects
+            .iter()
+            .find(|object| object.type_name.as_str() == "dcim.device")
+            .unwrap();
+        let canonical_site =
+            alembic_core::uid_v5("dcim.site", &key_string(&key("name", json!("FRA1")))).to_string();
+        assert_eq!(
+            device.attrs.get("site").and_then(|v| v.as_str()),
+            Some(canonical_site.as_str())
+        );
+    }
+
+    #[tokio::test]
     async fn apply_orders_creates_by_dependency() {
         let server = MockServer::start();
         let dir = tempdir().unwrap();

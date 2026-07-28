@@ -1,6 +1,6 @@
 //! import of canonical inventory from backend state.
 
-use crate::state::StateStore;
+use crate::state::{StateData, StateStore};
 use crate::types::Observer;
 use alembic_core::{key_string, uid_v5, Inventory, JsonMap, Object, Schema, TypeName};
 use anyhow::Result;
@@ -11,13 +11,18 @@ pub struct ImportReport {
     pub inventory: Inventory,
 }
 
+/// observe a backend into a canonical inventory.
+///
+/// import derives canonical uids, so it reads against an empty state store: that
+/// leaves every state-first ref resolver on its canonical fallback, and objects
+/// and their refs land in the same uid space.
 pub async fn import_inventory(
     adapter: &(dyn Observer + '_),
     schema: &Schema,
     types: &[TypeName],
-    state: &StateStore,
 ) -> Result<ImportReport> {
-    let observed = adapter.read(schema, types, state).await?;
+    let stateless = StateStore::new(None, StateData::default());
+    let observed = adapter.read(schema, types, &stateless).await?;
 
     let mut objects: Vec<_> = observed.by_key.into_values().collect();
     objects.sort_by_cached_key(|o| (o.type_name.as_str().to_string(), key_string(&o.key)));
@@ -92,6 +97,20 @@ mod tests {
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
 
+    // callsite interest is global in tracing, and an import running with no
+    // subscriber caches `never` for project_attrs' warning. serialize the imports
+    // so the log-capturing test can rebuild that cache under its own subscriber.
+    static IMPORT_LOCK: Mutex<()> = Mutex::new(());
+
+    fn import_unlocked(adapter: &dyn Observer, schema: &Schema) -> ImportReport {
+        block_on(import_inventory(adapter, schema, &[])).unwrap()
+    }
+
+    fn run_import(adapter: &dyn Observer, schema: &Schema) -> ImportReport {
+        let _guard = IMPORT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        import_unlocked(adapter, schema)
+    }
+
     struct MockAdapter {
         observed: ObservedState,
     }
@@ -104,6 +123,28 @@ mod tests {
             _types: &[TypeName],
             _state: &crate::state::StateStore,
         ) -> anyhow::Result<ObservedState> {
+            Ok(self.observed.clone())
+        }
+    }
+
+    type Mappings = BTreeMap<TypeName, BTreeMap<alembic_core::Uid, BackendId>>;
+
+    /// records the state store it was read with, so a test can assert import
+    /// observes statelessly.
+    struct RecordingAdapter {
+        observed: ObservedState,
+        seen: Arc<Mutex<Option<Mappings>>>,
+    }
+
+    #[async_trait]
+    impl Observer for RecordingAdapter {
+        async fn read(
+            &self,
+            _schema: &Schema,
+            _types: &[TypeName],
+            state: &crate::state::StateStore,
+        ) -> anyhow::Result<ObservedState> {
+            *self.seen.lock().unwrap() = Some(state.all_mappings().clone());
             Ok(self.observed.clone())
         }
     }
@@ -183,13 +224,31 @@ mod tests {
             observed: observed_state().unwrap(),
         };
         let schema = schema_for_observed(&adapter.observed);
-        let state = crate::state::StateStore::new(None, crate::state::StateData::default());
-        let report = block_on(import_inventory(&adapter, &schema, &[], &state)).unwrap();
+        let report = run_import(&adapter, &schema);
         assert_eq!(report.inventory.objects.len(), 1);
         let object = &report.inventory.objects[0];
         let key = key_str("site=fra1");
         assert_eq!(object.key, key);
         assert_eq!(object.uid, uid_v5("dcim.site", &key_string(&key)));
+    }
+
+    #[test]
+    fn import_observes_with_an_empty_state() {
+        // the guard: state-first ref resolvers must fall back to canonical uids,
+        // or the objects (always canonical) and their refs land in different spaces.
+        let seen = Arc::new(Mutex::new(None));
+        let adapter = RecordingAdapter {
+            observed: observed_state().unwrap(),
+            seen: Arc::clone(&seen),
+        };
+        let schema = schema_for_observed(&adapter.observed);
+        run_import(&adapter, &schema);
+
+        let mappings = seen.lock().unwrap().clone().expect("adapter was read");
+        assert!(
+            mappings.is_empty(),
+            "import must observe with no state mappings: {mappings:?}"
+        );
     }
 
     fn field_schema(required: bool, nullable: bool) -> FieldSchema {
@@ -240,9 +299,7 @@ mod tests {
     }
 
     fn import(observed: ObservedState, schema: &Schema) -> ImportReport {
-        let adapter = MockAdapter { observed };
-        let state = crate::state::StateStore::new(None, crate::state::StateData::default());
-        block_on(import_inventory(&adapter, schema, &[], &state)).unwrap()
+        run_import(&MockAdapter { observed }, schema)
     }
 
     #[test]
@@ -403,7 +460,11 @@ mod tests {
             .with_writer(buffer.clone())
             .with_ansi(false)
             .finish();
-        let report = tracing::subscriber::with_default(subscriber, || import(observed, &schema));
+        let _guard = IMPORT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let report = tracing::subscriber::with_default(subscriber, || {
+            tracing::callsite::rebuild_interest_cache();
+            import_unlocked(&MockAdapter { observed }, &schema)
+        });
 
         assert_eq!(report.inventory.objects.len(), 3);
         assert_eq!(
