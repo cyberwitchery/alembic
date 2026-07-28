@@ -1,9 +1,9 @@
 //! adapter registry and config loading for alembic.
 
 use alembic_engine::{
-    Adapter, ApplyReport, Backend, Emitter, ExternalEnvelopeRef, ExternalObject,
-    ExternalRequestRef, ExternalResponse, ObservedObject, ObservedState, Observer, Op,
-    ProvisionReport, StateData, StateStore, EXTERNAL_PROTOCOL_VERSION,
+    Adapter, ApplyReport, Backend, Emitter, ExternalCapabilities, ExternalEnvelopeRef,
+    ExternalObject, ExternalRequestRef, ExternalResponse, ExternalRole, ObservedObject,
+    ObservedState, Observer, Op, ProvisionReport, StateData, StateStore, EXTERNAL_PROTOCOL_VERSION,
 };
 use anyhow::{anyhow, Context, Result};
 use serde::{de::DeserializeOwned, Deserialize};
@@ -261,7 +261,16 @@ impl AdapterConfig {
                 alembic_adapter_django::DjangoAdapter::new(cfg),
             ))),
             AdapterConfig::External(cfg) => {
-                Ok(Backend::Adapter(Box::new(ProcessAdapter::new(cfg)?)))
+                let adapter = ProcessAdapter::new(cfg)?;
+                // box the adapter into the backend variant matching its declared
+                // role, so an emit-only external adapter gets the same handling a
+                // built-in emitter like django gets (all-creates plan, up-front
+                // import error) instead of silently observing nothing.
+                Ok(match adapter.probe_role() {
+                    ExternalRole::Observer => Backend::Observer(Box::new(adapter)),
+                    ExternalRole::Emitter => Backend::Emitter(Box::new(adapter)),
+                    ExternalRole::Adapter => Backend::Adapter(Box::new(adapter)),
+                })
             }
         }
     }
@@ -340,6 +349,32 @@ impl ProcessAdapter {
             Some(value) => serde_json::from_value(value)
                 .map(Some)
                 .context("deserialize external adapter result"),
+        }
+    }
+
+    /// ask the adapter which role it implements, once at construction. any probe
+    /// failure (an old adapter answering unknown-method, a crash, a garbage
+    /// payload) defaults to the full read+write role, the pre-capabilities
+    /// behavior, so the probe can never fail construction.
+    fn probe_role(&self) -> ExternalRole {
+        // build() is sync but may run inside the cli's tokio runtime, where
+        // blocking on a future in place is not allowed; a scoped thread with its
+        // own small runtime works from both sync and async callers.
+        let probed = std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    let runtime = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()?;
+                    runtime.block_on(
+                        self.call::<ExternalCapabilities>(ExternalRequestRef::Capabilities),
+                    )
+                })
+                .join()
+        });
+        match probed {
+            Ok(Ok(capabilities)) => capabilities.role,
+            Ok(Err(_)) | Err(_) => ExternalRole::Adapter,
         }
     }
 
@@ -572,7 +607,7 @@ mod tests {
     #[cfg(unix)]
     use super::ProcessAdapter;
     use alembic_core::{JsonMap, Key, Object, Schema, TypeName, Uid};
-    use alembic_engine::{BackendId, Op, StateData, StateStore};
+    use alembic_engine::{Backend, BackendId, Op, StateData, StateStore};
     use serde_json::json;
     use std::collections::BTreeMap;
     use std::fs;
@@ -772,6 +807,124 @@ fi
         assert!(provision
             .created_object_types
             .contains(&"dcim.site".to_string()));
+    }
+
+    /// write a script to `name` in `dir` and build an external backend around it.
+    /// callers must hold the spawn lock: build() probes the adapter's capabilities,
+    /// which spawns the script.
+    fn build_external(dir: &Path, name: &str, script: &str) -> Backend {
+        let script_path = dir.join(name);
+        write_script(&script_path, script);
+        AdapterConfig::External(ExternalConfig {
+            command: Some(script_path.to_string_lossy().to_string()),
+            args: Vec::new(),
+            working_dir: None,
+            env: BTreeMap::new(),
+            timeout_seconds: Some(5),
+            setup: serde_yaml::Value::default(),
+        })
+        .build()
+        .unwrap()
+    }
+
+    /// a script that answers capabilities with `response` and errors on all else.
+    fn capabilities_script(response: &str) -> String {
+        format!(
+            r#"#!/usr/bin/env bash
+req="$(cat)"
+case "$req" in
+  *'"method":"capabilities"'*) printf '{response}' ;;
+  *) printf '{{"ok":false,"error":"unsupported"}}' ;;
+esac
+"#
+        )
+    }
+
+    #[tokio::test]
+    async fn external_capabilities_role_selects_the_backend_variant() {
+        let _spawn = spawn_lock().lock().await;
+        let dir = tempdir().unwrap();
+
+        let observer = build_external(
+            dir.path(),
+            "observer.sh",
+            &capabilities_script(r#"{"ok":true,"result":{"role":"observer"}}"#),
+        );
+        assert!(matches!(observer, Backend::Observer(_)));
+
+        let emitter = build_external(
+            dir.path(),
+            "emitter.sh",
+            &capabilities_script(r#"{"ok":true,"result":{"role":"emitter"}}"#),
+        );
+        assert!(matches!(emitter, Backend::Emitter(_)));
+
+        let adapter = build_external(
+            dir.path(),
+            "adapter.sh",
+            &capabilities_script(r#"{"ok":true,"result":{"role":"adapter"}}"#),
+        );
+        assert!(matches!(adapter, Backend::Adapter(_)));
+    }
+
+    #[tokio::test]
+    async fn external_capabilities_probe_failure_defaults_to_adapter() {
+        let _spawn = spawn_lock().lock().await;
+        let dir = tempdir().unwrap();
+
+        // an old adapter answering unknown-method, a garbage role, a non-json
+        // answer, and a crash all default to the full read+write role; the probe
+        // never fails construction.
+        let scripts = [
+            (
+                "old.sh",
+                capabilities_script(r#"{"ok":false,"error":"invalid request: unknown method"}"#),
+            ),
+            (
+                "garbage.sh",
+                capabilities_script(r#"{"ok":true,"result":{"role":"frobnicator"}}"#),
+            ),
+            (
+                "nonjson.sh",
+                "#!/usr/bin/env bash\ncat >/dev/null\nprintf 'not json'\n".to_string(),
+            ),
+            (
+                "crash.sh",
+                "#!/usr/bin/env bash\ncat >/dev/null\nexit 1\n".to_string(),
+            ),
+        ];
+        for (name, script) in scripts {
+            let backend = build_external(dir.path(), name, &script);
+            assert!(
+                matches!(backend, Backend::Adapter(_)),
+                "{name} did not default to the adapter role"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn external_emitter_errors_on_observe_like_django() {
+        let _spawn = spawn_lock().lock().await;
+        let dir = tempdir().unwrap();
+        let backend = build_external(
+            dir.path(),
+            "emit-only.sh",
+            &capabilities_script(r#"{"ok":true,"result":{"role":"emitter"}}"#),
+        );
+
+        // plan and import observe through Backend::observer(); a declared emitter
+        // now gets the same up-front error a built-in emitter like django gets,
+        // instead of stubbing an empty read that silently observes nothing.
+        let Err(err) = backend.observer() else {
+            panic!("a declared emitter must not observe");
+        };
+        assert!(
+            err.to_string()
+                .contains("backend is write-only; it cannot observe state"),
+            "unexpected observer error: {err}"
+        );
+        // the write side stays reachable.
+        assert!(backend.emitter().is_ok());
     }
 
     #[cfg(unix)]

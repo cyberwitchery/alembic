@@ -51,9 +51,9 @@ fn forked_adapter_does_not_outlast_the_timeout() {
     // `sleep 30 & wait`: the shell backgrounds a sleep that inherits stdout, then
     // waits on it. killing the shell at the timeout orphans the sleep, which keeps
     // the pipe open. the runner must not block reading it until the orphan exits
-    // (which would take ~30s a check); the bounded drain caps that. each check is
-    // ~timeout + a grace, so four stay comfortably under this bound, while the
-    // pre-fix behavior was ~120s.
+    // (which would take ~30s a check); the bounded drain caps that. each check
+    // (plus the capabilities probe) is ~timeout + a grace, so seven runs stay
+    // under this bound, while the pre-fix behavior was ~120s.
     let start = Instant::now();
     let outcomes = run_builtin(&sh("sleep 30 & wait"), Duration::from_millis(300));
     assert!(outcomes.iter().all(|o| !o.passed()));
@@ -217,6 +217,58 @@ fn rejects_an_always_erroring_adapter() {
     assert!(find(&outcomes, "protocol/invalid-json").passed());
     assert!(find(&outcomes, "protocol/version-mismatch").passed());
     assert!(find(&outcomes, "protocol/unknown-method").passed());
+    // answering capabilities with a structured error is conformant (an adapter
+    // predating the method); it just means the default read+write role, which is
+    // exactly why the erroring read must still fail above.
+    assert!(find(&outcomes, "protocol/capabilities").passed());
+}
+
+#[test]
+fn declared_emitter_with_erroring_read_passes() {
+    // the emit-only shape from issue #117: the adapter declares the emitter role
+    // and errors on read. pre-capabilities it had to stub read() -> [] to pass;
+    // now the runner skips the empty read and probes liveness with an empty
+    // write instead.
+    let script = r#"req=$(cat); case "$req" in
+      *'"method":"capabilities"'*) printf '{"ok":true,"result":{"role":"emitter"}}' ;;
+      *'"method":"write"'*) printf '{"ok":true,"result":{"applied":[]}}' ;;
+      *'"method":"preview_schema"'*) printf '{"ok":true,"result":null}' ;;
+      *) printf '{"ok":false,"error":"read is not supported"}' ;;
+    esac"#;
+    let outcomes = run_builtin(&sh(script), TIMEOUT);
+    for outcome in &outcomes {
+        assert!(
+            outcome.passed(),
+            "{} failed: {:?}",
+            outcome.name,
+            outcome.failure
+        );
+    }
+    // the liveness check ran against a method the adapter claims to implement.
+    assert!(outcomes.iter().any(|o| o.name == "protocol/write-empty"));
+    assert!(!outcomes.iter().any(|o| o.name == "protocol/read-empty"));
+}
+
+#[test]
+fn garbage_capabilities_fails_and_defaults_to_adapter() {
+    // a well-formed envelope carrying a nonsense role fails the capabilities
+    // check (unlike the conformant unknown-method answer), and the runner still
+    // falls back to the default read+write role for the remaining checks.
+    let script = r#"req=$(cat); case "$req" in
+      *'"method":"capabilities"'*) printf '{"ok":true,"result":{"role":"frobnicator"}}' ;;
+      *'"method":"read"'*) printf '{"ok":true,"result":[]}' ;;
+      *) printf '{"ok":false,"error":"unsupported"}' ;;
+    esac"#;
+    let outcomes = run_builtin(&sh(script), TIMEOUT);
+    let capabilities = find(&outcomes, "protocol/capabilities");
+    assert!(!capabilities.passed());
+    assert!(
+        message(capabilities).contains("bad capabilities result"),
+        "{}",
+        message(capabilities)
+    );
+    // default role: the empty read still runs (and passes here).
+    assert!(find(&outcomes, "protocol/read-empty").passed());
 }
 
 #[test]
@@ -346,7 +398,9 @@ fn case_result_pinned_against_null_reported() {
 // real envelope and payload types. nothing else loads them, so guard them here.
 #[test]
 fn fixtures_match_the_protocol_types() {
-    use alembic_engine::{ApplyReport, ExternalObject, ExternalResponse, ProvisionReport};
+    use alembic_engine::{
+        ApplyReport, ExternalCapabilities, ExternalObject, ExternalResponse, ProvisionReport,
+    };
     use serde_json::Value;
 
     let dir = PathBuf::from(concat!(
@@ -386,6 +440,10 @@ fn fixtures_match_the_protocol_types() {
                     serde_json::from_value::<ProvisionReport>(result)
                         .unwrap_or_else(|e| panic!("{name}: bad preview_schema result: {e}")),
                 ),
+                "capabilities" => drop(
+                    serde_json::from_value::<ExternalCapabilities>(result)
+                        .unwrap_or_else(|e| panic!("{name}: bad capabilities result: {e}")),
+                ),
                 other => panic!("{name}: unknown method {other}"),
             },
             // a null preview result means "cannot preview schema", which the runner
@@ -400,5 +458,5 @@ fn fixtures_match_the_protocol_types() {
         }
         checked += 1;
     }
-    assert_eq!(checked, 7, "expected 7 fixtures, checked {checked}");
+    assert_eq!(checked, 8, "expected 8 fixtures, checked {checked}");
 }

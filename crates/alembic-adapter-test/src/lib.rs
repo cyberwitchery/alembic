@@ -1,7 +1,8 @@
 //! conformance checks for external adapter executables.
 
 use alembic_engine::{
-    ApplyReport, ExternalObject, ExternalResponse, ProvisionReport, EXTERNAL_PROTOCOL_VERSION,
+    ApplyReport, ExternalCapabilities, ExternalObject, ExternalResponse, ExternalRole,
+    ProvisionReport, EXTERNAL_PROTOCOL_VERSION,
 };
 use anyhow::Context;
 use serde::Deserialize;
@@ -56,14 +57,43 @@ pub struct Expect {
 pub fn run_builtin(adapter: &[String], timeout: Duration) -> Vec<Outcome> {
     // requests use the version the engine sends, so the suite tracks the protocol it tests.
     let version = EXTERNAL_PROTOCOL_VERSION;
-    let read_request = json!({
-        "version": version,
-        "setup": {},
-        "method": "read",
-        "schema": { "types": {} },
-        "types": [],
-        "state": {}
-    });
+    // the declared role decides which liveness check runs below, so probe it first.
+    let (role, capabilities) = probe_capabilities(adapter, timeout);
+    // a declared emitter does not implement read (the host never sends it one),
+    // so its liveness check is an empty write instead of the empty read forced
+    // on observers and full adapters.
+    let liveness = match role {
+        ExternalRole::Emitter => check(
+            adapter,
+            timeout,
+            "protocol/write-empty",
+            &request_bytes(&json!({
+                "version": version,
+                "setup": {},
+                "method": "write",
+                "schema": { "types": {} },
+                "ops": [],
+                "state": {}
+            })),
+            "write",
+            Expectation::MustSucceed,
+        ),
+        ExternalRole::Observer | ExternalRole::Adapter => check(
+            adapter,
+            timeout,
+            "protocol/read-empty",
+            &request_bytes(&json!({
+                "version": version,
+                "setup": {},
+                "method": "read",
+                "schema": { "types": {} },
+                "types": [],
+                "state": {}
+            })),
+            "read",
+            Expectation::MustSucceed,
+        ),
+    };
     vec![
         check(
             adapter,
@@ -96,14 +126,8 @@ pub fn run_builtin(adapter: &[String], timeout: Duration) -> Vec<Outcome> {
             "read",
             Expectation::MustError,
         ),
-        check(
-            adapter,
-            timeout,
-            "protocol/read-empty",
-            &request_bytes(&read_request),
-            "read",
-            Expectation::MustSucceed,
-        ),
+        capabilities,
+        liveness,
         check(
             adapter,
             timeout,
@@ -120,6 +144,58 @@ pub fn run_builtin(adapter: &[String], timeout: Duration) -> Vec<Outcome> {
             Expectation::MustSucceed,
         ),
     ]
+}
+
+/// probe the adapter's declared role with a capabilities request. answering with
+/// a structured error (an adapter predating the method) is conformant and means
+/// the default read+write role, exactly as the registry defaults at construction;
+/// only a broken exchange fails the check.
+fn probe_capabilities(adapter: &[String], timeout: Duration) -> (ExternalRole, Outcome) {
+    let request = request_bytes(&json!({
+        "version": EXTERNAL_PROTOCOL_VERSION,
+        "setup": {},
+        "method": "capabilities"
+    }));
+    let run = run_once(adapter, timeout, &request);
+    let judged = parse_response(&run).and_then(|response| {
+        match (response.ok, response.result, response.error) {
+            (true, Some(result), None) => serde_json::from_value::<ExternalCapabilities>(result)
+                .map(|capabilities| capabilities.role)
+                .map_err(|e| format!("bad capabilities result: {e}")),
+            (false, None, Some(error)) => {
+                if error.is_empty() {
+                    Err("inconsistent envelope: error message is empty".to_string())
+                } else {
+                    Ok(ExternalRole::default())
+                }
+            }
+            (ok, result, error) => Err(format!(
+                "inconsistent envelope: ok={}, has_result={}, has_error={}",
+                ok,
+                result.is_some(),
+                error.is_some()
+            )),
+        }
+    });
+    let (role, failure) = match judged {
+        Ok(role) => (role, None),
+        Err(message) => (
+            ExternalRole::default(),
+            Some(Failure {
+                message,
+                status: status_label(&run),
+                stdout: String::from_utf8_lossy(&run.stdout).into_owned(),
+                stderr: String::from_utf8_lossy(&run.stderr).into_owned(),
+            }),
+        ),
+    };
+    (
+        role,
+        Outcome {
+            name: "protocol/capabilities".to_string(),
+            failure,
+        },
+    )
 }
 
 /// run adapter-specific cases against the adapter command.
@@ -208,8 +284,8 @@ fn check(
     }
 }
 
-/// validate what the adapter wrote against the protocol and the expectation.
-fn validate(run: &RunResult, method: &str, expectation: &Expectation) -> Result<(), String> {
+/// check the process ran cleanly and parse its stdout into a response envelope.
+fn parse_response(run: &RunResult) -> Result<ExternalResponse<Value>, String> {
     if run.timed_out {
         return Err("did not terminate within the timeout".to_string());
     }
@@ -227,8 +303,12 @@ fn validate(run: &RunResult, method: &str, expectation: &Expectation) -> Result<
     de.end()
         .map_err(|_| "stdout has trailing output after the json document".to_string())?;
 
-    let response: ExternalResponse<Value> =
-        serde_json::from_value(value).map_err(|e| format!("not a response envelope: {e}"))?;
+    serde_json::from_value(value).map_err(|e| format!("not a response envelope: {e}"))
+}
+
+/// validate what the adapter wrote against the protocol and the expectation.
+fn validate(run: &RunResult, method: &str, expectation: &Expectation) -> Result<(), String> {
+    let response = parse_response(run)?;
 
     let consistent = match (response.ok, &response.result, &response.error) {
         (true, Some(_), None) => true,
@@ -321,6 +401,9 @@ fn check_payload(method: &str, result: &Value) -> Result<(), String> {
         "preview_schema" => serde_json::from_value::<Option<ProvisionReport>>(result.clone())
             .map(drop)
             .map_err(|e| format!("bad preview_schema result: {e}")),
+        "capabilities" => serde_json::from_value::<ExternalCapabilities>(result.clone())
+            .map(drop)
+            .map_err(|e| format!("bad capabilities result: {e}")),
         other => Err(format!("unknown method {other}")),
     }
 }

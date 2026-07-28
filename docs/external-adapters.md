@@ -224,6 +224,48 @@ operator passed `--allow-delete`, and it omits the six keys that are empty:
 }
 ```
 
+### capabilities
+
+the host calls this once when it constructs the backend, to learn which side of
+the adapter contract the adapter implements. the result carries a `role`:
+
+- `observer`: read-only. the host calls `read` but never `write`; `apply`
+  rejects the backend up front.
+- `emitter`: write-only. the host calls `write` but never `read`; `plan` plans
+  every declared object as a create against an empty observation, and `import`
+  rejects the backend up front instead of observing nothing.
+- `adapter`: read+write; the host may call every method.
+
+an adapter that does not answer capabilities (the unknown-method error, or any
+other probe failure) defaults to `adapter`, so existing adapters keep working
+unchanged. the rust sdk answers it automatically: the trait's default reports
+`adapter`, and an emit-only adapter overrides it in one method:
+
+```rust
+fn capabilities(&mut self) -> ExternalCapabilities {
+    ExternalCapabilities { role: ExternalRole::Emitter }
+}
+```
+
+request:
+
+```json
+{
+  "version": 1,
+  "setup": {},
+  "method": "capabilities"
+}
+```
+
+response:
+
+```json
+{
+  "ok": true,
+  "result": { "role": "adapter" }
+}
+```
+
 ### errors
 
 when the adapter fails, respond with `ok: false` and still exit `0`. a non-zero
@@ -253,7 +295,11 @@ produce a structured error; the process exits 0 within the timeout after writing
 exactly one json document (surrounding whitespace and multi-line json are fine,
 logs on stdout are not); the envelope is consistent; and a valid read of an empty
 inventory and a schema preview each succeed with a right-shaped payload, so an
-adapter that errors on every request does not pass.
+adapter that errors on every request does not pass. the runner probes
+`capabilities` first: a declared emitter is never sent a read by the host, so its
+liveness check is an empty write instead of the empty read, and it may answer
+`read` with an error. answering `capabilities` itself with the unknown-method
+error stays conformant and means the default read+write role.
 
 to exercise `read`, `write`, and `ensure_schema` against your own fake or
 disposable backend, pass `--cases` a file or directory of cases. a case is a

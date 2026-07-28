@@ -41,6 +41,8 @@ pub enum ExternalRequest {
     EnsureSchema { schema: Schema },
     /// preview what ensuring the backend schema would provision, writing nothing.
     PreviewSchema { schema: Schema },
+    /// report which role the adapter implements.
+    Capabilities,
 }
 
 /// borrowed host-side serializer; keep field-compatible with [`ExternalEnvelope`].
@@ -75,6 +77,29 @@ pub enum ExternalRequestRef<'a> {
     EnsureSchema { schema: &'a Schema },
     /// preview what ensuring the backend schema would provision, writing nothing.
     PreviewSchema { schema: &'a Schema },
+    /// report which role the adapter implements.
+    Capabilities,
+}
+
+/// the role an external adapter reports through the capabilities method.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExternalRole {
+    /// read-only: the adapter observes state but cannot apply changes.
+    Observer,
+    /// write-only: the adapter applies changes but cannot observe state.
+    Emitter,
+    /// read+write; the default for an adapter that does not answer capabilities.
+    #[default]
+    Adapter,
+}
+
+/// result payload of the capabilities method.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+pub struct ExternalCapabilities {
+    /// which side of the adapter contract the adapter implements.
+    #[serde(default)]
+    pub role: ExternalRole,
 }
 
 /// observed object representation for external adapters.
@@ -161,6 +186,14 @@ pub trait ExternalAdapter {
         let _ = schema;
         Ok(None)
     }
+
+    /// report which role this adapter implements. the default, the full read+write
+    /// [`ExternalRole::Adapter`], keeps existing adapters unchanged; an emit-only
+    /// adapter overrides this to report [`ExternalRole::Emitter`] so the host
+    /// errors on observe instead of reading nothing.
+    fn capabilities(&mut self) -> ExternalCapabilities {
+        ExternalCapabilities::default()
+    }
 }
 
 /// run an external adapter using stdin/stdout for a single request.
@@ -211,6 +244,9 @@ pub fn run_external_adapter<A: ExternalAdapter>(
             let response = ExternalResponse::from_result(adapter.preview_schema(&schema));
             write_response(&mut writer, response)
         }
+        ExternalRequest::Capabilities => {
+            write_response(&mut writer, ExternalResponse::ok(adapter.capabilities()))
+        }
     }
 }
 
@@ -244,9 +280,9 @@ macro_rules! alembic_external_main {
 mod tests {
     use super::ExternalResponse;
     use crate::{
-        run_external_adapter, ApplyReport, ExternalAdapter, ExternalEnvelope, ExternalEnvelopeRef,
-        ExternalObject, ExternalRequest, ExternalRequestRef, Op, ProvisionReport, StateData,
-        EXTERNAL_PROTOCOL_VERSION,
+        run_external_adapter, ApplyReport, ExternalAdapter, ExternalCapabilities, ExternalEnvelope,
+        ExternalEnvelopeRef, ExternalObject, ExternalRequest, ExternalRequestRef, ExternalRole, Op,
+        ProvisionReport, StateData, EXTERNAL_PROTOCOL_VERSION,
     };
     use alembic_core::{Key, Object, Schema, TypeName, TypeSchema, Uid};
     use serde_json::json;
@@ -349,6 +385,11 @@ mod tests {
         let ref_preview =
             serde_json::to_value(ExternalRequestRef::PreviewSchema { schema: &schema }).unwrap();
         assert_eq!(owned_preview, ref_preview);
+
+        let owned_capabilities = serde_json::to_value(ExternalRequest::Capabilities).unwrap();
+        let ref_capabilities = serde_json::to_value(ExternalRequestRef::Capabilities).unwrap();
+        assert_eq!(owned_capabilities, ref_capabilities);
+        assert_eq!(owned_capabilities, json!({"method": "capabilities"}));
 
         let owned_envelope = serde_json::to_value(ExternalEnvelope {
             version: EXTERNAL_PROTOCOL_VERSION,
@@ -723,5 +764,95 @@ mod tests {
         assert_eq!(response.result.unwrap().len(), MAGIC_NUMBER,);
 
         t.join().unwrap();
+    }
+
+    #[test]
+    fn capabilities_role_wire_shape() {
+        // the wire contract for the capabilities result: a lowercase role string,
+        // defaulting to the full read+write role when omitted.
+        let value = serde_json::to_value(ExternalCapabilities {
+            role: ExternalRole::Emitter,
+        })
+        .unwrap();
+        assert_eq!(value, json!({"role": "emitter"}));
+
+        let empty: ExternalCapabilities = serde_json::from_value(json!({})).unwrap();
+        assert_eq!(empty.role, ExternalRole::Adapter);
+
+        // an unknown role is a deserialization error; the host maps it to the
+        // default role rather than failing construction.
+        assert!(
+            serde_json::from_value::<ExternalCapabilities>(json!({"role": "frobnicator"})).is_err()
+        );
+    }
+
+    fn capabilities_over_stdio<A: ExternalAdapter + Send + 'static>(
+        adapter: A,
+    ) -> ExternalResponse<ExternalCapabilities> {
+        let (in_reader, mut in_writer) = std::io::pipe().unwrap();
+        let (out_reader, out_writer) = std::io::pipe().unwrap();
+
+        let t = std::thread::spawn(move || {
+            assert!(run_external_adapter(adapter, (in_reader, out_writer)).is_ok());
+        });
+
+        let envelope = ExternalEnvelope {
+            version: EXTERNAL_PROTOCOL_VERSION,
+            setup: Default::default(),
+            request: ExternalRequest::Capabilities,
+        };
+        writeln!(in_writer, "{}", serde_json::to_string(&envelope).unwrap()).unwrap();
+        drop(in_writer);
+
+        let mut response = String::new();
+        BufReader::new(out_reader).read_line(&mut response).unwrap();
+        t.join().unwrap();
+        serde_json::from_str(&response).unwrap()
+    }
+
+    #[test]
+    fn capabilities_defaults_to_the_adapter_role() {
+        // TestExternalAdapter does not override capabilities, so the sdk answers
+        // for it with the full read+write role.
+        let response = capabilities_over_stdio(TestExternalAdapter::default());
+        assert!(response.ok);
+        assert_eq!(response.result.unwrap().role, ExternalRole::Adapter);
+    }
+
+    #[test]
+    fn capabilities_override_reports_the_emitter_role() {
+        // the one-line override an emit-only adapter ships.
+        #[derive(Default)]
+        struct EmitOnly;
+        impl ExternalAdapter for EmitOnly {
+            fn setup(&mut self, _configuration: &Value) -> anyhow::Result<()> {
+                Ok(())
+            }
+            fn read(
+                &mut self,
+                _schema: &Schema,
+                _types: &[TypeName],
+                _state: &StateData,
+            ) -> anyhow::Result<Vec<ExternalObject>> {
+                Err(anyhow::anyhow!("read is not supported"))
+            }
+            fn write(
+                &mut self,
+                _schema: &Schema,
+                _ops: &[Op],
+                _state: &StateData,
+            ) -> anyhow::Result<ApplyReport> {
+                Ok(ApplyReport::default())
+            }
+            fn capabilities(&mut self) -> ExternalCapabilities {
+                ExternalCapabilities {
+                    role: ExternalRole::Emitter,
+                }
+            }
+        }
+
+        let response = capabilities_over_stdio(EmitOnly);
+        assert!(response.ok);
+        assert_eq!(response.result.unwrap().role, ExternalRole::Emitter);
     }
 }
