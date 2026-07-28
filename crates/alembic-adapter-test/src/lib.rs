@@ -370,13 +370,11 @@ fn run_once(adapter: &[String], timeout: Duration, stdin: &[u8]) -> RunResult {
         }
     };
 
-    if let Some(mut pipe) = child.stdin.take() {
-        // an early-crashing adapter may close stdin before we finish writing; that
-        // surfaces as the status/stdout failure being tested, so ignore the error.
-        let _ = pipe.write_all(stdin);
-    }
     let stdout = child.stdout.take().map(drain);
     let stderr = child.stderr.take().map(drain);
+    if let Some(pipe) = child.stdin.take() {
+        feed(pipe, stdin.to_vec());
+    }
 
     let deadline = Instant::now() + timeout;
     let mut timed_out = false;
@@ -409,6 +407,15 @@ fn run_once(adapter: &[String], timeout: Duration, stdin: &[u8]) -> RunResult {
             .map(|rx| collect(rx, drain_deadline))
             .unwrap_or_default(),
     }
+}
+
+/// write the request on its own thread so a non-reading adapter can't block the runner.
+fn feed<W: Write + Send + 'static>(mut pipe: W, bytes: Vec<u8>) {
+    thread::spawn(move || {
+        // an early-crashing adapter may close stdin before we finish writing; that
+        // surfaces as the status/stdout failure being tested, so ignore the error.
+        let _ = pipe.write_all(&bytes);
+    });
 }
 
 /// how long to keep reading a pipe after the adapter has exited or been killed.

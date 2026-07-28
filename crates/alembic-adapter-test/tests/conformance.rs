@@ -65,6 +65,41 @@ fn forked_adapter_does_not_outlast_the_timeout() {
 }
 
 #[test]
+fn oversized_request_does_not_outlast_the_timeout() {
+    // an adapter that never reads its stdin must trip the timeout, not block the
+    // runner in write_all: the request must exceed the pipe buffer to bind.
+    let case = Case {
+        name: "oversized".into(),
+        request: json!({
+            "version": 1,
+            "setup": {},
+            "method": "read",
+            "schema": {"types": {}},
+            "types": [],
+            "state": {},
+            "pad": "x".repeat(256 * 1024),
+        }),
+        expect: Expect {
+            ok: true,
+            result: None,
+            error: None,
+        },
+    };
+    let start = Instant::now();
+    let outcomes = run_cases(
+        &sh("sleep 30"),
+        Duration::from_millis(300),
+        std::slice::from_ref(&case),
+    );
+    assert!(outcomes.iter().all(|o| !o.passed()));
+    assert!(
+        start.elapsed() < Duration::from_secs(5),
+        "runner blocked writing the request for {:?}",
+        start.elapsed()
+    );
+}
+
+#[test]
 fn rejects_non_json() {
     let outcomes = run_builtin(&sh("cat >/dev/null; printf 'not json\\n'"), TIMEOUT);
     let msg = message(find(&outcomes, "protocol/read-empty"));
