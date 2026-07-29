@@ -55,16 +55,16 @@ cargo test --workspace --all-features
 
 ## e2e
 
-The NetBox + Infrahub end-to-end script provisions schema, applies objects, and imports them back to IR.
+the netbox + infrahub end-to-end script provisions schema, applies objects, and imports them back to ir.
 
 ```bash
 ./scripts/e2e_netbox_infrahub.sh
 ```
 
-Notes:
-- Requires Docker and a sibling checkout of `../infrahub.rs` (uses its `docker-compose.yml`).
-- Writes plans and imports under `/tmp` (see script output for paths).
-- Use `SKIP_DOCKER=1` to reuse running containers, or `CLEANUP=1` to tear them down afterward.
+notes:
+- requires docker and a sibling checkout of `../infrahub.rs` (uses its `docker-compose.yml`).
+- writes plans and imports under `/tmp` (see script output for paths).
+- use `SKIP_DOCKER=1` to reuse running containers, or `CLEANUP=1` to tear them down afterward.
 
 ## linting
 

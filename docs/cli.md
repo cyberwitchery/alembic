@@ -68,14 +68,13 @@ supply credentials via environment variables.
 
 ## plugins
 
-As a convenience, external adapter configs can be kept in a common
+as a convenience, external adapter configs can be kept in a common
 directory (default: `plugins` in the working directory, see
-`docs/configuration.md` for how to change that). By passing the
-filename of such a config as the `--backend`, that backend config is
-automatically used.
+`docs/configuration.md` for how to change that). passing the filename of
+such a config as the `--backend` uses that backend config automatically.
 
-For example, if there's a backend config for a custom external adapter
-in `./plugins/my_adapter.yaml`; here's how to run it:
+for example, with a backend config for a custom external adapter in
+`./plugins/my_adapter.yaml`:
 
 ```bash
 $ alembic apply --backend my_adapter
@@ -172,7 +171,7 @@ alembic map transform --spec examples/map.yaml site_code '"fra1"'
 ```
 
 - evaluates a single transform (user-defined or built-in) against a
-  json-encoded value, without an inventory or backend — the iteration loop for
+  json-encoded value, without an inventory or backend. the iteration loop for
   writing a spec's starlark transforms (see `docs/map.md`, transforms)
 - extra positional arguments are json-encoded transform arguments
 - prints the typed result as json; `fail()` exits non-zero with the message

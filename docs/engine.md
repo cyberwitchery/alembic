@@ -48,7 +48,7 @@ diffs are computed at the `attrs` field level.
 
 diffing is **additive-only**: only fields declared in your desired inventory are compared. fields present on the backend but absent from your inventory are left untouched. this means:
 
-- alembic only manages what you declare — unmanaged fields are not cleared.
+- alembic only manages what you declare; unmanaged fields are not cleared.
 - to stop managing a field, set it to `null` in your `attrs` (sends a null patch to the backend). simply removing it from your inventory has no effect on the backend.
 - this is intentional: you can layer alembic alongside manual backend edits on fields you do not declare.
 
@@ -63,4 +63,4 @@ import reads backend state via the adapter and emits a canonical inventory:
 - `attrs` are pulled from observed records (including backend custom fields/tags where supported)
 - observed attrs are **projected onto the schema**: any attr whose key is not declared in the type's `fields` is dropped, with a `warn` log naming `<type>.<field>`. server-computed fields (e.g. `last_updated`) are not in the schema and could never be managed, so keeping them would only make the imported inventory fail validation. a type absent from the schema is passed through untouched.
 
-import projection and the **additive-only** diff rules above are complementary: import never carries an undeclared field into your inventory, and planning only converges the fields you declare — an attr present on the backend but absent from your inventory is left untouched.
+import projection and the **additive-only** diff rules above are complementary: import never carries an undeclared field into your inventory, and planning only converges the fields you declare; an attr present on the backend but absent from your inventory is left untouched.
