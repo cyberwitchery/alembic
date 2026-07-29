@@ -56,6 +56,7 @@ pub enum AdapterConfig {
 
 #[cfg(feature = "netbox")]
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct NetboxConfig {
     pub url: Option<String>,
     pub token: Option<String>,
@@ -63,6 +64,7 @@ pub struct NetboxConfig {
 
 #[cfg(feature = "nautobot")]
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct NautobotConfig {
     pub url: Option<String>,
     pub token: Option<String>,
@@ -70,6 +72,7 @@ pub struct NautobotConfig {
 
 #[cfg(feature = "infrahub")]
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct InfrahubConfig {
     pub url: Option<String>,
     pub token: Option<String>,
@@ -80,12 +83,14 @@ pub struct InfrahubConfig {
 
 #[cfg(feature = "generic")]
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GenericConfig {
     pub config: Option<alembic_adapter_generic::GenericConfig>,
     pub config_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ExternalConfig {
     pub command: Option<String>,
     #[serde(default)]
@@ -110,6 +115,7 @@ pub enum InfrahubSchemaMode {
 
 #[cfg(feature = "infrahub")]
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct InfrahubSchemaConfig {
     #[serde(default)]
     pub mode: InfrahubSchemaMode,
@@ -708,6 +714,65 @@ mod tests {
             infrahubctl_path: None,
         };
         assert!(config.build().unwrap().is_none());
+    }
+
+    /// a typo'd key must not be discarded in silence: the run would take the
+    /// default instead, and for a boolean like django's `no_migrate` that means
+    /// migrating a database the user meant to leave untouched, reporting success.
+    #[test]
+    fn unknown_backend_config_key_is_rejected() {
+        let cases: &[(&str, &str)] = &[
+            #[cfg(feature = "netbox")]
+            ("netbox", "backend: netbox\nurl: http://nb\ntokn: secret\n"),
+            #[cfg(feature = "nautobot")]
+            (
+                "nautobot",
+                "backend: nautobot\nurl: http://nb\ntokn: secret\n",
+            ),
+            #[cfg(feature = "infrahub")]
+            (
+                "infrahub",
+                "backend: infrahub\nurl: http://ih\nbranchh: main\n",
+            ),
+            #[cfg(feature = "generic")]
+            ("generic", "backend: generic\nconfig_pth: ./g.yaml\n"),
+            #[cfg(feature = "django")]
+            ("django", "backend: django\noutput: ./out\nno_admn: true\n"),
+            (
+                "external",
+                "backend: external\ncommand: ./a\ntimeout_second: 5\n",
+            ),
+        ];
+
+        for (backend, yaml) in cases {
+            let err = serde_yaml::from_str::<AdapterConfig>(yaml)
+                .expect_err(&format!("{backend}: unknown key must be rejected"));
+            assert!(
+                err.to_string().contains("unknown field"),
+                "{backend}: expected an unknown-field error, got: {err}"
+            );
+        }
+    }
+
+    /// the tag the enum dispatches on is not itself an unknown field.
+    #[test]
+    fn known_backend_config_still_parses() {
+        let config: AdapterConfig =
+            serde_yaml::from_str("backend: external\ncommand: ./a\ntimeout_seconds: 5\n").unwrap();
+        assert_eq!(config.backend_name(), "external");
+    }
+
+    #[cfg(feature = "infrahub")]
+    #[test]
+    fn unknown_nested_infrahub_schema_key_is_rejected() {
+        let err = serde_yaml::from_str::<AdapterConfig>(
+            "backend: infrahub\nurl: http://ih\nschema:\n  mode: infrahubctl\n  schema_pth: ./s.yaml\n",
+        )
+        .expect_err("unknown key in a nested config must be rejected");
+        assert!(
+            err.to_string().contains("unknown field"),
+            "expected an unknown-field error, got: {err}"
+        );
     }
 
     #[cfg(unix)]

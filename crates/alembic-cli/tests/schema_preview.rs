@@ -31,7 +31,7 @@ fn plan_reports_a_preview_error_as_a_failure() {
     std::fs::write(
         &config,
         format!(
-            "backend: external\ncommand: \"{}\"\ntimeout-seconds: 5\n",
+            "backend: external\ncommand: \"{}\"\ntimeout_seconds: 5\n",
             example_binary("preview_error_adapter").display()
         ),
     )

@@ -15,6 +15,9 @@ alembic validate -f examples/inventory.yaml
 
 backend adapters are configured via a yaml file passed with `--backend-config`.
 
+unknown keys are rejected: a typo'd option is a parse error naming the field,
+not a silently ignored key that leaves the default in place.
+
 netbox:
 
 ```yaml

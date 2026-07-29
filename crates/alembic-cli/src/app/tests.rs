@@ -1258,7 +1258,7 @@ async fn run_plan_provision_fails_closed_on_preview_error() {
     std::fs::write(
         &config_path,
         format!(
-            "backend: external\ncommand: \"{}\"\ntimeout-seconds: 5\n",
+            "backend: external\ncommand: \"{}\"\ntimeout_seconds: 5\n",
             example_binary.to_str().unwrap()
         ),
     )

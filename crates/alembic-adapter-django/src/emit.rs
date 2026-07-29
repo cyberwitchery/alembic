@@ -58,6 +58,7 @@ impl Default for CommandRunner {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DjangoConfig {
     pub output: PathBuf,
     #[serde(default)]
@@ -610,5 +611,29 @@ mod tests {
             written.contains("path(\"api/\", include(\"api_app.urls\"))"),
             "expected the api route to be inserted, got:\n{written}"
         );
+    }
+
+    /// a typo'd `no_migrate` must not fall back to the default: that migrates and
+    /// loads the inventory into a database the user meant to leave untouched, and
+    /// reports success either way.
+    #[test]
+    fn unknown_config_key_is_rejected() {
+        let err =
+            serde_json::from_value::<DjangoConfig>(json!({"output": "./out", "no_migrat": true}))
+                .expect_err("a typo'd key must be rejected");
+        assert!(
+            err.to_string().contains("unknown field"),
+            "expected an unknown-field error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn known_config_keys_still_parse() {
+        let config: DjangoConfig = serde_json::from_value(
+            json!({"output": "./out", "no_migrate": true, "python": "python3.12"}),
+        )
+        .unwrap();
+        assert!(config.no_migrate);
+        assert_eq!(config.python, "python3.12");
     }
 }
