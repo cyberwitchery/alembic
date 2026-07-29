@@ -34,7 +34,12 @@ pub fn bin_path() -> PathBuf {
     target_dir.join("debug").join("alembic")
 }
 
-pub fn run_command(mut command: Command, context: &str) {
+pub fn run_command(command: Command, context: &str) {
+    run_command_capture(command, context);
+}
+
+/// `run_command`, returning stdout so a test can print what the command reported.
+pub fn run_command_capture(mut command: Command, context: &str) -> String {
     let output = command.output().unwrap_or_else(|err| {
         panic!("{context}: failed to start command: {err}");
     });
@@ -45,6 +50,7 @@ pub fn run_command(mut command: Command, context: &str) {
             String::from_utf8_lossy(&output.stderr)
         );
     }
+    String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
 /// whether the django e2e tests can run. a developer box without django skips
@@ -52,15 +58,34 @@ pub fn run_command(mut command: Command, context: &str) {
 /// sets) means django is expected: skipping there would report green for tests
 /// that never ran.
 pub fn django_available(python: &str) -> bool {
-    let output = Command::new(python)
-        .args(["-c", "import django, rest_framework"])
-        .output();
-    let available = match output {
-        Ok(result) => result.status.success(),
-        Err(_) => false,
-    };
+    modules_available(
+        python,
+        "django, rest_framework",
+        "django + djangorestframework",
+    )
+}
+
+/// whether the optional packages that unlock the generated app's full path
+/// (filtering, the openapi schema, the docs route) are importable. same
+/// discipline as `django_available`: under ALEMBIC_DJANGO_PYTHON a missing
+/// package fails loudly, because skipping would report green for the very path
+/// the test exists to exercise.
+pub fn django_full_stack_available(python: &str) -> bool {
+    django_available(python)
+        && modules_available(
+            python,
+            "django_filters, drf_spectacular",
+            "django-filter + drf-spectacular",
+        )
+}
+
+fn modules_available(python: &str, imports: &str, label: &str) -> bool {
+    let available = Command::new(python)
+        .args(["-c", &format!("import {imports}")])
+        .output()
+        .is_ok_and(|result| result.status.success());
     if !available && std::env::var_os("ALEMBIC_DJANGO_PYTHON").is_some() {
-        panic!("ALEMBIC_DJANGO_PYTHON is set to '{python}', but django + djangorestframework are not importable there");
+        panic!("ALEMBIC_DJANGO_PYTHON is set to '{python}', but {label} are not importable there");
     }
     available
 }
@@ -78,15 +103,18 @@ pub fn walkthrough_path(name: &str) -> PathBuf {
 /// write a django backend config into `dir`, emitting the generated app under `output`.
 pub fn write_django_config(dir: &Path, output: &Path) -> PathBuf {
     let path = dir.join("django.yaml");
+    // the config's interpreter has to be the one the availability check probed,
+    // or a run names one python and generates against another.
     let data = format!(
         r"backend: django
 output: {}
 project: alembic_project
 app: alembic_app
-python: python3
+python: {}
 no_migrate: false
 no_admin: false",
         output.to_str().unwrap(),
+        python_path(),
     );
     fs::write(&path, data).expect("write django config to temp dir");
     path

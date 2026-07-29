@@ -1,0 +1,74 @@
+# drives the generated django api in crates/alembic-cli/tests/django_e2e.rs: two
+# sites and three devices, so a filter on `role` returns strictly fewer rows than
+# the unfiltered list.
+schema:
+  types:
+    dcim.site:
+      key:
+        site:
+          type: slug
+      fields:
+        name:
+          type: string
+        slug:
+          type: slug
+    dcim.device:
+      key:
+        site:
+          type: slug
+        device:
+          type: slug
+      fields:
+        name:
+          type: string
+        site:
+          type: ref
+          target: dcim.site
+        role:
+          type: string
+objects:
+  - uid: "aaaaaaaa-0000-0000-0000-000000000001"
+    type: dcim.site
+    key:
+      site: "ams1"
+    attrs:
+      name: "AMS1"
+      slug: "ams1"
+
+  - uid: "aaaaaaaa-0000-0000-0000-000000000002"
+    type: dcim.site
+    key:
+      site: "fra1"
+    attrs:
+      name: "FRA1"
+      slug: "fra1"
+
+  - uid: "bbbbbbbb-0000-0000-0000-000000000001"
+    type: dcim.device
+    key:
+      site: "ams1"
+      device: "spine01"
+    attrs:
+      name: "spine01"
+      site: "aaaaaaaa-0000-0000-0000-000000000001"
+      role: "spine"
+
+  - uid: "bbbbbbbb-0000-0000-0000-000000000002"
+    type: dcim.device
+    key:
+      site: "ams1"
+      device: "leaf01"
+    attrs:
+      name: "leaf01"
+      site: "aaaaaaaa-0000-0000-0000-000000000001"
+      role: "leaf"
+
+  - uid: "bbbbbbbb-0000-0000-0000-000000000003"
+    type: dcim.device
+    key:
+      site: "fra1"
+      device: "leaf02"
+    attrs:
+      name: "leaf02"
+      site: "aaaaaaaa-0000-0000-0000-000000000002"
+      role: "leaf"

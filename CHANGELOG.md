@@ -1,5 +1,9 @@
 # changelog
 
+## Unreleased
+
+- ci: install `django-filter` and `drf-spectacular` in the django e2e job, and drive the generated app rather than only generating it. the job installed `django djangorestframework` alone, so `apply` detected neither optional package and every e2e run took the reduced path: no `filterset_fields`, no `DjangoFilterBackend` in `DEFAULT_FILTER_BACKENDS`, no `/api/schema/` and no `/api/docs/`. both branches were pinned by unit tests in the adapter crate, but nothing ever ran an app that declared them. a new e2e test plans and applies `fixtures/django_api.yaml` (three devices across two sites, with a `role` discriminator the walkthrough inventory's single device cannot express) and then requests the generated routes in-process with `django.test.Client`: `?role=spine` has to return strictly fewer rows than the unfiltered list, which is the failure the filter backend replaced, and the schema and docs routes have to answer 200. the test's availability check fails loudly when `ALEMBIC_DJANGO_PYTHON` names an interpreter missing the two optional packages, for the same reason the existing check does it for django and djangorestframework, and the backend config the tests write now names that interpreter instead of a hardcoded `python3` (#308)
+
 ## [0.8.0] - 2026-07-29
 
 - docs: add `docs/django.md`, the reference page the django adapter was missing while every other shipped adapter had one (config keys, emitter semantics, which files are regenerated, the optional-package matrix, and the name rules the emitter enforces). `no_migrate` and `no_admin` were documented nowhere before

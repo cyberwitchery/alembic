@@ -3,10 +3,13 @@ mod support;
 use std::fs;
 use std::process::Command;
 use support::{
-    bin_path, django_available, python_path, run_apply_django, run_command, walkthrough_path,
-    write_django_config,
+    bin_path, django_available, django_full_stack_available, fixture_path, python_path,
+    run_apply_django, run_command, run_command_capture, walkthrough_path, write_django_config,
 };
 use tempfile::tempdir;
+
+/// written into the temp dir and run with the configured interpreter.
+const DRIVE_API: &str = include_str!("support/drive_django_api.py");
 
 #[test]
 fn django_e2e_minimal() {
@@ -98,5 +101,81 @@ fn django_documented_walkthrough_flow_generates_app() {
     assert!(
         models.contains("models.ForeignKey(\"DcimSite\""),
         "{models}"
+    );
+}
+
+// with django-filter and drf-spectacular installed the generated app takes its
+// full path. generating it is not enough: the routes have to answer, and a
+// filtered list has to actually filter -- the failure this guards is a filter
+// that silently returns every row.
+
+#[test]
+fn django_generated_api_filters_and_serves_its_schema() {
+    let python = python_path();
+    if !django_full_stack_available(&python) {
+        eprintln!(
+            "skipping django api e2e; django, djangorestframework, django-filter \
+             and drf-spectacular are not all available for {python}"
+        );
+        return;
+    }
+
+    let out = tempdir().expect("temp dir");
+    let app_out = out.path().join("app");
+    let config = write_django_config(out.path(), &app_out);
+    let plan = out.path().join("plan.json");
+    let state = out.path().join("state.json");
+
+    let mut plan_cmd = Command::new(bin_path());
+    plan_cmd.env("ALEMBIC_STATE_PATH", &state);
+    plan_cmd.args([
+        "plan",
+        "--backend-config",
+        config.to_str().unwrap(),
+        "-f",
+        fixture_path("django_api.yaml").to_str().unwrap(),
+        "-o",
+        plan.to_str().unwrap(),
+    ]);
+    run_command(plan_cmd, "plan django api fixture");
+
+    let mut apply_cmd = Command::new(bin_path());
+    apply_cmd.env("ALEMBIC_STATE_PATH", &state);
+    apply_cmd.args([
+        "apply",
+        "--backend-config",
+        config.to_str().unwrap(),
+        "--plan",
+        plan.to_str().unwrap(),
+    ]);
+    run_command(apply_cmd, "apply django api fixture");
+
+    // pinned here so a missing declaration localises before the api driver runs.
+    let settings = fs::read_to_string(app_out.join("alembic_project").join("settings.py"))
+        .expect("settings.py should exist");
+    assert!(
+        settings.contains("django_filters.rest_framework.DjangoFilterBackend"),
+        "{settings}"
+    );
+    let views = fs::read_to_string(app_out.join("alembic_app").join("generated_views.py"))
+        .expect("generated_views.py should exist");
+    assert!(
+        views.lines().any(|line| {
+            line.trim_start().starts_with("filterset_fields = [") && line.contains("\"role\"")
+        }),
+        "{views}"
+    );
+    let urls = fs::read_to_string(app_out.join("alembic_app").join("generated_urls.py"))
+        .expect("generated_urls.py should exist");
+    assert!(urls.contains("router.register(\"dcimdevices\""), "{urls}");
+    assert!(urls.contains("SpectacularAPIView.as_view()"), "{urls}");
+
+    let script = out.path().join("drive_django_api.py");
+    fs::write(&script, DRIVE_API).expect("write the api driver into the temp dir");
+    let mut drive = Command::new(&python);
+    drive.arg(&script).arg(&app_out);
+    print!(
+        "{}",
+        run_command_capture(drive, "drive the generated django api")
     );
 }
