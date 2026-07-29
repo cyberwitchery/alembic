@@ -146,20 +146,24 @@ pub fn run_emit(runner: &dyn Runner, inventory: &Inventory, config: &DjangoConfi
         }
     }
 
-    tracing::info!(
-        "django app generated at {} (project {}, app {}); {}",
-        output_dir.display(),
-        project_name,
-        app_name,
-        if config.no_migrate {
-            format!(
-                "{} objects written to the fixture, not loaded (no_migrate)",
-                inventory.objects.len()
-            )
-        } else {
-            format!("{loaded} objects loaded")
-        }
-    );
+    // no_migrate needs the default level: `applied N operations` is otherwise the whole story,
+    // and nothing in it says the database was left alone.
+    if config.no_migrate {
+        tracing::warn!(
+            "django app generated at {} (project {}, app {}); {} objects written to the fixture, not loaded (no_migrate)",
+            output_dir.display(),
+            project_name,
+            app_name,
+            inventory.objects.len()
+        );
+    } else {
+        tracing::info!(
+            "django app generated at {} (project {}, app {}); {loaded} objects loaded",
+            output_dir.display(),
+            project_name,
+            app_name
+        );
+    }
     Ok(())
 }
 
