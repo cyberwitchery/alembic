@@ -1,11 +1,13 @@
 //! django app generation from alembic ir.
 
 use crate::emit::{CommandRunner, DjangoConfig};
-use alembic_core::{FieldFormat, FieldType, Inventory, Object, Schema, TypeName, TypeSchema};
+use alembic_core::{key_string, FieldFormat, FieldType, Inventory, Object, Schema, TypeSchema};
 use alembic_engine::{pluralize, AppliedOp, ApplyReport, Emitter, Op, StateStore};
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Map, Value};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
@@ -76,23 +78,40 @@ const USER_SERIALIZERS: &str = "serializers.py";
 const USER_VIEWS: &str = "views.py";
 const USER_URLS: &str = "urls.py";
 const USER_EXTENSIONS: &str = "extensions.py";
+const FIXTURES_DIR: &str = "fixtures";
+/// the objects land in one fixture, loaded by label (`manage.py loaddata alembic`).
+pub const FIXTURE_LABEL: &str = "alembic";
+const FIXTURE_FILE: &str = "alembic.json";
 
 const MODELS_TEMPLATE: &str = include_str!("../templates/models.py.tpl");
 const ADMIN_TEMPLATE: &str = include_str!("../templates/admin.py.tpl");
 const SERIALIZERS_TEMPLATE: &str = include_str!("../templates/serializers.py.tpl");
 const VIEWS_TEMPLATE: &str = include_str!("../templates/views.py.tpl");
 const URLS_TEMPLATE: &str = include_str!("../templates/urls.py.tpl");
-const ADMIN_SEARCH_FIELDS: &[&str] = &["key", "uid"];
-// relations are emitted hidden: nothing generated navigates one backwards, and named
-// accessors clash (fields.E304) once a type has two relations to the same target.
-const RELATED_NAME: &str = "related_name=\"+\"";
+
+/// two blank lines between top-level definitions, as pep8 wants them.
+const BLOCK_SEPARATOR: &str = "\n\n\n";
 
 #[derive(Debug)]
 struct ModelSpec {
+    type_name: String,
     class_name: String,
     fields: Vec<FieldSpec>,
     key_fields: Vec<String>,
-    has_validators: bool,
+}
+
+impl ModelSpec {
+    fn relation_fields(&self) -> impl Iterator<Item = &FieldSpec> {
+        self.fields
+            .iter()
+            .filter(|field| matches!(field.field_type, DjangoFieldType::ForeignKey { .. }))
+    }
+
+    fn many_to_many_fields(&self) -> impl Iterator<Item = &FieldSpec> {
+        self.fields
+            .iter()
+            .filter(|field| matches!(field.field_type, DjangoFieldType::ManyToMany { .. }))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -103,6 +122,7 @@ struct FieldSpec {
     nullable: bool,
     choices: Option<Vec<String>>,
     validators: Vec<String>,
+    help_text: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -116,21 +136,57 @@ enum DjangoFieldType {
     Date,
     DateTime,
     Time,
-    Json,
+    /// `default=list` for a list-shaped field, `default=dict` otherwise.
+    Json {
+        list: bool,
+    },
     Slug,
     IpAddress,
-    ForeignKey { target: String },
-    ManyToMany { target: String },
+    ForeignKey {
+        target: String,
+    },
+    ManyToMany {
+        target: String,
+    },
+}
+
+impl DjangoFieldType {
+    /// text columns hold "" for absent, so they stay NOT NULL; everything else
+    /// needs `null=True` or an optional value has nowhere to go.
+    fn is_textual(&self) -> bool {
+        matches!(
+            self,
+            DjangoFieldType::Char | DjangoFieldType::Text | DjangoFieldType::Slug
+        )
+    }
+
+    fn is_json(&self) -> bool {
+        matches!(self, DjangoFieldType::Json { .. })
+    }
+
+    fn is_many_to_many(&self) -> bool {
+        matches!(self, DjangoFieldType::ManyToMany { .. })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DjangoEmitOptions {
     pub emit_admin: bool,
+    /// whether `django_filters` is importable in the target interpreter. without
+    /// it there is no filter backend, so per-field filtering is not advertised.
+    pub filter_backend: bool,
+    /// whether `drf_spectacular` is importable in the target interpreter. it
+    /// serves the openapi schema and the docs page; without it neither is routed.
+    pub schema_view: bool,
 }
 
 impl Default for DjangoEmitOptions {
     fn default() -> Self {
-        Self { emit_admin: true }
+        Self {
+            emit_admin: true,
+            filter_backend: false,
+            schema_view: false,
+        }
     }
 }
 
@@ -147,6 +203,11 @@ const PYTHON_KEYWORDS: &[&str] = &[
 // the same name would silently override them (the `uid` case drops the uuid
 // primary key without any error from `manage.py check`).
 const RESERVED_FIELD_NAMES: &[&str] = &["uid", "key", "attrs"];
+
+// names django or python already give a meaning to on a model instance; a field
+// of the same name shadows the manager, the pk alias, or a model method.
+const DJANGO_RESERVED_FIELD_NAMES: &[&str] =
+    &["pk", "id", "objects", "save", "delete", "clean", "_state"];
 
 fn is_python_identifier(name: &str) -> bool {
     let mut chars = name.chars();
@@ -186,9 +247,22 @@ fn validate_schema_names(schema: &Schema) -> Result<()> {
                 problems.push(format!(
                     "field '{field}' of type '{type_name}' is reserved: it would shadow the generated model attribute of the same name"
                 ));
+            } else if DJANGO_RESERVED_FIELD_NAMES.contains(&field.as_str()) {
+                problems.push(format!(
+                    "field '{field}' of type '{type_name}' is reserved: django already gives that name a meaning on a model"
+                ));
             } else if !is_python_identifier(field) {
                 problems.push(format!(
                     "field '{field}' of type '{type_name}' is not a valid python identifier"
+                ));
+            } else if field.ends_with('_') {
+                // fields.E001/E002: django rejects both outright.
+                problems.push(format!(
+                    "field '{field}' of type '{type_name}' ends with an underscore, which django rejects"
+                ));
+            } else if field.contains("__") {
+                problems.push(format!(
+                    "field '{field}' of type '{type_name}' contains a double underscore, which django rejects"
                 ));
             }
         }
@@ -215,13 +289,9 @@ pub fn emit_django_app(
         .and_then(|name| name.to_str())
         .unwrap_or("alembic_app");
 
-    let types = schema_types(&inventory.schema);
-    let models: Vec<ModelSpec> = types
-        .into_iter()
-        .map(|(name, schema)| model_spec_from_schema(&name, &schema))
-        .collect();
+    let models = build_models(&inventory.schema)?;
 
-    let rendered = render_files(&models, app_name, options.emit_admin);
+    let rendered = render_files(&models, &options);
     fs::write(app_dir.join(GENERATED_MODELS), rendered.models)?;
     if let Some(admin) = rendered.admin {
         fs::write(app_dir.join(GENERATED_ADMIN), admin)?;
@@ -229,6 +299,14 @@ pub fn emit_django_app(
     fs::write(app_dir.join(GENERATED_SERIALIZERS), rendered.serializers)?;
     fs::write(app_dir.join(GENERATED_VIEWS), rendered.views)?;
     fs::write(app_dir.join(GENERATED_URLS), rendered.urls)?;
+
+    let fixtures_dir = app_dir.join(FIXTURES_DIR);
+    fs::create_dir_all(&fixtures_dir)?;
+    let entries = fixture_entries(app_name, &models, &inventory.objects)?;
+    fs::write(
+        fixtures_dir.join(FIXTURE_FILE),
+        format!("{}\n", serde_json::to_string_pretty(&entries)?),
+    )?;
 
     write_user_file(
         app_dir.join(USER_MODELS),
@@ -254,50 +332,77 @@ pub fn emit_django_app(
     Ok(())
 }
 
-fn schema_types(schema: &Schema) -> Vec<(TypeName, TypeSchema)> {
-    let mut types: Vec<(String, TypeSchema)> = schema
-        .types
-        .iter()
-        .map(|(name, schema)| (name.clone(), schema.clone()))
-        .collect();
-    types.sort_by(|a, b| a.0.cmp(&b.0));
-    types
-        .into_iter()
-        .map(|(name, schema)| (TypeName::new(name), schema))
-        .collect()
+/// turn the schema into model specs, rejecting anything that cannot become a
+/// valid django app: colliding model names, dangling relation targets, field
+/// names python or the ir envelope already own.
+fn build_models(schema: &Schema) -> Result<Vec<ModelSpec>> {
+    let mut by_class: BTreeMap<String, String> = BTreeMap::new();
+    for type_name in schema.types.keys() {
+        let class_name = class_name_for_type(type_name);
+        if class_name.is_empty() {
+            bail!("type '{type_name}' does not map to a usable django model name");
+        }
+        if let Some(previous) = by_class.insert(class_name.clone(), type_name.clone()) {
+            bail!(
+                "types '{previous}' and '{type_name}' both map to the django model \
+                 '{class_name}'; rename one of them"
+            );
+        }
+    }
+
+    for (type_name, type_schema) in schema.types.iter() {
+        for (field, field_schema) in type_schema.key.iter().chain(type_schema.fields.iter()) {
+            let target = match &field_schema.r#type {
+                FieldType::Ref { target } | FieldType::ListRef { target } => target,
+                _ => continue,
+            };
+            if !schema.types.contains_key(target) {
+                bail!(
+                    "{type_name}.{field} references unknown type '{target}'; \
+                     the django backend can only relate to types in the same model"
+                );
+            }
+        }
+    }
+
+    let mut models = Vec::with_capacity(schema.types.len());
+    let mut endpoints: BTreeMap<String, String> = BTreeMap::new();
+    for (type_name, type_schema) in schema.types.iter() {
+        let model = model_spec_from_schema(type_name, type_schema);
+        if let Some(previous) = endpoints.insert(endpoint_for(&model), model.type_name.clone()) {
+            bail!(
+                "types '{previous}' and '{}' both map to the api route '{}'; rename one of them",
+                model.type_name,
+                endpoint_for(&model)
+            );
+        }
+        models.push(model);
+    }
+    Ok(models)
 }
 
-fn model_spec_from_schema(type_name: &TypeName, schema: &TypeSchema) -> ModelSpec {
-    let class_name = class_name_for_type(type_name.as_str());
+fn model_spec_from_schema(type_name: &str, schema: &TypeSchema) -> ModelSpec {
+    let class_name = class_name_for_type(type_name);
     let mut fields = Vec::new();
     let mut key_fields = Vec::new();
-    let mut has_validators = false;
 
     for (field, field_schema) in schema.key.iter() {
-        let spec = field_spec_from_schema(field, field_schema, true);
-        if !spec.validators.is_empty() {
-            has_validators = true;
-        }
         key_fields.push(field.to_string());
-        fields.push(spec);
+        fields.push(field_spec_from_schema(field, field_schema, true));
     }
 
     for (field, field_schema) in schema.fields.iter() {
         if schema.key.contains_key(field) {
             continue;
         }
-        let spec = field_spec_from_schema(field, field_schema, false);
-        if !spec.validators.is_empty() {
-            has_validators = true;
-        }
-        fields.push(spec);
+        fields.push(field_spec_from_schema(field, field_schema, false));
     }
 
     ModelSpec {
+        type_name: type_name.to_string(),
         class_name,
         fields,
         key_fields,
-        has_validators,
     }
 }
 
@@ -309,7 +414,7 @@ struct DjangoFiles {
     urls: String,
 }
 
-fn render_files(models: &[ModelSpec], app_name: &str, emit_admin: bool) -> DjangoFiles {
+fn render_files(models: &[ModelSpec], options: &DjangoEmitOptions) -> DjangoFiles {
     let model_names: Vec<String> = models.iter().map(|m| m.class_name.clone()).collect();
     let model_import = import_line("from .generated_models import ", &model_names);
     let serializer_names: Vec<String> = model_names
@@ -323,34 +428,28 @@ fn render_files(models: &[ModelSpec], app_name: &str, emit_admin: bool) -> Djang
         .collect();
     let view_import = import_line("from .generated_views import ", &view_names);
 
-    let models_block = render_models_block(models);
-    let validators_import = if models.iter().any(|m| m.has_validators) {
-        "from django.core.validators import RegexValidator"
-    } else {
-        ""
-    };
-    let admins_block = if emit_admin {
-        render_admins_block(models)
-    } else {
-        String::new()
-    };
-    let serializers_block = render_serializers_block(models);
-    let views_block = render_views_block(models);
-    let routes_block = render_routes_block(models);
+    let mut model_imports = vec!["import uuid".to_string(), String::new()];
+    model_imports.push("from django.db import models".to_string());
+    if models
+        .iter()
+        .any(|model| model.fields.iter().any(|f| !f.validators.is_empty()))
+    {
+        model_imports.push("from django.core.validators import RegexValidator".to_string());
+    }
 
-    let models = render_template(
+    let models_file = render_template(
         MODELS_TEMPLATE,
         &[
-            ("validators_import", validators_import.to_string()),
-            ("models", models_block),
+            ("imports", model_imports.join("\n")),
+            ("models", render_blocks(models, render_model_block)),
         ],
     );
-    let admin = if emit_admin {
+    let admin = if options.emit_admin {
         Some(render_template(
             ADMIN_TEMPLATE,
             &[
                 ("model_import", model_import.clone()),
-                ("admins", admins_block),
+                ("admins", render_blocks(models, render_admin_block)),
             ],
         ))
     } else {
@@ -360,7 +459,10 @@ fn render_files(models: &[ModelSpec], app_name: &str, emit_admin: bool) -> Djang
         SERIALIZERS_TEMPLATE,
         &[
             ("model_import", model_import.clone()),
-            ("serializers", serializers_block),
+            (
+                "serializers",
+                render_blocks(models, render_serializer_block),
+            ),
         ],
     );
     let views = render_template(
@@ -368,20 +470,40 @@ fn render_files(models: &[ModelSpec], app_name: &str, emit_admin: bool) -> Djang
         &[
             ("model_import", model_import),
             ("serializer_import", serializer_import),
-            ("views", views_block),
+            (
+                "views",
+                render_blocks(models, |model| render_view_block(model, options)),
+            ),
         ],
     );
+    // drf's own schema view is the legacy coreapi surface: it needs three
+    // optional packages and django-filter no longer implements the hook it
+    // calls, so it is served by drf-spectacular or not at all.
+    let (schema_import, schema_routes) = if options.schema_view {
+        (
+            "from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView\n"
+                .to_string(),
+            concat!(
+                "    path(\"schema/\", SpectacularAPIView.as_view(), name=\"schema\"),\n",
+                "    path(\"docs/\", SpectacularSwaggerView.as_view(url_name=\"schema\"), name=\"docs\"),\n",
+            )
+            .to_string(),
+        )
+    } else {
+        (String::new(), String::new())
+    };
     let urls = render_template(
         URLS_TEMPLATE,
         &[
+            ("schema_import", schema_import),
             ("view_import", view_import),
-            ("routes", routes_block),
-            ("app_name", app_name.to_string()),
+            ("routes", render_routes_block(models)),
+            ("schema_routes", schema_routes),
         ],
     );
 
     DjangoFiles {
-        models,
+        models: models_file,
         admin,
         serializers,
         views,
@@ -389,194 +511,252 @@ fn render_files(models: &[ModelSpec], app_name: &str, emit_admin: bool) -> Djang
     }
 }
 
-fn render_field(field: &FieldSpec) -> String {
+fn render_blocks(models: &[ModelSpec], render: impl Fn(&ModelSpec) -> String) -> String {
+    models
+        .iter()
+        .map(render)
+        .collect::<Vec<String>>()
+        .join(BLOCK_SEPARATOR)
+}
+
+fn render_field(model: &ModelSpec, field: &FieldSpec) -> String {
     let mut args = Vec::new();
     if let Some(choices) = &field.choices {
         let choice_items = choices
             .iter()
-            .map(|value| format!("(\"{value}\", \"{value}\")"))
+            .map(|value| format!("({}, {})", py_str(value), py_str(value)))
             .collect::<Vec<_>>()
             .join(", ");
         args.push(format!("choices=[{choice_items}]"));
     }
     if !field.validators.is_empty() {
-        let validators = field.validators.join(", ");
-        args.push(format!("validators=[{validators}]"));
+        args.push(format!("validators=[{}]", field.validators.join(", ")));
     }
-    if !field.required {
+    if let Some(help_text) = &field.help_text {
+        args.push(format!("help_text={}", py_str(help_text)));
+    }
+
+    let optional = !field.required;
+    if optional {
         args.push("blank=True".to_string());
     }
-    if field.nullable {
-        args.push("null=True".to_string());
-    }
-    if matches!(field.field_type, DjangoFieldType::IpAddress)
-        && args.iter().any(|arg| arg == "blank=True")
-        && !args.iter().any(|arg| arg == "null=True")
-    {
+    // `blank=True` is a form-level flag only: without `null=True` the column is
+    // still NOT NULL and an absent value cannot be saved at all.
+    let nullable = field.nullable || (optional && !field.field_type.is_textual());
+    if nullable && !field.field_type.is_json() && !field.field_type.is_many_to_many() {
         args.push("null=True".to_string());
     }
 
-    let args_str = args.join(", ");
-
-    match &field.field_type {
+    let mut leading = Vec::new();
+    let mut trailing = Vec::new();
+    let django_type = match &field.field_type {
         DjangoFieldType::Char => {
-            if args_str.is_empty() {
-                format!("{} = models.CharField(max_length=255)", field.name)
-            } else {
-                format!(
-                    "{} = models.CharField(max_length=255, {})",
-                    field.name, args_str
-                )
+            leading.push("max_length=255".to_string());
+            "CharField"
+        }
+        DjangoFieldType::Text => "TextField",
+        DjangoFieldType::Integer => "IntegerField",
+        DjangoFieldType::Float => "FloatField",
+        DjangoFieldType::Boolean => "BooleanField",
+        DjangoFieldType::Uuid => "UUIDField",
+        DjangoFieldType::Date => "DateField",
+        DjangoFieldType::DateTime => "DateTimeField",
+        DjangoFieldType::Time => "TimeField",
+        DjangoFieldType::Json { list } => {
+            if optional {
+                trailing.push(format!("default={}", if *list { "list" } else { "dict" }));
             }
+            "JSONField"
         }
-        DjangoFieldType::Text => format!("{} = models.TextField({})", field.name, args_str),
-        DjangoFieldType::Integer => format!("{} = models.IntegerField({})", field.name, args_str),
-        DjangoFieldType::Float => format!("{} = models.FloatField({})", field.name, args_str),
-        DjangoFieldType::Boolean => format!("{} = models.BooleanField({})", field.name, args_str),
-        DjangoFieldType::Uuid => format!("{} = models.UUIDField({})", field.name, args_str),
-        DjangoFieldType::Date => format!("{} = models.DateField({})", field.name, args_str),
-        DjangoFieldType::DateTime => format!("{} = models.DateTimeField({})", field.name, args_str),
-        DjangoFieldType::Time => format!("{} = models.TimeField({})", field.name, args_str),
-        DjangoFieldType::Json => format!("{} = models.JSONField({})", field.name, args_str),
-        DjangoFieldType::Slug => format!("{} = models.SlugField({})", field.name, args_str),
-        DjangoFieldType::IpAddress => {
-            format!(
-                "{} = models.GenericIPAddressField({})",
-                field.name, args_str
-            )
-        }
+        DjangoFieldType::Slug => "SlugField",
+        DjangoFieldType::IpAddress => "GenericIPAddressField",
         DjangoFieldType::ForeignKey { target } => {
-            let mut fk_args = vec![
-                format!("\"{}\"", target),
-                "on_delete=models.PROTECT".to_string(),
-                RELATED_NAME.to_string(),
-            ];
-            fk_args.extend(args);
-            format!("{} = models.ForeignKey({})", field.name, fk_args.join(", "))
+            leading.push(py_str(target));
+            leading.push("on_delete=models.PROTECT".to_string());
+            leading.push(related_name_arg(model, field));
+            "ForeignKey"
         }
         DjangoFieldType::ManyToMany { target } => {
-            let mut m2m_args = vec![format!("\"{}\"", target), RELATED_NAME.to_string()];
-            m2m_args.extend(args.into_iter().filter(|arg| arg != "null=True"));
-            format!(
-                "{} = models.ManyToManyField({})",
-                field.name,
-                m2m_args.join(", ")
-            )
+            leading.push(py_str(target));
+            leading.push(related_name_arg(model, field));
+            "ManyToManyField"
         }
-    }
+    };
+
+    leading.extend(args);
+    leading.extend(trailing);
+    format!(
+        "{} = models.{}({})",
+        field.name,
+        django_type,
+        leading.join(", ")
+    )
 }
 
-fn render_models_block(models: &[ModelSpec]) -> String {
-    models
-        .iter()
-        .map(render_model_block)
-        .collect::<Vec<String>>()
-        .join("\n")
+/// a reverse accessor per relation: unique by construction (model names are
+/// unique, field names are unique within a model), so two relations to the same
+/// target cannot clash (fields.E304) while navigation stays available.
+fn related_name_arg(model: &ModelSpec, field: &FieldSpec) -> String {
+    format!(
+        "related_name={}",
+        py_str(&format!(
+            "{}_{}",
+            model.class_name.to_lowercase(),
+            field.name
+        ))
+    )
 }
 
 fn render_model_block(model: &ModelSpec) -> String {
     let mut fields = Vec::with_capacity(model.fields.len() + 3);
-    fields.push("uid = models.UUIDField(primary_key=True, editable=False)".to_string());
+    fields.push(
+        "uid = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)".to_string(),
+    );
     fields.push("key = models.TextField()".to_string());
     fields.push("attrs = models.JSONField(default=dict, blank=True)".to_string());
     for field in &model.fields {
-        fields.push(render_field(field));
+        fields.push(render_field(model, field));
     }
 
-    let mut lines = Vec::new();
-    lines.push(format!("class {}(models.Model):", model.class_name));
-    lines.push(format!("    {}", fields.join("\n    ")));
+    let mut lines = vec![
+        format!("class {}(models.Model):", model.class_name),
+        format!("    {}", fields.join("\n    ")),
+        String::new(),
+        "    class Meta:".to_string(),
+        // pagination over an unordered queryset is not stable; the key is unique
+        // per type, so it is the natural order.
+        "        ordering = [\"key\"]".to_string(),
+        format!("        verbose_name = {}", py_str(&model.type_name)),
+        format!(
+            "        verbose_name_plural = {}",
+            py_str(&pluralize(&model.type_name))
+        ),
+    ];
 
     if !model.key_fields.is_empty() {
         let unique_fields = model
             .key_fields
             .iter()
-            .map(|field| format!("\"{field}\""))
+            .map(|field| py_str(field))
             .collect::<Vec<_>>()
             .join(", ");
-        lines.push("".to_string());
-        lines.push("    class Meta:".to_string());
         lines.push(format!(
             "        constraints = [models.UniqueConstraint(fields=[{unique_fields}], name=\"{}_key\")]",
             model.class_name.to_lowercase()
         ));
     }
 
-    lines.join("\n") + "\n"
-}
+    lines.push(String::new());
+    lines.push("    def __str__(self):".to_string());
+    // the key column holds the ir key as json, which reads as
+    // `{"name":"leaf01"}` wherever django prints an object. the key *values*
+    // are what a person recognises, and a ref key field renders through the
+    // target's own __str__.
+    if model.key_fields.is_empty() {
+        lines.push("        return self.key".to_string());
+    } else {
+        let parts = model
+            .key_fields
+            .iter()
+            .map(|field| format!("{{self.{field}}}"))
+            .collect::<Vec<_>>()
+            .join(" / ");
+        lines.push(format!("        return f\"{parts}\""));
+    }
 
-fn render_admins_block(models: &[ModelSpec]) -> String {
-    models
-        .iter()
-        .map(render_admin_block)
-        .collect::<Vec<String>>()
-        .join("\n")
+    lines.join("\n")
 }
 
 fn render_admin_block(model: &ModelSpec) -> String {
     let list_display = admin_list_display(model);
     let list_filter = admin_list_filter(model);
+    let related: Vec<&str> = model
+        .relation_fields()
+        .map(|field| field.name.as_str())
+        .collect();
     let mut lines = vec![
         format!(
             "@admin.register({})\nclass {}Admin(admin.ModelAdmin):",
             model.class_name, model.class_name
         ),
         format!("    list_display = [{}]", join_quoted(&list_display)),
-        format!("    search_fields = [{}]", join_quoted(ADMIN_SEARCH_FIELDS)),
+        format!(
+            "    search_fields = [{}]",
+            join_quoted(&text_search_fields(model))
+        ),
     ];
     if !list_filter.is_empty() {
         lines.push(format!("    list_filter = [{}]", join_quoted(&list_filter)));
     }
+    if !related.is_empty() {
+        // a foreign key in list_display is one query per row without this.
+        lines.push(format!(
+            "    list_select_related = [{}]",
+            join_quoted(&related)
+        ));
+    }
     lines.join("\n")
-}
-
-fn render_serializers_block(models: &[ModelSpec]) -> String {
-    models
-        .iter()
-        .map(render_serializer_block)
-        .collect::<Vec<String>>()
-        .join("\n")
 }
 
 fn render_serializer_block(model: &ModelSpec) -> String {
     let fields = serializer_fields(model);
     format!(
-        "class {}Serializer(serializers.ModelSerializer):\n    class Meta:\n        model = {}\n        fields = [{}]\n",
+        "class {}Serializer(serializers.ModelSerializer):\n    class Meta:\n        model = {}\n        fields = [{}]",
         model.class_name,
         model.class_name,
         join_quoted(&fields)
     )
 }
 
-fn render_views_block(models: &[ModelSpec]) -> String {
-    models
-        .iter()
-        .map(render_view_block)
-        .collect::<Vec<String>>()
-        .join("\n")
+fn render_view_block(model: &ModelSpec, options: &DjangoEmitOptions) -> String {
+    let prefetch: Vec<&str> = model
+        .many_to_many_fields()
+        .map(|field| field.name.as_str())
+        .collect();
+    let queryset = if prefetch.is_empty() {
+        format!("{}.objects.all()", model.class_name)
+    } else {
+        format!(
+            "{}.objects.all().prefetch_related({})",
+            model.class_name,
+            join_quoted(&prefetch)
+        )
+    };
+
+    let mut lines = vec![
+        format!("class {}ViewSet(viewsets.ModelViewSet):", model.class_name),
+        format!("    queryset = {queryset}"),
+        format!("    serializer_class = {}Serializer", model.class_name),
+    ];
+    if options.filter_backend {
+        lines.push(format!(
+            "    filterset_fields = [{}]",
+            join_quoted(&filterset_fields(model))
+        ));
+    }
+    lines.push(format!(
+        "    search_fields = [{}]",
+        join_quoted(&text_search_fields(model))
+    ));
+    lines.push(format!(
+        "    ordering_fields = [{}]",
+        join_quoted(&ordering_fields(model))
+    ));
+    lines.push("    ordering = [\"key\"]".to_string());
+    lines.join("\n")
 }
 
-fn render_view_block(model: &ModelSpec) -> String {
-    let list_display = admin_list_display(model);
-    let search_fields = admin_search_fields_for_model(model);
-    format!(
-        "class {}ViewSet(viewsets.ModelViewSet):\n    queryset = {}.objects.all()\n    serializer_class = {}Serializer\n    filterset_fields = [{}]\n    search_fields = [{}]\n    ordering_fields = [{}]\n",
-        model.class_name,
-        model.class_name,
-        model.class_name,
-        join_quoted(&list_display),
-        join_quoted(&search_fields),
-        join_quoted(&list_display)
-    )
+fn endpoint_for(model: &ModelSpec) -> String {
+    pluralize(model.class_name.to_lowercase().as_str())
 }
 
 fn render_routes_block(models: &[ModelSpec]) -> String {
     models
         .iter()
         .map(|model| {
-            let endpoint = pluralize(model.class_name.to_lowercase().as_str());
             format!(
-                "router.register(\"{endpoint}\", {}ViewSet)",
+                "router.register(\"{}\", {}ViewSet)",
+                endpoint_for(model),
                 model.class_name
             )
         })
@@ -584,14 +764,30 @@ fn render_routes_block(models: &[ModelSpec]) -> String {
         .join("\n")
 }
 
-fn field_name(field: &FieldSpec) -> &str {
-    field.name.as_str()
+/// a python string literal for an arbitrary value: everything here ends up in
+/// generated source, so a stray quote or backslash must not break the file.
+fn py_str(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('"');
+    for ch in value.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            ch if (ch as u32) < 0x20 => out.push_str(&format!("\\x{:02x}", ch as u32)),
+            ch => out.push(ch),
+        }
+    }
+    out.push('"');
+    out
 }
 
 fn join_quoted(fields: &[&str]) -> String {
     fields
         .iter()
-        .map(|field| format!("\"{field}\""))
+        .map(|field| py_str(field))
         .collect::<Vec<String>>()
         .join(", ")
 }
@@ -612,42 +808,67 @@ fn import_line<T: AsRef<str>>(prefix: &str, names: &[T]) -> String {
 }
 
 fn admin_list_display(model: &ModelSpec) -> Vec<&str> {
-    let mut fields = vec!["key", "uid"];
+    // the object's own __str__ leads: the `key` column is the ir key as json,
+    // which is not what anyone scans a changelist for. it stays searchable.
+    let mut fields = vec!["__str__"];
     for field in &model.fields {
-        // ManyToManyField is invalid in a Django admin list_display (admin.E109).
-        if !matches!(field.field_type, DjangoFieldType::ManyToMany { .. }) {
-            fields.push(field_name(field));
+        // ManyToManyField is invalid in a Django admin list_display (admin.E109),
+        // and json/text blobs make the changelist unreadable.
+        if field.field_type.is_many_to_many()
+            || field.field_type.is_json()
+            || matches!(field.field_type, DjangoFieldType::Text)
+        {
+            continue;
         }
+        fields.push(field.name.as_str());
     }
+    fields.push("uid");
     fields
 }
 
-fn admin_search_fields_for_model(model: &ModelSpec) -> Vec<&str> {
+/// icontains is what both the admin and drf's SearchFilter emit, and postgres
+/// has no such operator for uuid, inet, or json columns.
+fn text_search_fields(model: &ModelSpec) -> Vec<&str> {
     let mut fields = vec!["key"];
     for field in &model.fields {
-        match field.field_type {
-            DjangoFieldType::Char
-            | DjangoFieldType::Text
-            | DjangoFieldType::Slug
-            | DjangoFieldType::Uuid
-            | DjangoFieldType::IpAddress => fields.push(field_name(field)),
-            _ => {}
+        if field.field_type.is_textual() {
+            fields.push(field.name.as_str());
         }
     }
     fields
 }
 
 fn admin_list_filter(model: &ModelSpec) -> Vec<&str> {
-    let mut fields = Vec::new();
+    model
+        .fields
+        .iter()
+        .filter(|field| {
+            matches!(field.field_type, DjangoFieldType::Boolean) || field.choices.is_some()
+        })
+        .map(|field| field.name.as_str())
+        .collect()
+}
+
+/// django-filter has no filter for json columns and cannot resolve a text blob
+/// to a sensible lookup, so those stay out of the filterset.
+fn filterset_fields(model: &ModelSpec) -> Vec<&str> {
+    let mut fields = vec!["key", "uid"];
     for field in &model.fields {
-        match field.field_type {
-            DjangoFieldType::Boolean => fields.push(field_name(field)),
-            _ => {
-                if field.name == "status" {
-                    fields.push(field_name(field));
-                }
-            }
+        if field.field_type.is_json() || matches!(field.field_type, DjangoFieldType::Text) {
+            continue;
         }
+        fields.push(field.name.as_str());
+    }
+    fields
+}
+
+fn ordering_fields(model: &ModelSpec) -> Vec<&str> {
+    let mut fields = vec!["key", "uid"];
+    for field in &model.fields {
+        if field.field_type.is_json() || field.field_type.is_many_to_many() {
+            continue;
+        }
+        fields.push(field.name.as_str());
     }
     fields
 }
@@ -655,9 +876,64 @@ fn admin_list_filter(model: &ModelSpec) -> Vec<&str> {
 fn serializer_fields(model: &ModelSpec) -> Vec<&str> {
     let mut fields = vec!["uid", "key", "attrs"];
     for field in &model.fields {
-        fields.push(field_name(field));
+        fields.push(field.name.as_str());
     }
     fields
+}
+
+/// the ir objects as a django fixture: the uid is the primary key, so relations
+/// carry over as-is and `loaddata` is idempotent across runs.
+fn fixture_entries(app_name: &str, models: &[ModelSpec], objects: &[Object]) -> Result<Vec<Value>> {
+    let by_type: BTreeMap<&str, &ModelSpec> = models
+        .iter()
+        .map(|model| (model.type_name.as_str(), model))
+        .collect();
+
+    let mut entries: Vec<(String, String, Value)> = Vec::with_capacity(objects.len());
+    for object in objects {
+        let type_name = object.type_name.as_str();
+        let model = by_type.get(type_name).ok_or_else(|| {
+            anyhow!(
+                "object {} has type '{type_name}' which is not in the schema",
+                object.uid
+            )
+        })?;
+
+        let mut fields = Map::new();
+        for spec in &model.fields {
+            let value = object
+                .attrs
+                .get(&spec.name)
+                .or_else(|| object.key.get(&spec.name));
+            match value {
+                Some(Value::Null) | None => {}
+                Some(value) => {
+                    fields.insert(spec.name.clone(), value.clone());
+                }
+            }
+        }
+        // whatever the schema does not model stays in the envelope blob, so
+        // nothing in the inventory is dropped on the way into the app.
+        let leftovers: Map<String, Value> = object
+            .attrs
+            .iter()
+            .filter(|(name, _)| !model.fields.iter().any(|spec| &spec.name == *name))
+            .map(|(name, value)| (name.clone(), value.clone()))
+            .collect();
+        fields.insert("key".to_string(), Value::String(key_string(&object.key)));
+        fields.insert("attrs".to_string(), Value::Object(leftovers));
+
+        let model_label = format!("{app_name}.{}", model.class_name.to_lowercase());
+        let pk = object.uid.to_string();
+        entries.push((
+            model_label.clone(),
+            pk.clone(),
+            json!({"model": model_label, "pk": pk, "fields": Value::Object(fields)}),
+        ));
+    }
+
+    entries.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
+    Ok(entries.into_iter().map(|(_, _, entry)| entry).collect())
 }
 
 fn class_name_for_type(type_name: &str) -> String {
@@ -691,7 +967,7 @@ fn field_spec_from_schema(
         validators.push(format_validator(format));
     }
     if let Some(pattern) = &schema.pattern {
-        validators.push(format!("RegexValidator(r\"{pattern}\")"));
+        validators.push(format!("RegexValidator({})", py_str(pattern)));
     }
 
     let field_type = match &schema.r#type {
@@ -704,7 +980,7 @@ fn field_spec_from_schema(
         FieldType::Date => DjangoFieldType::Date,
         FieldType::Datetime => DjangoFieldType::DateTime,
         FieldType::Time => DjangoFieldType::Time,
-        FieldType::Json => DjangoFieldType::Json,
+        FieldType::Json => DjangoFieldType::Json { list: false },
         FieldType::IpAddress => DjangoFieldType::IpAddress,
         FieldType::Cidr | FieldType::Prefix | FieldType::Mac => {
             validators.push(format_validator(&format_for_field_type(&schema.r#type)));
@@ -715,7 +991,8 @@ fn field_spec_from_schema(
             choices = Some(values.clone());
             DjangoFieldType::Char
         }
-        FieldType::List { .. } | FieldType::Map { .. } => DjangoFieldType::Json,
+        FieldType::List { .. } => DjangoFieldType::Json { list: true },
+        FieldType::Map { .. } => DjangoFieldType::Json { list: false },
         FieldType::Ref { target } => DjangoFieldType::ForeignKey {
             target: class_name_for_type(target),
         },
@@ -734,6 +1011,7 @@ fn field_spec_from_schema(
         nullable,
         choices,
         validators,
+        help_text: schema.description.clone(),
     }
 }
 
@@ -763,21 +1041,16 @@ fn format_for_field_type(field_type: &FieldType) -> FieldFormat {
 }
 
 fn format_validator(format: &FieldFormat) -> String {
-    match format {
-        FieldFormat::Slug => "RegexValidator(r\"^[a-z0-9]+(?:[a-z0-9_-]*[a-z0-9])?$\")".to_string(),
-        FieldFormat::IpAddress => {
-            "RegexValidator(r\"^([0-9]{1,3}\\.){3}[0-9]{1,3}$|^[0-9a-fA-F:]+$\")".to_string()
-        }
-        FieldFormat::Cidr | FieldFormat::Prefix => {
-            "RegexValidator(r\"^[0-9a-fA-F:\\./]+$\")".to_string()
-        }
-        FieldFormat::Mac => {
-            "RegexValidator(r\"^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$\")".to_string()
-        }
+    let pattern = match format {
+        FieldFormat::Slug => "^[a-z0-9]+(?:[a-z0-9_-]*[a-z0-9])?$",
+        FieldFormat::IpAddress => "^([0-9]{1,3}\\.){3}[0-9]{1,3}$|^[0-9a-fA-F:]+$",
+        FieldFormat::Cidr | FieldFormat::Prefix => "^[0-9a-fA-F:\\./]+$",
+        FieldFormat::Mac => "^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$",
         FieldFormat::Uuid => {
-            "RegexValidator(r\"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$\")".to_string()
+            "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
         }
-    }
+    };
+    format!("RegexValidator({})", py_str(pattern))
 }
 
 fn write_if_missing(path: impl AsRef<Path>, contents: &str) -> Result<()> {
@@ -853,11 +1126,8 @@ fn default_views_stub() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alembic_core::{
-        FieldSchema, FieldType, Inventory, JsonMap, Object, Schema, TypeName, TypeSchema,
-    };
-    use serde_json::{json, Value};
-    use std::collections::BTreeMap;
+    use alembic_core::{FieldSchema, JsonMap, TypeName};
+    use serde_json::json;
     use tempfile::tempdir;
     use uuid::Uuid;
 
@@ -891,155 +1161,91 @@ mod tests {
         .unwrap()
     }
 
+    fn field(r#type: FieldType) -> FieldSchema {
+        FieldSchema {
+            r#type,
+            required: true,
+            nullable: false,
+            description: None,
+            format: None,
+            pattern: None,
+        }
+    }
+
+    fn optional(r#type: FieldType) -> FieldSchema {
+        FieldSchema {
+            required: false,
+            ..field(r#type)
+        }
+    }
+
+    fn type_schema(key: Vec<(&str, FieldSchema)>, fields: Vec<(&str, FieldSchema)>) -> TypeSchema {
+        TypeSchema {
+            key: key
+                .into_iter()
+                .map(|(name, schema)| (name.to_string(), schema))
+                .collect(),
+            fields: fields
+                .into_iter()
+                .map(|(name, schema)| (name.to_string(), schema))
+                .collect(),
+        }
+    }
+
+    fn schema_of(types: Vec<(&str, TypeSchema)>) -> Schema {
+        Schema {
+            types: types
+                .into_iter()
+                .map(|(name, schema)| (name.to_string(), schema))
+                .collect(),
+        }
+    }
+
     fn test_schema() -> Schema {
-        let mut types = BTreeMap::new();
-        types.insert(
-            "dcim.site".to_string(),
-            TypeSchema {
-                key: BTreeMap::from([(
-                    "slug".to_string(),
-                    FieldSchema {
-                        r#type: FieldType::Slug,
-                        required: true,
-                        nullable: false,
-                        description: None,
-                        format: None,
-                        pattern: None,
-                    },
-                )]),
-                fields: BTreeMap::from([
-                    (
-                        "name".to_string(),
-                        FieldSchema {
-                            r#type: FieldType::String,
-                            required: true,
-                            nullable: false,
-                            description: None,
-                            format: None,
-                            pattern: None,
-                        },
-                    ),
-                    (
-                        "slug".to_string(),
-                        FieldSchema {
-                            r#type: FieldType::Slug,
-                            required: true,
-                            nullable: false,
-                            description: None,
-                            format: None,
-                            pattern: None,
-                        },
-                    ),
-                ]),
-            },
-        );
-        types.insert(
-            "dcim.device".to_string(),
-            TypeSchema {
-                key: BTreeMap::from([(
-                    "name".to_string(),
-                    FieldSchema {
-                        r#type: FieldType::Slug,
-                        required: true,
-                        nullable: false,
-                        description: None,
-                        format: None,
-                        pattern: None,
-                    },
-                )]),
-                fields: BTreeMap::from([
-                    (
-                        "name".to_string(),
-                        FieldSchema {
-                            r#type: FieldType::String,
-                            required: true,
-                            nullable: false,
-                            description: None,
-                            format: None,
-                            pattern: None,
-                        },
-                    ),
-                    (
-                        "site".to_string(),
-                        FieldSchema {
-                            r#type: FieldType::Ref {
+        schema_of(vec![
+            (
+                "dcim.site",
+                type_schema(
+                    vec![("slug", field(FieldType::Slug))],
+                    vec![
+                        ("name", field(FieldType::String)),
+                        ("slug", field(FieldType::Slug)),
+                    ],
+                ),
+            ),
+            (
+                "dcim.device",
+                type_schema(
+                    vec![("name", field(FieldType::Slug))],
+                    vec![
+                        ("name", field(FieldType::String)),
+                        (
+                            "site",
+                            field(FieldType::Ref {
                                 target: "dcim.site".to_string(),
-                            },
-                            required: true,
-                            nullable: false,
-                            description: None,
-                            format: None,
-                            pattern: None,
-                        },
-                    ),
-                    (
-                        "role".to_string(),
-                        FieldSchema {
-                            r#type: FieldType::String,
-                            required: true,
-                            nullable: false,
-                            description: None,
-                            format: None,
-                            pattern: None,
-                        },
-                    ),
-                    (
-                        "device_type".to_string(),
-                        FieldSchema {
-                            r#type: FieldType::String,
-                            required: true,
-                            nullable: false,
-                            description: None,
-                            format: None,
-                            pattern: None,
-                        },
-                    ),
-                ]),
-            },
-        );
-        types.insert(
-            "dcim.interface".to_string(),
-            TypeSchema {
-                key: BTreeMap::from([(
-                    "name".to_string(),
-                    FieldSchema {
-                        r#type: FieldType::Slug,
-                        required: true,
-                        nullable: false,
-                        description: None,
-                        format: None,
-                        pattern: None,
-                    },
-                )]),
-                fields: BTreeMap::from([
-                    (
-                        "name".to_string(),
-                        FieldSchema {
-                            r#type: FieldType::String,
-                            required: true,
-                            nullable: false,
-                            description: None,
-                            format: None,
-                            pattern: None,
-                        },
-                    ),
-                    (
-                        "device".to_string(),
-                        FieldSchema {
-                            r#type: FieldType::Ref {
+                            }),
+                        ),
+                        ("role", field(FieldType::String)),
+                        ("device_type", field(FieldType::String)),
+                    ],
+                ),
+            ),
+            (
+                "dcim.interface",
+                type_schema(
+                    vec![("name", field(FieldType::Slug))],
+                    vec![
+                        ("name", field(FieldType::String)),
+                        (
+                            "device",
+                            field(FieldType::Ref {
                                 target: "dcim.device".to_string(),
-                            },
-                            required: true,
-                            nullable: false,
-                            description: None,
-                            format: None,
-                            pattern: None,
-                        },
-                    ),
-                ]),
-            },
-        );
-        Schema { types }
+                            }),
+                        ),
+                    ],
+                ),
+            ),
+        ])
     }
 
     fn sample_inventory() -> Inventory {
@@ -1053,6 +1259,7 @@ mod tests {
                     ("site", json!(Uuid::from_u128(2).to_string())),
                     ("role", json!("leaf")),
                     ("device_type", json!("leaf-switch")),
+                    ("unmodelled", json!("kept in attrs")),
                 ]),
             ),
             obj(
@@ -1077,15 +1284,19 @@ mod tests {
         }
     }
 
+    fn emit_to_temp(inventory: &Inventory) -> tempfile::TempDir {
+        let dir = tempdir().unwrap();
+        emit_django_app(dir.path(), inventory, DjangoEmitOptions::default()).unwrap();
+        dir
+    }
+
+    fn generated(dir: &tempfile::TempDir, name: &str) -> String {
+        fs::read_to_string(dir.path().join(name)).unwrap()
+    }
+
     #[test]
     fn emit_django_app_writes_files_and_stubs() {
-        let dir = tempdir().unwrap();
-        emit_django_app(
-            dir.path(),
-            &sample_inventory(),
-            DjangoEmitOptions::default(),
-        )
-        .unwrap();
+        let dir = emit_to_temp(&sample_inventory());
 
         assert!(dir.path().join(GENERATED_MODELS).exists());
         assert!(dir.path().join(GENERATED_ADMIN).exists());
@@ -1098,80 +1309,279 @@ mod tests {
         assert!(dir.path().join(USER_VIEWS).exists());
         assert!(dir.path().join(USER_URLS).exists());
         assert!(dir.path().join(USER_EXTENSIONS).exists());
+        assert!(dir.path().join(FIXTURES_DIR).join(FIXTURE_FILE).exists());
 
-        let models = fs::read_to_string(dir.path().join(GENERATED_MODELS)).unwrap();
+        let models = generated(&dir, GENERATED_MODELS);
         assert!(models.contains("class DcimSite"));
         assert!(models.contains(
-            "site = models.ForeignKey(\"DcimSite\", on_delete=models.PROTECT, related_name=\"+\""
+            "site = models.ForeignKey(\"DcimSite\", on_delete=models.PROTECT, related_name=\"dcimdevice_site\")"
         ));
         assert!(models.contains(
-            "device = models.ForeignKey(\"DcimDevice\", on_delete=models.PROTECT, related_name=\"+\""
+            "device = models.ForeignKey(\"DcimDevice\", on_delete=models.PROTECT, related_name=\"dciminterface_device\")"
         ));
-        assert!(models.contains("uid = models.UUIDField"));
         assert!(models.contains("attrs = models.JSONField"));
+    }
+
+    #[test]
+    fn uid_defaults_so_the_api_can_create_objects() {
+        // the pk is not editable, so drf marks it read-only: without a default,
+        // every POST to the generated api dies on a NOT NULL uid.
+        let models = generated(&emit_to_temp(&sample_inventory()), GENERATED_MODELS);
+        assert!(models.contains("import uuid"));
+        assert!(models.contains(
+            "uid = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)"
+        ));
+    }
+
+    #[test]
+    fn optional_non_text_fields_are_nullable() {
+        // `blank=True` is a form-level flag: without `null=True` the column stays
+        // NOT NULL and an absent value cannot be saved at all.
+        let inventory = Inventory {
+            schema: schema_of(vec![(
+                "dcim.site",
+                type_schema(
+                    vec![("slug", field(FieldType::Slug))],
+                    vec![
+                        ("active", optional(FieldType::Bool)),
+                        ("created", optional(FieldType::Datetime)),
+                        ("mgmt_ip", optional(FieldType::IpAddress)),
+                        ("name", optional(FieldType::String)),
+                        ("meta", optional(FieldType::Json)),
+                        (
+                            "tags",
+                            optional(FieldType::List {
+                                item: Box::new(FieldType::String),
+                            }),
+                        ),
+                    ],
+                ),
+            )]),
+            objects: vec![],
+        };
+        let models = generated(&emit_to_temp(&inventory), GENERATED_MODELS);
+
+        assert!(models.contains("active = models.BooleanField(blank=True, null=True)"));
+        assert!(models.contains("created = models.DateTimeField(blank=True, null=True)"));
+        assert!(models.contains("mgmt_ip = models.GenericIPAddressField(blank=True, null=True)"));
+        // text columns hold "" for absent, so they stay NOT NULL.
+        assert!(models.contains("name = models.CharField(max_length=255, blank=True)"));
+        // json columns get a default instead of null.
+        assert!(models.contains("meta = models.JSONField(blank=True, default=dict)"));
+        assert!(models.contains("tags = models.JSONField(blank=True, default=list)"));
+    }
+
+    #[test]
+    fn many_to_many_is_never_nullable() {
+        // django rejects null=True on a ManyToManyField (fields.W340).
+        let inventory = Inventory {
+            schema: schema_of(vec![
+                (
+                    "dcim.tag",
+                    type_schema(vec![("name", field(FieldType::Slug))], vec![]),
+                ),
+                (
+                    "dcim.device",
+                    type_schema(
+                        vec![("name", field(FieldType::Slug))],
+                        vec![(
+                            "tags",
+                            optional(FieldType::ListRef {
+                                target: "dcim.tag".to_string(),
+                            }),
+                        )],
+                    ),
+                ),
+            ]),
+            objects: vec![],
+        };
+        let models = generated(&emit_to_temp(&inventory), GENERATED_MODELS);
+        assert!(models.contains(
+            "tags = models.ManyToManyField(\"DcimTag\", related_name=\"dcimdevice_tags\", blank=True)"
+        ));
+    }
+
+    #[test]
+    fn string_values_are_escaped_into_python() {
+        // an enum value or pattern carrying a quote used to produce a SyntaxError.
+        let mut status = field(FieldType::Enum {
+            values: vec!["active".to_string(), "retired \"old\"".to_string()],
+        });
+        status.pattern = Some("^\\d+\"$".to_string());
+        status.description = Some("a \"quoted\" description".to_string());
+        let inventory = Inventory {
+            schema: schema_of(vec![(
+                "dcim.site",
+                type_schema(
+                    vec![("slug", field(FieldType::Slug))],
+                    vec![("status", status)],
+                ),
+            )]),
+            objects: vec![],
+        };
+        let models = generated(&emit_to_temp(&inventory), GENERATED_MODELS);
+
+        assert!(
+            models.contains(r#"("retired \"old\"", "retired \"old\"")"#),
+            "{models}"
+        );
+        assert!(models.contains(r#"RegexValidator("^\\d+\"$")"#), "{models}");
+        assert!(
+            models.contains(r#"help_text="a \"quoted\" description""#),
+            "{models}"
+        );
+    }
+
+    #[test]
+    fn field_descriptions_become_help_text() {
+        let mut name = field(FieldType::String);
+        name.description = Some("human readable name".to_string());
+        let inventory = Inventory {
+            schema: schema_of(vec![(
+                "dcim.site",
+                type_schema(vec![("slug", field(FieldType::Slug))], vec![("name", name)]),
+            )]),
+            objects: vec![],
+        };
+        let models = generated(&emit_to_temp(&inventory), GENERATED_MODELS);
+        assert!(
+            models.contains("help_text=\"human readable name\""),
+            "{models}"
+        );
+    }
+
+    #[test]
+    fn unusable_field_names_are_rejected() {
+        for name in ["class", "key", "attrs", "uid", "pk", "trailing_", "do__ble"] {
+            let inventory = Inventory {
+                schema: schema_of(vec![(
+                    "dcim.site",
+                    type_schema(
+                        vec![("slug", field(FieldType::Slug))],
+                        vec![(name, field(FieldType::String))],
+                    ),
+                )]),
+                objects: vec![],
+            };
+            let dir = tempdir().unwrap();
+            let result = emit_django_app(dir.path(), &inventory, DjangoEmitOptions::default());
+            assert!(
+                result.is_err(),
+                "expected '{name}' to be rejected instead of emitting broken python"
+            );
+        }
+    }
+
+    #[test]
+    fn colliding_model_names_are_rejected() {
+        // both types render as `class DcimSite`, which would silently drop one.
+        let inventory = Inventory {
+            schema: schema_of(vec![
+                (
+                    "dcim.site",
+                    type_schema(vec![("slug", field(FieldType::Slug))], vec![]),
+                ),
+                (
+                    "dcim_site",
+                    type_schema(vec![("slug", field(FieldType::Slug))], vec![]),
+                ),
+            ]),
+            objects: vec![],
+        };
+        let dir = tempdir().unwrap();
+        let err = emit_django_app(dir.path(), &inventory, DjangoEmitOptions::default())
+            .expect_err("colliding model names must fail");
+        assert!(err.to_string().contains("DcimSite"), "{err}");
+    }
+
+    #[test]
+    fn dangling_relation_targets_are_rejected() {
+        let inventory = Inventory {
+            schema: schema_of(vec![(
+                "dcim.device",
+                type_schema(
+                    vec![("name", field(FieldType::Slug))],
+                    vec![(
+                        "site",
+                        field(FieldType::Ref {
+                            target: "dcim.site".to_string(),
+                        }),
+                    )],
+                ),
+            )]),
+            objects: vec![],
+        };
+        let dir = tempdir().unwrap();
+        let err = emit_django_app(dir.path(), &inventory, DjangoEmitOptions::default())
+            .expect_err("a relation to a type outside the model must fail");
+        assert!(err.to_string().contains("dcim.site"), "{err}");
+    }
+
+    #[test]
+    fn objects_are_emitted_as_a_fixture() {
+        let dir = emit_to_temp(&sample_inventory());
+        let fixture: Value = serde_json::from_str(
+            &fs::read_to_string(dir.path().join(FIXTURES_DIR).join(FIXTURE_FILE)).unwrap(),
+        )
+        .unwrap();
+        let entries = fixture.as_array().expect("a fixture list");
+        assert_eq!(entries.len(), 3);
+
+        let device = entries
+            .iter()
+            .find(|entry| entry["pk"] == json!(Uuid::from_u128(1).to_string()))
+            .expect("the device is in the fixture");
+        let app_name = dir.path().file_name().unwrap().to_str().unwrap();
+        assert_eq!(device["model"], json!(format!("{app_name}.dcimdevice")));
+        assert_eq!(device["fields"]["name"], json!("leaf01"));
+        // a relation carries over as the target uid, which is that model's pk.
+        assert_eq!(
+            device["fields"]["site"],
+            json!(Uuid::from_u128(2).to_string())
+        );
+        assert_eq!(device["fields"]["key"], json!("{\"name\":\"leaf01\"}"));
+        // what the schema does not model stays in the envelope blob.
+        assert_eq!(
+            device["fields"]["attrs"],
+            json!({"unmodelled": "kept in attrs"})
+        );
     }
 
     #[test]
     fn admin_list_display_excludes_many_to_many_fields() {
         // a ManyToManyField in admin list_display trips admin.E109 under `manage.py check`,
         // so a list_ref field must not leak into it. it must still exist as a model field.
-        let mut types = BTreeMap::new();
-        types.insert(
-            "dcim.device".to_string(),
-            TypeSchema {
-                key: BTreeMap::from([(
-                    "name".to_string(),
-                    FieldSchema {
-                        r#type: FieldType::Slug,
-                        required: true,
-                        nullable: false,
-                        description: None,
-                        format: None,
-                        pattern: None,
-                    },
-                )]),
-                fields: BTreeMap::from([
-                    (
-                        "name".to_string(),
-                        FieldSchema {
-                            r#type: FieldType::String,
-                            required: true,
-                            nullable: false,
-                            description: None,
-                            format: None,
-                            pattern: None,
-                        },
-                    ),
-                    (
-                        "tags".to_string(),
-                        FieldSchema {
-                            r#type: FieldType::ListRef {
-                                target: "dcim.tag".to_string(),
-                            },
-                            required: false,
-                            nullable: false,
-                            description: None,
-                            format: None,
-                            pattern: None,
-                        },
-                    ),
-                ]),
-            },
-        );
         let inventory = Inventory {
-            schema: Schema { types },
+            schema: schema_of(vec![
+                (
+                    "dcim.tag",
+                    type_schema(vec![("name", field(FieldType::Slug))], vec![]),
+                ),
+                (
+                    "dcim.device",
+                    type_schema(
+                        vec![("name", field(FieldType::Slug))],
+                        vec![
+                            ("name", field(FieldType::String)),
+                            (
+                                "tags",
+                                optional(FieldType::ListRef {
+                                    target: "dcim.tag".to_string(),
+                                }),
+                            ),
+                        ],
+                    ),
+                ),
+            ]),
             objects: vec![],
         };
-
-        let dir = tempdir().unwrap();
-        emit_django_app(dir.path(), &inventory, DjangoEmitOptions::default()).unwrap();
+        let dir = emit_to_temp(&inventory);
 
         // the field is still generated as a real M2M relation on the model...
-        let models = fs::read_to_string(dir.path().join(GENERATED_MODELS)).unwrap();
-        assert!(models.contains("tags = models.ManyToManyField("));
+        assert!(generated(&dir, GENERATED_MODELS).contains("tags = models.ManyToManyField("));
 
         // ...but it must not appear in the admin list_display (its only path into admin.py).
-        let admin = fs::read_to_string(dir.path().join(GENERATED_ADMIN)).unwrap();
+        let admin = generated(&dir, GENERATED_ADMIN);
         assert!(admin.contains("list_display"));
         assert!(!admin.contains("\"tags\""));
     }
@@ -1222,53 +1632,130 @@ mod tests {
 
     #[test]
     fn generated_admin_includes_defaults() {
-        let dir = tempdir().unwrap();
-        emit_django_app(
-            dir.path(),
-            &sample_inventory(),
-            DjangoEmitOptions::default(),
-        )
-        .unwrap();
-        let admin = fs::read_to_string(dir.path().join(GENERATED_ADMIN)).unwrap();
+        let admin = generated(&emit_to_temp(&sample_inventory()), GENERATED_ADMIN);
 
         assert!(admin.contains("class DcimDeviceAdmin"));
         assert!(admin.contains(
-            "list_display = [\"key\", \"uid\", \"name\", \"device_type\", \"role\", \"site\"]"
+            "list_display = [\"__str__\", \"name\", \"device_type\", \"role\", \"site\", \"uid\"]"
         ));
-        assert!(admin.contains("search_fields = [\"key\", \"uid\"]"));
+        // icontains has no postgres operator for uuid, so only text columns are searched.
+        assert!(admin.contains("search_fields = [\"key\", \"name\", \"device_type\", \"role\"]"));
+        assert!(admin.contains("list_select_related = [\"site\"]"));
         assert!(admin.contains("class DcimInterfaceAdmin"));
     }
 
     #[test]
+    fn str_renders_the_key_values_not_the_json_key() {
+        // `key` holds the ir key as json, so a __str__ returning it reads as
+        // `{"name":"leaf01"}` in the admin and the browsable api.
+        let models = generated(&emit_to_temp(&sample_inventory()), GENERATED_MODELS);
+        assert!(
+            models.contains("        return f\"{self.name}\""),
+            "{models}"
+        );
+        // a composite key renders every component, refs through their own __str__.
+        let inventory = Inventory {
+            schema: schema_of(vec![
+                (
+                    "dcim.device",
+                    type_schema(vec![("name", field(FieldType::Slug))], vec![]),
+                ),
+                (
+                    "dcim.interface",
+                    type_schema(
+                        vec![
+                            (
+                                "device",
+                                field(FieldType::Ref {
+                                    target: "dcim.device".to_string(),
+                                }),
+                            ),
+                            ("name", field(FieldType::Slug)),
+                        ],
+                        vec![],
+                    ),
+                ),
+            ]),
+            objects: vec![],
+        };
+        let models = generated(&emit_to_temp(&inventory), GENERATED_MODELS);
+        assert!(
+            models.contains("        return f\"{self.device} / {self.name}\""),
+            "{models}"
+        );
+    }
+
+    #[test]
     fn generated_api_files_include_models() {
+        let dir = emit_to_temp(&sample_inventory());
+        let serializers = generated(&dir, GENERATED_SERIALIZERS);
+        let views = generated(&dir, GENERATED_VIEWS);
+        let urls = generated(&dir, GENERATED_URLS);
+
+        assert!(serializers.contains("class DcimDeviceSerializer"));
+        assert!(views.contains("class DcimDeviceViewSet"));
+        assert!(views.contains("ordering = [\"key\"]"));
+        assert!(urls.contains("router.register(\"dcimdevices\""));
+        // without drf-spectacular there is nothing to serve a schema with.
+        assert!(!urls.contains("schema"), "{urls}");
+    }
+
+    #[test]
+    fn filterset_fields_are_only_emitted_with_a_filter_backend() {
+        // without django-filter installed there is no backend to honour them, and
+        // a filter that silently returns everything is worse than none.
         let dir = tempdir().unwrap();
         emit_django_app(
             dir.path(),
             &sample_inventory(),
-            DjangoEmitOptions::default(),
+            DjangoEmitOptions {
+                emit_admin: true,
+                filter_backend: false,
+                ..DjangoEmitOptions::default()
+            },
         )
         .unwrap();
-        let serializers = fs::read_to_string(dir.path().join(GENERATED_SERIALIZERS)).unwrap();
-        let views = fs::read_to_string(dir.path().join(GENERATED_VIEWS)).unwrap();
-        let urls = fs::read_to_string(dir.path().join(GENERATED_URLS)).unwrap();
+        assert!(!generated(&dir, GENERATED_VIEWS).contains("filterset_fields"));
 
-        assert!(serializers.contains("class DcimDeviceSerializer"));
-        assert!(views.contains("class DcimDeviceViewSet"));
-        assert!(urls.contains("router.register(\"dcimdevices\""));
-        assert!(urls.contains("schema_view"));
+        let dir = tempdir().unwrap();
+        emit_django_app(
+            dir.path(),
+            &sample_inventory(),
+            DjangoEmitOptions {
+                emit_admin: true,
+                filter_backend: true,
+                ..DjangoEmitOptions::default()
+            },
+        )
+        .unwrap();
+        let views = generated(&dir, GENERATED_VIEWS);
+        assert!(
+            views.contains("filterset_fields = [\"key\", \"uid\", \"name\""),
+            "{views}"
+        );
+    }
+
+    #[test]
+    fn schema_route_is_wired_when_drf_can_serve_it() {
+        let dir = tempdir().unwrap();
+        emit_django_app(
+            dir.path(),
+            &sample_inventory(),
+            DjangoEmitOptions {
+                schema_view: true,
+                ..DjangoEmitOptions::default()
+            },
+        )
+        .unwrap();
+        let urls = generated(&dir, GENERATED_URLS);
+        assert!(urls.contains("from drf_spectacular.views import"), "{urls}");
+        assert!(urls.contains("SpectacularAPIView.as_view()"), "{urls}");
+        assert!(urls.contains("SpectacularSwaggerView.as_view("), "{urls}");
     }
 
     #[test]
     fn generated_models_are_deterministic_by_kind() {
-        let dir = tempdir().unwrap();
-        emit_django_app(
-            dir.path(),
-            &sample_inventory(),
-            DjangoEmitOptions::default(),
-        )
-        .unwrap();
-
-        let models = fs::read_to_string(dir.path().join(GENERATED_MODELS)).unwrap();
+        let models = generated(&emit_to_temp(&sample_inventory()), GENERATED_MODELS);
         let device_pos = models.find("class DcimDevice").unwrap();
         let interface_pos = models.find("class DcimInterface").unwrap();
         let site_pos = models.find("class DcimSite").unwrap();
@@ -1472,16 +1959,16 @@ mod tests {
         // (not `prefixs`), vowel + y `gateway` -> `gateways` (not `gatewaies`).
         let models = vec![
             ModelSpec {
+                type_name: "ipam.prefix".to_string(),
                 class_name: "Prefix".to_string(),
                 fields: Vec::new(),
                 key_fields: Vec::new(),
-                has_validators: false,
             },
             ModelSpec {
+                type_name: "ipam.gateway".to_string(),
                 class_name: "Gateway".to_string(),
                 fields: Vec::new(),
                 key_fields: Vec::new(),
-                has_validators: false,
             },
         ];
         let routes = render_routes_block(&models);

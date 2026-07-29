@@ -102,24 +102,62 @@ pub fn run_emit(runner: &dyn Runner, inventory: &Inventory, config: &DjangoConfi
     ensure_python_has_drf(runner, &config.python)?;
     ensure_django_app(runner, output_dir, app_name, &config.python)?;
 
+    // django-filter is optional: with it the viewsets get per-field filtering,
+    // without it they only declare what the built-in backends can honour.
+    let filter_backend = python_has_module(runner, &config.python, "django_filters");
+    // the openapi schema and docs page come from drf-spectacular when it is there.
+    let schema_view = python_has_module(runner, &config.python, "drf_spectacular");
+
     let app_dir = output_dir.join(app_name);
     let options = DjangoEmitOptions {
         emit_admin: !config.no_admin,
+        filter_backend,
+        schema_view,
     };
     crate::emit_django_app(&app_dir, inventory, options)?;
-    ensure_installed_apps_entries(output_dir, project_name, &["rest_framework", app_name])?;
+
+    let mut installed = vec!["rest_framework"];
+    if filter_backend {
+        installed.push("django_filters");
+    }
+    if schema_view {
+        installed.push("drf_spectacular");
+    }
+    installed.push(app_name);
+    ensure_installed_apps_entries(output_dir, project_name, &installed)?;
+    ensure_rest_framework_settings(
+        output_dir,
+        project_name,
+        app_name,
+        filter_backend,
+        schema_view,
+    )?;
     ensure_project_urls(output_dir, project_name, app_name)?;
     run_manage_check(runner, output_dir, &config.python)?;
     run_manage_makemigrations(runner, output_dir, &config.python)?;
+
+    let mut loaded = 0;
     if !config.no_migrate {
         run_manage_migrate(runner, output_dir, &config.python)?;
+        if !inventory.objects.is_empty() {
+            run_manage_loaddata(runner, output_dir, &config.python)?;
+            loaded = inventory.objects.len();
+        }
     }
 
     println!(
-        "django app generated at {} (project {}, app {})",
+        "django app generated at {} (project {}, app {}); {}",
         output_dir.display(),
         project_name,
-        app_name
+        app_name,
+        if config.no_migrate {
+            format!(
+                "{} objects written to the fixture, not loaded (no_migrate)",
+                inventory.objects.len()
+            )
+        } else {
+            format!("{loaded} objects loaded")
+        }
     );
     Ok(())
 }
@@ -159,24 +197,30 @@ fn ensure_django_app(
     )
 }
 
+fn python_has_module(runner: &dyn Runner, python: &str, module: &str) -> bool {
+    runner
+        .run(python, &["-c", &format!("import {module}")], None)
+        .is_ok()
+}
+
 fn ensure_python_has_django(runner: &dyn Runner, python: &str) -> Result<()> {
-    match runner.run(python, &["-c", "import django"], None) {
-        Ok(()) => Ok(()),
-        Err(_) => Err(anyhow!(
-            "django is not available for python version '{}'; install it (pip install django)",
-            python
-        )),
+    if python_has_module(runner, python, "django") {
+        return Ok(());
     }
+    Err(anyhow!(
+        "django is not available for python version '{}'; install it (pip install django)",
+        python
+    ))
 }
 
 fn ensure_python_has_drf(runner: &dyn Runner, python: &str) -> Result<()> {
-    match runner.run(python, &["-c", "import rest_framework"], None) {
-        Ok(()) => Ok(()),
-        Err(_) => Err(anyhow!(
-            " djangorestframework is not available for {}; install it (pip install djangorestframework)",
-            python
-        )),
+    if python_has_module(runner, python, "rest_framework") {
+        return Ok(());
     }
+    Err(anyhow!(
+        "djangorestframework is not available for {}; install it (pip install djangorestframework)",
+        python
+    ))
 }
 
 fn ensure_app_name_available(
@@ -247,6 +291,49 @@ fn ensure_installed_apps_entries(
     Ok(())
 }
 
+/// the generated viewsets declare filtering, search, and ordering; drf ignores
+/// all three unless a backend is configured, so the settings say so explicitly.
+fn ensure_rest_framework_settings(
+    output_dir: &Path,
+    project_name: &str,
+    app_name: &str,
+    filter_backend: bool,
+    schema_view: bool,
+) -> Result<()> {
+    let settings_path = output_dir.join(project_name).join("settings.py");
+    let contents = fs::read_to_string(&settings_path)
+        .with_context(|| format!("read {}", settings_path.display()))?;
+    if contents.contains("REST_FRAMEWORK") {
+        return Ok(());
+    }
+
+    let mut backends = Vec::new();
+    if filter_backend {
+        backends.push("        \"django_filters.rest_framework.DjangoFilterBackend\",");
+    }
+    backends.push("        \"rest_framework.filters.SearchFilter\",");
+    backends.push("        \"rest_framework.filters.OrderingFilter\",");
+
+    let (schema_class, spectacular) = if schema_view {
+        (
+            "    \"DEFAULT_SCHEMA_CLASS\": \"drf_spectacular.openapi.AutoSchema\",\n".to_string(),
+            format!("\nSPECTACULAR_SETTINGS = {{\n    \"TITLE\": \"{app_name} API\",\n}}\n"),
+        )
+    } else {
+        (String::new(), String::new())
+    };
+    let block = format!(
+        "\nREST_FRAMEWORK = {{\n    \"DEFAULT_FILTER_BACKENDS\": [\n{}\n    ],\n    \
+         \"DEFAULT_PAGINATION_CLASS\": \"rest_framework.pagination.PageNumberPagination\",\n    \
+         \"PAGE_SIZE\": 50,\n{schema_class}}}\n{spectacular}",
+        backends.join("\n")
+    );
+    let separator = if contents.ends_with('\n') { "" } else { "\n" };
+    fs::write(&settings_path, format!("{contents}{separator}{block}"))
+        .with_context(|| format!("write {}", settings_path.display()))?;
+    Ok(())
+}
+
 fn ensure_project_urls(output_dir: &Path, project_name: &str, app_name: &str) -> Result<()> {
     let urls_path = output_dir.join(project_name).join("urls.py");
     let mut contents =
@@ -305,10 +392,184 @@ fn run_manage_migrate(runner: &dyn Runner, output_dir: &Path, python: &str) -> R
     runner.run(python, &["manage.py", "migrate"], Some(output_dir))
 }
 
+/// loaddata keys on the primary key, and the primary key is the ir uid, so
+/// re-running converges the app's rows instead of duplicating them.
+fn run_manage_loaddata(runner: &dyn Runner, output_dir: &Path, python: &str) -> Result<()> {
+    runner.run(
+        python,
+        &["manage.py", "loaddata", crate::FIXTURE_LABEL],
+        Some(output_dir),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alembic_core::{FieldSchema, FieldType, Key, Object, Schema, TypeName, TypeSchema};
+    use serde_json::{json, Value};
+    use std::cell::RefCell;
+    use std::collections::BTreeMap;
     use tempfile::tempdir;
+
+    /// records what run_emit would have shelled out to, and reports every module
+    /// as importable so the preflight checks pass without django installed.
+    #[derive(Default)]
+    struct FakeRunner {
+        calls: RefCell<Vec<String>>,
+    }
+
+    impl FakeRunner {
+        fn calls(&self) -> Vec<String> {
+            self.calls.borrow().clone()
+        }
+
+        fn ran(&self, needle: &str) -> bool {
+            self.calls().iter().any(|call| call.contains(needle))
+        }
+    }
+
+    impl Runner for FakeRunner {
+        fn run(&self, program: &str, args: &[&str], _cwd: Option<&Path>) -> Result<()> {
+            self.calls
+                .borrow_mut()
+                .push(format!("{program} {}", args.join(" ")));
+            Ok(())
+        }
+    }
+
+    /// a project skeleton as django-admin would leave it, so run_emit's
+    /// "already there" checks hold and the fake runner never has to create files.
+    fn scaffold_project(dir: &Path, project: &str, app: &str) {
+        fs::create_dir_all(dir.join(project)).unwrap();
+        fs::create_dir_all(dir.join(app)).unwrap();
+        fs::write(dir.join("manage.py"), "# manage\n").unwrap();
+        fs::write(dir.join(app).join("apps.py"), "# apps\n").unwrap();
+        fs::write(
+            dir.join(project).join("settings.py"),
+            "INSTALLED_APPS = [\n    \"django.contrib.admin\",\n]\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join(project).join("urls.py"),
+            "from django.urls import path\n\nurlpatterns = [\n]\n",
+        )
+        .unwrap();
+    }
+
+    fn one_type_inventory(objects: Vec<Object>) -> Inventory {
+        let field = |r#type: FieldType| FieldSchema {
+            r#type,
+            required: true,
+            nullable: false,
+            description: None,
+            format: None,
+            pattern: None,
+        };
+        let mut types = BTreeMap::new();
+        types.insert(
+            "dcim.site".to_string(),
+            TypeSchema {
+                key: BTreeMap::from([("slug".to_string(), field(FieldType::Slug))]),
+                fields: BTreeMap::from([("name".to_string(), field(FieldType::String))]),
+            },
+        );
+        Inventory {
+            schema: Schema { types },
+            objects,
+        }
+    }
+
+    fn site_object() -> Object {
+        Object::new(
+            uuid::Uuid::from_u128(1),
+            TypeName::new("dcim.site"),
+            Key::from(BTreeMap::from([(
+                "slug".to_string(),
+                Value::String("fra1".to_string()),
+            )])),
+            alembic_core::JsonMap::from(BTreeMap::from([("name".to_string(), json!("FRA1"))])),
+        )
+        .unwrap()
+    }
+
+    fn config_for(dir: &Path) -> DjangoConfig {
+        DjangoConfig {
+            output: dir.to_path_buf(),
+            project: Some("proj".to_string()),
+            app: Some("app".to_string()),
+            ..DjangoConfig::default()
+        }
+    }
+
+    #[test]
+    fn run_emit_loads_the_objects_it_emitted() {
+        let dir = tempdir().unwrap();
+        scaffold_project(dir.path(), "proj", "app");
+        let runner = FakeRunner::default();
+
+        run_emit(
+            &runner,
+            &one_type_inventory(vec![site_object()]),
+            &config_for(dir.path()),
+        )
+        .expect("emit the app");
+
+        assert!(runner.ran("manage.py check"), "{:?}", runner.calls());
+        assert!(
+            runner.ran("manage.py makemigrations"),
+            "{:?}",
+            runner.calls()
+        );
+        assert!(runner.ran("manage.py migrate"), "{:?}", runner.calls());
+        // the objects are only in the app once loaddata has run.
+        assert!(
+            runner.ran("manage.py loaddata alembic"),
+            "{:?}",
+            runner.calls()
+        );
+
+        let settings = fs::read_to_string(dir.path().join("proj").join("settings.py")).unwrap();
+        assert!(settings.contains("\"app\","), "{settings}");
+        assert!(settings.contains("\"rest_framework\","), "{settings}");
+        // the fake runner reports django_filters as importable, so it is wired up.
+        assert!(settings.contains("\"django_filters\","), "{settings}");
+        assert!(
+            settings.contains("DEFAULT_FILTER_BACKENDS"),
+            "drf ignores the generated filtering unless a backend is configured: {settings}"
+        );
+    }
+
+    #[test]
+    fn run_emit_skips_loaddata_without_objects() {
+        let dir = tempdir().unwrap();
+        scaffold_project(dir.path(), "proj", "app");
+        let runner = FakeRunner::default();
+
+        run_emit(
+            &runner,
+            &one_type_inventory(vec![]),
+            &config_for(dir.path()),
+        )
+        .expect("emit the app");
+
+        assert!(!runner.ran("loaddata"), "{:?}", runner.calls());
+    }
+
+    #[test]
+    fn run_emit_does_not_migrate_when_told_not_to() {
+        let dir = tempdir().unwrap();
+        scaffold_project(dir.path(), "proj", "app");
+        let runner = FakeRunner::default();
+        let config = DjangoConfig {
+            no_migrate: true,
+            ..config_for(dir.path())
+        };
+
+        run_emit(&runner, &one_type_inventory(vec![site_object()]), &config).expect("emit the app");
+
+        assert!(!runner.ran("manage.py migrate"), "{:?}", runner.calls());
+        assert!(!runner.ran("loaddata"), "{:?}", runner.calls());
+    }
 
     fn setup_project(urls_py: &str) -> (tempfile::TempDir, String) {
         let dir = tempdir().unwrap();

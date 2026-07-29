@@ -47,14 +47,22 @@ pub fn run_command(mut command: Command, context: &str) {
     }
 }
 
+/// whether the django e2e tests can run. a developer box without django skips
+/// them, but a run that names its interpreter (ALEMBIC_DJANGO_PYTHON, which CI
+/// sets) means django is expected: skipping there would report green for tests
+/// that never ran.
 pub fn django_available(python: &str) -> bool {
     let output = Command::new(python)
         .args(["-c", "import django, rest_framework"])
         .output();
-    match output {
+    let available = match output {
         Ok(result) => result.status.success(),
         Err(_) => false,
+    };
+    if !available && std::env::var_os("ALEMBIC_DJANGO_PYTHON").is_some() {
+        panic!("ALEMBIC_DJANGO_PYTHON is set to '{python}', but django + djangorestframework are not importable there");
     }
+    available
 }
 
 /// path to a documented example walkthrough inventory (examples/walkthroughs/<name>).

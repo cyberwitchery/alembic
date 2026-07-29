@@ -62,7 +62,7 @@ fields:
 
 `format` supports: `slug`, `ip_address`, `cidr`, `prefix`, `mac`, `uuid`.
 
-`nullable` also shapes provisioned schema: the django adapter emits `null=True`.
+`nullable` also shapes provisioned schema: the django adapter emits `null=True`. it does the same for any non-text field that is not `required`, since a django column without `null=True` is NOT NULL whatever the form layer says. optional text fields hold the empty string instead, and optional `json`/`list`/`map` fields get `default=dict`/`default=list`.
 
 composite types take a further mandatory key alongside `type`: `list` takes `item`, `map` takes `value`, `enum` takes `values`, `ref` and `list_ref` take `target`.
 
