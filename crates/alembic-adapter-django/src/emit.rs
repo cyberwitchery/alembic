@@ -146,7 +146,7 @@ pub fn run_emit(runner: &dyn Runner, inventory: &Inventory, config: &DjangoConfi
         }
     }
 
-    println!(
+    tracing::info!(
         "django app generated at {} (project {}, app {}); {}",
         output_dir.display(),
         project_name,
