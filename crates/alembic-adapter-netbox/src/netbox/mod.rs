@@ -209,6 +209,173 @@ mod tests {
         );
     }
 
+    /// the schema the import tests share: a device keyed on `name` referencing a
+    /// site, and a site keyed on `site_key`.
+    fn import_schema(site_key: &str) -> alembic_core::Schema {
+        alembic_core::Schema {
+            types: std::collections::BTreeMap::from([
+                (
+                    "dcim.device".to_string(),
+                    alembic_core::TypeSchema {
+                        key: std::collections::BTreeMap::from([(
+                            "name".to_string(),
+                            string_field(true),
+                        )]),
+                        fields: std::collections::BTreeMap::from([
+                            ("name".to_string(), string_field(true)),
+                            (
+                                "site".to_string(),
+                                alembic_core::FieldSchema {
+                                    r#type: alembic_core::FieldType::Ref {
+                                        target: "dcim.site".to_string(),
+                                    },
+                                    required: true,
+                                    nullable: false,
+                                    description: None,
+                                    format: None,
+                                    pattern: None,
+                                },
+                            ),
+                        ]),
+                    },
+                ),
+                (
+                    "dcim.site".to_string(),
+                    alembic_core::TypeSchema {
+                        key: std::collections::BTreeMap::from([(
+                            site_key.to_string(),
+                            string_field(true),
+                        )]),
+                        fields: std::collections::BTreeMap::from([
+                            ("name".to_string(), string_field(true)),
+                            ("slug".to_string(), string_field(false)),
+                        ]),
+                    },
+                ),
+            ]),
+        }
+    }
+
+    /// one site (id 1) and one device (id 2) whose nested `site` is `site_brief`.
+    fn mock_import_backend<'a>(
+        server: &'a MockServer,
+        site_brief: serde_json::Value,
+    ) -> Vec<Mock<'a>> {
+        vec![
+            mock_list(
+                server,
+                "/api/core/object-types/",
+                json!([
+                    {
+                        "app_label": "dcim",
+                        "model": "device",
+                        "rest_api_endpoint": "/api/dcim/devices/",
+                        "features": ["custom-fields", "tags"]
+                    },
+                    {
+                        "app_label": "dcim",
+                        "model": "site",
+                        "rest_api_endpoint": "/api/dcim/sites/",
+                        "features": ["custom-fields", "tags"]
+                    }
+                ]),
+            ),
+            mock_list(
+                server,
+                "/api/dcim/devices/",
+                json!([{ "id": 2, "name": "leaf01", "site": site_brief }]),
+            ),
+            mock_list(
+                server,
+                "/api/dcim/sites/",
+                json!([{ "id": 1, "name": "FRA1", "slug": "fra1" }]),
+            ),
+            server.mock(|when, then| {
+                when.method(GET).path("/api/extras/custom-fields/");
+                then.status(200).json_body(page(json!([])));
+            }),
+            server.mock(|when, then| {
+                when.method(GET)
+                    .path("/api/extras/tags/")
+                    .query_param("limit", "200")
+                    .query_param("offset", "0");
+                then.status(200).json_body(page(json!([])));
+            }),
+        ]
+    }
+
+    /// import through the adapter and assert the device's `site` is the site's
+    /// canonical uid, the same one the imported site object carries.
+    async fn assert_import_resolves_site(
+        adapter: &NetBoxAdapter,
+        schema: &alembic_core::Schema,
+        site_key: Key,
+    ) {
+        let report = alembic_engine::import_inventory(adapter, schema, &[])
+            .await
+            .unwrap();
+
+        let validation = alembic_core::validate_inventory(&report.inventory);
+        assert!(
+            validation.errors.is_empty(),
+            "imported inventory must validate: {:?}",
+            validation.errors
+        );
+
+        let device = report
+            .inventory
+            .objects
+            .iter()
+            .find(|object| object.type_name.as_str() == "dcim.device")
+            .unwrap();
+        let canonical_site = alembic_core::uid_v5("dcim.site", &key_string(&site_key)).to_string();
+        assert_eq!(
+            device.attrs.get("site").and_then(|v| v.as_str()),
+            Some(canonical_site.as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn import_resolves_refs_in_canonical_uid_space() {
+        // observe alone would state-map the ref (see observe_maps_nested_refs_to_uids)
+        // and the inventory would dangle.
+        let server = MockServer::start();
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
+        let _mocks = mock_import_backend(
+            &server,
+            json!({
+                "id": 1,
+                "url": "https://netbox.example.com/api/dcim/sites/1/",
+                "name": "FRA1",
+                "slug": "fra1"
+            }),
+        );
+
+        assert_import_resolves_site(&adapter, &import_schema("name"), key("name", json!("FRA1")))
+            .await;
+    }
+
+    #[tokio::test]
+    async fn import_resolves_a_ref_whose_brief_omits_a_key_field() {
+        // `resolve_nested_ref_uid` needs the target's whole declared key for its
+        // canonical fallback, so a brief missing one field leaves the ref a bare
+        // backend id once state is out of the picture. the index bootstrapped
+        // from the observation resolves it anyway.
+        let server = MockServer::start();
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
+        let _mocks = mock_import_backend(
+            &server,
+            json!({
+                "id": 1,
+                "url": "https://netbox.example.com/api/dcim/sites/1/",
+                "name": "FRA1"
+            }),
+        );
+
+        assert_import_resolves_site(&adapter, &import_schema("slug"), key("slug", json!("fra1")))
+            .await;
+    }
+
     #[tokio::test]
     async fn apply_orders_creates_by_dependency() {
         let server = MockServer::start();

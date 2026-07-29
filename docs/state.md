@@ -22,7 +22,7 @@ The uid (uuid) is always a string. the backend id can be either an integer (e.g.
 
 ## behavior
 
-- used as the primary match during planning and apply.
+- used as the primary match during planning and apply; `import` ignores it.
 - supports both integer (e.g. NetBox) and string/uuid (e.g. Nautobot) backend ids.
 - provides stability across renames (key changes).
 - when empty, alembic can bootstrap mappings by matching observed objects by key (canonical JSON form).

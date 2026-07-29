@@ -747,6 +747,59 @@ async fn test_observe_resolves_ref_ids_to_uids() {
 }
 
 #[tokio::test]
+async fn test_import_resolves_bare_ref_ids_from_the_observation() {
+    // generic refs are bare backend ids with no key material behind them, so
+    // with no state nothing but an index bootstrapped from the observation puts
+    // the device's `site` in the uid space the imported site object lives in.
+    // this is the second import of an already-adopted backend.
+    let server = MockServer::start();
+    let _devices = server.mock(|when, then| {
+        when.method(GET).path("/api/devices");
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(serde_json::json!({
+                "results": [{"id": 2, "name": "leaf01", "site": 1}]
+            }));
+    });
+    let _sites = server.mock(|when, then| {
+        when.method(GET).path("/api/sites");
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(serde_json::json!([{"id": 1, "name": "FRA1"}]));
+    });
+
+    let adapter = GenericAdapter::new(test_config(&server.base_url())).unwrap();
+    let schema = test_schema();
+
+    let report = alembic_engine::import_inventory(&adapter, &schema, &[])
+        .await
+        .unwrap();
+
+    let validation = alembic_core::validate_inventory(&report.inventory);
+    assert!(
+        validation.errors.is_empty(),
+        "imported inventory must validate: {:?}",
+        validation.errors
+    );
+
+    let object_of = |type_name: &str| {
+        report
+            .inventory
+            .objects
+            .iter()
+            .find(|object| object.type_name.as_str() == type_name)
+            .unwrap_or_else(|| panic!("no {type_name} in the imported inventory"))
+    };
+    assert_eq!(
+        object_of("device")
+            .attrs
+            .get("site")
+            .and_then(|v| v.as_str()),
+        Some(object_of("site").uid.to_string().as_str())
+    );
+}
+
+#[tokio::test]
 async fn test_observe_without_results_path() {
     let server = MockServer::start();
     let mock = server.mock(|when, then| {
