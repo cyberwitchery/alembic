@@ -1,6 +1,6 @@
 # changelog
 
-## Unreleased
+## [0.8.0] - 2026-07-29
 
 - docs: add `docs/django.md`, the reference page the django adapter was missing while every other shipped adapter had one (config keys, emitter semantics, which files are regenerated, the optional-package matrix, and the name rules the emitter enforces). `no_migrate` and `no_admin` were documented nowhere before
 - **breaking** adapter configs reject unknown keys. every backend config (`netbox`, `nautobot`, `infrahub` and its nested `schema`, `generic`, `django`, `external`) carried no `deny_unknown_fields`, so a typo was discarded in silence and the run took the default instead. the booleans are what made this bite: a typo'd `no_migrate` migrated and loaded the inventory into a database the user meant to leave untouched, and reported success either way. a typo'd key is now a parse error naming the field, matching `Schema` in core, which already denied them. the `backend:` tag the config dispatches on is not itself an unknown field (#309)
