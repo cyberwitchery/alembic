@@ -31,6 +31,8 @@ pub struct EndpointConfig {
     pub path: String,
     /// json path to the results array in the list response (default: root).
     pub results_path: Option<String>,
+    /// json path to the next page's url in the list response; unset reads one page.
+    pub next_path: Option<String>,
     /// json path to the object id (default: "id").
     #[serde(default = "default_id_path")]
     pub id_path: String,
@@ -489,25 +491,53 @@ impl Adapter for GenericAdapter {
     }
 }
 
-/// list an endpoint and return its results array (from `results_path` when set,
-/// else the response root). shared by `read` and `lookup_backend_id` so the
-/// 409-recovery path fetches and extracts identically to observation.
+/// list an endpoint and return the results of every page (from `results_path`
+/// when set, else the response root), following `next_path` when it is set.
+/// shared by `read` and `lookup_backend_id` so the 409-recovery path fetches and
+/// extracts identically to observation.
 async fn list_endpoint_results(
     client: &reqwest::Client,
     base_url: &str,
     endpoint: &EndpointConfig,
     type_name: &TypeName,
 ) -> Result<Vec<serde_json::Value>> {
-    let url = format!(
+    let mut url = reqwest::Url::parse(&format!(
         "{}/{}",
         base_url.trim_end_matches('/'),
         endpoint.path.trim_start_matches('/')
-    );
-    let resp = client.get(&url).send().await?.error_for_status()?;
-    let body: serde_json::Value = resp.json().await?;
+    ))?;
 
+    let mut results = Vec::new();
+    let mut visited = BTreeSet::new();
+    loop {
+        if !visited.insert(url.to_string()) {
+            return Err(anyhow!(
+                "pagination cycle for {}: {} was already fetched",
+                type_name,
+                url
+            ));
+        }
+
+        let resp = client.get(url.clone()).send().await?.error_for_status()?;
+        let body: serde_json::Value = resp.json().await?;
+        results.extend(page_results(&body, endpoint, type_name)?);
+
+        match next_page_url(&body, endpoint, &url, type_name)? {
+            Some(next) => url = next,
+            None => return Ok(results),
+        }
+    }
+}
+
+/// one page's results array: the array at `results_path` when set, else the
+/// response root.
+fn page_results(
+    body: &serde_json::Value,
+    endpoint: &EndpointConfig,
+    type_name: &TypeName,
+) -> Result<Vec<serde_json::Value>> {
     if let Some(path) = &endpoint.results_path {
-        Ok(resolve_path(&body, path)?
+        Ok(walk_path(body, path)?
             .as_array()
             .ok_or_else(|| anyhow!("expected array at path {} for {}", path, type_name))?
             .clone())
@@ -518,7 +548,63 @@ async fn list_endpoint_results(
     }
 }
 
-fn resolve_path(value: &serde_json::Value, path: &str) -> Result<serde_json::Value> {
+/// the url of the page after `page`, or `None` when the walk is over: an unset
+/// `next_path`, or a link that is absent or null (the last page carries neither).
+/// a relative link resolves against the page it came from, and one that leaves
+/// that page's origin is refused, since the configured auth headers go out with
+/// every request the adapter makes.
+fn next_page_url(
+    body: &serde_json::Value,
+    endpoint: &EndpointConfig,
+    page: &reqwest::Url,
+    type_name: &TypeName,
+) -> Result<Option<reqwest::Url>> {
+    let Some(path) = &endpoint.next_path else {
+        return Ok(None);
+    };
+
+    // a missing segment is the last page, not a config error, so the walk's
+    // error is dropped here.
+    let next = match walk_path(body, path).ok() {
+        None | Some(serde_json::Value::Null) => return Ok(None),
+        Some(serde_json::Value::String(next)) => next,
+        Some(other) => {
+            return Err(anyhow!(
+                "expected a string or null at next path {} for {}, got a {}",
+                path,
+                type_name,
+                value_kind(other)
+            ));
+        }
+    };
+
+    let next = page.join(next)?;
+    if next.origin() != page.origin() {
+        return Err(anyhow!(
+            "next page {} for {} leaves the origin of {}",
+            next,
+            type_name,
+            page
+        ));
+    }
+    Ok(Some(next))
+}
+
+/// the json kind of a value, so an error about a misconfigured path does not
+/// repeat a whole page body back at the reader.
+fn value_kind(value: &serde_json::Value) -> &'static str {
+    match value {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "bool",
+        serde_json::Value::Number(_) => "number",
+        serde_json::Value::String(_) => "string",
+        serde_json::Value::Array(_) => "array",
+        serde_json::Value::Object(_) => "object",
+    }
+}
+
+/// walk a dotted path; the error names the first segment that is missing.
+fn walk_path<'a>(value: &'a serde_json::Value, path: &str) -> Result<&'a serde_json::Value> {
     let mut current = value;
     for segment in path.split('.') {
         if segment.is_empty() {
@@ -528,7 +614,11 @@ fn resolve_path(value: &serde_json::Value, path: &str) -> Result<serde_json::Val
             .get(segment)
             .ok_or_else(|| anyhow!("path segment not found: {}", segment))?;
     }
-    Ok(current.clone())
+    Ok(current)
+}
+
+fn resolve_path(value: &serde_json::Value, path: &str) -> Result<serde_json::Value> {
+    walk_path(value, path).cloned()
 }
 
 /// decode a backend id from the id-path value the api returned.

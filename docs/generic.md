@@ -23,17 +23,38 @@ each `types` entry is an endpoint config:
 - `path` (required) - path for listing and creating objects.
 - `results_path` (optional) - json path to the results array in a list response; defaults
   to the response root.
+- `next_path` (optional) - json path to the next page's url in a list response; unset
+  reads a single page (see pagination below).
 - `id_path` (optional, default `id`) - json path to an object's id in a response.
 - `delete_strategy` (optional, default `none`) - `none` or `standard` (see below).
 - `update_method` (optional, default `PATCH`) - `PATCH` or `PUT`; any other value errors
   when the adapter is constructed.
 
-`results_path` and `id_path` are dotted paths (for example `results` or `data.id`).
+`results_path`, `next_path` and `id_path` are dotted paths (for example `results` or
+`data.id`).
+
+## pagination
+
+with `next_path` set, a list walks pages until the link is absent or null, and the
+results of every page are concatenated. this applies to observation and to the lookup
+that recovers from a create conflict alike, so both see the whole collection.
+
+- the link is read from the page's response root, so an endpoint whose list response is
+  the bare results array has nowhere to carry one and stops after a single page.
+- a relative link (`?page=2`, `/api/devices?page=2`) resolves against the page it came
+  from, per rfc 3986; an absolute one is used as given.
+- a link that leaves that page's origin (scheme, host, port) is refused, since the
+  configured `headers` go out with every request the adapter makes.
+- a link that is neither a string nor null is a config error, and a page already fetched
+  in this walk is reported as a pagination cycle rather than followed.
+
+without `next_path` the adapter issues exactly one GET per list, as before.
 
 ## observe and apply
 
-- observe issues one GET per type to `path`, takes the array at `results_path` (or the
-  response root), and reads each object's id from `id_path`.
+- observe issues one GET per type to `path` (more with `next_path`, see above), takes the
+  array at `results_path` (or the response root), and reads each object's id from
+  `id_path`.
 - create POSTs to `path` with the object's attrs as the json body and reads the new id from
   the response via `id_path`. on a create conflict (409) the adapter re-lists the endpoint
   and reuses the existing object whose key matches; if none matches, the conflict is returned.
@@ -63,8 +84,10 @@ each `types` entry is an endpoint config:
 
 ## known limitations
 
-- reads a single list response per type; pagination is not followed, so each type's endpoint
-  must return all of that type's objects in one response.
+- pagination is followed only through a next-page link in the response body (`next_path`).
+  offset/limit paging the client has to compute, and a link in the `Link` header rather
+  than the body, are not supported; such an endpoint must return all of that type's
+  objects in one response.
 - `update_method` must be `PATCH` or `PUT`.
 - deletes require `delete_strategy: standard`; with the default `none`, delete ops fail.
 - no schema provisioning; the backend schema must already exist.

@@ -15,6 +15,7 @@ fn test_config(base_url: &str) -> GenericConfig {
         EndpointConfig {
             path: "/api/devices".to_string(),
             results_path: Some("results".to_string()),
+            next_path: None,
             id_path: "id".to_string(),
             delete_strategy: DeleteStrategy::Standard,
             update_method: "PATCH".to_string(),
@@ -25,6 +26,7 @@ fn test_config(base_url: &str) -> GenericConfig {
         EndpointConfig {
             path: "/api/sites".to_string(),
             results_path: None,
+            next_path: None,
             id_path: "id".to_string(),
             delete_strategy: DeleteStrategy::None,
             update_method: "PUT".to_string(),
@@ -35,6 +37,18 @@ fn test_config(base_url: &str) -> GenericConfig {
         headers: BTreeMap::new(),
         types,
     }
+}
+
+/// `test_config` with `next_path` set on device, the drf-shaped
+/// `{results, next}` endpoint.
+fn paginated_config(base_url: &str) -> GenericConfig {
+    let mut config = test_config(base_url);
+    config
+        .types
+        .get_mut("device")
+        .expect("device endpoint")
+        .next_path = Some("next".to_string());
+    config
 }
 
 fn test_schema() -> Schema {
@@ -854,6 +868,219 @@ async fn test_observe_all_types() {
     assert_eq!(state.by_key.len(), 2);
 }
 
+// tests for pagination. `next_path` is the only thing that makes the adapter
+// issue more than one GET per type, and the walk is shared with 409 recovery.
+async fn observe_devices(config: GenericConfig) -> Result<ObservedState> {
+    GenericAdapter::new(config)
+        .unwrap()
+        .read(
+            &test_schema(),
+            &[TypeName::new("device".to_string())],
+            &new_state_store(),
+        )
+        .await
+}
+
+#[tokio::test]
+async fn test_observe_follows_pagination() {
+    let server = MockServer::start();
+    let base = server.base_url();
+    let page1 = server.mock(|when, then| {
+        when.method(GET)
+            .path("/api/devices")
+            .query_param_missing("page");
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(serde_json::json!({
+                "results": [{"id": 1, "name": "device1"}],
+                "next": format!("{base}/api/devices?page=2"),
+            }));
+    });
+    let page2 = server.mock(|when, then| {
+        when.method(GET)
+            .path("/api/devices")
+            .query_param("page", "2");
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(serde_json::json!({
+                "results": [{"id": 2, "name": "device2"}],
+                "next": format!("{base}/api/devices?page=3"),
+            }));
+    });
+    let page3 = server.mock(|when, then| {
+        when.method(GET)
+            .path("/api/devices")
+            .query_param("page", "3");
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(serde_json::json!({
+                "results": [{"id": 3, "name": "device3"}],
+                "next": serde_json::Value::Null,
+            }));
+    });
+
+    let state = observe_devices(paginated_config(&base)).await.unwrap();
+
+    page1.assert();
+    page2.assert();
+    page3.assert();
+    assert_eq!(state.by_key.len(), 3);
+}
+
+#[tokio::test]
+async fn test_observe_stops_on_null_next() {
+    let server = MockServer::start();
+    let page = server.mock(|when, then| {
+        when.method(GET).path("/api/devices");
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(serde_json::json!({
+                "results": [{"id": 1, "name": "device1"}],
+                "next": serde_json::Value::Null,
+            }));
+    });
+
+    let state = observe_devices(paginated_config(&server.base_url()))
+        .await
+        .unwrap();
+
+    // exactly one hit: a single-page api must not be walked further.
+    page.assert();
+    assert_eq!(state.by_key.len(), 1);
+}
+
+#[tokio::test]
+async fn test_observe_stops_on_absent_next_key() {
+    // an api that omits the key entirely on the last page. the dotted-path walk
+    // errors on a missing segment, so an absent link must not surface as one.
+    let server = MockServer::start();
+    let page = server.mock(|when, then| {
+        when.method(GET).path("/api/devices");
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(serde_json::json!({"results": [{"id": 1, "name": "device1"}]}));
+    });
+
+    let state = observe_devices(paginated_config(&server.base_url()))
+        .await
+        .unwrap();
+
+    page.assert();
+    assert_eq!(state.by_key.len(), 1);
+}
+
+#[tokio::test]
+async fn test_observe_follows_relative_next() {
+    let server = MockServer::start();
+    let page1 = server.mock(|when, then| {
+        when.method(GET)
+            .path("/api/devices")
+            .query_param_missing("page");
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(serde_json::json!({
+                "results": [{"id": 1, "name": "device1"}],
+                "next": "?page=2",
+            }));
+    });
+    let page2 = server.mock(|when, then| {
+        when.method(GET)
+            .path("/api/devices")
+            .query_param("page", "2");
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(serde_json::json!({
+                "results": [{"id": 2, "name": "device2"}],
+                "next": serde_json::Value::Null,
+            }));
+    });
+
+    let state = observe_devices(paginated_config(&server.base_url()))
+        .await
+        .unwrap();
+
+    page1.assert();
+    page2.assert();
+    assert_eq!(state.by_key.len(), 2);
+}
+
+#[tokio::test]
+async fn test_observe_rejects_non_string_next() {
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(GET).path("/api/devices");
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(serde_json::json!({"results": [], "next": 2}));
+    });
+
+    let err = observe_devices(paginated_config(&server.base_url()))
+        .await
+        .unwrap_err();
+
+    assert!(err
+        .to_string()
+        .contains("expected a string or null at next path next for device, got a number"));
+}
+
+#[tokio::test]
+async fn test_observe_rejects_pagination_cycle() {
+    // an api whose last page links back to its first would otherwise loop forever.
+    let server = MockServer::start();
+    let base = server.base_url();
+    let page1 = server.mock(|when, then| {
+        when.method(GET)
+            .path("/api/devices")
+            .query_param_missing("page");
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(serde_json::json!({
+                "results": [{"id": 1, "name": "device1"}],
+                "next": "?page=2",
+            }));
+    });
+    let page2 = server.mock(|when, then| {
+        when.method(GET)
+            .path("/api/devices")
+            .query_param("page", "2");
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(serde_json::json!({
+                "results": [{"id": 2, "name": "device2"}],
+                "next": format!("{base}/api/devices"),
+            }));
+    });
+
+    let err = observe_devices(paginated_config(&base)).await.unwrap_err();
+
+    page1.assert();
+    page2.assert();
+    assert!(err.to_string().contains("pagination cycle"));
+}
+
+#[tokio::test]
+async fn test_observe_rejects_cross_origin_next() {
+    // the configured auth headers go out with every request, so a next link the
+    // backend points at another host must not be fetched.
+    let server = MockServer::start();
+    let page = server.mock(|when, then| {
+        when.method(GET).path("/api/devices");
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(serde_json::json!({
+                "results": [],
+                "next": "http://elsewhere.invalid/api/devices",
+            }));
+    });
+
+    let err = observe_devices(paginated_config(&server.base_url()))
+        .await
+        .unwrap_err();
+
+    page.assert();
+    assert!(err.to_string().contains("leaves the origin"));
+}
+
 #[tokio::test]
 async fn test_observe_string_id() {
     let server = MockServer::start();
@@ -1484,6 +1711,76 @@ async fn test_apply_create_conflict_recovers_through_results_path() {
     let report = adapter.write(&schema, &ops, &state).await.unwrap();
     create.assert();
     lookup.assert();
+    assert_eq!(report.applied.len(), 1);
+    assert_eq!(report.applied[0].backend_id, Some(BackendId::Int(5)));
+}
+
+#[tokio::test]
+async fn test_apply_create_conflict_finds_existing_on_a_later_page() {
+    // the conflicting object need not be on the first page: against a paginated
+    // api a truncated lookup fails to find it and re-raises the 409.
+    let server = MockServer::start();
+    let create = server.mock(|when, then| {
+        when.method(POST).path("/api/devices");
+        then.status(409);
+    });
+    let page1 = server.mock(|when, then| {
+        when.method(GET)
+            .path("/api/devices")
+            .query_param_missing("page");
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(serde_json::json!({
+                "results": [{"id": 4, "name": "spine01", "site": 1}],
+                "next": "?page=2",
+            }));
+    });
+    let page2 = server.mock(|when, then| {
+        when.method(GET)
+            .path("/api/devices")
+            .query_param("page", "2");
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(serde_json::json!({
+                "results": [{"id": 5, "name": "leaf01", "site": 1}],
+                "next": serde_json::Value::Null,
+            }));
+    });
+
+    let mut state = new_state_store();
+    let site_uid = Uid::new_v4();
+    state.set_backend_id(
+        TypeName::new("site".to_string()),
+        site_uid,
+        BackendId::Int(1),
+    );
+
+    let adapter = GenericAdapter::new(paginated_config(&server.base_url())).unwrap();
+    let schema = test_schema();
+
+    let uid = Uid::new_v4();
+    let mut key = BTreeMap::new();
+    key.insert("name".to_string(), serde_json::json!("leaf01"));
+    let mut attrs = BTreeMap::new();
+    attrs.insert("name".to_string(), serde_json::json!("leaf01"));
+    attrs.insert("site".to_string(), serde_json::json!(site_uid.to_string()));
+
+    let ops = vec![Op::Create {
+        uid,
+        type_name: TypeName::new("device".to_string()),
+        desired: alembic_core::Object {
+            uid,
+            type_name: TypeName::new("device".to_string()),
+            key: Key::from(key),
+            attrs: attrs.into(),
+            source: None,
+        },
+    }];
+
+    let report = adapter.write(&schema, &ops, &state).await.unwrap();
+    create.assert();
+    page1.assert();
+    page2.assert();
     assert_eq!(report.applied.len(), 1);
     assert_eq!(report.applied[0].backend_id, Some(BackendId::Int(5)));
 }

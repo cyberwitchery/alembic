@@ -1,6 +1,9 @@
 # generic rest adapter config, pointed at by `config_path` in a generic backend
 # config (see docs/cli.md). each key under `types` is an ir type name and `path`
 # is appended to `base_url`; written for examples/inventory-generic.yaml.
+#
+# `next_path` is the drf-shaped `{"results": [...], "next": "..."}` page link:
+# set, the adapter walks every page; unset, only the first page is read.
 base_url: http://localhost:8080/api
 headers:
   Authorization: Token generic_xxx_replace_me
@@ -8,8 +11,10 @@ types:
   services.vpn:
     path: /services/vpns/
     results_path: results
+    next_path: next
     delete_strategy: standard
   dcim.site:
     path: /dcim/sites/
     results_path: results
+    next_path: next
     delete_strategy: standard
