@@ -17,8 +17,8 @@ use std::path::PathBuf;
 
 use self::diag::err;
 use self::io::{
-    format_validation_errors, read_plan, warn_misleading_output_extension, write_inventory,
-    write_plan,
+    format_validation_errors, read_plan, warn_misleading_output_extension, write_apply_report,
+    write_inventory, write_plan,
 };
 use self::state::load_state;
 use crate::app::config::AppConfig;
@@ -46,8 +46,9 @@ File formats are chosen by file extension:
   - inventories (IR) are authored as YAML or JSON: a .json extension is parsed as
     JSON, anything else (.yaml, .yml, or no extension) is parsed as YAML. each
     inventory carries a schema block plus optional include/imports.
-  - plans (plan --output) and observed or transformed IR (import --output and
-    map --output) are always written as JSON, regardless of the path extension.
+  - plans (plan --output), observed or transformed IR (import --output and
+    map --output), and the apply report (apply --output) are always written as
+    JSON, regardless of the path extension.
   - apply --plan consumes a JSON plan file as produced by alembic plan.")]
 pub(crate) struct Cli {
     #[command(subcommand)]
@@ -99,6 +100,10 @@ enum Command {
         /// json plan file produced by `alembic plan`.
         #[arg(short = 'p', long)]
         plan: PathBuf,
+        /// where to write the json apply report (uid -> backend id per applied
+        /// op); written only when the apply succeeds.
+        #[arg(short = 'o', long)]
+        output: Option<PathBuf>,
         /// backend name; credentials come from the environment.
         #[arg(long)]
         backend: Option<String>,
@@ -283,6 +288,7 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
         }
         Command::Apply {
             plan,
+            output,
             backend,
             backend_config,
             allow_delete,
@@ -295,7 +301,7 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             backend.emitter()?;
             let plan = read_plan(&plan)?;
 
-            if interactive {
+            let plan = if interactive {
                 if !allow_delete
                     && plan
                         .ops
@@ -334,20 +340,27 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                         approved.push(op);
                     }
                 }
-                let interactive_plan = Plan {
-                    schema: plan.schema.clone(),
+                Plan {
+                    schema: plan.schema,
                     ops: approved,
                     summary: None,
                     schema_preview: None,
-                };
-                let report =
-                    apply_plan(&backend, &interactive_plan, &mut state, allow_delete).await?;
-                state.save_async().await?;
-                print_apply_report(report);
+                }
             } else {
-                let report = apply_plan(&backend, &plan, &mut state, allow_delete).await?;
-                state.save_async().await?;
-                print_apply_report(report);
+                plan
+            };
+
+            let report = apply_plan(&backend, &plan, &mut state, allow_delete).await?;
+            state.save_async().await?;
+            print_apply_report(&report);
+            // machine-readable record of what this run wrote, on the success
+            // path only: state.json is cumulative and the journal is gone by now.
+            if let Some(output) = output {
+                if let Some(msg) = warn_misleading_output_extension(&output) {
+                    eprintln!("{msg}");
+                }
+                write_apply_report(&output, &report)?;
+                println!("apply report written to {}", output.display());
             }
         }
         Command::Map {
@@ -421,7 +434,7 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
     Ok(())
 }
 
-fn print_apply_report(report: ApplyReport) {
+fn print_apply_report(report: &ApplyReport) {
     if !report.provision.is_empty() {
         println!("provision: {}", report.provision);
     }

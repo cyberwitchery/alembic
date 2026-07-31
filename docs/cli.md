@@ -135,7 +135,7 @@ alembic apply -p plan.json \
   --backend-config examples/backend-netbox.yaml \
   --allow-delete
 
-alembic apply -p plan.json \
+alembic apply -p plan.json -o apply-report.json \
   --backend-config examples/backend-infrahub.yaml \
   --allow-delete
 ```
@@ -151,8 +151,43 @@ alembic apply -p plan.json \
   skip provisioning
 - infrahub provisioning can generate and load a schema file when
   configured in the backend config
+- `-o`/`--output` writes the apply report as json (optional; without it apply writes no artifact, as before)
 
 note that apply has no transaction semantics. state is persisted after each successful write, so a crash partway through leaves backend objects with no corresponding cleanup and no rollback.
+
+### apply report
+
+```json
+{
+  "applied": [
+    {
+      "uid": "00000000-0000-0000-0000-000000000001",
+      "type_name": "dcim.site",
+      "backend_id": 7
+    }
+  ],
+  "provision": {}
+}
+```
+
+the per-run record of what this apply wrote: one entry per applied op, carrying
+the backend id the write returned (an integer or a string, whichever the backend
+uses), plus the `provision` report of what `ensure_schema` created or deleted.
+`backend_id` is absent when the write returns none: a delete, which leaves no
+object behind, or an emitter backend such as `django`, which assigns no ids of
+its own and keys the emitted objects by uid. `previously_applied_count` is
+present only when the run resumed from a journal, and reports how many ops the
+interrupted run had already applied. this is the same shape external adapters
+return from `write` (see `docs/external-adapters.md`).
+
+it is written on the success path only, so a report file means the whole plan
+applied; a failed apply leaves the previous run's file untouched rather than
+writing a partial one. `--interactive` reports the ops you approved, not the ops
+in the plan.
+
+state (`docs/state.md`) is cumulative and keyed by uid, and the journal is
+deleted once apply succeeds, so this is the only per-run artifact: the file a ci
+or review process consumes to see what a given run did.
 
 ## map
 

@@ -174,6 +174,45 @@ fn write_plan_creates_missing_parent_dirs() {
 }
 
 #[test]
+fn write_apply_report_creates_missing_parent_dirs() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("nested/out/report.json");
+    write_apply_report(&path, &ApplyReport::default()).unwrap();
+    assert!(path.exists());
+}
+
+#[test]
+fn apply_report_json_carries_the_uid_to_backend_id_pairs() {
+    // the pairs are the point of the file: state.json is cumulative and keyed by
+    // uid, and the journal is deleted on success.
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("report.json");
+    let report = ApplyReport {
+        applied: vec![alembic_engine::AppliedOp {
+            uid: uuid::Uuid::from_u128(1),
+            type_name: alembic_core::TypeName::new("dcim.site"),
+            backend_id: Some(alembic_engine::BackendId::Int(7)),
+        }],
+        ..Default::default()
+    };
+    write_apply_report(&path, &report).unwrap();
+
+    let raw = std::fs::read_to_string(&path).unwrap();
+    let loaded: ApplyReport = serde_json::from_str(&raw).unwrap();
+    assert_eq!(loaded.applied.len(), 1);
+    assert_eq!(loaded.applied[0].uid, uuid::Uuid::from_u128(1));
+    assert_eq!(
+        loaded.applied[0].backend_id,
+        Some(alembic_engine::BackendId::Int(7))
+    );
+    // absent, not null, when the apply did not resume from a journal
+    assert!(
+        !raw.contains("previously_applied_count"),
+        "a non-resumed apply must not report a resume count: {raw}"
+    );
+}
+
+#[test]
 fn write_inventory_creates_missing_parent_dirs() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("nested/out/ir.json");
@@ -689,6 +728,7 @@ async fn run_apply_missing_credentials_errors() {
     let cli = Cli {
         command: Command::Apply {
             plan: plan_path,
+            output: None,
             backend: Some("netbox".to_string()),
             backend_config: None,
             allow_delete: false,
@@ -732,6 +772,7 @@ async fn run_apply_interactive_delete_requires_allow_delete() {
     let cli = Cli {
         command: Command::Apply {
             plan: plan_path,
+            output: None,
             backend: Some("django".to_string()),
             backend_config: None,
             allow_delete: false,
@@ -766,6 +807,7 @@ async fn run_apply_read_only_backend_fails_before_prompting() {
         let cli = Cli {
             command: Command::Apply {
                 plan: missing_plan.clone(),
+                output: None,
                 backend: Some("peeringdb".to_string()),
                 backend_config: None,
                 allow_delete: false,
@@ -781,6 +823,147 @@ async fn run_apply_read_only_backend_fails_before_prompting() {
         );
     }
     std::env::set_current_dir(cwd).unwrap();
+}
+
+// a one-create plan against a generic rest backend, plus the config pointing at
+// `base_url`. shared by the apply-report tests, which differ only in what the
+// mocked POST answers.
+fn generic_apply_fixture(dir: &Path, base_url: &str) -> (PathBuf, PathBuf) {
+    let schema: alembic_core::Schema = serde_yaml::from_str(
+        r#"
+types:
+  dcim.site:
+    key:
+      name:
+        type: string
+    fields:
+      name:
+        type: string
+"#,
+    )
+    .unwrap();
+    let mut attrs = BTreeMap::new();
+    attrs.insert("name".to_string(), serde_json::json!("fra1"));
+    let plan = Plan {
+        schema,
+        ops: vec![Op::Create {
+            uid: uuid::Uuid::from_u128(1),
+            type_name: alembic_core::TypeName::new("dcim.site"),
+            desired: alembic_core::Object {
+                uid: uuid::Uuid::from_u128(1),
+                type_name: alembic_core::TypeName::new("dcim.site"),
+                key: key_str("name=fra1"),
+                attrs: attrs.into(),
+                source: None,
+            },
+        }],
+        summary: None,
+        schema_preview: None,
+    };
+    let plan_path = dir.join("plan.json");
+    write_plan(&plan_path, &plan).unwrap();
+
+    let config_path = dir.join("backend.yaml");
+    std::fs::write(
+        &config_path,
+        format!(
+            "backend: generic\nconfig:\n  base_url: {base_url}\n  types:\n    dcim.site:\n      path: /sites/\n"
+        ),
+    )
+    .unwrap();
+    (plan_path, config_path)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn run_apply_writes_the_report_to_output() {
+    use httpmock::Method::POST;
+
+    let _guard = cwd_lock().lock().await;
+    let server = httpmock::MockServer::start();
+    server.mock(|when, then| {
+        when.method(POST).path("/sites/");
+        then.status(201).json_body(serde_json::json!({"id": 7}));
+    });
+
+    let dir = tempdir().unwrap();
+    let state_path = dir.path().join(".alembic").join("state.json");
+    let _env = EnvVarGuard::acquire_async(&[
+        ("ALEMBIC_STATE_BACKEND", Some("local")),
+        ("ALEMBIC_STATE_PATH", Some(state_path.to_str().unwrap())),
+    ])
+    .await;
+    let (plan_path, config_path) = generic_apply_fixture(dir.path(), &server.base_url());
+    let report_path = dir.path().join("nested/report.json");
+
+    let cwd = std::env::current_dir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
+    let cli = Cli {
+        command: Command::Apply {
+            plan: plan_path,
+            output: Some(report_path.clone()),
+            backend: None,
+            backend_config: Some(config_path),
+            allow_delete: false,
+            interactive: false,
+        },
+    };
+    let result = run(cli, AppConfig::load().unwrap()).await;
+    std::env::set_current_dir(cwd).unwrap();
+    result.unwrap();
+
+    let report: ApplyReport =
+        serde_json::from_str(&std::fs::read_to_string(&report_path).unwrap()).unwrap();
+    assert_eq!(report.applied.len(), 1);
+    assert_eq!(report.applied[0].uid, uuid::Uuid::from_u128(1));
+    assert_eq!(report.applied[0].type_name.as_str(), "dcim.site");
+    assert_eq!(
+        report.applied[0].backend_id,
+        Some(alembic_engine::BackendId::Int(7)),
+        "the report must carry the backend id the create returned"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn run_apply_writes_no_report_when_the_apply_fails() {
+    use httpmock::Method::POST;
+
+    let _guard = cwd_lock().lock().await;
+    let server = httpmock::MockServer::start();
+    server.mock(|when, then| {
+        when.method(POST).path("/sites/");
+        then.status(500);
+    });
+
+    let dir = tempdir().unwrap();
+    let state_path = dir.path().join(".alembic").join("state.json");
+    let _env = EnvVarGuard::acquire_async(&[
+        ("ALEMBIC_STATE_BACKEND", Some("local")),
+        ("ALEMBIC_STATE_PATH", Some(state_path.to_str().unwrap())),
+    ])
+    .await;
+    let (plan_path, config_path) = generic_apply_fixture(dir.path(), &server.base_url());
+    let report_path = dir.path().join("report.json");
+
+    let cwd = std::env::current_dir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
+    let cli = Cli {
+        command: Command::Apply {
+            plan: plan_path,
+            output: Some(report_path.clone()),
+            backend: None,
+            backend_config: Some(config_path),
+            allow_delete: false,
+            interactive: false,
+        },
+    };
+    let result = run(cli, AppConfig::load().unwrap()).await;
+    std::env::set_current_dir(cwd).unwrap();
+
+    result.expect_err("a failing apply must not report success");
+    assert!(
+        !report_path.exists(),
+        "a partial apply must not leave a report claiming it completed"
+    );
 }
 
 // registers the nautobot bootstrap list mocks shared by the plan/report tests:
@@ -1086,6 +1269,23 @@ fn plan_write_mode_requires_output() {
     let result = Cli::try_parse_from(["alembic", "plan", "-f", "inventory.yaml"]);
     let err = result.err().expect("plan write-mode without -o must fail");
     assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+}
+
+#[test]
+fn apply_output_is_optional_and_takes_the_short_flag() {
+    use clap::Parser;
+    // apply wrote no artifact before this flag existed, so it stays optional; -o
+    // spells the same thing it does on plan/map/import.
+    assert!(
+        Cli::try_parse_from(["alembic", "apply", "-p", "plan.json"]).is_ok(),
+        "apply without -o must keep parsing"
+    );
+    let parsed = Cli::try_parse_from(["alembic", "apply", "-p", "plan.json", "-o", "report.json"])
+        .expect("apply -o must parse");
+    let Command::Apply { output, .. } = parsed.command else {
+        panic!("expected the apply subcommand");
+    };
+    assert_eq!(output, Some(PathBuf::from("report.json")));
 }
 
 #[test]
