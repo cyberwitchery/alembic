@@ -757,8 +757,8 @@ mod tests {
 
     #[test]
     fn field_schema_rejects_a_typod_constraint_key() {
-        // the ignored key is a constraint the user wrote and believes is enforced:
-        // `requried` used to validate `ok` against an inventory missing the field.
+        // a typo'd constraint key must be a parse error; dropping it would
+        // validate `ok` against an inventory the constraint was written to reject.
         for typo in ["requried", "patern", "fromat", "nulable", "descripton"] {
             let err = serde_json::from_value::<FieldSchema>(serde_json::json!({
                 "type": "string",
