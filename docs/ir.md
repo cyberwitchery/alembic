@@ -77,6 +77,8 @@ fields:
   site: { type: ref, target: dcim.site }
 ```
 
+a field declaration takes those metadata keys plus the one param its type requires; anything else is a parse error, so a typo'd `required` or `pattern` is reported rather than dropping the constraint it declares.
+
 list and map elements are validated as required and non-nullable, so a null inside a list is rejected whatever the field declares.
 
 ### key field rules

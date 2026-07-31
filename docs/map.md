@@ -48,10 +48,11 @@ rules:
   including reference integrity, before it is written.
 - each rule has a `match` selector and either one or more `emit` blocks or
   `emit: passthrough` (see below).
-- a key the spec's own blocks do not define is a parse error, not a silent no-op:
-  the top level takes `schema`, `rules` and `transforms`; a rule takes `name`,
-  `match`, `group_by`, `lookups`, `uids` and `emit`; an emit takes `type` (or
-  `kind`), `key`, `uid` and `attrs`.
+- a key a block does not define is a parse error, not a silent no-op, at every
+  level of the spec: the top level takes `schema`, `rules` and `transforms`; a
+  rule takes `name`, `match`, `group_by`, `lookups`, `uids` and `emit`; an emit
+  takes `type` (or `kind`), `key`, `uid` and `attrs`; `schema` is the inventory
+  schema, down to the keys a field declaration takes (`docs/ir.md`).
 
 ## match
 
