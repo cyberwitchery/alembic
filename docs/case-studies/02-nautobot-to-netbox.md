@@ -22,7 +22,8 @@ alembic import -o nautobot-ir.json \
 
 `-f` is an inventory whose `schema` declares the nautobot-shaped types to observe;
 import writes the observed objects to `nautobot-ir.json`. the same ir, trimmed and
-shown as yaml for readability:
+shown as yaml for readability
+([`examples/walkthroughs/nautobot-ir.yaml`](../../examples/walkthroughs/nautobot-ir.yaml)):
 
 ```yaml
 schema:
@@ -70,7 +71,8 @@ follows the reference with a lookup.
 ## 2) map into netbox's vocabulary
 
 the map declares the netbox-shaped target schema and the rules that reshape the
-nautobot objects into it.
+nautobot objects into it
+([`examples/walkthroughs/map-nautobot-to-netbox.yaml`](../../examples/walkthroughs/map-nautobot-to-netbox.yaml)).
 
 ```yaml
 schema:

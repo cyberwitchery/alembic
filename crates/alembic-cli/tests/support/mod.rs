@@ -1,3 +1,7 @@
+// every integration test binary compiles this module separately, so a helper
+// only one of them needs reads as dead code in the others.
+#![allow(dead_code)]
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -90,14 +94,18 @@ fn modules_available(python: &str, imports: &str, label: &str) -> bool {
     available
 }
 
-/// path to a documented example walkthrough inventory (examples/walkthroughs/<name>).
-pub fn walkthrough_path(name: &str) -> PathBuf {
+/// the directory the documented example walkthroughs live in.
+pub fn walkthroughs_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("..")
         .join("examples")
         .join("walkthroughs")
-        .join(name)
+}
+
+/// path to a documented example walkthrough inventory (examples/walkthroughs/<name>).
+pub fn walkthrough_path(name: &str) -> PathBuf {
+    walkthroughs_dir().join(name)
 }
 
 /// write a django backend config into `dir`, emitting the generated app under `output`.
