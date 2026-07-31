@@ -20,6 +20,8 @@ mod render;
 #[cfg(feature = "starlark")]
 mod starlark_transforms;
 mod state;
+#[cfg(test)]
+mod test_log;
 mod transform;
 mod types;
 use alembic_core::{key_string, validate_inventory, Inventory, Object, ValidationReport};

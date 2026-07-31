@@ -1,0 +1,51 @@
+# the map for docs/case-studies/02-nautobot-to-netbox.md: nautobot's
+# `dcim.location` into netbox's `dcim.site`, deriving the slug netbox requires
+# and resolving nautobot's status ref to the string netbox wants. run:
+# alembic map -f nautobot-ir.yaml --spec map-nautobot-to-netbox.yaml
+schema:
+  types:
+    dcim.site:
+      key:
+        slug: { type: slug }
+      fields:
+        name: { type: string }
+        slug: { type: slug }
+        status: { type: string }
+    dcim.device:
+      key:
+        name: { type: slug }
+      fields:
+        status: { type: string }
+        role: { type: string }
+        site: { type: ref, target: dcim.site }
+rules:
+  # dcim.location -> dcim.site, deriving the slug netbox requires from the
+  # location's human name, and resolving the status reference to a string.
+  - name: locations-to-sites
+    match: "dcim.location"
+    lookups:
+      status_name: { ref: "${attrs.status}", get: "key.name" }
+    emit:
+      type: dcim.site
+      key:
+        slug: "${key.name|slug}"
+      attrs:
+        name: "${key.name}"
+        slug: "${key.name|slug}"
+        status: "${lookup.status_name|lower}"
+
+  # devices keep their type but the `location` relation becomes `site`. because
+  # the rule above is a 1:1 rename, map rewrites this ref from the old
+  # dcim.location uid to the new dcim.site uid automatically.
+  - name: devices
+    match: "dcim.device"
+    lookups:
+      status_name: { ref: "${attrs.status}", get: "key.name" }
+    emit:
+      type: dcim.device
+      key:
+        name: "${key.name}"
+      attrs:
+        status: "${lookup.status_name|lower}"
+        role: "${attrs.role}"
+        site: "${attrs.location}"

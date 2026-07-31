@@ -1955,8 +1955,8 @@ mod tests {
 
     #[test]
     fn render_routes_block_pluralizes_endpoints() {
-        // regression for the stale pluralize copy: `prefix` -> `prefixes`
-        // (not `prefixs`), vowel + y `gateway` -> `gateways` (not `gatewaies`).
+        // `prefix` -> `prefixes` (not `prefixs`); vowel + y `gateway` ->
+        // `gateways` (not `gatewaies`).
         let models = vec![
             ModelSpec {
                 type_name: "ipam.prefix".to_string(),

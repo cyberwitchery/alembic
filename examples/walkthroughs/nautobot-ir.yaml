@@ -1,0 +1,40 @@
+# the nautobot-shaped ir for docs/case-studies/02-nautobot-to-netbox.md, as the
+# page shows it: what `import` observes from a live nautobot, trimmed to one
+# status, one location and one device. `status` is a ref to an `extras.status`
+# object, which is what the map's lookup follows.
+schema:
+  types:
+    extras.status:
+      key:
+        name: { type: string }
+    dcim.location:
+      key:
+        name: { type: string }
+      fields:
+        status: { type: ref, target: extras.status }
+    dcim.device:
+      key:
+        name: { type: slug }
+      fields:
+        status: { type: ref, target: extras.status }
+        role: { type: string }
+        location: { type: ref, target: dcim.location }
+objects:
+  - uid: 99999999-9999-9999-9999-999999999999
+    type: extras.status
+    key:
+      name: Active
+  - uid: aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
+    type: dcim.location
+    key:
+      name: "Frankfurt DC1"
+    attrs:
+      status: 99999999-9999-9999-9999-999999999999
+  - uid: bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb
+    type: dcim.device
+    key:
+      name: leaf01
+    attrs:
+      status: 99999999-9999-9999-9999-999999999999
+      role: leaf
+      location: aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa

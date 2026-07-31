@@ -1043,8 +1043,8 @@ fn provision_conflicts_with_dry_run_but_not_report() {
         .expect("--provision and --dry-run must conflict");
     assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
 
-    // regression guard for the documented provision-then-preview combo: it must
-    // keep parsing (it fails later on the backend requirement, not here).
+    // the documented provision-then-preview combo must keep parsing (it fails
+    // later on the backend requirement, not here).
     let report = Cli::try_parse_from([
         "alembic",
         "plan",
@@ -1107,9 +1107,8 @@ fn plan_report_with_output_still_parses() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn run_plan_report_surfaces_extra() {
-    // regression test for the `extra` category: an object present on the backend
-    // but not declared in intent must surface under --report even without
-    // --allow-delete (the existing read-only test only covered a missing object).
+    // an object present on the backend but not declared in intent must surface
+    // under --report even without --allow-delete.
     use serde_json::json;
 
     let _guard = cwd_lock().lock().await;
