@@ -963,7 +963,7 @@ async fn run_apply_rejects_a_bad_output_path_before_touching_the_backend() {
 
     result.expect_err("a bad -o must fail the run");
     assert_eq!(
-        mock.hits(),
+        mock.calls(),
         0,
         "the output path must be rejected before anything is written to the backend"
     );
