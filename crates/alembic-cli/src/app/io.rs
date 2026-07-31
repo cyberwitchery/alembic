@@ -1,4 +1,4 @@
-use alembic_engine::Plan;
+use alembic_engine::{ApplyReport, Plan};
 use anyhow::{Context, Result};
 use std::fs;
 use std::path::Path;
@@ -14,7 +14,7 @@ pub(super) fn format_validation_errors(
         .collect()
 }
 
-fn ensure_parent_dir(path: &Path) -> Result<()> {
+pub(super) fn ensure_parent_dir(path: &Path) -> Result<()> {
     match path.parent() {
         // a bare filename has an empty parent; create_dir_all("") is not portable
         Some(parent) if !parent.as_os_str().is_empty() => fs::create_dir_all(parent)
@@ -27,6 +27,12 @@ pub(super) fn write_plan(path: &Path, plan: &Plan) -> Result<()> {
     ensure_parent_dir(path)?;
     let raw = serde_json::to_string_pretty(plan)?;
     fs::write(path, raw).with_context(|| format!("write plan: {}", path.display()))
+}
+
+pub(super) fn write_apply_report(path: &Path, report: &ApplyReport) -> Result<()> {
+    ensure_parent_dir(path)?;
+    let raw = serde_json::to_string_pretty(report)?;
+    fs::write(path, raw).with_context(|| format!("write apply report: {}", path.display()))
 }
 
 pub(super) fn write_inventory(path: &Path, inventory: &alembic_core::Inventory) -> Result<()> {
