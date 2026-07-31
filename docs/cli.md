@@ -182,13 +182,46 @@ return from `write` (see `docs/external-adapters.md`).
 
 it is written on the success path only, so a report file means the whole plan
 applied; a failed apply leaves the previous run's file untouched rather than
-writing a partial one. `--interactive` reports the ops you approved, not the ops
-in the plan.
+writing a partial one, and the output path is checked before the apply starts,
+so a bad `-o` fails before the backend is written to. the `applied` list covers
+the current run's ops: after a resume, the ops the interrupted run applied
+appear only as `previously_applied_count`, without their uid to backend-id
+pairs (the journal records `done`, not the backend id; #46). `--interactive`
+reports the ops you approved, not the ops in the plan.
 
 state (`docs/state.md`) is cumulative and keyed by uid, and the journal is
 deleted once apply succeeds, so this is the only per-run artifact: the file a ci
 or review process consumes to see what a given run did.
 
+### resuming an interrupted apply
+
+apply journals the create/update operations it has completed, so an apply that stops
+partway can be continued instead of redone. the journal is a file under `.alembic/`,
+named for the backend and a hash of the plan's operations.
+
+when a run stops with operations already applied, it says so before the error:
+
+```
+WARN apply stopped after 3 of 12 create/update operations; the journal at ./.alembic/netbox_journal_16459615207231411390.yaml records what was applied, and re-running the same plan resumes from there
+```
+
+resuming needs no flag and no file argument: run the same `alembic apply` again and it
+picks up the journal by name, skips the operations it records as applied, and reports
+what it resumed with `applied N operations (after resuming, had previously applied M
+operations)`. the journal is deleted once the plan applies in full, so its presence
+means an apply is unfinished.
+
+- the journal is keyed to the plan. editing the plan and re-running starts a fresh
+  journal rather than resuming into a changed set of operations, and the old one is
+  left behind
+- deletes are not journaled. they run after the creates and updates, and the journal
+  is deleted once those complete, so a failure during the delete phase gets no
+  notice, even though every create/update has applied by then
+- nothing is said when a run fails before applying anything (an unreachable backend,
+  say): there is no progress to resume from
+- a resumed run reports and maps only its own ops: the interrupted run's uid to
+  backend-id mappings are not recovered from the journal, which records `done`
+  and nothing else (#46)
 ## map
 
 ```bash

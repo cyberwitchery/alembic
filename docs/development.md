@@ -15,7 +15,6 @@ alembic/
     alembic-adapter-peeringdb
     alembic-adapter-django
     alembic-adapter-test
-    alembic-file-generator
     alembic-cli
 ```
 

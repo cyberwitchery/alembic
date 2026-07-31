@@ -329,7 +329,7 @@ fn test_resolve_attrs_ref_missing_uid_errors() {
 
 // a null value for a nullable ref must pass straight through as json null (to
 // clear the field on the backend), not reach the ref encoder and error with
-// "ref value must be a uuid string" -- which previously aborted the whole write.
+// "ref value must be a uuid string".
 #[test]
 fn test_resolve_attrs_passes_null_ref_through() {
     let resolved = BTreeMap::new();

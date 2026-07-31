@@ -398,10 +398,10 @@ mod tests {
         );
     }
 
-    // regression: a non-slug custom field name must be created with `key` = the
-    // field name so the read/detect/write paths (which key on `field.key`) match
-    // it. nautobot has no writable `name`; sending `name` let it derive `key` by
-    // slugifying `label`, so `assetTag` became `assettag` and never matched again.
+    // a non-slug custom field name must be created with `key` = the field name
+    // so the read/detect/write paths (which key on `field.key`) match it.
+    // nautobot has no writable `name`; sending `name` lets it derive `key` by
+    // slugifying `label`, so `assetTag` becomes `assettag` and never matches.
     #[tokio::test]
     async fn ensure_schema_creates_non_slug_custom_field_with_key() {
         let server = MockServer::start();

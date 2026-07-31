@@ -299,6 +299,11 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             let backend = create_backend(&plugins, backend.as_deref(), backend_config)?;
             // reject a backend that cannot apply before reading the plan or prompting
             backend.emitter()?;
+            // and a bad output path before writing to the backend: failing on -o
+            // after a successful apply would report failure for a run that landed
+            if let Some(output) = &output {
+                io::ensure_parent_dir(output)?;
+            }
             let plan = read_plan(&plan)?;
 
             let plan = if interactive {

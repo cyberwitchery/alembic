@@ -14,7 +14,7 @@ pub(super) fn format_validation_errors(
         .collect()
 }
 
-fn ensure_parent_dir(path: &Path) -> Result<()> {
+pub(super) fn ensure_parent_dir(path: &Path) -> Result<()> {
     match path.parent() {
         // a bare filename has an empty parent; create_dir_all("") is not portable
         Some(parent) if !parent.as_os_str().is_empty() => fs::create_dir_all(parent)

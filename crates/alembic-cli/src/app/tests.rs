@@ -924,6 +924,53 @@ async fn run_apply_writes_the_report_to_output() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn run_apply_rejects_a_bad_output_path_before_touching_the_backend() {
+    use httpmock::Method::POST;
+
+    let _guard = cwd_lock().lock().await;
+    let server = httpmock::MockServer::start();
+    let mock = server.mock(|when, then| {
+        when.method(POST).path("/sites/");
+        then.status(201).json_body(serde_json::json!({"id": 7}));
+    });
+
+    let dir = tempdir().unwrap();
+    let state_path = dir.path().join(".alembic").join("state.json");
+    let _env = EnvVarGuard::acquire_async(&[
+        ("ALEMBIC_STATE_BACKEND", Some("local")),
+        ("ALEMBIC_STATE_PATH", Some(state_path.to_str().unwrap())),
+    ])
+    .await;
+    let (plan_path, config_path) = generic_apply_fixture(dir.path(), &server.base_url());
+    // the report path's parent is a file, so it can never be created
+    let blocker = dir.path().join("blocker");
+    std::fs::write(&blocker, "").unwrap();
+
+    let cwd = std::env::current_dir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
+    let cli = Cli {
+        command: Command::Apply {
+            plan: plan_path,
+            output: Some(blocker.join("report.json")),
+            backend: None,
+            backend_config: Some(config_path),
+            allow_delete: false,
+            interactive: false,
+        },
+    };
+    let result = run(cli, AppConfig::load().unwrap()).await;
+    std::env::set_current_dir(cwd).unwrap();
+
+    result.expect_err("a bad -o must fail the run");
+    assert_eq!(
+        mock.hits(),
+        0,
+        "the output path must be rejected before anything is written to the backend"
+    );
+    assert!(!state_path.exists(), "no state must be saved either");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn run_apply_writes_no_report_when_the_apply_fails() {
     use httpmock::Method::POST;
 
@@ -1226,8 +1273,8 @@ fn provision_conflicts_with_dry_run_but_not_report() {
         .expect("--provision and --dry-run must conflict");
     assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
 
-    // regression guard for the documented provision-then-preview combo: it must
-    // keep parsing (it fails later on the backend requirement, not here).
+    // the documented provision-then-preview combo must keep parsing (it fails
+    // later on the backend requirement, not here).
     let report = Cli::try_parse_from([
         "alembic",
         "plan",
@@ -1307,9 +1354,8 @@ fn plan_report_with_output_still_parses() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn run_plan_report_surfaces_extra() {
-    // regression test for the `extra` category: an object present on the backend
-    // but not declared in intent must surface under --report even without
-    // --allow-delete (the existing read-only test only covered a missing object).
+    // an object present on the backend but not declared in intent must surface
+    // under --report even without --allow-delete.
     use serde_json::json;
 
     let _guard = cwd_lock().lock().await;

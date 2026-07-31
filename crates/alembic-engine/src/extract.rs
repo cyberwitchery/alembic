@@ -718,34 +718,6 @@ mod tests {
         assert!(!site.attrs.contains_key("created"));
     }
 
-    #[derive(Clone, Default)]
-    struct LogBuffer(Arc<Mutex<Vec<u8>>>);
-
-    impl LogBuffer {
-        fn logged(&self) -> String {
-            String::from_utf8(self.0.lock().unwrap().clone()).unwrap()
-        }
-    }
-
-    impl std::io::Write for LogBuffer {
-        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            self.0.lock().unwrap().extend_from_slice(buf);
-            Ok(buf.len())
-        }
-
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-
-    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogBuffer {
-        type Writer = Self;
-
-        fn make_writer(&'a self) -> Self::Writer {
-            self.clone()
-        }
-    }
-
     #[test]
     fn import_warns_once_per_undeclared_attr_across_objects() {
         let observed = observed_of(&[
@@ -770,29 +742,20 @@ mod tests {
             ("dcim.site", &["site"], &["name"]),
         ]);
 
-        let buffer = LogBuffer::default();
-        let subscriber = tracing_subscriber::fmt()
-            .with_writer(buffer.clone())
-            .with_ansi(false)
-            .finish();
         let _guard = IMPORT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let report = tracing::subscriber::with_default(subscriber, || {
-            tracing::callsite::rebuild_interest_cache();
-            import_unlocked(&MockAdapter { observed }, &schema)
-        });
+        let (report, logged) =
+            crate::test_log::capture(|| import_unlocked(&MockAdapter { observed }, &schema));
 
         assert_eq!(report.inventory.objects.len(), 3);
         assert_eq!(
-            buffer
-                .logged()
+            logged
                 .matches("dropping undeclared attr dcim.cable.last_updated")
                 .count(),
             1,
             "the same undeclared attr warns once for the whole import, not once per object"
         );
         assert_eq!(
-            buffer
-                .logged()
+            logged
                 .matches("dropping undeclared attr dcim.site.last_updated")
                 .count(),
             1,
