@@ -329,6 +329,66 @@ impl<'de> Deserialize<'de> for FieldType {
     }
 }
 
+/// the metadata keys a field declaration accepts alongside its type.
+const FIELD_SCHEMA_KEYS: [&str; 6] = [
+    "type",
+    "required",
+    "nullable",
+    "format",
+    "pattern",
+    "description",
+];
+
+/// the param a composite tag takes alongside `type`; `None` for a simple type, which
+/// takes none.
+fn composite_field_type_param(tag: &str) -> Option<&'static str> {
+    match tag {
+        "list" => Some("item"),
+        "map" => Some("value"),
+        "enum" => Some("values"),
+        "ref" | "list_ref" => Some("target"),
+        _ => None,
+    }
+}
+
+/// the keys a declaration with this tag accepts: `base` plus the param the tag takes.
+/// a tag that is neither composite nor simple is rejected here, so a typo'd tag reports
+/// as an unknown type rather than as a stray key.
+fn accepted_field_keys(tag: &str, base: &[&'static str]) -> Result<Vec<&'static str>, String> {
+    let param = composite_field_type_param(tag);
+    if param.is_none() {
+        parse_simple_field_type(tag)?;
+    }
+    Ok(base.iter().copied().chain(param).collect())
+}
+
+fn reject_unknown_keys(
+    map: &serde_json::Map<String, serde_json::Value>,
+    expected: &[&str],
+) -> Result<(), String> {
+    match map.keys().find(|key| !expected.contains(&key.as_str())) {
+        Some(key) => Err(unknown_key(key, expected)),
+        None => Ok(()),
+    }
+}
+
+/// serde's own phrasing, so a field declaration reports a stray key the way the levels
+/// around it do.
+fn unknown_key(key: &str, expected: &[&str]) -> String {
+    let expected = match expected {
+        [only] => format!("`{only}`"),
+        [first, second] => format!("`{first}` or `{second}`"),
+        many => {
+            let names = many
+                .iter()
+                .map(|name| format!("`{name}`"))
+                .collect::<Vec<_>>();
+            format!("one of {}", names.join(", "))
+        }
+    };
+    format!("unknown field `{key}`, expected {expected}")
+}
+
 /// parse the five composite field-type tags (`list`/`map`/`enum`/`ref`/`list_ref`), whose
 /// sibling params live in `map` alongside the `type` tag. returns `Ok(None)` for any other
 /// tag, so each caller keeps its own simple-type fall-through.
@@ -399,13 +459,9 @@ fn parse_field_type_value(value: &serde_json::Value) -> Result<FieldType, String
                 .get("type")
                 .and_then(serde_json::Value::as_str)
                 .ok_or_else(|| "field type requires a string 'type' key".to_string())?;
+            reject_unknown_keys(map, &accepted_field_keys(raw_type, &["type"])?)?;
             if let Some(field_type) = parse_composite_field_type(raw_type, map)? {
                 return Ok(field_type);
-            }
-            // not a composite tag: a lone `{type: <scalar>}` is a simple type,
-            // anything else with extra keys is unknown
-            if map.len() != 1 {
-                return Err(format!("unknown field type {raw_type}"));
             }
             parse_simple_field_type(raw_type)
         }
@@ -489,6 +545,19 @@ impl<'de> Deserialize<'de> for FieldSchema {
             }
         };
 
+        let type_value = map
+            .get("type")
+            .ok_or_else(|| serde::de::Error::custom("field schema requires type"))?;
+        // a composite tag written inline puts its param beside the metadata keys; a nested
+        // type value carries its own, and checks them itself
+        let expected = match type_value {
+            serde_json::Value::String(raw) => {
+                accepted_field_keys(raw, &FIELD_SCHEMA_KEYS).map_err(serde::de::Error::custom)?
+            }
+            _ => FIELD_SCHEMA_KEYS.to_vec(),
+        };
+        reject_unknown_keys(map, &expected).map_err(serde::de::Error::custom)?;
+
         let required = bool_field("required")?;
         let nullable = bool_field("nullable")?;
         let description = str_field("description")?;
@@ -497,9 +566,6 @@ impl<'de> Deserialize<'de> for FieldSchema {
             .map(|raw| parse_field_format(&raw).map_err(serde::de::Error::custom))
             .transpose()?;
 
-        let type_value = map
-            .get("type")
-            .ok_or_else(|| serde::de::Error::custom("field schema requires type"))?;
         let field_type = match type_value {
             serde_json::Value::String(raw) => {
                 match parse_composite_field_type(raw, map).map_err(serde::de::Error::custom)? {
@@ -687,6 +753,116 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(err.contains("unknown field `fieldz`"), "{}", err);
+    }
+
+    #[test]
+    fn field_schema_rejects_a_typod_constraint_key() {
+        // the ignored key is a constraint the user wrote and believes is enforced:
+        // `requried` used to validate `ok` against an inventory missing the field.
+        for typo in ["requried", "patern", "fromat", "nulable", "descripton"] {
+            let err = serde_json::from_value::<FieldSchema>(serde_json::json!({
+                "type": "string",
+                typo: true,
+            }))
+            .unwrap_err()
+            .to_string();
+            assert!(err.contains(&format!("unknown field `{typo}`")), "{}", err);
+        }
+    }
+
+    #[test]
+    fn field_schema_rejects_a_composite_param_its_type_does_not_take() {
+        let err = serde_json::from_value::<FieldSchema>(serde_json::json!({
+            "type": "string",
+            "target": "dcim.site",
+        }))
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("unknown field `target`"), "{}", err);
+
+        // ... while the param the tag does take stays a sibling of the metadata
+        let schema: FieldSchema = serde_json::from_value(serde_json::json!({
+            "type": "ref",
+            "target": "dcim.site",
+            "required": true,
+        }))
+        .unwrap();
+        assert_eq!(
+            schema.r#type,
+            FieldType::Ref {
+                target: "dcim.site".to_string()
+            }
+        );
+        assert!(schema.required);
+    }
+
+    #[test]
+    fn field_schema_rejects_a_typod_composite_param() {
+        let err = serde_json::from_value::<FieldSchema>(serde_json::json!({
+            "type": "ref",
+            "target": "dcim.site",
+            "tarrget": "oops",
+        }))
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("unknown field `tarrget`"), "{}", err);
+    }
+
+    #[test]
+    fn nested_field_type_rejects_an_unknown_key() {
+        let err = parse_field_type_value(&serde_json::json!({
+            "type": "ref",
+            "target": "dcim.site",
+            "bogus": 1,
+        }))
+        .unwrap_err();
+        assert_eq!(err, "unknown field `bogus`, expected `type` or `target`");
+
+        // a nested value reached through a field declaration is checked the same way
+        let err = serde_json::from_value::<FieldSchema>(serde_json::json!({
+            "type": "list",
+            "item": { "type": "ref", "target": "dcim.site", "bogus": 1 },
+        }))
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("unknown field `bogus`"), "{}", err);
+    }
+
+    #[test]
+    fn nested_field_type_rejects_a_stray_key_beside_a_simple_tag() {
+        let err = parse_field_type_value(&serde_json::json!({
+            "type": "string",
+            "item": { "type": "string" },
+        }))
+        .unwrap_err();
+        assert_eq!(err, "unknown field `item`, expected `type`");
+    }
+
+    #[test]
+    fn a_typod_tag_reports_as_an_unknown_type_not_as_a_stray_key() {
+        // `lst` for `list` leaves `item` looking stray; the tag is the real error
+        let err = parse_field_type_value(&serde_json::json!({
+            "type": "lst",
+            "item": { "type": "string" },
+        }))
+        .unwrap_err();
+        assert_eq!(err, "unknown field type lst");
+    }
+
+    #[test]
+    fn every_composite_tag_agrees_with_its_accepted_param() {
+        // the param table and the parser match on the tag separately; pin that a tag
+        // the parser handles is a tag the key check knows a param for, and no other
+        for tag in ["list", "map", "enum", "ref", "list_ref"] {
+            let param = composite_field_type_param(tag).unwrap_or_else(|| panic!("{tag}"));
+            let err = parse_field_type_value(&serde_json::json!({ "type": tag }))
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains(&format!("requires {param}")), "{tag}: {err}");
+        }
+        for tag in ["string", "json", "uuid"] {
+            assert_eq!(composite_field_type_param(tag), None, "{tag}");
+        }
     }
 
     #[test]
