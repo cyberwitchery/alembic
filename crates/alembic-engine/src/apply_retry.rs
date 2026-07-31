@@ -108,11 +108,11 @@ pub async fn apply_non_delete_with_retries(
 }
 
 /// tell the user what the interrupted apply left behind. resuming is automatic and
-/// silent, so this is the only place the journal is ever named. warn-level because the
-/// cli's default filter is `warn`, and this belongs with the error it precedes.
+/// silent, so this is the only place the journal is ever named; warn-level so the
+/// cli's default filter shows it.
 ///
 /// the count is cumulative across runs, and nothing applied means nothing to resume
-/// from: an unreachable backend is a common failure and the error is its whole story.
+/// from: a backend unreachable on the first op leaves the error as the whole story.
 fn report_resumable(journal: &Journal) {
     let done = journal.done_ops_count();
     let Some(path) = journal.backing_file_path().filter(|_| done > 0) else {
