@@ -183,8 +183,8 @@ fn write_apply_report_creates_missing_parent_dirs() {
 
 #[test]
 fn apply_report_json_carries_the_uid_to_backend_id_pairs() {
-    // the pairs are the point of the file: state.json is cumulative and keyed by
-    // uid, and the journal is deleted on success.
+    // the uid to backend-id pairs are the point of the file; nothing else
+    // records them per run.
     let dir = tempdir().unwrap();
     let path = dir.path().join("report.json");
     let report = ApplyReport {
@@ -1274,8 +1274,8 @@ fn plan_write_mode_requires_output() {
 #[test]
 fn apply_output_is_optional_and_takes_the_short_flag() {
     use clap::Parser;
-    // apply wrote no artifact before this flag existed, so it stays optional; -o
-    // spells the same thing it does on plan/map/import.
+    // -o is optional (an apply without it writes nothing) and spells the same
+    // thing it does on plan/map/import.
     assert!(
         Cli::try_parse_from(["alembic", "apply", "-p", "plan.json"]).is_ok(),
         "apply without -o must keep parsing"
