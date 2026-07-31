@@ -1385,10 +1385,10 @@ mod tests {
 
     // ip_address is a multi-word model: its endpoint-form type name is
     // `ipam.ip_address`, but its django content type (what netbox keys a custom
-    // field's `object_types` by, and returns them under) is `ipam.ipaddress`. the
-    // two regressions below rode on the adapter looking custom fields up, and
-    // posting a field's `object_types`, by the endpoint form against the
-    // content-type form. `fields` holds only the non-key fields under test.
+    // field's `object_types` by, and returns them under) is `ipam.ipaddress`.
+    // the tests below guard custom-field lookup and `object_types` posting
+    // against mixing the endpoint form into the content-type form. `fields`
+    // holds only the non-key fields under test.
     fn ip_address_schema(fields: &[&str]) -> alembic_core::Schema {
         let string_field = || alembic_core::FieldSchema {
             r#type: alembic_core::FieldType::String,

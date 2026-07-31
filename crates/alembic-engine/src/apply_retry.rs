@@ -63,7 +63,7 @@ pub async fn apply_non_delete_with_retries(
             match driver.apply_non_delete(&op).await {
                 Ok(applied_op) => {
                     // marked in memory only; the journal is flushed to disk at the exit
-                    // points below, not once per op (per-op saving was a ~100x regression).
+                    // points below, not once per op (saving per op is ~100x slower).
                     if let Some(journal) = journal.as_mut() {
                         journal.mark_op_as_done(&op)?;
                     }
