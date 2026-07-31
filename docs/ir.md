@@ -18,6 +18,7 @@ attrs: { ... }
 - `type`: canonical type id for the object (any string).
 - `key`: structured key used for matching when no state mapping exists.
 - `attrs`: payload for the object. alembic validates structure and references against the schema.
+- `type` may also be spelled `kind`; no other key is accepted, so a typo'd `attrs` is a parse error rather than an object that silently has none.
 
 ## schema
 
@@ -41,6 +42,8 @@ schema:
         role: { type: string }
         device_type: { type: string }
 ```
+
+a type block takes `key` and `fields` only; anything else is a parse error.
 
 supported field types include scalar types (string, text, int, float, bool, uuid, date, datetime, time), network types (ip_address, cidr, prefix, mac, slug), structured types (list, map, json, enum), and typed references (`ref`, `list_ref`).
 

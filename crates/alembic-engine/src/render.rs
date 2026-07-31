@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 /// a `v5: { type, stable }` uid spec, shared by the map emit path (`transform`)
 /// and the `${ uid: { type, stable } }` attr form rendered here.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct UidV5Spec {
     #[serde(rename = "type", alias = "kind")]
     pub type_name: String,
