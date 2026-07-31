@@ -75,11 +75,12 @@ pub async fn apply_non_delete_with_retries(
                     // so the next run can resume from here. don't mask the original error if
                     // the save itself fails.
                     if let Some(journal) = journal.as_mut() {
-                        if let Err(save_err) = journal.save() {
-                            tracing::warn!(
+                        match journal.save() {
+                            Ok(()) => report_resumable(journal),
+                            Err(save_err) => tracing::warn!(
                                 error = %save_err,
                                 "failed to persist journal after apply error"
-                            );
+                            ),
                         }
                     }
                     return Err(err);
@@ -99,10 +100,30 @@ pub async fn apply_non_delete_with_retries(
         } else {
             // ops remain pending (stuck with no progress): persist so a re-run can resume
             journal.save()?;
+            report_resumable(journal);
         }
     }
 
     Ok(RetryApplyResult { applied, pending })
+}
+
+/// tell the user what the interrupted apply left behind. resuming is automatic and
+/// silent, so this is the only place the journal is ever named; warn-level so the
+/// cli's default filter shows it.
+///
+/// the count is cumulative across runs, and nothing applied means nothing to resume
+/// from: a backend unreachable on the first op leaves the error as the whole story.
+fn report_resumable(journal: &Journal) {
+    let done = journal.done_ops_count();
+    let Some(path) = journal.backing_file_path().filter(|_| done > 0) else {
+        return;
+    };
+    tracing::warn!(
+        "apply stopped after {} of {} create/update operations; the journal at {} records what was applied, and re-running the same plan resumes from there",
+        done,
+        journal.op_count(),
+        path.display()
+    );
 }
 
 /// journal-wiring shared by the internal apply-adapters: build the journal from `state`,
@@ -185,10 +206,21 @@ mod tests {
     use crate::BackendId;
     use alembic_core::{JsonMap, Key, Object, TypeName, Uid};
     use anyhow::anyhow;
+    use futures::executor::block_on;
     use rand::rng;
     use rand::seq::SliceRandom;
     use serde_json::json;
+    use std::sync::Mutex;
     use tempfile::tempdir;
+
+    // the resume notice is a single tracing callsite, and callsite interest is global: a
+    // journaled run on another thread with no subscriber caches it as `never` and the
+    // capturing test then sees nothing. serialize every journaled run.
+    static JOURNAL_LOCK: Mutex<()> = Mutex::new(());
+
+    fn journal_guard() -> std::sync::MutexGuard<'static, ()> {
+        JOURNAL_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
 
     #[test]
     fn is_missing_ref_error_matches_only_missing_ref() {
@@ -271,6 +303,7 @@ mod tests {
     enum Mode {
         RetryThenOk,
         AlwaysRetry,
+        AlwaysRetryUid(Uid),
         Fatal,
     }
 
@@ -288,8 +321,11 @@ mod tests {
                     Err(anyhow!("missing referenced uid {}", op.uid()))
                 }
                 Mode::AlwaysRetry => Err(anyhow!("missing referenced uid {}", op.uid())),
+                Mode::AlwaysRetryUid(uid) if op.uid() == uid => {
+                    Err(anyhow!("missing referenced uid {uid}"))
+                }
                 Mode::Fatal => Err(anyhow!("boom")),
-                Mode::RetryThenOk => Ok(AppliedOp {
+                Mode::AlwaysRetryUid(_) | Mode::RetryThenOk => Ok(AppliedOp {
                     uid: op.uid(),
                     type_name: op.type_name().clone(),
                     backend_id: Some(BackendId::Int(1)),
@@ -405,8 +441,9 @@ mod tests {
             false
         }
     }
-    #[tokio::test]
-    async fn erratic_driver_first_fails_then_succeeds() {
+    #[test]
+    fn erratic_driver_first_fails_then_succeeds() {
+        let _guard = journal_guard();
         let uid1 = Uid::from_u128(1);
         let uid2 = Uid::from_u128(2);
         let ops = vec![create_op(uid1), create_op(uid2)];
@@ -417,17 +454,23 @@ mod tests {
         let dir = tempdir().unwrap();
         let mut journal = Journal::load_or_create(dir.path(), "erratic_driver", &ops).unwrap();
 
-        apply_non_delete_with_retries(&ops, Some(&mut journal), &mut driver)
-            .await
-            .expect_err("should fail (on second op applied this run)");
+        block_on(apply_non_delete_with_retries(
+            &ops,
+            Some(&mut journal),
+            &mut driver,
+        ))
+        .expect_err("should fail (on second op applied this run)");
         assert_eq!(driver.applied_ops.len(), 1);
         assert!(!journal.is_completed());
 
         // turn off crashing
         driver.countdown_to_crash = 99999;
-        _ = apply_non_delete_with_retries(&ops, Some(&mut journal), &mut driver)
-            .await
-            .unwrap();
+        _ = block_on(apply_non_delete_with_retries(
+            &ops,
+            Some(&mut journal),
+            &mut driver,
+        ))
+        .unwrap();
         assert_eq!(
             driver.applied_ops.iter().map(|a| a.uid).collect::<Vec<_>>(),
             vec![uid1, uid2]
@@ -435,8 +478,9 @@ mod tests {
         assert!(journal.is_completed());
     }
 
-    #[tokio::test]
-    async fn resumes_from_disk_after_error() {
+    #[test]
+    fn resumes_from_disk_after_error() {
+        let _guard = journal_guard();
         let uid1 = Uid::from_u128(1);
         let uid2 = Uid::from_u128(2);
         let uid3 = Uid::from_u128(3);
@@ -451,9 +495,12 @@ mod tests {
                 applied_ops: vec![],
             };
             let mut journal = Journal::load_or_create(dir.path(), "resume_test", &ops).unwrap();
-            apply_non_delete_with_retries(&ops, Some(&mut journal), &mut driver)
-                .await
-                .expect_err("should fail on the second op");
+            block_on(apply_non_delete_with_retries(
+                &ops,
+                Some(&mut journal),
+                &mut driver,
+            ))
+            .expect_err("should fail on the second op");
             assert_eq!(driver.applied_ops.len(), 1);
         }
 
@@ -464,9 +511,12 @@ mod tests {
                 applied_ops: vec![],
             };
             let mut journal = Journal::load_or_create(dir.path(), "resume_test", &ops).unwrap();
-            let result = apply_non_delete_with_retries(&ops, Some(&mut journal), &mut driver)
-                .await
-                .unwrap();
+            let result = block_on(apply_non_delete_with_retries(
+                &ops,
+                Some(&mut journal),
+                &mut driver,
+            ))
+            .unwrap();
             assert_eq!(
                 driver.applied_ops.iter().map(|a| a.uid).collect::<Vec<_>>(),
                 vec![uid2, uid3]
@@ -477,8 +527,9 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn erratic_driver_with_shuffled_ops() {
+    #[test]
+    fn erratic_driver_with_shuffled_ops() {
+        let _guard = journal_guard();
         let mut ops = Vec::new();
         for i in 1..10 {
             ops.push(create_op(Uid::from_u128(i)));
@@ -494,9 +545,12 @@ mod tests {
         let dir = tempdir().unwrap();
         let mut journal = Journal::load_or_create(dir.path(), "erratic_driver", &ops).unwrap();
 
-        apply_non_delete_with_retries(&ops, Some(&mut journal), &mut driver)
-            .await
-            .expect_err("should fail (on fifth op applied this run)");
+        block_on(apply_non_delete_with_retries(
+            &ops,
+            Some(&mut journal),
+            &mut driver,
+        ))
+        .expect_err("should fail (on fifth op applied this run)");
         assert_eq!(driver.applied_ops.len(), 4);
         assert!(!journal.is_completed());
 
@@ -504,9 +558,12 @@ mod tests {
 
         // turn off crashing
         driver.countdown_to_crash = 99999;
-        _ = apply_non_delete_with_retries(&ops, Some(&mut journal), &mut driver)
-            .await
-            .unwrap();
+        _ = block_on(apply_non_delete_with_retries(
+            &ops,
+            Some(&mut journal),
+            &mut driver,
+        ))
+        .unwrap();
 
         let mut applied_uids = driver.applied_ops.iter().map(|a| a.uid).collect::<Vec<_>>();
         applied_uids.sort();
@@ -538,8 +595,9 @@ mod tests {
         })
     }
 
-    #[tokio::test]
-    async fn journaled_apply_via_state_store_resumes_and_reports() {
+    #[test]
+    fn journaled_apply_via_state_store_resumes_and_reports() {
+        let _guard = journal_guard();
         let uid1 = Uid::from_u128(1);
         let uid2 = Uid::from_u128(2);
         let uid3 = Uid::from_u128(3);
@@ -555,8 +613,7 @@ mod tests {
                 countdown_to_crash: 2,
                 applied_ops: vec![],
             };
-            run_journaled_apply(&state, &ops, &mut driver)
-                .await
+            block_on(run_journaled_apply(&state, &ops, &mut driver))
                 .expect_err("should crash on the second op");
             assert_eq!(driver.applied_ops.len(), 1);
             assert!(journal_path.exists());
@@ -569,9 +626,7 @@ mod tests {
                 countdown_to_crash: 99999,
                 applied_ops: vec![],
             };
-            let report = run_journaled_apply(&state, &ops, &mut driver)
-                .await
-                .unwrap();
+            let report = block_on(run_journaled_apply(&state, &ops, &mut driver)).unwrap();
             assert_eq!(
                 driver.applied_ops.iter().map(|a| a.uid).collect::<Vec<_>>(),
                 vec![uid2, uid3]
@@ -580,6 +635,122 @@ mod tests {
             assert_eq!(report.previously_applied_count, Some(1));
             assert!(!journal_path.exists());
         }
+    }
+
+    #[test]
+    fn fatal_error_reports_the_journal_and_that_a_re_run_resumes() {
+        let _guard = journal_guard();
+        let ops = vec![
+            create_op(Uid::from_u128(1)),
+            create_op(Uid::from_u128(2)),
+            create_op(Uid::from_u128(3)),
+        ];
+        let dir = tempdir().unwrap();
+        let journal_path = Journal::stable_file_name(dir.path(), "notice", &ops);
+
+        let logged = crate::test_log::capture(|| {
+            let mut driver = ErraticDriver {
+                countdown_to_crash: 2,
+                applied_ops: vec![],
+            };
+            let mut journal = Journal::load_or_create(dir.path(), "notice", &ops).unwrap();
+            block_on(apply_non_delete_with_retries(
+                &ops,
+                Some(&mut journal),
+                &mut driver,
+            ))
+            .expect_err("should fail on the second op");
+        })
+        .1;
+
+        assert!(
+            logged.contains("apply stopped after 1 of 3 create/update operations"),
+            "got: {logged}"
+        );
+        assert!(
+            logged.contains(&journal_path.display().to_string()),
+            "the message names the journal file, got: {logged}"
+        );
+        assert!(logged.contains("resumes from there"), "got: {logged}");
+    }
+
+    #[test]
+    fn stuck_with_no_progress_reports_the_journal_too() {
+        let _guard = journal_guard();
+        // the retry loop exits without an error here, but the adapters turn leftover
+        // pending ops into one, so the user is in the same failed-apply spot.
+        let stuck = Uid::from_u128(2);
+        let ops = vec![create_op(Uid::from_u128(1)), create_op(stuck)];
+        let dir = tempdir().unwrap();
+
+        let (result, logged) = crate::test_log::capture(|| {
+            let mut driver = TestDriver {
+                attempts: 0,
+                mode: Mode::AlwaysRetryUid(stuck),
+            };
+            let mut journal = Journal::load_or_create(dir.path(), "stuck", &ops).unwrap();
+            block_on(apply_non_delete_with_retries(
+                &ops,
+                Some(&mut journal),
+                &mut driver,
+            ))
+            .unwrap()
+        });
+
+        assert_eq!(result.pending.len(), 1);
+        assert!(
+            logged.contains("apply stopped after 1 of 2 create/update operations"),
+            "got: {logged}"
+        );
+    }
+
+    #[test]
+    fn a_failure_before_any_op_applied_says_nothing_about_the_journal() {
+        let _guard = journal_guard();
+        // an unreachable backend fails on the first op: there is no progress to describe.
+        let ops = vec![create_op(Uid::from_u128(1)), create_op(Uid::from_u128(2))];
+        let dir = tempdir().unwrap();
+
+        let logged = crate::test_log::capture(|| {
+            let mut driver = TestDriver {
+                attempts: 0,
+                mode: Mode::Fatal,
+            };
+            let mut journal = Journal::load_or_create(dir.path(), "cold", &ops).unwrap();
+            block_on(apply_non_delete_with_retries(
+                &ops,
+                Some(&mut journal),
+                &mut driver,
+            ))
+            .expect_err("should fail on the first op");
+        })
+        .1;
+
+        assert!(!logged.contains("apply stopped"), "got: {logged}");
+    }
+
+    #[test]
+    fn a_successful_apply_says_nothing_about_the_journal() {
+        let _guard = journal_guard();
+        let ops = vec![create_op(Uid::from_u128(1))];
+        let dir = tempdir().unwrap();
+
+        let logged = crate::test_log::capture(|| {
+            let mut driver = ErraticDriver {
+                countdown_to_crash: 99999,
+                applied_ops: vec![],
+            };
+            let mut journal = Journal::load_or_create(dir.path(), "clean", &ops).unwrap();
+            block_on(apply_non_delete_with_retries(
+                &ops,
+                Some(&mut journal),
+                &mut driver,
+            ))
+            .unwrap();
+        })
+        .1;
+
+        assert!(!logged.contains("apply stopped"), "got: {logged}");
     }
 
     #[tokio::test]

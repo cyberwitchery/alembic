@@ -154,6 +154,32 @@ alembic apply -p plan.json \
 
 note that apply has no transaction semantics. state is persisted after each successful write, so a crash partway through leaves backend objects with no corresponding cleanup and no rollback.
 
+### resuming an interrupted apply
+
+apply journals the create/update operations it has completed, so an apply that stops
+partway can be continued instead of redone. the journal is a file under `.alembic/`,
+named for the backend and a hash of the plan's operations.
+
+when a run stops with operations already applied, it says so before the error:
+
+```
+WARN apply stopped after 3 of 12 create/update operations; the journal at ./.alembic/netbox_journal_16459615207231411390.yaml records what was applied, and re-running the same plan resumes from there
+```
+
+resuming needs no flag and no file argument: run the same `alembic apply` again and it
+picks up the journal by name, skips the operations it records as applied, and reports
+what it resumed with `applied N operations (after resuming, had previously applied M
+operations)`. the journal is deleted once the plan applies in full, so its presence
+means an apply is unfinished.
+
+- the journal is keyed to the plan. editing the plan and re-running starts a fresh
+  journal rather than resuming into a changed set of operations, and the old one is
+  left behind
+- deletes are not journaled. they run after the creates and updates, so an interrupted
+  apply has not reached them
+- nothing is said when a run fails before applying anything (an unreachable backend,
+  say): there is no progress to resume from
+
 ## map
 
 ```bash

@@ -157,6 +157,15 @@ impl Journal {
         self.ops.iter().filter(|op| op.done).count()
     }
 
+    pub fn op_count(&self) -> usize {
+        self.ops.len()
+    }
+
+    /// path of the file this journal is backed by, if any.
+    pub fn backing_file_path(&self) -> Option<&Path> {
+        self.file.as_ref().map(|(_, path)| path.as_path())
+    }
+
     pub fn is_completed(&self) -> bool {
         self.ops.iter().all(|op| op.done)
     }
