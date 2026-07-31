@@ -21,24 +21,60 @@ use alembic_core::{
     key_string, uid_v5, FieldType, Inventory, JsonMap, Key, Object, Schema, TypeName, Uid,
 };
 use anyhow::{anyhow, Context, Result};
-use serde::Deserialize;
+use serde::de::{self, MapAccess, SeqAccess, Visitor};
+use serde::{Deserialize, Deserializer};
 use serde_json::Value as JsonValue;
 use serde_yaml::Value as YamlValue;
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 /// uid override for an emit: a deterministic `v5: { type, stable }` or an
 /// explicit uuid-string template.
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
+#[derive(Debug)]
 pub enum EmitUid {
     V5 { v5: UidV5Spec },
     Template(String),
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EmitUidV5 {
+    v5: UidV5Spec,
+}
+
+// dispatched on the value's shape rather than `#[serde(untagged)]`: untagged
+// swallows the chosen variant's own error, so a typo inside `v5:` would report
+// "did not match any variant" instead of naming the field.
+impl<'de> Deserialize<'de> for EmitUid {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct EmitUidVisitor;
+
+        impl<'de> Visitor<'de> for EmitUidVisitor {
+            type Value = EmitUid;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("a uuid template string or a `v5:` mapping")
+            }
+
+            fn visit_str<E: de::Error>(self, value: &str) -> Result<EmitUid, E> {
+                Ok(EmitUid::Template(value.to_string()))
+            }
+
+            fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<EmitUid, A::Error> {
+                EmitUidV5::deserialize(de::value::MapAccessDeserializer::new(map))
+                    .map(|spec| EmitUid::V5 { v5: spec.v5 })
+            }
+        }
+
+        deserializer.deserialize_any(EmitUidVisitor)
+    }
+}
+
 /// a map specification: the target schema plus the transformation rules.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MapSpec {
     /// target schema; the output inventory is validated against it.
     #[serde(default)]
@@ -60,6 +96,7 @@ pub struct MapSpec {
 /// the `transforms:` block of a map spec: starlark source from a file or
 /// inline. exactly one of the two must be set.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TransformsSpec {
     /// path to a starlark file; a relative path resolves against the spec file.
     #[serde(default)]
@@ -74,6 +111,7 @@ pub struct TransformsSpec {
 /// as `${uids.name}` in emits -- the mechanism for wiring cross-object refs in a
 /// multi-emit restructure.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MapRule {
     pub name: String,
     /// source selector: a type-name pattern with optional field
@@ -100,14 +138,14 @@ pub struct MapRule {
 /// a reference lookup: render `ref` to a uid, find that object in the input, and
 /// read the dotted field path `get` from it (e.g. `attrs.name`).
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Lookup {
     pub r#ref: String,
     pub get: String,
 }
 
 /// `emit: passthrough`, a single emit (a mapping), or a list of emits.
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
+#[derive(Debug)]
 pub enum EmitSpec {
     /// `emit: passthrough` copies each matched source object unchanged (and
     /// carries its source-schema type into the output), but only for objects no
@@ -116,6 +154,40 @@ pub enum EmitSpec {
     Keyword(EmitKeyword),
     Single(MapEmit),
     Multi(Vec<MapEmit>),
+}
+
+// dispatched on the value's shape for the same reason as `EmitUid`: with
+// `#[serde(untagged)]` a typo'd key inside an emit fails its variant and falls
+// through, reporting the enum instead of the field.
+impl<'de> Deserialize<'de> for EmitSpec {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct EmitSpecVisitor;
+
+        impl<'de> Visitor<'de> for EmitSpecVisitor {
+            type Value = EmitSpec;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("`passthrough`, an emit mapping, or a list of emit mappings")
+            }
+
+            fn visit_str<E: de::Error>(self, value: &str) -> Result<EmitSpec, E> {
+                EmitKeyword::deserialize(de::value::StrDeserializer::new(value))
+                    .map(EmitSpec::Keyword)
+            }
+
+            fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<EmitSpec, A::Error> {
+                MapEmit::deserialize(de::value::MapAccessDeserializer::new(map))
+                    .map(EmitSpec::Single)
+            }
+
+            fn visit_seq<A: SeqAccess<'de>>(self, seq: A) -> Result<EmitSpec, A::Error> {
+                Vec::<MapEmit>::deserialize(de::value::SeqAccessDeserializer::new(seq))
+                    .map(EmitSpec::Multi)
+            }
+        }
+
+        deserializer.deserialize_any(EmitSpecVisitor)
+    }
 }
 
 /// bare-word emit modes.
@@ -127,6 +199,7 @@ pub enum EmitKeyword {
 
 /// one emitted target object.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MapEmit {
     /// target type name (templates allowed).
     #[serde(rename = "type", alias = "kind")]
@@ -910,6 +983,150 @@ mod tests {
 
     fn spec(yaml: &str) -> MapSpec {
         serde_yaml::from_str(yaml).unwrap()
+    }
+
+    fn spec_err(yaml: &str) -> String {
+        serde_yaml::from_str::<MapSpec>(yaml)
+            .unwrap_err()
+            .to_string()
+    }
+
+    #[test]
+    fn rejects_an_unknown_key_in_a_map_spec() {
+        // `rulez` used to drop the whole ruleset and write an empty inventory.
+        let err = spec_err("schema:\n  types: {}\nrulez: []\n");
+        assert!(err.contains("unknown field `rulez`"), "{}", err);
+    }
+
+    #[test]
+    fn a_typo_inside_an_emit_names_the_field() {
+        // the emit shape is dispatched before the variant is deserialized, so the
+        // error is the emit's own and not `did not match any variant`.
+        let err = spec_err(
+            r#"
+rules:
+  - name: sites
+    match: "dcim.site"
+    emit:
+      type: location.site
+      key: { slug: "${key.slug}" }
+      atrrs: { label: "${attrs.name}" }
+"#,
+        );
+        assert!(err.contains("unknown field `atrrs`"), "{}", err);
+        assert!(!err.contains("any variant"), "{}", err);
+    }
+
+    #[test]
+    fn a_typo_inside_a_list_emit_names_the_field() {
+        let err = spec_err(
+            r#"
+rules:
+  - name: sites
+    match: "dcim.site"
+    emit:
+      - type: location.site
+        key: { slug: "${key.slug}" }
+      - type: location.region
+        key: { slug: "${key.slug}" }
+        atrrs: { label: "${attrs.name}" }
+"#,
+        );
+        assert!(err.contains("unknown field `atrrs`"), "{}", err);
+        assert!(!err.contains("any variant"), "{}", err);
+    }
+
+    #[test]
+    fn a_typo_inside_an_emit_uid_names_the_field() {
+        let err = spec_err(
+            r#"
+rules:
+  - name: sites
+    match: "dcim.site"
+    emit:
+      type: location.site
+      key: { slug: "${key.slug}" }
+      uid:
+        v5: { type: location.site, stabel: "${key.slug}" }
+"#,
+        );
+        assert!(err.contains("unknown field `stabel`"), "{}", err);
+        assert!(!err.contains("any variant"), "{}", err);
+
+        let err = spec_err(
+            r#"
+rules:
+  - name: sites
+    match: "dcim.site"
+    emit:
+      type: location.site
+      key: { slug: "${key.slug}" }
+      uid: { v6: { type: location.site, stable: "${key.slug}" } }
+"#,
+        );
+        assert!(err.contains("unknown field `v6`"), "{}", err);
+    }
+
+    #[test]
+    fn rejects_an_unknown_key_in_a_rule_lookup_or_transforms_block() {
+        let err = spec_err("rules:\n  - name: n\n    matsh: \"dcim.site\"\n");
+        assert!(err.contains("unknown field `matsh`"), "{}", err);
+
+        let err = spec_err(
+            r#"
+rules:
+  - name: sites
+    match: "dcim.site"
+    lookups:
+      site: { ref: "${attrs.site}", gett: attrs.name }
+    emit:
+      type: location.site
+      key: { slug: "${key.slug}" }
+"#,
+        );
+        assert!(err.contains("unknown field `gett`"), "{}", err);
+
+        let err = spec_err("transforms:\n  fil: ./transforms.star\n");
+        assert!(err.contains("unknown field `fil`"), "{}", err);
+    }
+
+    #[test]
+    fn keeps_the_emit_shapes_the_untagged_enum_accepted() {
+        // shape dispatch has to still accept every form: the bare keyword, a
+        // single mapping, a list, the `kind` alias, and both uid forms.
+        let parsed = spec(
+            r#"
+rules:
+  - name: rest
+    match: "*"
+    emit: passthrough
+  - name: sites
+    match: "dcim.site"
+    uids:
+      pinned: "11111111-1111-1111-1111-111111111111"
+      derived: { v5: { kind: location.site, stable: "${key.slug}" } }
+    emit:
+      - kind: location.site
+        key: { slug: "${key.slug}" }
+        uid: "${uids.pinned}"
+      - type: location.region
+        key: { slug: "${key.slug}" }
+        uid: { v5: { type: location.region, stable: "${key.slug}" } }
+"#,
+        );
+        assert!(matches!(
+            parsed.rules[0].emit,
+            EmitSpec::Keyword(EmitKeyword::Passthrough)
+        ));
+        assert!(matches!(parsed.rules[1].emit, EmitSpec::Multi(ref e) if e.len() == 2));
+        assert!(matches!(
+            parsed.rules[1].uids["pinned"],
+            EmitUid::Template(_)
+        ));
+        assert!(matches!(
+            parsed.rules[1].uids["derived"],
+            EmitUid::V5 { .. }
+        ));
     }
 
     #[test]

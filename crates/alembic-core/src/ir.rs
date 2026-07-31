@@ -523,6 +523,7 @@ impl<'de> Deserialize<'de> for FieldSchema {
 
 /// schema metadata for a type.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TypeSchema {
     pub key: BTreeMap<String, FieldSchema>,
     #[serde(default)]
@@ -539,6 +540,7 @@ pub struct Schema {
 
 /// object envelope for the ir.
 #[derive(Debug, Clone, Serialize, Deserialize, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct Object {
     /// stable identifier for the object.
     pub uid: Uid,
@@ -623,6 +625,7 @@ impl Object {
 
 /// top-level inventory of objects.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Inventory {
     /// schema definitions for type metadata.
     pub schema: Schema,
@@ -634,6 +637,68 @@ pub struct Inventory {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn object_rejects_an_unknown_key() {
+        // `attributes` for `attrs` used to leave the object with no attributes at
+        // all, and the file validated clean.
+        let err = serde_json::from_value::<Object>(serde_json::json!({
+            "uid": Uuid::from_u128(1).to_string(),
+            "type": "dcim.site",
+            "key": { "slug": "fra1" },
+            "attributes": { "name": "FRA1" },
+        }))
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("unknown field `attributes`"), "{}", err);
+    }
+
+    #[test]
+    fn object_keeps_the_kind_alias_and_rejects_the_skipped_source_field() {
+        let object: Object = serde_json::from_value(serde_json::json!({
+            "uid": Uuid::from_u128(1).to_string(),
+            "kind": "dcim.site",
+            "key": { "slug": "fra1" },
+        }))
+        .unwrap();
+        assert_eq!(object.type_name.as_str(), "dcim.site");
+        assert!(object.source.is_none());
+
+        // `source` is `#[serde(skip)]`, so it is not an accepted input key.
+        let err = serde_json::from_value::<Object>(serde_json::json!({
+            "uid": Uuid::from_u128(1).to_string(),
+            "type": "dcim.site",
+            "key": { "slug": "fra1" },
+            "source": "inv.yaml:1",
+        }))
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("unknown field `source`"), "{}", err);
+    }
+
+    #[test]
+    fn type_schema_rejects_an_unknown_key() {
+        // a typo'd `fields` used to be blamed on the object: `extra attr
+        // dcim.site.name`, pointing at the data rather than the schema.
+        let err = serde_json::from_value::<TypeSchema>(serde_json::json!({
+            "key": { "slug": { "type": "string" } },
+            "fieldz": { "name": { "type": "string" } },
+        }))
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("unknown field `fieldz`"), "{}", err);
+    }
+
+    #[test]
+    fn inventory_rejects_an_unknown_key() {
+        let err = serde_json::from_value::<Inventory>(serde_json::json!({
+            "schema": { "types": {} },
+            "object": [],
+        }))
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("unknown field `object`"), "{}", err);
+    }
 
     #[test]
     fn object_roundtrip_json() {

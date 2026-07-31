@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 
 /// raw on-disk representation for a inventory file.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct InventoryFile {
     #[serde(default)]
     include: Vec<String>,
@@ -143,6 +144,17 @@ mod tests {
     use alembic_core::{Schema, TypeSchema, Uid};
     use std::collections::BTreeMap;
     use tempfile::tempdir;
+
+    #[test]
+    fn rejects_an_unknown_key_in_an_inventory_file() {
+        // `includes` for `include` used to load nothing and report `ok`, so
+        // `validate` passed on an inventory that was never assembled.
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("inv.yaml");
+        std::fs::write(&path, "includes: [other.yaml]\nschema: { types: {} }\n").unwrap();
+        let err = format!("{:#}", load_inventory(&path).unwrap_err());
+        assert!(err.contains("unknown field `includes`"), "{}", err);
+    }
 
     #[test]
     fn locates_uid_definition_not_an_earlier_reference() {
