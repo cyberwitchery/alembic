@@ -67,3 +67,33 @@ fn missing_adapter_argument_exits_2() {
     let out = Command::new(BIN).output().expect("run binary");
     assert_eq!(out.status.code(), Some(2));
 }
+
+#[test]
+fn a_case_whose_expectation_key_is_misspelled_exits_2() {
+    // the case is copied from examples/cases/delete-unsupported.json and pins an
+    // error the adapter never returns. spelled `error` the case fails, so the
+    // one letter used to be the difference between a real assertion and a green
+    // run that compared nothing -- the gate must refuse the fixture instead.
+    let dir = std::env::temp_dir().join("alembic-adapter-test-misspelled-expect");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create case dir");
+    let case = std::fs::read_to_string(manifest("examples/cases/delete-unsupported.json"))
+        .expect("read fixture")
+        .replace(
+            r#""ok": false"#,
+            r#""ok": false, "errror": "this message is definitely wrong""#,
+        );
+    std::fs::write(dir.join("misspelled.json"), case).expect("write case");
+
+    let out = Command::new(BIN)
+        .args(["--cases"])
+        .arg(&dir)
+        .args(["--", "sh", "-c", "true"])
+        .output()
+        .expect("run binary");
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("errror"), "{stderr}");
+}

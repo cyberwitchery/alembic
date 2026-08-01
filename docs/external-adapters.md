@@ -320,10 +320,14 @@ complete request and an expectation:
 }
 ```
 
-`result` is optional: omitted, the runner only checks the payload shape; present,
-it compares the returned json structurally. the runner exits `0` when every check
-passes, `1` when a check fails, and `2` on a usage or fixtures error, so it drops
-straight into ci:
+`expect` takes `ok` plus `result` or `error`, both optional. `result` omitted, the
+runner only checks the payload shape; present, it compares the returned json
+structurally. `error` pins the exact message an `ok: false` case must come back with.
+a key that is none of those three is a parse error naming it, and so is a
+stray key beside `name`/`request`/`expect`: `result` and `error` are the assertions, so
+a typo in one would drop it and report the case as passing. the runner exits `0` when
+every check passes, `1` when a check fails, and `2` on a usage or fixtures error, so it
+drops straight into ci:
 
 ```console
 alembic-adapter-test --cases tests/alembic -- ./alembic-adapter-mybackend
