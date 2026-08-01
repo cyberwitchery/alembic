@@ -176,6 +176,14 @@ impl Emitter for NetBoxAdapter {
             fn is_retryable(&self, err: &anyhow::Error) -> bool {
                 is_missing_ref_error(err)
             }
+
+            fn resume(&mut self, resumed: &[AppliedOp]) {
+                for op in resumed {
+                    if let Some(BackendId::Int(id)) = &op.backend_id {
+                        self.resolved.insert(op.uid, *id);
+                    }
+                }
+            }
         }
 
         let mut driver = ApplyDriver {
@@ -193,6 +201,7 @@ impl Emitter for NetBoxAdapter {
             return Err(anyhow!("unresolved references: {missing}"));
         }
 
+        let resumed = retry_result.resumed;
         for applied_op in retry_result.applied {
             if let Some(BackendId::Int(backend_id)) = &applied_op.backend_id {
                 resolved.insert(applied_op.uid, *backend_id);
@@ -253,6 +262,7 @@ impl Emitter for NetBoxAdapter {
 
         Ok(ApplyReport {
             applied,
+            resumed,
             previously_applied_count,
             ..Default::default()
         })
