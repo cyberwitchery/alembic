@@ -1,8 +1,8 @@
 #!/bin/bash
-# Local CI mirror script - ensures parity with .github/workflows/ci.yml
+# local ci mirror script - ensures parity with .github/workflows/ci.yml
 set -e
 
-# Ensure we are in the alembic directory
+# ensure we are in the alembic directory
 cd "$(dirname "$0")/.."
 
 echo "--- Lint & Analysis ---"
@@ -10,17 +10,17 @@ echo "Running fmt..."
 cargo fmt --all -- --check
 
 echo "Running clippy..."
-# Added --all-features to match CI
+# --all-features matches ci
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 
 echo "--- Tests ---"
-# env var used in CI for the django e2e tests
+# env var used in ci for the django e2e tests
 export ALEMBIC_DJANGO_PYTHON=python3
 cargo test --workspace
 
 echo "--- Coverage ---"
 if command -v cargo-llvm-cov >/dev/null 2>&1; then
-    # Aligned flags and regex with CI (ci.yml line 100)
+    # fail under 80% line coverage, excluding the netbox.rs client sources
     cargo llvm-cov --workspace --all-features --fail-under-lines 80 \
       --ignore-filename-regex "netbox\\.rs/"
 else

@@ -490,7 +490,7 @@ mod tests {
 
     #[test]
     fn diff_attrs_without_schema_compares_raw() {
-        // no type info: 3.0 vs 3 differ structurally (unchanged behavior).
+        // no type info: 3.0 vs 3 differ structurally.
         let existing = make_attrs(&[("count", json!(3.0))]);
         let desired = make_attrs(&[("count", json!(3))]);
         let changes = diff_attrs(&existing, &desired, None);

@@ -180,6 +180,14 @@ impl Emitter for NautobotAdapter {
             fn is_retryable(&self, err: &anyhow::Error) -> bool {
                 is_missing_ref_error(err)
             }
+
+            fn resume(&mut self, resumed: &[AppliedOp]) {
+                for op in resumed {
+                    if let Some(BackendId::String(id)) = &op.backend_id {
+                        self.resolved.insert(op.uid, id.clone());
+                    }
+                }
+            }
         }
 
         let mut driver = ApplyDriver {
@@ -197,6 +205,7 @@ impl Emitter for NautobotAdapter {
             return Err(anyhow!("unresolved references: {missing}"));
         }
 
+        let resumed = retry_result.resumed;
         for applied_op in retry_result.applied {
             if let Some(BackendId::String(backend_id)) = &applied_op.backend_id {
                 resolved.insert(applied_op.uid, backend_id.clone());
@@ -256,6 +265,7 @@ impl Emitter for NautobotAdapter {
 
         Ok(ApplyReport {
             applied,
+            resumed,
             previously_applied_count,
             ..Default::default()
         })
@@ -906,8 +916,8 @@ mod tests {
         let mut attrs = JsonMap::default();
         attrs.insert("type".to_string(), json!("1000base-t"));
 
-        // the adapter no longer aliases `type` to `if_type`: the literal backend
-        // `type` field is preserved as-is (interfaces and everything else alike).
+        // the literal backend `type` field is preserved as-is (interfaces and
+        // everything else alike).
         normalize_attrs(&mut attrs, &type_schema, &schema, &registry, &mappings);
         assert_eq!(attrs.get("type").unwrap(), &json!("1000base-t"));
         assert!(!attrs.contains_key("if_type"));
@@ -1152,7 +1162,7 @@ mod tests {
         )
         .expect("key-derived uid");
         assert_eq!(attrs.get("device").unwrap(), &json!(expected.to_string()));
-        // without the fix this degrades to the raw backend id.
+        // a hint miss here degrades to the raw backend id.
         assert_ne!(attrs.get("device").unwrap(), &json!(raw_id));
     }
 

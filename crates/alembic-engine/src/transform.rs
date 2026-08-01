@@ -993,7 +993,7 @@ mod tests {
 
     #[test]
     fn rejects_an_unknown_key_in_a_map_spec() {
-        // `rulez` used to drop the whole ruleset and write an empty inventory.
+        // an unknown key must not silently drop the ruleset.
         let err = spec_err("schema:\n  types: {}\nrulez: []\n");
         assert!(err.contains("unknown field `rulez`"), "{}", err);
     }
@@ -1800,9 +1800,7 @@ rules:
         assert_eq!(first.objects, second.objects);
     }
 
-    /// a cycle among key-derived key refs has no converging uid assignment.
-    /// core validation does not reject it (the planner merely tolerates ref
-    /// cycles), so map reports it as an error naming the cycle.
+    /// a key-ref cycle is an error naming the cycle (see rewrite_key_refs).
     #[test]
     fn key_ref_cycle_is_a_clear_error() {
         let a_src = Uuid::from_u128(1).to_string();

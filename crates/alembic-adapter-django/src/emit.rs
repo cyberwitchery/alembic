@@ -587,7 +587,7 @@ mod tests {
 
     #[test]
     fn errors_when_urlpatterns_list_missing() {
-        // A tuple-form urlpatterns lacks the exact `urlpatterns = [` landmark, so
+        // a tuple-form urlpatterns lacks the exact `urlpatterns = [` landmark, so
         // the api route cannot be wired in and the step must error rather than
         // write a routeless file and report success.
         let urls_py =
