@@ -911,8 +911,8 @@ async fn run_apply_writes_the_report_to_output() {
     std::env::set_current_dir(cwd).unwrap();
     result.unwrap();
 
-    let report: ApplyReport =
-        serde_json::from_str(&std::fs::read_to_string(&report_path).unwrap()).unwrap();
+    let raw = std::fs::read_to_string(&report_path).unwrap();
+    let report: ApplyReport = serde_json::from_str(&raw).unwrap();
     assert_eq!(report.applied.len(), 1);
     assert_eq!(report.applied[0].uid, uuid::Uuid::from_u128(1));
     assert_eq!(report.applied[0].type_name.as_str(), "dcim.site");
@@ -920,6 +920,11 @@ async fn run_apply_writes_the_report_to_output() {
         report.applied[0].backend_id,
         Some(alembic_engine::BackendId::Int(7)),
         "the report must carry the backend id the create returned"
+    );
+    // absent, not empty, when the run resumed from nothing
+    assert!(
+        !raw.contains("resumed"),
+        "a non-resumed run's report json must be unchanged: {raw}"
     );
 }
 

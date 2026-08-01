@@ -224,6 +224,11 @@ means an apply is unfinished.
   reference objects the interrupted run created, and their uid to backend-id
   mappings land in state once the plan applies in full. a journal written before ids
   were recorded still resumes, but carries no ids to recover
+- resume covers an apply that exits through an error. operations are marked done in
+  memory and the journal is written at that exit, not once per operation, so a
+  process killed mid-apply (sigkill, panic, power loss) leaves a journal recording
+  nothing done, and re-running repeats what already applied
+
 ## map
 
 ```bash
