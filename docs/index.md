@@ -16,6 +16,7 @@ this directory contains the reference documentation for alembic.
 - `docs/nautobot.md` - nautobot adapter mapping and constraints
 - `docs/infrahub.md` - infrahub adapter mapping and constraints
 - `docs/generic.md` - generic rest adapter mapping and constraints
+- `docs/peeringdb.md` - peeringdb read-only observer, types and constraints
 - `docs/django.md` - django app emitter, config and constraints
 - `docs/external-adapters.md` - process-based external adapter protocol
 - `docs/development.md` - building, testing, and release flow

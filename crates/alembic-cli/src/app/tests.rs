@@ -182,6 +182,33 @@ fn write_apply_report_creates_missing_parent_dirs() {
 }
 
 #[test]
+fn write_drift_report_creates_missing_parent_dirs() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("nested/out/drift.json");
+    write_drift_report(&path, &DriftReport::default()).unwrap();
+    assert!(path.exists());
+}
+
+#[test]
+fn drift_report_json_names_every_category() {
+    // an empty category is written as an empty list, not omitted, so a consumer
+    // reads "no drift here" rather than having to infer it from a missing key.
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("drift.json");
+    write_drift_report(&path, &DriftReport::default()).unwrap();
+
+    let raw = std::fs::read_to_string(&path).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    for category in ["changed", "missing", "extra"] {
+        assert_eq!(
+            value[category],
+            serde_json::json!([]),
+            "category {category} missing from an empty report: {raw}"
+        );
+    }
+}
+
+#[test]
 fn apply_report_json_carries_the_uid_to_backend_id_pairs() {
     // the uid to backend-id pairs are the point of the file; nothing else
     // records them per run.
@@ -768,7 +795,8 @@ async fn run_apply_interactive_delete_requires_allow_delete() {
     let cwd = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
 
-    // django (write-only): a read-only backend now fails the capability gate before this delete-gate
+    // django is write-only, so it passes the capability gate and reaches the
+    // delete gate; a read-only backend fails earlier
     let cli = Cli {
         command: Command::Apply {
             plan: plan_path,
@@ -911,8 +939,8 @@ async fn run_apply_writes_the_report_to_output() {
     std::env::set_current_dir(cwd).unwrap();
     result.unwrap();
 
-    let report: ApplyReport =
-        serde_json::from_str(&std::fs::read_to_string(&report_path).unwrap()).unwrap();
+    let raw = std::fs::read_to_string(&report_path).unwrap();
+    let report: ApplyReport = serde_json::from_str(&raw).unwrap();
     assert_eq!(report.applied.len(), 1);
     assert_eq!(report.applied[0].uid, uuid::Uuid::from_u128(1));
     assert_eq!(report.applied[0].type_name.as_str(), "dcim.site");
@@ -920,6 +948,201 @@ async fn run_apply_writes_the_report_to_output() {
         report.applied[0].backend_id,
         Some(alembic_engine::BackendId::Int(7)),
         "the report must carry the backend id the create returned"
+    );
+    // absent, not empty, when the run resumed from nothing
+    assert!(
+        !raw.contains("resumed"),
+        "a non-resumed run's report json must be unchanged: {raw}"
+    );
+}
+
+// a site plus a device referencing it, against a generic rest backend. the plan
+// shape resume exists for: the run dies between the two, and the device can only
+// be written once the site's backend id is known.
+fn generic_resume_fixture(dir: &Path, base_url: &str) -> (PathBuf, PathBuf) {
+    let schema: alembic_core::Schema = serde_yaml::from_str(
+        r#"
+types:
+  dcim.site:
+    key:
+      name:
+        type: string
+    fields:
+      name:
+        type: string
+  dcim.device:
+    key:
+      name:
+        type: string
+    fields:
+      name:
+        type: string
+      site:
+        type: ref
+        target: dcim.site
+"#,
+    )
+    .unwrap();
+    let site_uid = uuid::Uuid::from_u128(1);
+    let device_uid = uuid::Uuid::from_u128(2);
+    let mut site_attrs = BTreeMap::new();
+    site_attrs.insert("name".to_string(), serde_json::json!("fra1"));
+    let mut device_attrs = BTreeMap::new();
+    device_attrs.insert("name".to_string(), serde_json::json!("edge1"));
+    device_attrs.insert("site".to_string(), serde_json::json!(site_uid.to_string()));
+    let plan = Plan {
+        schema,
+        ops: vec![
+            Op::Create {
+                uid: site_uid,
+                type_name: alembic_core::TypeName::new("dcim.site"),
+                desired: alembic_core::Object {
+                    uid: site_uid,
+                    type_name: alembic_core::TypeName::new("dcim.site"),
+                    key: key_str("name=fra1"),
+                    attrs: site_attrs.into(),
+                    source: None,
+                },
+            },
+            Op::Create {
+                uid: device_uid,
+                type_name: alembic_core::TypeName::new("dcim.device"),
+                desired: alembic_core::Object {
+                    uid: device_uid,
+                    type_name: alembic_core::TypeName::new("dcim.device"),
+                    key: key_str("name=edge1"),
+                    attrs: device_attrs.into(),
+                    source: None,
+                },
+            },
+        ],
+        summary: None,
+        schema_preview: None,
+    };
+    let plan_path = dir.join("plan.json");
+    write_plan(&plan_path, &plan).unwrap();
+
+    let config_path = dir.join("backend.yaml");
+    std::fs::write(
+        &config_path,
+        format!(
+            "backend: generic\nconfig:\n  base_url: {base_url}\n  types:\n    dcim.site:\n      path: /sites/\n    dcim.device:\n      path: /devices/\n"
+        ),
+    )
+    .unwrap();
+    (plan_path, config_path)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn run_apply_resumes_with_the_ids_the_interrupted_run_created() {
+    use httpmock::Method::POST;
+
+    let _guard = cwd_lock().lock().await;
+    let dir = tempdir().unwrap();
+    let state_path = dir.path().join(".alembic").join("state.json");
+    let _env = EnvVarGuard::acquire_async(&[
+        ("ALEMBIC_STATE_BACKEND", Some("local")),
+        ("ALEMBIC_STATE_PATH", Some(state_path.to_str().unwrap())),
+    ])
+    .await;
+    let report_path = dir.path().join("report.json");
+    let cwd = std::env::current_dir().unwrap();
+
+    // run 1 creates the site and dies on the device. no state is saved: apply only
+    // saves on the success path.
+    let first = httpmock::MockServer::start();
+    first.mock(|when, then| {
+        when.method(POST).path("/sites/");
+        then.status(201).json_body(serde_json::json!({"id": 7}));
+    });
+    first.mock(|when, then| {
+        when.method(POST).path("/devices/");
+        then.status(500);
+    });
+    let (plan_path, config_path) = generic_resume_fixture(dir.path(), &first.base_url());
+    std::env::set_current_dir(dir.path()).unwrap();
+    let result = run(
+        Cli {
+            command: Command::Apply {
+                plan: plan_path.clone(),
+                output: Some(report_path.clone()),
+                backend: None,
+                backend_config: Some(config_path),
+                allow_delete: false,
+                interactive: false,
+            },
+        },
+        AppConfig::load().unwrap(),
+    )
+    .await;
+    std::env::set_current_dir(&cwd).unwrap();
+    result.expect_err("the device create fails");
+    assert!(!state_path.exists(), "a failed apply saves no state");
+
+    // run 2 is a cold start against a fresh backend: the site must not be created
+    // again, and the device must go out with the id the first run got for it.
+    let second = httpmock::MockServer::start();
+    let sites = second.mock(|when, then| {
+        when.method(POST).path("/sites/");
+        then.status(201).json_body(serde_json::json!({"id": 99}));
+    });
+    let devices = second.mock(|when, then| {
+        when.method(POST)
+            .path("/devices/")
+            .json_body_includes(r#"{"site": 7}"#);
+        then.status(201).json_body(serde_json::json!({"id": 9}));
+    });
+    let (plan_path, config_path) = generic_resume_fixture(dir.path(), &second.base_url());
+    std::env::set_current_dir(dir.path()).unwrap();
+    let result = run(
+        Cli {
+            command: Command::Apply {
+                plan: plan_path,
+                output: Some(report_path.clone()),
+                backend: None,
+                backend_config: Some(config_path),
+                allow_delete: false,
+                interactive: false,
+            },
+        },
+        AppConfig::load().unwrap(),
+    )
+    .await;
+    std::env::set_current_dir(cwd).unwrap();
+    result.unwrap();
+
+    sites.assert_calls(0);
+    devices.assert_calls(1);
+
+    let report: ApplyReport =
+        serde_json::from_str(&std::fs::read_to_string(&report_path).unwrap()).unwrap();
+    assert_eq!(
+        report.applied.iter().map(|a| a.uid).collect::<Vec<_>>(),
+        vec![uuid::Uuid::from_u128(2)],
+        "`applied` stays this run's ops"
+    );
+    assert_eq!(
+        report
+            .resumed
+            .iter()
+            .map(|a| (a.uid, a.backend_id.clone()))
+            .collect::<Vec<_>>(),
+        vec![(
+            uuid::Uuid::from_u128(1),
+            Some(alembic_engine::BackendId::Int(7))
+        )]
+    );
+    assert_eq!(report.previously_applied_count, Some(1));
+
+    // and the recovered mapping lands in state, so a later rename plans an update
+    // rather than a duplicate create.
+    let state = StateStore::load(&state_path).unwrap();
+    assert_eq!(
+        state.backend_id(
+            alembic_core::TypeName::new("dcim.site"),
+            uuid::Uuid::from_u128(1)
+        ),
+        Some(alembic_engine::BackendId::Int(7))
     );
 }
 
@@ -1208,14 +1431,160 @@ objects:
     };
     run(cli, AppConfig::load().unwrap()).await.unwrap();
 
-    // --report is read-only: no plan file is written and no state is persisted.
-    assert!(!out.exists(), "plan file must not be written for --report");
+    // --report is read-only: -o carries the drift report, never a plan, and no
+    // state is persisted.
+    let raw = std::fs::read_to_string(&out).unwrap();
+    assert!(
+        !raw.contains("\"ops\""),
+        "--report must not write a plan file: {raw}"
+    );
     assert!(
         !dir.path().join(".alembic/state.json").exists(),
         "state must not be saved for --report"
     );
 
     std::env::set_current_dir(cwd).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn run_plan_report_writes_the_drift_report_to_output() {
+    use serde_json::json;
+
+    let _guard = cwd_lock().lock().await;
+    // the backend holds leaf01, intent declares leaf02: one extra, one missing.
+    let server = nautobot_plan_server(json!([{ "id": "uuid-leaf01", "name": "leaf01" }]));
+    let dir = tempdir().unwrap();
+    let state_path = dir.path().join(".alembic").join("state.json");
+    let _env = EnvVarGuard::acquire_async(&[
+        ("ALEMBIC_STATE_BACKEND", Some("local")),
+        ("ALEMBIC_STATE_PATH", Some(state_path.to_str().unwrap())),
+    ])
+    .await;
+    let inventory = dir.path().join("inventory.yaml");
+    let out = dir.path().join("nested/drift.json");
+    let config = dir.path().join("adapter.yaml");
+    std::fs::write(
+        &inventory,
+        r#"
+schema:
+  types:
+    dcim.device:
+      key:
+        name:
+          type: string
+      fields:
+        name:
+          type: string
+objects:
+  - uid: "00000000-0000-0000-0000-000000000002"
+    type: dcim.device
+    key:
+      name: "leaf02"
+    attrs:
+      name: "leaf02"
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        &config,
+        format!(
+            "backend: nautobot\nurl: {}\ntoken: token\n",
+            server.base_url()
+        ),
+    )
+    .unwrap();
+
+    let cwd = std::env::current_dir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
+
+    let cli = Cli {
+        command: Command::Plan {
+            file: inventory,
+            output: Some(out.clone()),
+            backend: None,
+            backend_config: Some(config),
+            provision: false,
+            dry_run: false,
+            report: true,
+            allow_delete: false,
+        },
+    };
+    let result = run(cli, AppConfig::load().unwrap()).await;
+    std::env::set_current_dir(cwd).unwrap();
+    result.unwrap();
+
+    let drift: DriftReport = serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    assert_eq!(drift.missing.len(), 1);
+    assert_eq!(drift.missing[0].key, key_str("name=leaf02"));
+    // report mode forces delete-detection, so the extra rides in the file too,
+    // without --allow-delete
+    assert_eq!(drift.extra.len(), 1);
+    assert_eq!(drift.extra[0].key, key_str("name=leaf01"));
+    assert!(drift.changed.is_empty());
+    assert!(
+        !state_path.exists(),
+        "writing the report must not turn --report into a state write"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn run_plan_report_rejects_a_bad_output_path_before_observing() {
+    let _guard = cwd_lock().lock().await;
+    let server = httpmock::MockServer::start();
+    let mock = server.mock(|when, then| {
+        when.any_request();
+        then.status(500);
+    });
+
+    let dir = tempdir().unwrap();
+    let state_path = dir.path().join(".alembic").join("state.json");
+    let _env = EnvVarGuard::acquire_async(&[
+        ("ALEMBIC_STATE_BACKEND", Some("local")),
+        ("ALEMBIC_STATE_PATH", Some(state_path.to_str().unwrap())),
+    ])
+    .await;
+    // a declared type, so observing would issue requests if it were reached
+    let inventory = write_site_inventory(dir.path());
+    let config = dir.path().join("adapter.yaml");
+    std::fs::write(
+        &config,
+        format!(
+            "backend: nautobot\nurl: {}\ntoken: token\n",
+            server.base_url()
+        ),
+    )
+    .unwrap();
+    // the report path's parent is a file, so it can never be created
+    let blocker = dir.path().join("blocker");
+    std::fs::write(&blocker, "").unwrap();
+
+    let cwd = std::env::current_dir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
+    let cli = Cli {
+        command: Command::Plan {
+            file: inventory,
+            output: Some(blocker.join("drift.json")),
+            backend: None,
+            backend_config: Some(config),
+            provision: false,
+            dry_run: false,
+            report: true,
+            allow_delete: false,
+        },
+    };
+    let result = run(cli, AppConfig::load().unwrap()).await;
+    std::env::set_current_dir(cwd).unwrap();
+
+    let err = result.expect_err("a bad -o must fail the run");
+    assert!(
+        format!("{err:#}").contains("create output directory"),
+        "the run must fail on the output path: {err:#}"
+    );
+    assert_eq!(
+        mock.calls(),
+        0,
+        "the output path must be rejected before the backend is observed"
+    );
 }
 
 #[test]
@@ -1295,7 +1664,7 @@ fn provision_conflicts_with_dry_run_but_not_report() {
 #[test]
 fn plan_report_output_optional() {
     use clap::Parser;
-    // --report exits without writing a plan file, so -o/--output is not required.
+    // --report prints its summary either way, so -o/--output is not required.
     let result = Cli::try_parse_from(["alembic", "plan", "-f", "inventory.yaml", "--report"]);
     assert!(result.is_ok(), "plan --report without -o must parse");
 }
@@ -1338,8 +1707,8 @@ fn apply_output_is_optional_and_takes_the_short_flag() {
 #[test]
 fn plan_report_with_output_still_parses() {
     use clap::Parser;
-    // backward-compat: -o alongside --report is still accepted, not rejected as a
-    // conflict, so existing scripts that always pass -o keep working.
+    // -o alongside --report is where the drift report's json goes, so the two
+    // must never be rejected as a conflict.
     let result = Cli::try_parse_from([
         "alembic",
         "plan",
@@ -1403,8 +1772,8 @@ objects: []
     let mut state = load_state().await.unwrap();
     let backend = create_backend(&[], None, Some(config)).unwrap();
 
-    // the buggy threading (allow_delete alone) never emits deletes, so the
-    // `extra` category is silently empty even though leaf01 is unmanaged.
+    // without report-forced delete-detection, allow_delete=false emits no
+    // deletes and the `extra` category stays empty.
     let buggy = build_plan(
         backend.observer().unwrap(),
         &inventory,
@@ -1482,10 +1851,7 @@ async fn minimal_external_adapter() {
 
 // drives the real run() for `plan --provision` against an external adapter whose
 // preview_schema errors (ensure_schema stays defaulted/Ok). the provision guard
-// must propagate that Err and abort before ensure_schema, so a preview hiccup
-// cannot slip past the --allow-delete gate and provision blind. this fails
-// against the old `if let Ok(Some(..))` swallow (run completes Ok) and passes
-// once the guard uses `?` to fail closed, mirroring the engine apply path.
+// must propagate a preview Err and abort before ensure_schema.
 #[tokio::test(flavor = "multi_thread")]
 async fn run_plan_provision_fails_closed_on_preview_error() {
     let _guard = cwd_lock().lock().await;

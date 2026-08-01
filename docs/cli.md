@@ -97,7 +97,7 @@ NETBOX_URL=https://netbox.example.com NETBOX_TOKEN=$NETBOX_TOKEN \
 - without `--provision`, plan asks the backend for a read-only schema preview (what `apply`'s `ensure_schema` would create/delete, writing nothing) and prints it to stderr as `schema preview: ...`; the machine-readable copy rides in the plan's `schema_preview`. backends that cannot preview report `schema preview: unavailable for this backend`
 - `--provision` runs adapter provisioning (`ensure_schema`) before observing backend state; provisioning that would delete custom object types/fields the inventory no longer declares is blocked unless `--allow-delete` is also given (such deletes cascade to their objects on the backend)
 - `--dry-run` prints the raw plan json instead of writing it (no `-o`/`--output` needed)
-- `--report` prints a read-only drift report and exits without writing a plan file or saving state (no `-o`/`--output` needed)
+- `--report` prints a read-only drift report and exits without writing a plan file or saving state; `-o`/`--output` writes that report as json (optional: without it the report is the printed summary only)
 - `--report` and `--dry-run` are mutually exclusive (both exit without applying); passing both is rejected at parse time
 - `--provision` cannot be combined with `--dry-run` (rejected at parse time): a `--dry-run` preview promises not to write, but `--provision` still writes backend schema (`ensure_schema`). combining `--provision` with `--report` stays allowed as the documented "provision schema, then preview drift" workflow (see below)
 - accepts any type string and arbitrary attrs (schema validation is required)
@@ -107,6 +107,9 @@ NETBOX_URL=https://netbox.example.com NETBOX_TOKEN=$NETBOX_TOKEN \
 ```bash
 NETBOX_URL=https://netbox.example.com NETBOX_TOKEN=$NETBOX_TOKEN \
   alembic plan --backend netbox -f examples/inventory.yaml --report
+
+NETBOX_URL=https://netbox.example.com NETBOX_TOKEN=$NETBOX_TOKEN \
+  alembic plan --backend netbox -f examples/inventory.yaml --report -o drift.json
 ```
 
 `--report` surfaces the same desired-vs-observed diff that `plan` computes, as a
@@ -118,9 +121,36 @@ standalone human-readable summary grouped into three categories:
 
 it is one-way by construction: it only ever describes how observed state diverges
 from intent and never writes observed state back into the inventory or state
-store. `-o`/`--output` is optional in `--report` mode (as with `--dry-run`): both
-exit without writing a plan file, so neither needs an output path. it is required
-only for the default write path.
+store.
+
+`-o`/`--output` writes the same report as json, the machine-readable half of the
+document the summary prints. it is optional: the summary prints either way, and
+without it the report leaves no file. the file is the drift report, never a plan
+(`--report` still writes no plan and saves no state), and the path is checked
+before the backend is observed, so a bad `-o` costs no backend requests. the
+json shape:
+
+```json
+{
+  "changed": [
+    {
+      "type_name": "dcim.site",
+      "key": { "slug": "fra1" },
+      "changes": [{ "field": "status", "from": "planned", "to": "active" }]
+    }
+  ],
+  "missing": [{ "type_name": "dcim.device", "key": { "name": "leaf02" } }],
+  "extra": [{ "type_name": "dcim.device", "key": { "name": "leaf01" } }]
+}
+```
+
+every category is always present, so an empty one reads as "no drift here"
+rather than a missing key, and a report with three empty lists is the json form
+of `no drift: observed backend state matches declared intent`. `extra` is
+populated whether or not `--allow-delete` was passed: report mode forces
+delete-detection on so unmanaged backend objects surface. reading the file back
+is a read of a diff, not a way to adopt observed state: there is deliberately no
+write-back mode (#56).
 
 note that combining `--report` with `--provision` is not fully read-only:
 `--provision` still runs adapter provisioning (`ensure_schema`) against the
@@ -185,9 +215,10 @@ applied; a failed apply leaves the previous run's file untouched rather than
 writing a partial one, and the output path is checked before the apply starts,
 so a bad `-o` fails before the backend is written to. the `applied` list covers
 the current run's ops: after a resume, the ops the interrupted run applied
-appear only as `previously_applied_count`, without their uid to backend-id
-pairs (the journal records `done`, not the backend id; #46). `--interactive`
-reports the ops you approved, not the ops in the plan.
+appear under `resumed` instead, in the same shape, each with the backend id its
+write returned. that list is present only on a resumed run, and is empty for a
+journal written before ids were recorded. `--interactive` reports the ops you
+approved, not the ops in the plan.
 
 state (`docs/state.md`) is cumulative and keyed by uid, and the journal is
 deleted once apply succeeds, so this is the only per-run artifact: the file a ci
@@ -219,9 +250,15 @@ means an apply is unfinished.
   notice, even though every create/update has applied by then
 - nothing is said when a run fails before applying anything (an unreachable backend,
   say): there is no progress to resume from
-- a resumed run reports and maps only its own ops: the interrupted run's uid to
-  backend-id mappings are not recovered from the journal, which records `done`
-  and nothing else (#46)
+- the journal records the backend id each create or update returned, so the resumed
+  run can reference objects the interrupted run created or updated, and their uid to
+  backend-id mappings land in state once the plan applies in full. a journal written
+  before ids were recorded still resumes, but carries no ids to recover
+- resume covers an apply that exits through an error. operations are marked done in
+  memory and the journal is written at that exit, not once per operation, so a
+  process killed mid-apply (sigkill, panic, power loss) leaves a journal recording
+  nothing done, and re-running repeats what already applied
+
 ## map
 
 ```bash

@@ -48,7 +48,7 @@ fn apply_read_only_interactive_prints_no_prompt() {
         stderr.contains("backend is read-only; it cannot apply changes"),
         "expected the read-only capability error; stderr:\n{stderr}"
     );
-    // the bug: interactive apply used to prompt for every op before failing.
+    // interactive apply must not prompt before the capability check fails.
     assert!(
         !stdout.contains("[y/N]"),
         "interactive apply must not prompt before failing fast; stdout:\n{stdout}"

@@ -706,8 +706,6 @@ mod tests {
 
     #[test]
     fn object_rejects_an_unknown_key() {
-        // `attributes` for `attrs` used to leave the object with no attributes at
-        // all, and the file validated clean.
         let err = serde_json::from_value::<Object>(serde_json::json!({
             "uid": Uuid::from_u128(1).to_string(),
             "type": "dcim.site",
@@ -744,8 +742,7 @@ mod tests {
 
     #[test]
     fn type_schema_rejects_an_unknown_key() {
-        // a typo'd `fields` used to be blamed on the object: `extra attr
-        // dcim.site.name`, pointing at the data rather than the schema.
+        // a typo'd `fields` must be reported against the schema, not the object
         let err = serde_json::from_value::<TypeSchema>(serde_json::json!({
             "key": { "slug": { "type": "string" } },
             "fieldz": { "name": { "type": "string" } },
@@ -1077,8 +1074,7 @@ mod tests {
 
     #[test]
     fn field_type_enum_missing_values_error_is_consistent_across_encodings() {
-        // the nested (FieldType) and flattened (FieldSchema) encodings drifted before
-        // sharing one dispatch; pin that a missing `values` now reports one message
+        // pin that both encodings report one message for a missing `values`
         let nested = parse_field_type_value(&serde_json::json!({ "type": "enum" })).unwrap_err();
         let flattened =
             serde_json::from_value::<FieldSchema>(serde_json::json!({ "type": "enum" }))

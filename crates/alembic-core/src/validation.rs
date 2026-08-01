@@ -121,8 +121,7 @@ impl ValidationError {
                     Some(key.clone())
                 }
             }
-            // exhaustive on purpose (no `_`): a new variant that carries a key must
-            // be classified here rather than silently returning None.
+            // exhaustive on purpose (see uid())
             ValidationError::DuplicateUid(_)
             | ValidationError::MissingType
             | ValidationError::MissingKey
@@ -165,9 +164,7 @@ impl ValidationError {
                 field.split('.').next().map(|s| s.to_string())
             }
             ValidationError::DuplicateKey(key) => key.split("::").next().map(|s| s.to_string()),
-            // exhaustive on purpose (no `_`): a new variant that carries a type name
-            // must be classified here rather than silently returning None, which is
-            // what dropped these four validators' source locations to begin with.
+            // exhaustive on purpose (see uid())
             ValidationError::DuplicateUid(_)
             | ValidationError::MissingType
             | ValidationError::MissingKey => None,
@@ -180,8 +177,7 @@ impl ValidationError {
             ValidationError::InvalidValue { field, .. }
             | ValidationError::MissingReference { field, .. }
             | ValidationError::ReferenceTypeMismatch { field, .. } => Some(field),
-            // exhaustive on purpose (no `_`): a new variant that carries a dotted
-            // field path must be classified here rather than silently returning None.
+            // exhaustive on purpose (see uid())
             ValidationError::DuplicateUid(_)
             | ValidationError::DuplicateKey(_)
             | ValidationError::MissingType
@@ -253,7 +249,6 @@ impl ValidationReport {
     /// this matches errors to objects based on UIDs, types, and keys,
     /// and attaches the object's source location to the error.
     pub fn with_sources(self, objects: &[Object]) -> Vec<LocatedError> {
-        // build lookup maps
         let uid_to_source: BTreeMap<Uid, Option<SourceLocation>> =
             objects.iter().map(|o| (o.uid, o.source.clone())).collect();
         let key_to_source: BTreeMap<String, Option<SourceLocation>> = objects
@@ -279,7 +274,6 @@ impl ValidationReport {
                     .and_then(|uid| uid_to_source.get(&uid).cloned().flatten())
                     .or_else(|| {
                         error.key_hint().and_then(|_| {
-                            // for DuplicateKey errors, try to find source
                             if let ValidationError::DuplicateKey(key) = &error {
                                 key_to_source.get(key).cloned().flatten()
                             } else {
@@ -590,10 +584,8 @@ fn validate_field_enum(
 /// reject a key field whose declared type is composite (`list`, `list_ref`, or
 /// `map`). a key component feeds uid derivation and must render to a scalar
 /// string, so `render_key`/`ensure_scalar` reject a composite value at map time
-/// (docs/map.md). validation enforced this per-value but not per-type, so a
-/// schema declaring a composite key field passed `alembic validate` clean yet
-/// was un-representable by the pipeline. catching the type at schema load keeps
-/// the invalid state unrepresentable before any object is authored.
+/// (docs/map.md). catching the type at schema load keeps the invalid state
+/// unrepresentable before any object is authored.
 ///
 /// only the top-level key field type matters: a key value is scalar or it is
 /// not, so nesting is irrelevant (unlike `ref`-target and `enum` checks, which
@@ -639,15 +631,11 @@ fn is_composite_type(field_type: &FieldType) -> bool {
     }
 }
 
-/// reject a key field declared `nullable: true`. a key component feeds uid
-/// derivation and must render to a scalar string, and a null value has no
-/// identity form, so `render_key`/`ensure_scalar` reject a null key at map time
-/// (docs/map.md). the per-object null check honours `nullable` uniformly for
-/// every field, so an object supplying a null value under a nullable key field
-/// passed `alembic validate` clean yet was un-representable by the pipeline.
-/// rejecting the declaration at schema load keeps the invalid state
-/// unrepresentable before any object is authored, mirroring the composite
-/// key-type check above.
+/// reject a key field declared `nullable: true`. a key component must render
+/// to a scalar to have an identity form (see `validate_schema_key_scalar`),
+/// and a null value has none, so `render_key`/`ensure_scalar` reject a null
+/// key at map time. rejecting the declaration at schema load keeps the invalid
+/// state unrepresentable before any object is authored.
 fn validate_schema_key_nullable(schema: &Schema, report: &mut ValidationReport) {
     for (type_name, type_schema) in &schema.types {
         for (field, field_schema) in &type_schema.key {
@@ -1556,11 +1544,8 @@ mod tests {
 
     #[test]
     fn detects_composite_key_field_type() {
-        // a key component must render to a scalar to have an identity form
-        // (docs/map.md); a composite key type never can. schema-load validation
-        // catches all three composite types even with no objects present (the
-        // `validate_schema` helper passes none), before render would reject the
-        // value at map time.
+        // schema-load rejects all three composite key types (see
+        // validate_schema_key_scalar)
         let group = TypeSchema {
             key: BTreeMap::from([(
                 "members".to_string(),
@@ -1614,9 +1599,7 @@ mod tests {
 
     #[test]
     fn accepts_ref_key_field_type() {
-        // the critical carve-out: a `ref` key value renders to a scalar uid
-        // string, so a `ref` key is legal. infrahub keys an interface by
-        // (device: ref, name: string); both fields must validate clean.
+        // a `ref` key renders to a scalar uid string and stays legal
         let device = TypeSchema {
             key: BTreeMap::from([("name".to_string(), schema_field(FieldType::String))]),
             fields: BTreeMap::new(),
@@ -1671,8 +1654,8 @@ mod tests {
     #[test]
     fn scalar_key_field_with_composite_value_is_rejected() {
         // the type-level check is not the only guard: a scalar-typed key whose
-        // object supplies a composite VALUE is already rejected by per-object
-        // value-type validation, so a composite key VALUE never reaches uid
+        // object supplies a composite value is already rejected by per-object
+        // value-type validation, so a composite key value never reaches uid
         // derivation either. the schema is scalar-keyed, so no type-level error
         // fires here -- only the per-object value error.
         let device = TypeSchema {
@@ -1707,11 +1690,8 @@ mod tests {
 
     #[test]
     fn detects_nullable_key_field() {
-        // a key component must render to a scalar to have a stable identity
-        // (docs/map.md); a null value has none. schema-load validation catches a
-        // key field declared `nullable: true` even with no objects present (the
-        // `validate_schema` helper passes none), before render would reject a
-        // null value at map time.
+        // schema-load rejects a nullable key field (see
+        // validate_schema_key_nullable)
         let device = TypeSchema {
             key: BTreeMap::from([("slug".to_string(), nullable_field(FieldType::String))]),
             fields: BTreeMap::new(),
@@ -1741,10 +1721,7 @@ mod tests {
 
     #[test]
     fn accepts_non_nullable_key_fields() {
-        // a `ref` key and every scalar key stay legal when not nullable: their
-        // values render to a scalar identity string. infrahub keys an interface
-        // by (device: ref, name: string); neither field may fire a nullable-key
-        // error.
+        // non-nullable `ref` and scalar keys must not fire a nullable-key error
         let device = TypeSchema {
             key: BTreeMap::from([("name".to_string(), schema_field(FieldType::String))]),
             fields: BTreeMap::new(),
@@ -1809,8 +1786,8 @@ mod tests {
 
     #[test]
     fn detects_invalid_pattern_for_type_with_no_objects() {
-        // the headline win: a bad pattern on a type with NO objects is never
-        // reached by per-object validation, but schema-load validation catches it.
+        // a bad pattern on a type with no objects is never reached by
+        // per-object validation, but schema-load validation catches it.
         let ghost = TypeSchema {
             key: BTreeMap::new(),
             fields: BTreeMap::from([("name".to_string(), pattern_field("[bad"))]),
@@ -1926,9 +1903,8 @@ mod tests {
 
     #[test]
     fn detects_constraint_on_non_string_field_for_type_with_no_objects() {
-        // the headline win: a constraint on a never-string field of a type with
-        // NO objects is never reached by per-object validation, but schema-load
-        // validation catches it.
+        // see detects_invalid_pattern_for_type_with_no_objects; here for a
+        // constraint on a never-string field.
         let mut count = schema_field(FieldType::Int);
         count.pattern = Some("^[0-9]+$".to_string());
         let ghost = TypeSchema {
@@ -2053,9 +2029,8 @@ mod tests {
 
     #[test]
     fn detects_empty_enum_for_type_with_no_objects() {
-        // the headline win: an empty enum on a type with NO objects is never
-        // reached by per-object validation, but schema-load validation catches
-        // it. the key field also exercises the `key.{field}` label path.
+        // see detects_invalid_pattern_for_type_with_no_objects; here for an
+        // empty enum. the key field also exercises the `key.{field}` label path.
         let ghost = TypeSchema {
             key: BTreeMap::from([(
                 "role".to_string(),
@@ -2191,8 +2166,8 @@ mod tests {
 
     #[test]
     fn with_sources_attaches_location_for_empty_enum() {
-        // the four newest schema validators carry a `type_name`; with_sources must
-        // resolve it to the declaring type's source line, like every older error.
+        // `EmptyEnum` carries a `type_name`; with_sources must resolve it to
+        // the declaring type's source line, like every other schema-load error.
         let device = TypeSchema {
             key: BTreeMap::from([("name".to_string(), schema_field(FieldType::String))]),
             fields: BTreeMap::from([(
@@ -2231,8 +2206,8 @@ mod tests {
 
     #[test]
     fn with_sources_attaches_location_for_unknown_ref_target() {
-        // a second of the four newest validators, proving the arm resolves per
-        // variant and not just for empty-enum.
+        // `UnknownRefTarget` resolves too: the arm matches per variant, not
+        // just `EmptyEnum`.
         let device = TypeSchema {
             key: BTreeMap::from([("name".to_string(), schema_field(FieldType::String))]),
             fields: BTreeMap::from([(
@@ -2273,9 +2248,8 @@ mod tests {
 
     #[test]
     fn with_sources_attaches_location_for_non_scalar_key() {
-        // the newest schema validator also carries a `type_name`; with_sources
-        // must resolve it to the declaring type's source line, like every older
-        // schema-load error.
+        // `NonScalarKeyField` carries a `type_name`; with_sources must resolve
+        // it to the declaring type's source line.
         let device = TypeSchema {
             key: BTreeMap::from([(
                 "members".to_string(),
@@ -2316,9 +2290,8 @@ mod tests {
 
     #[test]
     fn with_sources_attaches_location_for_nullable_key() {
-        // the nullable-key validator carries a `type_name`; with_sources must
-        // resolve it to the declaring type's source line, like every other
-        // schema-load error.
+        // `NullableKeyField` carries a `type_name`; with_sources must resolve
+        // it to the declaring type's source line.
         let device = TypeSchema {
             key: BTreeMap::from([("slug".to_string(), nullable_field(FieldType::String))]),
             fields: BTreeMap::new(),
@@ -2357,7 +2330,7 @@ mod tests {
         let uid_to_type = BTreeMap::from([(uid(1), TypeName::new("target"))]);
         let mut report = ValidationReport::default();
 
-        // test Type Mismatch
+        // test type mismatch
         let schema = FieldSchema {
             r#type: FieldType::Int,
             required: true,
@@ -2380,7 +2353,7 @@ mod tests {
             .iter()
             .any(|e| matches!(e, ValidationError::InvalidValue { .. })));
 
-        // test Enum
+        // test `enum`
         let schema = FieldSchema {
             r#type: FieldType::Enum {
                 values: vec!["a".to_string(), "b".to_string()],
@@ -2406,7 +2379,7 @@ mod tests {
             .iter()
             .any(|e| matches!(e, ValidationError::InvalidValue { .. })));
 
-        // test Reference Type Mismatch
+        // test reference type mismatch
         let schema = FieldSchema {
             r#type: FieldType::Ref {
                 target: "wrong".to_string(),
@@ -2432,7 +2405,7 @@ mod tests {
             .iter()
             .any(|e| matches!(e, ValidationError::ReferenceTypeMismatch { .. })));
 
-        // test ListRef
+        // test `list_ref`
         let schema = FieldSchema {
             r#type: FieldType::ListRef {
                 target: "target".to_string(),
@@ -2455,7 +2428,7 @@ mod tests {
         );
         assert!(report.errors.is_empty());
 
-        // test Map
+        // test `map`
         let schema = FieldSchema {
             r#type: FieldType::Map {
                 value: Box::new(FieldType::Int),
@@ -2481,7 +2454,7 @@ mod tests {
             .iter()
             .any(|e| matches!(e, ValidationError::InvalidValue { .. })));
 
-        // test Uuid
+        // test `uuid`
         let schema = FieldSchema {
             r#type: FieldType::Uuid,
             required: true,
@@ -2505,7 +2478,7 @@ mod tests {
             .iter()
             .any(|e| matches!(e, ValidationError::InvalidValue { .. })));
 
-        // test List of Refs
+        // test a list of refs
         let schema = FieldSchema {
             r#type: FieldType::List {
                 item: Box::new(FieldType::Ref {
@@ -2724,9 +2697,7 @@ mod tests {
 
     #[test]
     fn type_ip_address_accepts_any_string_including_masked() {
-        // `ip_address` is intentionally not format-validated yet: NetBox-style
-        // masked addresses (as in examples/e2e.yaml) must keep passing until the
-        // mask convention is decided. both bare and masked strings are accepted.
+        // `ip_address` is a plain string check (see value_matches_type)
         assert!(
             check(&typed_field(FieldType::IpAddress), &json!("10.0.0.10/24"))
                 .errors
@@ -2811,7 +2782,7 @@ mod tests {
 
     #[test]
     fn malformed_pattern_reported_once_across_many_objects() {
-        // reported once at the schema level, not once per object (was 1 + 3).
+        // reported once at the schema level, not once per object.
         let device = TypeSchema {
             key: BTreeMap::from([("name".to_string(), schema_field(FieldType::String))]),
             fields: BTreeMap::from([("code".to_string(), pattern_field("["))]),

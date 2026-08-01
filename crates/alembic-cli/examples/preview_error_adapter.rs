@@ -5,7 +5,6 @@ use alembic_engine::{
 };
 use anyhow::Result;
 
-// this will define the main function of the crate
 alembic_external_main!(PreviewErrorAdapter::default());
 
 #[derive(Debug, Default)]
@@ -32,8 +31,7 @@ impl ExternalAdapter for PreviewErrorAdapter {
     }
 
     // override just the preview to fail, so the cli's provision guard sees an
-    // Err from preview_schema; ensure_schema stays defaulted (Ok), which is what
-    // makes the pre-fix code provision blind.
+    // Err from preview_schema; ensure_schema stays defaulted (Ok).
     fn preview_schema(&mut self, _schema: &Schema) -> Result<Option<ProvisionReport>> {
         Err(anyhow::anyhow!("preview failed for test"))
     }

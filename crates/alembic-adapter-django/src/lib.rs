@@ -1403,7 +1403,8 @@ mod tests {
 
     #[test]
     fn string_values_are_escaped_into_python() {
-        // an enum value or pattern carrying a quote used to produce a SyntaxError.
+        // a stray quote in an enum value or pattern must not break the
+        // generated python.
         let mut status = field(FieldType::Enum {
             values: vec!["active".to_string(), "retired \"old\"".to_string()],
         });

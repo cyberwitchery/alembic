@@ -4,7 +4,6 @@ use alembic_engine::{
 };
 use anyhow::Result;
 
-// this will define the main function of the crate
 alembic_external_main!(MinimalAdapter::default());
 
 #[derive(Debug, Default)]
