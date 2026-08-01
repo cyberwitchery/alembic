@@ -18,7 +18,7 @@ use std::path::PathBuf;
 use self::diag::err;
 use self::io::{
     format_validation_errors, read_plan, warn_misleading_output_extension, write_apply_report,
-    write_inventory, write_plan,
+    write_drift_report, write_inventory, write_plan,
 };
 use self::state::load_state;
 use crate::app::config::AppConfig;
@@ -46,9 +46,10 @@ File formats are chosen by file extension:
   - inventories (IR) are authored as YAML or JSON: a .json extension is parsed as
     JSON, anything else (.yaml, .yml, or no extension) is parsed as YAML. each
     inventory carries a schema block plus optional include/imports.
-  - plans (plan --output), observed or transformed IR (import --output and
-    map --output), and the apply report (apply --output) are always written as
-    JSON, regardless of the path extension.
+  - plans (plan --output), the drift report (plan --report --output), observed
+    or transformed IR (import --output and map --output), and the apply report
+    (apply --output) are always written as JSON, regardless of the path
+    extension.
   - apply --plan consumes a JSON plan file as produced by alembic plan.")]
 pub(crate) struct Cli {
     #[command(subcommand)]
@@ -69,7 +70,8 @@ enum Command {
         /// inventory file to plan from (yaml or json).
         #[arg(short = 'f', long)]
         file: PathBuf,
-        /// where to write the json plan; required unless --report or --dry-run.
+        /// where to write the json plan, or the json drift report under
+        /// --report; required unless --report or --dry-run.
         #[arg(short = 'o', long, required_unless_present_any = ["report", "dry_run"])]
         output: Option<PathBuf>,
         /// backend name (netbox, nautobot, infrahub, generic, peeringdb, django,
@@ -87,7 +89,8 @@ enum Command {
         #[arg(long, default_value_t = false)]
         dry_run: bool,
         /// print a read-only drift report (desired vs observed) and exit without
-        /// writing a plan file or saving state. mutually exclusive with --dry-run.
+        /// writing a plan file or saving state; --output writes the same report
+        /// as json. mutually exclusive with --dry-run.
         #[arg(long, default_value_t = false, conflicts_with = "dry_run")]
         report: bool,
         /// allow the plan to include deletes (objects, and destructive schema
@@ -216,6 +219,14 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             let mut state = load_state().await?;
             let plugins = search_for_plugins(&config);
             let backend = create_backend(&plugins, backend.as_deref(), backend_config)?;
+            // a bad output path before the backend is observed: plan and report
+            // are both written after observing, so a late failure costs a full
+            // observation for nothing. --dry-run writes no file at all
+            if !dry_run {
+                if let Some(output) = &output {
+                    io::ensure_parent_dir(output)?;
+                }
+            }
             // read-only schema preview: what apply's ensure_schema would provision,
             // writing nothing. skipped when --provision actually provisions now, and
             // for observer/emitter backends that cannot provision schema at all. all
@@ -267,7 +278,17 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             if report {
                 // read-only: describe desired-vs-observed and exit without
                 // writing a plan file or saving state.
-                println!("{}", DriftReport::from_plan(&plan));
+                let drift = DriftReport::from_plan(&plan);
+                println!("{drift}");
+                // the machine-readable half of the same report: a drift document,
+                // never a plan, and still no state save
+                if let Some(output) = &output {
+                    if let Some(msg) = warn_misleading_output_extension(output) {
+                        eprintln!("{msg}");
+                    }
+                    write_drift_report(output, &drift)?;
+                    println!("\ndrift report written to {}", output.display());
+                }
             } else if dry_run {
                 let raw = serde_json::to_string_pretty(&plan)?;
                 println!("{raw}");

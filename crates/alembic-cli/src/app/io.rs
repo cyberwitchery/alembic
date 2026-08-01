@@ -1,4 +1,4 @@
-use alembic_engine::{ApplyReport, Plan};
+use alembic_engine::{ApplyReport, DriftReport, Plan};
 use anyhow::{Context, Result};
 use std::fs;
 use std::path::Path;
@@ -33,6 +33,12 @@ pub(super) fn write_apply_report(path: &Path, report: &ApplyReport) -> Result<()
     ensure_parent_dir(path)?;
     let raw = serde_json::to_string_pretty(report)?;
     fs::write(path, raw).with_context(|| format!("write apply report: {}", path.display()))
+}
+
+pub(super) fn write_drift_report(path: &Path, report: &DriftReport) -> Result<()> {
+    ensure_parent_dir(path)?;
+    let raw = serde_json::to_string_pretty(report)?;
+    fs::write(path, raw).with_context(|| format!("write drift report: {}", path.display()))
 }
 
 pub(super) fn write_inventory(path: &Path, inventory: &alembic_core::Inventory) -> Result<()> {

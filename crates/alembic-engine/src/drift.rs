@@ -8,11 +8,11 @@
 
 use crate::types::{FieldChange, Op, Plan};
 use alembic_core::{key_string, Key, TypeName};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::fmt;
 
 /// an object present in both intent and backend, but with diverging fields.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChangedEntry {
     /// object type.
     pub type_name: TypeName,
@@ -23,7 +23,7 @@ pub struct ChangedEntry {
 }
 
 /// an object that exists on only one side of the diff (missing or extra).
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DriftEntry {
     /// object type.
     pub type_name: TypeName,
@@ -38,7 +38,10 @@ pub struct DriftEntry {
 /// [`missing`](DriftReport::missing) (declared but absent from the backend), and
 /// deletes become [`extra`](DriftReport::extra) (present on the backend but not
 /// declared). it is a one-way projection only, never a write path.
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+///
+/// `Deserialize` is here so a consumer can read a written report back; it is
+/// never a way to feed observed state into an inventory or state store.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct DriftReport {
     /// objects present in both intent and backend but with diverging fields.
     pub changed: Vec<ChangedEntry>,

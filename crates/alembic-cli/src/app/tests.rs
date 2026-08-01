@@ -182,6 +182,33 @@ fn write_apply_report_creates_missing_parent_dirs() {
 }
 
 #[test]
+fn write_drift_report_creates_missing_parent_dirs() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("nested/out/drift.json");
+    write_drift_report(&path, &DriftReport::default()).unwrap();
+    assert!(path.exists());
+}
+
+#[test]
+fn drift_report_json_names_every_category() {
+    // an empty category is written as an empty list, not omitted, so a consumer
+    // reads "no drift here" rather than having to infer it from a missing key.
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("drift.json");
+    write_drift_report(&path, &DriftReport::default()).unwrap();
+
+    let raw = std::fs::read_to_string(&path).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    for category in ["changed", "missing", "extra"] {
+        assert_eq!(
+            value[category],
+            serde_json::json!([]),
+            "category {category} missing from an empty report: {raw}"
+        );
+    }
+}
+
+#[test]
 fn apply_report_json_carries_the_uid_to_backend_id_pairs() {
     // the uid to backend-id pairs are the point of the file; nothing else
     // records them per run.
@@ -1209,14 +1236,160 @@ objects:
     };
     run(cli, AppConfig::load().unwrap()).await.unwrap();
 
-    // --report is read-only: no plan file is written and no state is persisted.
-    assert!(!out.exists(), "plan file must not be written for --report");
+    // --report is read-only: -o carries the drift report, never a plan, and no
+    // state is persisted.
+    let raw = std::fs::read_to_string(&out).unwrap();
+    assert!(
+        !raw.contains("\"ops\""),
+        "--report must not write a plan file: {raw}"
+    );
     assert!(
         !dir.path().join(".alembic/state.json").exists(),
         "state must not be saved for --report"
     );
 
     std::env::set_current_dir(cwd).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn run_plan_report_writes_the_drift_report_to_output() {
+    use serde_json::json;
+
+    let _guard = cwd_lock().lock().await;
+    // the backend holds leaf01, intent declares leaf02: one extra, one missing.
+    let server = nautobot_plan_server(json!([{ "id": "uuid-leaf01", "name": "leaf01" }]));
+    let dir = tempdir().unwrap();
+    let state_path = dir.path().join(".alembic").join("state.json");
+    let _env = EnvVarGuard::acquire_async(&[
+        ("ALEMBIC_STATE_BACKEND", Some("local")),
+        ("ALEMBIC_STATE_PATH", Some(state_path.to_str().unwrap())),
+    ])
+    .await;
+    let inventory = dir.path().join("inventory.yaml");
+    let out = dir.path().join("nested/drift.json");
+    let config = dir.path().join("adapter.yaml");
+    std::fs::write(
+        &inventory,
+        r#"
+schema:
+  types:
+    dcim.device:
+      key:
+        name:
+          type: string
+      fields:
+        name:
+          type: string
+objects:
+  - uid: "00000000-0000-0000-0000-000000000002"
+    type: dcim.device
+    key:
+      name: "leaf02"
+    attrs:
+      name: "leaf02"
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        &config,
+        format!(
+            "backend: nautobot\nurl: {}\ntoken: token\n",
+            server.base_url()
+        ),
+    )
+    .unwrap();
+
+    let cwd = std::env::current_dir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
+
+    let cli = Cli {
+        command: Command::Plan {
+            file: inventory,
+            output: Some(out.clone()),
+            backend: None,
+            backend_config: Some(config),
+            provision: false,
+            dry_run: false,
+            report: true,
+            allow_delete: false,
+        },
+    };
+    let result = run(cli, AppConfig::load().unwrap()).await;
+    std::env::set_current_dir(cwd).unwrap();
+    result.unwrap();
+
+    let drift: DriftReport = serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    assert_eq!(drift.missing.len(), 1);
+    assert_eq!(drift.missing[0].key, key_str("name=leaf02"));
+    // report mode forces delete-detection, so the extra rides in the file too,
+    // without --allow-delete
+    assert_eq!(drift.extra.len(), 1);
+    assert_eq!(drift.extra[0].key, key_str("name=leaf01"));
+    assert!(drift.changed.is_empty());
+    assert!(
+        !state_path.exists(),
+        "writing the report must not turn --report into a state write"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn run_plan_report_rejects_a_bad_output_path_before_observing() {
+    let _guard = cwd_lock().lock().await;
+    let server = httpmock::MockServer::start();
+    let mock = server.mock(|when, then| {
+        when.any_request();
+        then.status(500);
+    });
+
+    let dir = tempdir().unwrap();
+    let state_path = dir.path().join(".alembic").join("state.json");
+    let _env = EnvVarGuard::acquire_async(&[
+        ("ALEMBIC_STATE_BACKEND", Some("local")),
+        ("ALEMBIC_STATE_PATH", Some(state_path.to_str().unwrap())),
+    ])
+    .await;
+    // a declared type, so observing would issue requests if it were reached
+    let inventory = write_site_inventory(dir.path());
+    let config = dir.path().join("adapter.yaml");
+    std::fs::write(
+        &config,
+        format!(
+            "backend: nautobot\nurl: {}\ntoken: token\n",
+            server.base_url()
+        ),
+    )
+    .unwrap();
+    // the report path's parent is a file, so it can never be created
+    let blocker = dir.path().join("blocker");
+    std::fs::write(&blocker, "").unwrap();
+
+    let cwd = std::env::current_dir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
+    let cli = Cli {
+        command: Command::Plan {
+            file: inventory,
+            output: Some(blocker.join("drift.json")),
+            backend: None,
+            backend_config: Some(config),
+            provision: false,
+            dry_run: false,
+            report: true,
+            allow_delete: false,
+        },
+    };
+    let result = run(cli, AppConfig::load().unwrap()).await;
+    std::env::set_current_dir(cwd).unwrap();
+
+    let err = result.expect_err("a bad -o must fail the run");
+    assert!(
+        format!("{err:#}").contains("create output directory"),
+        "the run must fail on the output path: {err:#}"
+    );
+    assert_eq!(
+        mock.calls(),
+        0,
+        "the output path must be rejected before the backend is observed"
+    );
 }
 
 #[test]
@@ -1296,7 +1469,7 @@ fn provision_conflicts_with_dry_run_but_not_report() {
 #[test]
 fn plan_report_output_optional() {
     use clap::Parser;
-    // --report exits without writing a plan file, so -o/--output is not required.
+    // --report prints its summary either way, so -o/--output is not required.
     let result = Cli::try_parse_from(["alembic", "plan", "-f", "inventory.yaml", "--report"]);
     assert!(result.is_ok(), "plan --report without -o must parse");
 }
@@ -1339,8 +1512,8 @@ fn apply_output_is_optional_and_takes_the_short_flag() {
 #[test]
 fn plan_report_with_output_still_parses() {
     use clap::Parser;
-    // backward-compat: -o alongside --report is still accepted, not rejected as a
-    // conflict, so existing scripts that always pass -o keep working.
+    // -o alongside --report is where the drift report's json goes, so the two
+    // must never be rejected as a conflict.
     let result = Cli::try_parse_from([
         "alembic",
         "plan",
