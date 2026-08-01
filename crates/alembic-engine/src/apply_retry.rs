@@ -10,12 +10,17 @@ use std::collections::{BTreeMap, BTreeSet};
 pub struct RetryApplyResult {
     pub applied: Vec<AppliedOp>,
     pub pending: Vec<Op>,
+    /// ops earlier runs of this plan applied, recovered from the journal in plan order.
+    pub resumed: Vec<AppliedOp>,
 }
 
 #[async_trait]
 pub trait RetryApplyDriver {
     async fn apply_non_delete(&mut self, op: &Op) -> Result<AppliedOp>;
     fn is_retryable(&self, err: &anyhow::Error) -> bool;
+    /// handed the ops an earlier run applied, before this run's first op, so the
+    /// driver can resolve references into objects it is not going to create again.
+    fn resume(&mut self, _resumed: &[AppliedOp]) {}
 }
 
 pub async fn apply_non_delete_with_retries(
@@ -24,6 +29,7 @@ pub async fn apply_non_delete_with_retries(
     driver: &mut impl RetryApplyDriver,
 ) -> Result<RetryApplyResult> {
     let mut applied = Vec::new();
+    let mut resumed = Vec::new();
     let mut pending: Vec<Op> = ops
         .iter()
         .filter(|op| !matches!(op, Op::Delete { .. }))
@@ -51,6 +57,9 @@ pub async fn apply_non_delete_with_retries(
                 "journal contains done ops that are not present in the provided ops"
             ));
         }
+
+        resumed = journal.done_applied_ops();
+        driver.resume(&resumed);
     }
 
     while !pending.is_empty() {
@@ -63,7 +72,7 @@ pub async fn apply_non_delete_with_retries(
                     // marked in memory only; the journal is flushed to disk at the exit
                     // points below, not once per op (saving per op is ~100x slower).
                     if let Some(journal) = journal.as_mut() {
-                        journal.mark_op_as_done(&op)?;
+                        journal.mark_op_as_done(&op, applied_op.backend_id.as_ref())?;
                     }
                     applied.push(applied_op);
                 }
@@ -101,7 +110,11 @@ pub async fn apply_non_delete_with_retries(
         }
     }
 
-    Ok(RetryApplyResult { applied, pending })
+    Ok(RetryApplyResult {
+        applied,
+        pending,
+        resumed,
+    })
 }
 
 /// tell the user what the interrupted apply left behind. resuming is automatic and
@@ -136,8 +149,8 @@ pub async fn apply_non_delete_journaled(
         Some(dir) => Some(Journal::load_or_create(dir, adapter_name, creates_updates)?),
         None => None,
     };
-    let previously_applied = journal.as_ref().map(|j| j.done_ops_count()).unwrap_or(0);
     let result = apply_non_delete_with_retries(creates_updates, journal.as_mut(), driver).await?;
+    let previously_applied = result.resumed.len();
     Ok((
         result,
         (previously_applied > 0).then_some(previously_applied),
@@ -585,11 +598,198 @@ mod tests {
             .collect();
         let (result, previously_applied_count) =
             apply_non_delete_journaled(state, "test", &creates_updates, driver).await?;
+        if !result.pending.is_empty() {
+            let resolved: BTreeMap<Uid, BackendId> = BTreeMap::new();
+            return Err(anyhow!(
+                "unresolved references: {}",
+                describe_missing_refs(&result.pending, &resolved)
+            ));
+        }
         Ok(crate::ApplyReport {
             applied: result.applied,
+            resumed: result.resumed,
             previously_applied_count,
             ..Default::default()
         })
+    }
+
+    /// creates that carry a `site` ref, which must already resolve or the op comes
+    /// back as a retryable missing-ref: the plan shape resume exists for.
+    struct RefDriver {
+        resolved: BTreeMap<Uid, BackendId>,
+        next_id: u64,
+        fatal_on: Option<Uid>,
+        seen_refs: Vec<(Uid, BackendId)>,
+    }
+
+    impl RefDriver {
+        fn new(fatal_on: Option<Uid>) -> Self {
+            Self {
+                resolved: BTreeMap::new(),
+                next_id: 100,
+                fatal_on,
+                seen_refs: Vec::new(),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl RetryApplyDriver for RefDriver {
+        async fn apply_non_delete(&mut self, op: &Op) -> Result<AppliedOp> {
+            if self.fatal_on == Some(op.uid()) {
+                return Err(anyhow!("planned error"));
+            }
+            if let Op::Create { desired, .. } = op {
+                if let Some(referenced) = desired
+                    .attrs
+                    .get("site")
+                    .and_then(|value| value.as_str())
+                    .and_then(|value| value.parse::<Uid>().ok())
+                {
+                    let id = self
+                        .resolved
+                        .get(&referenced)
+                        .ok_or(AdapterApplyError::MissingRef { uid: referenced })?;
+                    self.seen_refs.push((op.uid(), id.clone()));
+                }
+            }
+            let backend_id = match op {
+                // the journaling adapters hand back the id of the object they updated
+                Op::Update {
+                    backend_id: Some(id),
+                    ..
+                } => id.clone(),
+                _ => {
+                    let id = BackendId::Int(self.next_id);
+                    self.next_id += 1;
+                    id
+                }
+            };
+            self.resolved.insert(op.uid(), backend_id.clone());
+            Ok(AppliedOp {
+                uid: op.uid(),
+                type_name: op.type_name().clone(),
+                backend_id: Some(backend_id),
+            })
+        }
+
+        fn is_retryable(&self, err: &anyhow::Error) -> bool {
+            is_missing_ref_error(err)
+        }
+
+        fn resume(&mut self, resumed: &[AppliedOp]) {
+            for op in resumed {
+                if let Some(backend_id) = &op.backend_id {
+                    self.resolved.insert(op.uid, backend_id.clone());
+                }
+            }
+        }
+    }
+
+    fn update_op(uid: Uid, backend_id: u64) -> Op {
+        Op::Update {
+            uid,
+            type_name: TypeName::new("test.item"),
+            desired: Object {
+                uid,
+                type_name: TypeName::new("test.item"),
+                key: Key::default(),
+                attrs: JsonMap::default(),
+                source: None,
+            },
+            changes: vec![],
+            backend_id: Some(BackendId::Int(backend_id)),
+        }
+    }
+
+    fn create_op_referencing(uid: Uid, site: Uid) -> Op {
+        let attrs = JsonMap::from(BTreeMap::from([(
+            "site".to_string(),
+            json!(site.to_string()),
+        )]));
+        Op::Create {
+            uid,
+            type_name: TypeName::new("test.item"),
+            desired: Object {
+                uid,
+                type_name: TypeName::new("test.item"),
+                key: Key::default(),
+                attrs,
+                source: None,
+            },
+        }
+    }
+
+    #[test]
+    fn a_resumed_run_resolves_refs_into_what_the_interrupted_run_created() {
+        let _guard = journal_guard();
+        let site = Uid::from_u128(1);
+        let device = Uid::from_u128(2);
+        let ops = vec![create_op(site), create_op_referencing(device, site)];
+        let dir = tempdir().unwrap();
+        let state = crate::StateStore::new(None, crate::StateData::default())
+            .with_journal_dir(dir.path().to_path_buf());
+
+        // run 1 creates the site, then dies on the device that references it.
+        let mut first = RefDriver::new(Some(device));
+        block_on(run_journaled_apply(&state, &ops, &mut first))
+            .expect_err("should fail on the device");
+        assert_eq!(first.resolved.get(&site), Some(&BackendId::Int(100)));
+
+        // run 2 starts cold: nothing in memory, and run 1 never reached a state save,
+        // so the device's ref resolves only if the journal handed the site's id back.
+        let mut second = RefDriver::new(None);
+        let report = block_on(run_journaled_apply(&state, &ops, &mut second)).unwrap();
+        assert_eq!(second.seen_refs, vec![(device, BackendId::Int(100))]);
+        assert_eq!(
+            report.applied.iter().map(|a| a.uid).collect::<Vec<_>>(),
+            vec![device],
+            "`applied` stays this run's ops"
+        );
+        assert_eq!(
+            report
+                .resumed
+                .iter()
+                .map(|a| (a.uid, a.backend_id.clone()))
+                .collect::<Vec<_>>(),
+            vec![(site, Some(BackendId::Int(100)))],
+            "the interrupted run's op comes back with the id it created"
+        );
+        assert_eq!(report.previously_applied_count, Some(1));
+    }
+
+    #[test]
+    fn a_resumed_run_resolves_refs_into_what_the_interrupted_run_updated() {
+        let _guard = journal_guard();
+        // same shape as the create case: nothing about the journal is per op kind, and
+        // an update's id is the one thing a ref into an existing object can resolve to.
+        let site = Uid::from_u128(1);
+        let device = Uid::from_u128(2);
+        let ops = vec![update_op(site, 55), create_op_referencing(device, site)];
+        let dir = tempdir().unwrap();
+        let state = crate::StateStore::new(None, crate::StateData::default())
+            .with_journal_dir(dir.path().to_path_buf());
+
+        let mut first = RefDriver::new(Some(device));
+        block_on(run_journaled_apply(&state, &ops, &mut first))
+            .expect_err("should fail on the device");
+
+        let mut second = RefDriver::new(None);
+        let report = block_on(run_journaled_apply(&state, &ops, &mut second)).unwrap();
+        assert_eq!(
+            second.seen_refs,
+            vec![(device, BackendId::Int(55))],
+            "the device resolves its ref into the object run 1 updated"
+        );
+        assert_eq!(
+            report
+                .resumed
+                .iter()
+                .map(|a| (a.uid, a.backend_id.clone()))
+                .collect::<Vec<_>>(),
+            vec![(site, Some(BackendId::Int(55)))],
+            "an update's id is journaled and recovered like a create's"
+        );
     }
 
     #[test]

@@ -939,8 +939,8 @@ async fn run_apply_writes_the_report_to_output() {
     std::env::set_current_dir(cwd).unwrap();
     result.unwrap();
 
-    let report: ApplyReport =
-        serde_json::from_str(&std::fs::read_to_string(&report_path).unwrap()).unwrap();
+    let raw = std::fs::read_to_string(&report_path).unwrap();
+    let report: ApplyReport = serde_json::from_str(&raw).unwrap();
     assert_eq!(report.applied.len(), 1);
     assert_eq!(report.applied[0].uid, uuid::Uuid::from_u128(1));
     assert_eq!(report.applied[0].type_name.as_str(), "dcim.site");
@@ -948,6 +948,201 @@ async fn run_apply_writes_the_report_to_output() {
         report.applied[0].backend_id,
         Some(alembic_engine::BackendId::Int(7)),
         "the report must carry the backend id the create returned"
+    );
+    // absent, not empty, when the run resumed from nothing
+    assert!(
+        !raw.contains("resumed"),
+        "a non-resumed run's report json must be unchanged: {raw}"
+    );
+}
+
+// a site plus a device referencing it, against a generic rest backend. the plan
+// shape resume exists for: the run dies between the two, and the device can only
+// be written once the site's backend id is known.
+fn generic_resume_fixture(dir: &Path, base_url: &str) -> (PathBuf, PathBuf) {
+    let schema: alembic_core::Schema = serde_yaml::from_str(
+        r#"
+types:
+  dcim.site:
+    key:
+      name:
+        type: string
+    fields:
+      name:
+        type: string
+  dcim.device:
+    key:
+      name:
+        type: string
+    fields:
+      name:
+        type: string
+      site:
+        type: ref
+        target: dcim.site
+"#,
+    )
+    .unwrap();
+    let site_uid = uuid::Uuid::from_u128(1);
+    let device_uid = uuid::Uuid::from_u128(2);
+    let mut site_attrs = BTreeMap::new();
+    site_attrs.insert("name".to_string(), serde_json::json!("fra1"));
+    let mut device_attrs = BTreeMap::new();
+    device_attrs.insert("name".to_string(), serde_json::json!("edge1"));
+    device_attrs.insert("site".to_string(), serde_json::json!(site_uid.to_string()));
+    let plan = Plan {
+        schema,
+        ops: vec![
+            Op::Create {
+                uid: site_uid,
+                type_name: alembic_core::TypeName::new("dcim.site"),
+                desired: alembic_core::Object {
+                    uid: site_uid,
+                    type_name: alembic_core::TypeName::new("dcim.site"),
+                    key: key_str("name=fra1"),
+                    attrs: site_attrs.into(),
+                    source: None,
+                },
+            },
+            Op::Create {
+                uid: device_uid,
+                type_name: alembic_core::TypeName::new("dcim.device"),
+                desired: alembic_core::Object {
+                    uid: device_uid,
+                    type_name: alembic_core::TypeName::new("dcim.device"),
+                    key: key_str("name=edge1"),
+                    attrs: device_attrs.into(),
+                    source: None,
+                },
+            },
+        ],
+        summary: None,
+        schema_preview: None,
+    };
+    let plan_path = dir.join("plan.json");
+    write_plan(&plan_path, &plan).unwrap();
+
+    let config_path = dir.join("backend.yaml");
+    std::fs::write(
+        &config_path,
+        format!(
+            "backend: generic\nconfig:\n  base_url: {base_url}\n  types:\n    dcim.site:\n      path: /sites/\n    dcim.device:\n      path: /devices/\n"
+        ),
+    )
+    .unwrap();
+    (plan_path, config_path)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn run_apply_resumes_with_the_ids_the_interrupted_run_created() {
+    use httpmock::Method::POST;
+
+    let _guard = cwd_lock().lock().await;
+    let dir = tempdir().unwrap();
+    let state_path = dir.path().join(".alembic").join("state.json");
+    let _env = EnvVarGuard::acquire_async(&[
+        ("ALEMBIC_STATE_BACKEND", Some("local")),
+        ("ALEMBIC_STATE_PATH", Some(state_path.to_str().unwrap())),
+    ])
+    .await;
+    let report_path = dir.path().join("report.json");
+    let cwd = std::env::current_dir().unwrap();
+
+    // run 1 creates the site and dies on the device. no state is saved: apply only
+    // saves on the success path.
+    let first = httpmock::MockServer::start();
+    first.mock(|when, then| {
+        when.method(POST).path("/sites/");
+        then.status(201).json_body(serde_json::json!({"id": 7}));
+    });
+    first.mock(|when, then| {
+        when.method(POST).path("/devices/");
+        then.status(500);
+    });
+    let (plan_path, config_path) = generic_resume_fixture(dir.path(), &first.base_url());
+    std::env::set_current_dir(dir.path()).unwrap();
+    let result = run(
+        Cli {
+            command: Command::Apply {
+                plan: plan_path.clone(),
+                output: Some(report_path.clone()),
+                backend: None,
+                backend_config: Some(config_path),
+                allow_delete: false,
+                interactive: false,
+            },
+        },
+        AppConfig::load().unwrap(),
+    )
+    .await;
+    std::env::set_current_dir(&cwd).unwrap();
+    result.expect_err("the device create fails");
+    assert!(!state_path.exists(), "a failed apply saves no state");
+
+    // run 2 is a cold start against a fresh backend: the site must not be created
+    // again, and the device must go out with the id the first run got for it.
+    let second = httpmock::MockServer::start();
+    let sites = second.mock(|when, then| {
+        when.method(POST).path("/sites/");
+        then.status(201).json_body(serde_json::json!({"id": 99}));
+    });
+    let devices = second.mock(|when, then| {
+        when.method(POST)
+            .path("/devices/")
+            .json_body_includes(r#"{"site": 7}"#);
+        then.status(201).json_body(serde_json::json!({"id": 9}));
+    });
+    let (plan_path, config_path) = generic_resume_fixture(dir.path(), &second.base_url());
+    std::env::set_current_dir(dir.path()).unwrap();
+    let result = run(
+        Cli {
+            command: Command::Apply {
+                plan: plan_path,
+                output: Some(report_path.clone()),
+                backend: None,
+                backend_config: Some(config_path),
+                allow_delete: false,
+                interactive: false,
+            },
+        },
+        AppConfig::load().unwrap(),
+    )
+    .await;
+    std::env::set_current_dir(cwd).unwrap();
+    result.unwrap();
+
+    sites.assert_calls(0);
+    devices.assert_calls(1);
+
+    let report: ApplyReport =
+        serde_json::from_str(&std::fs::read_to_string(&report_path).unwrap()).unwrap();
+    assert_eq!(
+        report.applied.iter().map(|a| a.uid).collect::<Vec<_>>(),
+        vec![uuid::Uuid::from_u128(2)],
+        "`applied` stays this run's ops"
+    );
+    assert_eq!(
+        report
+            .resumed
+            .iter()
+            .map(|a| (a.uid, a.backend_id.clone()))
+            .collect::<Vec<_>>(),
+        vec![(
+            uuid::Uuid::from_u128(1),
+            Some(alembic_engine::BackendId::Int(7))
+        )]
+    );
+    assert_eq!(report.previously_applied_count, Some(1));
+
+    // and the recovered mapping lands in state, so a later rename plans an update
+    // rather than a duplicate create.
+    let state = StateStore::load(&state_path).unwrap();
+    assert_eq!(
+        state.backend_id(
+            alembic_core::TypeName::new("dcim.site"),
+            uuid::Uuid::from_u128(1)
+        ),
+        Some(alembic_engine::BackendId::Int(7))
     );
 }
 

@@ -2,7 +2,7 @@
 //!
 //! when resuming, the journal must match the previous run's non-delete op sequence (including op hashes).
 
-use crate::{BackendId, Op};
+use crate::{AppliedOp, BackendId, Op};
 use alembic_core::{TypeName, Uid};
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
@@ -153,6 +153,20 @@ impl Journal {
             .collect()
     }
 
+    /// ops recorded as done, in plan order, with the backend id each one returned.
+    /// a journal written before ids were recorded yields `None` for every id.
+    pub fn done_applied_ops(&self) -> Vec<AppliedOp> {
+        self.ops
+            .iter()
+            .filter(|owm| owm.done)
+            .map(|owm| AppliedOp {
+                uid: owm.op_uid,
+                type_name: owm.op_typename.clone(),
+                backend_id: owm.backend_id.clone(),
+            })
+            .collect()
+    }
+
     pub fn done_ops_count(&self) -> usize {
         self.ops.iter().filter(|op| op.done).count()
     }
@@ -170,9 +184,10 @@ impl Journal {
         self.ops.iter().all(|op| op.done)
     }
 
-    /// marks the first not-done op matching `op`'s (uid, typename, hash).
+    /// marks the first not-done op matching `op`'s (uid, typename, hash) done and
+    /// records the id the backend returned for it.
     /// O(1) via `pending_index`; errors if there's no such op.
-    pub fn mark_op_as_done(&mut self, op: &Op) -> Result<()> {
+    pub fn mark_op_as_done(&mut self, op: &Op, backend_id: Option<&BackendId>) -> Result<()> {
         let key = (op.uid(), op.type_name().clone(), op.hashed());
         let op_index = self
             .pending_index
@@ -181,6 +196,7 @@ impl Journal {
             .ok_or_else(|| anyhow!("no matching op found in journal, can't mark any as done"))?;
         // the position came from the pending index, so it is in range and not yet done
         self.ops[op_index].done = true;
+        self.ops[op_index].backend_id = backend_id.cloned();
         Ok(())
     }
 
@@ -232,7 +248,10 @@ struct OpWithMeta {
     op_typename: TypeName,
     op_hash: u64,
     done: bool,
-    backend_id: Option<BackendId>, // FIXME: not sure if/when this is needed
+    // id the backend returned for this op, so a resumed run can resolve references
+    // into what an earlier run created or updated. the journaling adapters return one
+    // for both; `null` in a journal written before ids were recorded.
+    backend_id: Option<BackendId>,
 }
 
 impl OpWithMeta {
@@ -390,11 +409,11 @@ mod tests {
     fn mark_ops_as_done() {
         let ops = test_ops();
         let mut journal = Journal::new_with_file(tempdir().unwrap().path(), "test", &ops).unwrap();
-        journal.mark_op_as_done(&ops[0]).unwrap();
+        journal.mark_op_as_done(&ops[0], None).unwrap();
         assert!(!journal.is_completed());
-        journal.mark_op_as_done(&ops[1]).unwrap();
+        journal.mark_op_as_done(&ops[1], None).unwrap();
         assert!(!journal.is_completed());
-        journal.mark_op_as_done(&ops[2]).unwrap();
+        journal.mark_op_as_done(&ops[2], None).unwrap();
         assert!(journal.is_completed());
     }
 
@@ -402,12 +421,65 @@ mod tests {
     fn mark_ops_as_done_backwards() {
         let ops = test_ops();
         let mut journal = Journal::new_with_file(tempdir().unwrap().path(), "test", &ops).unwrap();
-        journal.mark_op_as_done(&ops[2]).unwrap();
+        journal.mark_op_as_done(&ops[2], None).unwrap();
         assert!(!journal.is_completed());
-        journal.mark_op_as_done(&ops[1]).unwrap();
+        journal.mark_op_as_done(&ops[1], None).unwrap();
         assert!(!journal.is_completed());
-        journal.mark_op_as_done(&ops[0]).unwrap();
+        journal.mark_op_as_done(&ops[0], None).unwrap();
         assert!(journal.is_completed());
+    }
+
+    #[test]
+    fn records_the_backend_id_each_op_returned() {
+        // the whole point of the journal for a resumed run: the ids survive the
+        // crash, in plan order, so the next run can resolve refs into them.
+        let dir = tempdir().unwrap();
+        let ops = test_ops();
+        {
+            let mut journal = Journal::new_with_file(dir.path(), "test", &ops).unwrap();
+            journal
+                .mark_op_as_done(&ops[0], Some(&BackendId::Int(7)))
+                .unwrap();
+            journal
+                .mark_op_as_done(&ops[2], Some(&BackendId::String("abc".into())))
+                .unwrap();
+            journal.save().unwrap();
+        }
+
+        let journal = Journal::new_from_existing_file(dir.path(), "test", &ops).unwrap();
+        let done = journal.done_applied_ops();
+        assert_eq!(
+            done.iter()
+                .map(|a| (a.uid, a.backend_id.clone()))
+                .collect::<Vec<_>>(),
+            vec![
+                (ops[0].uid(), Some(BackendId::Int(7))),
+                (ops[2].uid(), Some(BackendId::String("abc".into()))),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_journal_without_recorded_ids_loads_with_none() {
+        // a journal written before ids were recorded serialized `backend_id: null`
+        // for every op, which is what marking done without an id still writes. it
+        // must load, and report no id rather than fail.
+        let dir = tempdir().unwrap();
+        let ops = test_ops();
+        let path = Journal::stable_file_name(dir.path(), "test", &ops);
+        {
+            let mut journal = Journal::new_with_file(dir.path(), "test", &ops).unwrap();
+            journal.mark_op_as_done(&ops[0], None).unwrap();
+            journal.save().unwrap();
+        }
+        assert!(fs::read_to_string(&path)
+            .unwrap()
+            .contains("backend_id: null"));
+
+        let journal = Journal::new_from_existing_file(dir.path(), "test", &ops).unwrap();
+        let done = journal.done_applied_ops();
+        assert_eq!(done.len(), 1);
+        assert_eq!(done[0].backend_id, None);
     }
 
     #[test]
@@ -415,17 +487,20 @@ mod tests {
         let ops = test_ops();
         let mut journal = Journal::new_with_file(tempdir().unwrap().path(), "test", &ops).unwrap();
         journal
-            .mark_op_as_done(&Op::Create {
-                uid: Uid::from_u128(999),
-                type_name: TypeName::new("dcim.site"),
-                desired: Object {
+            .mark_op_as_done(
+                &Op::Create {
                     uid: Uid::from_u128(999),
                     type_name: TypeName::new("dcim.site"),
-                    key: Default::default(),
-                    attrs: Default::default(),
-                    source: None,
+                    desired: Object {
+                        uid: Uid::from_u128(999),
+                        type_name: TypeName::new("dcim.site"),
+                        key: Default::default(),
+                        attrs: Default::default(),
+                        source: None,
+                    },
                 },
-            })
+                None,
+            )
             .expect_err("should fail");
         assert!(!journal.is_completed());
     }
@@ -434,8 +509,10 @@ mod tests {
     fn mark_same_op_as_done_twice() {
         let ops = test_ops();
         let mut journal = Journal::new_with_file(tempdir().unwrap().path(), "test", &ops).unwrap();
-        journal.mark_op_as_done(&ops[1]).unwrap();
-        journal.mark_op_as_done(&ops[1]).expect_err("should fail");
+        journal.mark_op_as_done(&ops[1], None).unwrap();
+        journal
+            .mark_op_as_done(&ops[1], None)
+            .expect_err("should fail");
     }
 
     #[test]
@@ -447,17 +524,17 @@ mod tests {
         let ops = test_ops();
         {
             let mut journal = Journal::new_with_file(dir.path(), "test", &ops).unwrap();
-            journal.mark_op_as_done(&ops[0]).unwrap();
+            journal.mark_op_as_done(&ops[0], None).unwrap();
             journal.save().unwrap();
         }
 
         let mut journal = Journal::new_from_existing_file(dir.path(), "test", &ops).unwrap();
         // (a) a still-pending op marks after reload
-        journal.mark_op_as_done(&ops[1]).unwrap();
+        journal.mark_op_as_done(&ops[1], None).unwrap();
         assert!(!journal.is_completed());
         // (b) the op done before the save is respected on reload: re-marking errors
         let err = journal
-            .mark_op_as_done(&ops[0])
+            .mark_op_as_done(&ops[0], None)
             .expect_err("already-done op must not be markable again");
         assert!(
             err.to_string().contains("no matching op found"),
@@ -465,7 +542,7 @@ mod tests {
         );
         // (c) completed only once the last remaining op is marked
         assert!(!journal.is_completed());
-        journal.mark_op_as_done(&ops[2]).unwrap();
+        journal.mark_op_as_done(&ops[2], None).unwrap();
         assert!(journal.is_completed());
     }
 
@@ -490,7 +567,7 @@ mod tests {
 
         let mut journal = Journal::new_ephemeral(&ops);
         for op in &ops {
-            journal.mark_op_as_done(op).unwrap();
+            journal.mark_op_as_done(op, None).unwrap();
         }
         assert!(journal.is_completed());
     }

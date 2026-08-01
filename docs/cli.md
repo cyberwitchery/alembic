@@ -215,9 +215,10 @@ applied; a failed apply leaves the previous run's file untouched rather than
 writing a partial one, and the output path is checked before the apply starts,
 so a bad `-o` fails before the backend is written to. the `applied` list covers
 the current run's ops: after a resume, the ops the interrupted run applied
-appear only as `previously_applied_count`, without their uid to backend-id
-pairs (the journal records `done`, not the backend id; #46). `--interactive`
-reports the ops you approved, not the ops in the plan.
+appear under `resumed` instead, in the same shape, each with the backend id its
+write returned. that list is present only on a resumed run, and is empty for a
+journal written before ids were recorded. `--interactive` reports the ops you
+approved, not the ops in the plan.
 
 state (`docs/state.md`) is cumulative and keyed by uid, and the journal is
 deleted once apply succeeds, so this is the only per-run artifact: the file a ci
@@ -249,9 +250,15 @@ means an apply is unfinished.
   notice, even though every create/update has applied by then
 - nothing is said when a run fails before applying anything (an unreachable backend,
   say): there is no progress to resume from
-- a resumed run reports and maps only its own ops: the interrupted run's uid to
-  backend-id mappings are not recovered from the journal, which records `done`
-  and nothing else (#46)
+- the journal records the backend id each create or update returned, so the resumed
+  run can reference objects the interrupted run created or updated, and their uid to
+  backend-id mappings land in state once the plan applies in full. a journal written
+  before ids were recorded still resumes, but carries no ids to recover
+- resume covers an apply that exits through an error. operations are marked done in
+  memory and the journal is written at that exit, not once per operation, so a
+  process killed mid-apply (sigkill, panic, power loss) leaves a journal recording
+  nothing done, and re-running repeats what already applied
+
 ## map
 
 ```bash
