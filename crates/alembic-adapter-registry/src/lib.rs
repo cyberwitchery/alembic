@@ -48,7 +48,7 @@ pub enum AdapterConfig {
     #[cfg(feature = "generic")]
     Generic(GenericConfig),
     #[cfg(feature = "peeringdb")]
-    Peeringdb,
+    Peeringdb(PeeringdbConfig),
     #[cfg(feature = "django")]
     Django(DjangoConfig),
     External(ExternalConfig),
@@ -88,6 +88,13 @@ pub struct GenericConfig {
     pub config: Option<alembic_adapter_generic::GenericConfig>,
     pub config_path: Option<PathBuf>,
 }
+
+/// takes no keys; the credential is `PEERINGDB_API_KEY`. it exists so a stray
+/// key is rejected by name, which the unit variant it replaces could not do.
+#[cfg(feature = "peeringdb")]
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PeeringdbConfig {}
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -139,7 +146,7 @@ impl AdapterConfig {
             #[cfg(feature = "generic")]
             AdapterConfig::Generic(_) => "generic",
             #[cfg(feature = "peeringdb")]
-            AdapterConfig::Peeringdb => "peeringdb",
+            AdapterConfig::Peeringdb(_) => "peeringdb",
             #[cfg(feature = "django")]
             AdapterConfig::Django(_) => "django",
             AdapterConfig::External(_) => "external",
@@ -171,7 +178,7 @@ impl AdapterConfig {
                 config_path: None,
             })),
             #[cfg(feature = "peeringdb")]
-            "peeringdb" => Ok(AdapterConfig::Peeringdb),
+            "peeringdb" => Ok(AdapterConfig::Peeringdb(PeeringdbConfig {})),
             #[cfg(feature = "django")]
             "django" => Ok(AdapterConfig::Django(DjangoConfig {
                 ..DjangoConfig::default()
@@ -259,7 +266,7 @@ impl AdapterConfig {
                 )))
             }
             #[cfg(feature = "peeringdb")]
-            AdapterConfig::Peeringdb => Ok(Backend::Observer(Box::new(
+            AdapterConfig::Peeringdb(_) => Ok(Backend::Observer(Box::new(
                 alembic_adapter_peeringdb::PeeringDBAdapter::new(),
             ))),
             #[cfg(feature = "django")]
@@ -736,6 +743,8 @@ mod tests {
             ),
             #[cfg(feature = "generic")]
             ("generic", "backend: generic\nconfig_pth: ./g.yaml\n"),
+            #[cfg(feature = "peeringdb")]
+            ("peeringdb", "backend: peeringdb\ntoken: secret\n"),
             #[cfg(feature = "django")]
             ("django", "backend: django\noutput: ./out\nno_admn: true\n"),
             (
@@ -760,6 +769,29 @@ mod tests {
         let config: AdapterConfig =
             serde_yaml::from_str("backend: external\ncommand: ./a\ntimeout_seconds: 5\n").unwrap();
         assert_eq!(config.backend_name(), "external");
+    }
+
+    /// peeringdb takes the credential from the environment, so a `token:`
+    /// copied from a netbox config has to name itself rather than be dropped on
+    /// the way to an unauthenticated read; both ways to select it keep working.
+    #[cfg(feature = "peeringdb")]
+    #[test]
+    fn peeringdb_takes_no_config_keys() {
+        let bare: AdapterConfig = serde_yaml::from_str("backend: peeringdb\n").unwrap();
+        assert_eq!(bare.backend_name(), "peeringdb");
+        assert_eq!(
+            AdapterConfig::from_env(&[], "peeringdb")
+                .unwrap()
+                .backend_name(),
+            "peeringdb"
+        );
+
+        let err = serde_yaml::from_str::<AdapterConfig>("backend: peeringdb\ntoken: secret\n")
+            .expect_err("a key peeringdb does not read must be rejected");
+        assert!(
+            err.to_string().contains("token"),
+            "expected the error to name the key, got: {err}"
+        );
     }
 
     #[cfg(feature = "infrahub")]
