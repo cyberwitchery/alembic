@@ -12,7 +12,7 @@ use alembic_engine::{
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use self::io::{
     read_plan, warn_misleading_output_extension, write_apply_report, write_drift_report,
@@ -28,8 +28,6 @@ use self::state::{resolve_state_backend_config, state_path, StateBackendConfig};
 use alembic_adapter_django::emit::Runner;
 #[cfg(test)]
 use alembic_engine::PostgresTlsMode;
-#[cfg(test)]
-use std::path::Path;
 
 /// top-level cli definition.
 #[derive(Parser)]
@@ -73,8 +71,14 @@ enum Command {
         #[arg(short = 'f', long)]
         file: PathBuf,
         /// where to write the json plan, or the json drift report under
-        /// --report; required unless --report or --dry-run.
-        #[arg(short = 'o', long, required_unless_present_any = ["report", "dry_run"])]
+        /// --report; required unless --report or --dry-run, and rejected with
+        /// --dry-run, which prints the plan instead of writing it.
+        #[arg(
+            short = 'o',
+            long,
+            required_unless_present_any = ["report", "dry_run"],
+            conflicts_with = "dry_run"
+        )]
         output: Option<PathBuf>,
         /// backend name (netbox, nautobot, infrahub, generic, peeringdb, django,
         /// external); credentials come from the environment.
@@ -193,7 +197,42 @@ fn should_detect_deletes(allow_delete: bool, report: bool) -> bool {
     allow_delete || report
 }
 
+/// the `alembic map` args the `transform` subcommand cannot act on, named as the
+/// user passed them.
+fn stray_map_args(file: bool, spec: bool, output: bool) -> Vec<&'static str> {
+    [
+        file.then_some("-f/--file"),
+        spec.then_some("--spec"),
+        output.then_some("-o/--output"),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
+}
+
+/// the `-o`/`--output` path a command will write, if any. the one place that
+/// knows, so every write site is preflighted by construction; matching
+/// exhaustively means a new command has to answer this.
+fn output_path(command: &Command) -> Option<&Path> {
+    match command {
+        Command::Validate { .. } => None,
+        Command::Plan { output, .. } | Command::Apply { output, .. } => output.as_deref(),
+        // the transform subcommand prints to stdout and writes no file
+        Command::Map {
+            action: Some(_), ..
+        } => None,
+        Command::Map { output, .. } => output.as_deref(),
+        Command::Import { output, .. } => Some(output),
+    }
+}
+
 pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
+    // before anything expensive: every command that writes an output file pays
+    // for a backend observation or an apply first, so a bad -o must not surface
+    // at the write. the write path recreates what the probe removed.
+    if let Some(output) = output_path(&cli.command) {
+        io::preflight_output_path(output)?;
+    }
     match cli.command {
         Command::Validate { file, output } => {
             // a bad output path before there is a verdict: failing on -o
@@ -247,14 +286,6 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             let mut state = load_state().await?;
             let plugins = search_for_plugins(&config);
             let backend = create_backend(&plugins, backend.as_deref(), backend_config)?;
-            // a bad output path before the backend is observed: plan and report
-            // are both written after observing, so a late failure costs a full
-            // observation for nothing. --dry-run writes no file at all
-            if !dry_run {
-                if let Some(output) = &output {
-                    io::ensure_parent_dir(output)?;
-                }
-            }
             // read-only schema preview: what apply's ensure_schema would provision,
             // writing nothing. skipped when --provision actually provisions now, and
             // for observer/emitter backends that cannot provision schema at all. all
@@ -348,11 +379,6 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             let backend = create_backend(&plugins, backend.as_deref(), backend_config)?;
             // reject a backend that cannot apply before reading the plan or prompting
             backend.emitter()?;
-            // and a bad output path before writing to the backend: failing on -o
-            // after a successful apply would report failure for a run that landed
-            if let Some(output) = &output {
-                io::ensure_parent_dir(output)?;
-            }
             let plan = read_plan(&plan)?;
 
             let plan = if interactive {
@@ -424,12 +450,21 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             output,
         } => match action {
             Some(MapAction::Transform {
-                spec,
+                spec: transform_spec,
                 name,
                 value,
                 args,
             }) => {
-                let spec = alembic_engine::load_map_spec(&spec)?;
+                // the subcommand carries its own --spec and prints to stdout, so
+                // the inventory flow's args have nowhere to go here
+                let stray = stray_map_args(file.is_some(), spec.is_some(), output.is_some());
+                if !stray.is_empty() {
+                    return Err(anyhow!(
+                        "alembic map transform does not take {}; it takes its own --spec and prints the result to stdout",
+                        stray.join(" or ")
+                    ));
+                }
+                let spec = alembic_engine::load_map_spec(&transform_spec)?;
                 let parse_json = |label: &str, raw: &str| -> Result<serde_json::Value> {
                     serde_json::from_str(raw).map_err(|err| {
                         anyhow!(
