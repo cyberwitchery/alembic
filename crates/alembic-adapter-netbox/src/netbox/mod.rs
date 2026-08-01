@@ -1445,9 +1445,7 @@ mod tests {
                 "type": {}
             }])));
         });
-        // the create must nest criticality under `custom_fields`; the pre-fix
-        // lookup (endpoint form) missed, so it was sent top-level and this mock
-        // never matched.
+        // the create must nest criticality under `custom_fields`.
         let create = server.mock(|when, then| {
             when.method(POST)
                 .path("/api/ipam/ip-addresses/")
@@ -1508,8 +1506,7 @@ mod tests {
                 .query_param("limit", "1");
             then.status(200).json_body(page(json!([])));
         });
-        // the create must carry object_types in the content-type form; the pre-fix
-        // payload posted the endpoint form and this mock never matched.
+        // the create must carry object_types in the content-type form.
         let cf_create = server.mock(|when, then| {
             when.method(POST)
                 .path("/api/extras/custom-fields/")
@@ -1894,9 +1891,8 @@ mod tests {
         }
     }
 
-    // one plan, two consumers: against a mock backend with no TOCTOU race the
-    // report `preview_schema` renders must equal the one `ensure_schema` produces
-    // executing the same plan. this structurally pins the anti-drift invariant.
+    // against a mock backend with no TOCTOU race, the report `preview_schema`
+    // renders must equal the one `ensure_schema` produces (see ProvisionPlan).
     #[tokio::test]
     async fn preview_and_ensure_report_the_same_plan() {
         let server = MockServer::start();

@@ -2356,7 +2356,7 @@ schema { query: Query }
     }
 
     // characterization tests for `extract_field_value`: they pin the current
-    // mapping from each Infrahub GraphQL node shape to an IR value. The function
+    // mapping from each infrahub GraphQL node shape to an IR value. the function
     // is otherwise only exercised indirectly through `extract_attrs`.
 
     #[test]
@@ -3521,8 +3521,7 @@ schema { query: Query }
 
         let resolved_key = key_in_backend_id_space(&type_schema, &key, &resolved).unwrap();
         assert_eq!(resolved_key, expected);
-        // the raw desired-uid key does not equal the observed-id key: this is the
-        // mismatch the pre-fix direct comparison hit.
+        // the raw desired-uid key does not equal the observed-id key.
         assert_ne!(key, expected);
     }
 
@@ -3593,12 +3592,12 @@ schema { query: Query }
     }
 
     // characterization tests pinning the empty-list vs absent-single asymmetry
-    // in `extract_field_value`. The `RelationList` arms always build a
+    // in `extract_field_value`. the `RelationList` arms always build a
     // `Value::Array`, so an empty or missing inner array produces an empty array
     // rather than null, and the final `value.is_null()` guard then lets it
-    // through as `Some(Value::Array([]))`. The `RelationSingle` arms instead fall
+    // through as `Some(Value::Array([]))`. the `RelationSingle` arms instead fall
     // back to `Value::Null` when the id is absent, which the same guard collapses
-    // to `None`. A future refactor of these arms must preserve this distinction.
+    // to `None`. a future refactor of these arms must preserve this distinction.
 
     #[test]
     fn extract_field_value_relation_list_nested_paginated_empty_edges_returns_some_empty_array() {

@@ -768,7 +768,8 @@ async fn run_apply_interactive_delete_requires_allow_delete() {
     let cwd = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
 
-    // django (write-only): a read-only backend now fails the capability gate before this delete-gate
+    // django is write-only, so it passes the capability gate and reaches the
+    // delete gate; a read-only backend fails earlier
     let cli = Cli {
         command: Command::Apply {
             plan: plan_path,
@@ -1403,8 +1404,8 @@ objects: []
     let mut state = load_state().await.unwrap();
     let backend = create_backend(&[], None, Some(config)).unwrap();
 
-    // the buggy threading (allow_delete alone) never emits deletes, so the
-    // `extra` category is silently empty even though leaf01 is unmanaged.
+    // without report-forced delete-detection, allow_delete=false emits no
+    // deletes and the `extra` category stays empty.
     let buggy = build_plan(
         backend.observer().unwrap(),
         &inventory,
@@ -1482,10 +1483,7 @@ async fn minimal_external_adapter() {
 
 // drives the real run() for `plan --provision` against an external adapter whose
 // preview_schema errors (ensure_schema stays defaulted/Ok). the provision guard
-// must propagate that Err and abort before ensure_schema, so a preview hiccup
-// cannot slip past the --allow-delete gate and provision blind. this fails
-// against the old `if let Ok(Some(..))` swallow (run completes Ok) and passes
-// once the guard uses `?` to fail closed, mirroring the engine apply path.
+// must propagate a preview Err and abort before ensure_schema.
 #[tokio::test(flavor = "multi_thread")]
 async fn run_plan_provision_fails_closed_on_preview_error() {
     let _guard = cwd_lock().lock().await;

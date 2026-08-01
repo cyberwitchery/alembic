@@ -53,7 +53,7 @@ fn forked_adapter_does_not_outlast_the_timeout() {
     // the pipe open. the runner must not block reading it until the orphan exits
     // (which would take ~30s a check); the bounded drain caps that. each check
     // (plus the capabilities probe) is ~timeout + a grace, so seven runs stay
-    // under this bound, while the pre-fix behavior was ~120s.
+    // under this bound.
     let start = Instant::now();
     let outcomes = run_builtin(&sh("sleep 30 & wait"), Duration::from_millis(300));
     assert!(outcomes.iter().all(|o| !o.passed()));
@@ -129,8 +129,7 @@ fn rejects_inconsistent_envelope() {
 #[test]
 fn preview_schema_may_return_null() {
     // a null result is the canonical "cannot preview schema" signal; the host's
-    // call_optional maps it to Ok(None), so conformance must accept it too. red before
-    // the guarded (true, None, None) arm, green after.
+    // call_optional maps it to Ok(None), so conformance must accept it too.
     let case = Case {
         name: "preview-null".into(),
         request: json!({
@@ -225,10 +224,9 @@ fn rejects_an_always_erroring_adapter() {
 
 #[test]
 fn declared_emitter_with_erroring_read_passes() {
-    // the emit-only shape from issue #117: the adapter declares the emitter role
-    // and errors on read. pre-capabilities it had to stub read() -> [] to pass;
-    // now the runner skips the empty read and probes liveness with an empty
-    // write instead.
+    // the emit-only shape from issue #117: the adapter declares the emitter
+    // role and errors on read. the runner skips the empty read for a declared
+    // emitter and probes liveness with an empty write instead.
     let script = r#"req=$(cat); case "$req" in
       *'"method":"capabilities"'*) printf '{"ok":true,"result":{"role":"emitter"}}' ;;
       *'"method":"write"'*) printf '{"ok":true,"result":{"applied":[]}}' ;;

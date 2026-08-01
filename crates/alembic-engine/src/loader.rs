@@ -147,8 +147,7 @@ mod tests {
 
     #[test]
     fn rejects_an_unknown_key_in_an_inventory_file() {
-        // `includes` for `include` used to load nothing and report `ok`, so
-        // `validate` passed on an inventory that was never assembled.
+        // a typo'd `includes` must be rejected, not load nothing and report ok.
         let dir = tempdir().unwrap();
         let path = dir.path().join("inv.yaml");
         std::fs::write(&path, "includes: [other.yaml]\nschema: { types: {} }\n").unwrap();

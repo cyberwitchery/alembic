@@ -225,7 +225,7 @@ impl Drop for Journal {
     }
 }
 
-// we're only storing the uid and typename for the Op to keep this struct small and readable
+// the op itself is not stored, only its identity (uid, typename, hash)
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct OpWithMeta {
     op_uid: Uid,

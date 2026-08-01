@@ -906,8 +906,8 @@ mod tests {
         let mut attrs = JsonMap::default();
         attrs.insert("type".to_string(), json!("1000base-t"));
 
-        // the adapter no longer aliases `type` to `if_type`: the literal backend
-        // `type` field is preserved as-is (interfaces and everything else alike).
+        // the literal backend `type` field is preserved as-is (interfaces and
+        // everything else alike).
         normalize_attrs(&mut attrs, &type_schema, &schema, &registry, &mappings);
         assert_eq!(attrs.get("type").unwrap(), &json!("1000base-t"));
         assert!(!attrs.contains_key("if_type"));
@@ -1152,7 +1152,7 @@ mod tests {
         )
         .expect("key-derived uid");
         assert_eq!(attrs.get("device").unwrap(), &json!(expected.to_string()));
-        // without the fix this degrades to the raw backend id.
+        // a hint miss here degrades to the raw backend id.
         assert_ne!(attrs.get("device").unwrap(), &json!(raw_id));
     }
 

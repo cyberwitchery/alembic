@@ -55,7 +55,7 @@ fn plan_reports_a_preview_error_as_a_failure() {
         stderr.contains("schema preview failed:") && stderr.contains("preview failed for test"),
         "expected the preview error reported as a failure; stderr:\n{stderr}"
     );
-    // the bug: an Err used the phrase the docs reserve for Ok(None).
+    // an Err must not reuse the phrase the docs reserve for Ok(None).
     assert!(
         !stderr.contains("unavailable for this backend"),
         "a preview error must not be reported as a capability gap; stderr:\n{stderr}"

@@ -29,7 +29,7 @@ mod tests {
 
     #[test]
     fn pluralize_covers_every_branch() {
-        // x/z/ch/sh -> +es (the cases django's stale copy got wrong)
+        // x/z/ch/sh -> +es
         assert_eq!(pluralize("prefix"), "prefixes");
         assert_eq!(pluralize("box"), "boxes");
         assert_eq!(pluralize("buzz"), "buzzes");
@@ -37,7 +37,7 @@ mod tests {
         assert_eq!(pluralize("dish"), "dishes");
         // consonant + y -> ies
         assert_eq!(pluralize("city"), "cities");
-        // vowel + y -> +s (django's stale copy got this wrong too)
+        // vowel + y -> +s
         assert_eq!(pluralize("gateway"), "gateways");
         assert_eq!(pluralize("bay"), "bays");
         // address -> addresses, special-cased ahead of the +es rule

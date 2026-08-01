@@ -558,8 +558,8 @@ fn apply_builtin(
     context: &str,
 ) -> Result<String> {
     // classify the name first, so an unknown transform errors before the
-    // argument check and coercion (the original precedence), then dispatch
-    // exhaustively over the four built-ins.
+    // argument check and coercion, then dispatch exhaustively over the four
+    // built-ins.
     enum Builtin {
         Upper,
         Lower,

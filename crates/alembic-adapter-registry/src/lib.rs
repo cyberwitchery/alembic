@@ -978,8 +978,8 @@ esac
         );
 
         // plan and import observe through Backend::observer(); a declared emitter
-        // now gets the same up-front error a built-in emitter like django gets,
-        // instead of stubbing an empty read that silently observes nothing.
+        // gets the same up-front error as a built-in emitter; it must never
+        // silently observe nothing.
         let Err(err) = backend.observer() else {
             panic!("a declared emitter must not observe");
         };
@@ -1087,9 +1087,8 @@ esac
             setup: serde_yaml::Value::default(),
         };
 
-        // 256 KB > the 64 KB pipe buffer, so an un-drained write blocks after the
-        // buffer fills. before the fix this blocked outside the timeout guard and
-        // hung run() forever; now it trips the 1s timeout instead.
+        // 256 KB > the 64 KB pipe buffer, so an un-drained write blocks once the
+        // buffer fills; it must trip the 1s timeout, not hang run().
         let payload = vec![b'x'; 256 * 1024];
         let result = tokio::time::timeout(Duration::from_secs(10), adapter.run(payload)).await;
         let run_result =

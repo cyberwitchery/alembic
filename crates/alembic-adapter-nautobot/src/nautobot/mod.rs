@@ -413,8 +413,7 @@ mod tests {
             then.status(200).json_body(page(json!([])));
         });
         // the create must carry `key` (= the field name), not `name`: this mock
-        // only matches when the body includes `"key": "assetTag"`, so the pre-fix
-        // payload (which sent `name` and no `key`) leaves ensure_schema erroring.
+        // only matches when the body includes `"key": "assetTag"`.
         let cf_create = server.mock(|when, then| {
             when.method(POST)
                 .path("/api/extras/custom-fields/")

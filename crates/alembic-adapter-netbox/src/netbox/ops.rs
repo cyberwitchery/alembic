@@ -302,7 +302,7 @@ impl Adapter for NetBoxAdapter {
 
         // resolve or create every custom object type first, registering each so a
         // field payload can reference a sibling custom type by its resolved
-        // identity (the original interleaves type and field creation for this).
+        // identity.
         let mut type_ids = Vec::with_capacity(plan.object_types.len());
         for object_type in &plan.object_types {
             let type_id = match &object_type.existing {
@@ -358,8 +358,8 @@ impl Adapter for NetBoxAdapter {
         }
 
         // deletes: alembic-owned custom object fields, then types, the schema no
-        // longer declares. the plan carries their backend ids; the 404 tolerance
-        // matches the original.
+        // longer declares. the plan carries their backend ids; a 404 on delete
+        // is tolerated.
         if !plan.deleted_object_fields.is_empty() || !plan.deleted_object_types.is_empty() {
             let resource_fields: Resource<Value> = self
                 .client
@@ -408,13 +408,8 @@ impl Adapter for NetBoxAdapter {
         })
     }
 
-    /// read-only counterpart to `ensure_schema`: reports what `ensure_schema`
-    /// would create and delete, from the same backend reads, writing nothing.
-    /// both share one decision -- `plan_schema` -- so the preview cannot claim a
-    /// change apply would not make, nor miss one. preview renders the plan; ensure
-    /// executes it. netbox interleaves those decisions with its writes only
-    /// because attaching fields needs a created type's backend id, an execution
-    /// concern the plan keeps out of the decision.
+    /// read-only counterpart to `ensure_schema`: renders the shared
+    /// `ProvisionPlan` (see its doc) without writing.
     async fn preview_schema(&self, schema: &Schema) -> Result<Option<ProvisionReport>> {
         let registry: ObjectTypeRegistry = self.client.fetch_object_types().await?;
         let custom_fields_by_type = self.client.fetch_custom_fields().await?;
@@ -792,11 +787,9 @@ impl NetBoxAdapter {
         }
     }
 
-    /// decides what `ensure_schema` would create and delete, from the four
-    /// backend reads and the schema, without writing. shared by `ensure_schema`
-    /// (which executes it) and `preview_schema` (which renders it), so the two
-    /// cannot drift. `native_fields_for_type` still reads a sample object per
-    /// native type; no write happens here.
+    /// computes the shared `ProvisionPlan` (see its doc) from the four backend
+    /// reads and the schema. `native_fields_for_type` still reads a sample
+    /// object per native type; no write happens here.
     async fn plan_schema<'a>(
         &self,
         registry: &ObjectTypeRegistry,
@@ -1510,8 +1503,8 @@ struct PlannedObjectType<'a> {
     /// `Some` when the type already exists on the backend (reuse its id, report
     /// no create); `None` when it must be created.
     existing: Option<CustomObjectType>,
-    /// existing field ids, seeding the field provisioner so intra-type conflict
-    /// handling matches the interleaved original.
+    /// existing field ids, seeding the field provisioner for intra-type
+    /// conflict handling.
     existing_field_ids: BTreeMap<String, u64>,
     /// fields to create, deduped key-then-fields, with reserved/existing/invalid
     /// names already filtered out.
@@ -1865,8 +1858,8 @@ mod test_normalization {
         let mut attrs = JsonMap::default();
         attrs.insert("type".to_string(), json!("1000base-t"));
 
-        // the adapter no longer aliases `type` to `if_type`: the literal backend
-        // `type` field is preserved as-is (interfaces and everything else alike).
+        // the literal backend `type` field is preserved as-is (interfaces and
+        // everything else alike).
         normalize_attrs(&mut attrs, &type_schema, &schema, &registry, &mappings);
         assert_eq!(attrs.get("type").unwrap(), &json!("1000base-t"));
         assert!(!attrs.contains_key("if_type"));
@@ -2037,7 +2030,7 @@ mod test_normalization {
         )
         .expect("key-derived uid");
         assert_eq!(attrs.get("device").unwrap(), &json!(expected.to_string()));
-        // without the fix this degrades to the raw backend id.
+        // a hint miss here degrades to the raw backend id.
         assert_ne!(attrs.get("device").unwrap(), &json!(123));
     }
 
