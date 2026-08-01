@@ -717,6 +717,14 @@ impl Emitter for InfrahubAdapter {
             fn is_retryable(&self, err: &anyhow::Error) -> bool {
                 is_missing_ref_error(err)
             }
+
+            fn resume(&mut self, resumed: &[AppliedOp]) {
+                for op in resumed {
+                    if let Some(backend_id) = &op.backend_id {
+                        self.resolved.insert(op.uid, backend_id.clone());
+                    }
+                }
+            }
         }
 
         let mut driver = ApplyDriver {
@@ -731,6 +739,7 @@ impl Emitter for InfrahubAdapter {
             return Err(anyhow!("unresolved references: {missing}"));
         }
 
+        let resumed = retry_result.resumed;
         for applied_op in retry_result.applied {
             if let Some(backend_id) = &applied_op.backend_id {
                 resolved.insert(applied_op.uid, backend_id.clone());
@@ -744,6 +753,7 @@ impl Emitter for InfrahubAdapter {
 
         Ok(ApplyReport {
             applied,
+            resumed,
             previously_applied_count,
             ..Default::default()
         })

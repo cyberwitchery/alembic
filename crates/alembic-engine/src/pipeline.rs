@@ -130,6 +130,15 @@ pub(crate) async fn apply(
     let mut report = emitter.write(&plan.schema, &ordered, state).await?;
     report.provision = provision;
 
+    // ops an interrupted run applied: their mappings exist nowhere else, since it
+    // never reached a state save. only ever set one, never clear on a `None` -- a
+    // journal written before ids were recorded has `None` throughout.
+    for applied in &report.resumed {
+        if let Some(backend_id) = &applied.backend_id {
+            state.set_backend_id(applied.type_name.clone(), applied.uid, backend_id.clone());
+        }
+    }
+
     for applied in &report.applied {
         if let Some(backend_id) = &applied.backend_id {
             state.set_backend_id(applied.type_name.clone(), applied.uid, backend_id.clone());

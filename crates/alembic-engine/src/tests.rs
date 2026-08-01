@@ -1456,6 +1456,74 @@ fn apply_plan_clears_state_for_deleted_op() {
 }
 
 #[test]
+fn apply_plan_recovers_state_mappings_for_resumed_ops() {
+    // the interrupted run never reached a state save, so the ops it applied are in
+    // the journal and nowhere else. without this fold a later rename of the object
+    // plans a duplicate create.
+    let adapter = TestAdapter {
+        observed: ObservedState::default(),
+        report: ApplyReport {
+            applied: vec![],
+            resumed: vec![AppliedOp {
+                uid: uid(1),
+                type_name: t("dcim.site"),
+                backend_id: Some(BackendId::Int(55)),
+            }],
+            ..Default::default()
+        },
+    };
+    let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
+    let plan = Plan {
+        schema: Schema {
+            types: BTreeMap::new(),
+        },
+        ops: vec![],
+        summary: None,
+        schema_preview: None,
+    };
+    let backend = Backend::Adapter(Box::new(adapter));
+    futures::executor::block_on(apply_plan(&backend, &plan, &mut state, true)).unwrap();
+    assert_eq!(
+        state.backend_id(t("dcim.site"), uid(1)),
+        Some(BackendId::Int(55))
+    );
+}
+
+#[test]
+fn apply_plan_keeps_the_mapping_a_resumed_op_has_no_id_for() {
+    // a journal written before ids were recorded has none for any op; recovering
+    // from it must not clear a mapping that is already good.
+    let adapter = TestAdapter {
+        observed: ObservedState::default(),
+        report: ApplyReport {
+            applied: vec![],
+            resumed: vec![AppliedOp {
+                uid: uid(1),
+                type_name: t("dcim.site"),
+                backend_id: None,
+            }],
+            ..Default::default()
+        },
+    };
+    let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
+    state.set_backend_id(t("dcim.site"), uid(1), BackendId::Int(55));
+    let plan = Plan {
+        schema: Schema {
+            types: BTreeMap::new(),
+        },
+        ops: vec![],
+        summary: None,
+        schema_preview: None,
+    };
+    let backend = Backend::Adapter(Box::new(adapter));
+    futures::executor::block_on(apply_plan(&backend, &plan, &mut state, true)).unwrap();
+    assert_eq!(
+        state.backend_id(t("dcim.site"), uid(1)),
+        Some(BackendId::Int(55))
+    );
+}
+
+#[test]
 fn apply_plan_emitter_writes_and_provisions_nothing() {
     let adapter = TestAdapter {
         observed: ObservedState::default(),

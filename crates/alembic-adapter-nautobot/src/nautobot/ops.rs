@@ -180,6 +180,14 @@ impl Emitter for NautobotAdapter {
             fn is_retryable(&self, err: &anyhow::Error) -> bool {
                 is_missing_ref_error(err)
             }
+
+            fn resume(&mut self, resumed: &[AppliedOp]) {
+                for op in resumed {
+                    if let Some(BackendId::String(id)) = &op.backend_id {
+                        self.resolved.insert(op.uid, id.clone());
+                    }
+                }
+            }
         }
 
         let mut driver = ApplyDriver {
@@ -197,6 +205,7 @@ impl Emitter for NautobotAdapter {
             return Err(anyhow!("unresolved references: {missing}"));
         }
 
+        let resumed = retry_result.resumed;
         for applied_op in retry_result.applied {
             if let Some(BackendId::String(backend_id)) = &applied_op.backend_id {
                 resolved.insert(applied_op.uid, backend_id.clone());
@@ -256,6 +265,7 @@ impl Emitter for NautobotAdapter {
 
         Ok(ApplyReport {
             applied,
+            resumed,
             previously_applied_count,
             ..Default::default()
         })
