@@ -30,6 +30,11 @@ each `types` entry is an endpoint config:
 
 `results_path` and `id_path` are dotted paths (for example `results` or `data.id`).
 
+a key that is not one of the above is a parse error naming it, at both levels and whether
+the config is inline under `config:` or in its own file. every one of these keys defaults
+silently otherwise, so a typo'd `headers` would send every request unauthenticated and a
+typo'd `delete_strategy` would fail the delete ops the plan showed.
+
 ## observe and apply
 
 - observe issues one GET per type to `path`, takes the array at `results_path` (or the

@@ -14,6 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 /// configuration for the generic rest adapter.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GenericConfig {
     /// base url for the api.
     pub base_url: String,
@@ -26,6 +27,7 @@ pub struct GenericConfig {
 
 /// endpoint configuration for a specific type.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EndpointConfig {
     /// path for listing and creating objects.
     pub path: String,

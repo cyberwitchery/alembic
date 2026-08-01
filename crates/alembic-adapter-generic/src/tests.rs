@@ -1536,3 +1536,56 @@ async fn test_preview_schema_reports_nothing_to_provision() {
     // and it matches what ensure_schema actually does (a no-op empty report).
     assert!(adapter.ensure_schema(&schema).await.unwrap().is_empty());
 }
+
+#[test]
+fn config_rejects_an_unknown_key() {
+    // a typo'd `headers` used to default to empty, so every request went out
+    // unauthenticated and the backend's 401 read as a credentials problem.
+    let err = serde_json::from_str::<GenericConfig>(
+        r#"{"base_url": "http://localhost", "header": {"Authorization": "Token t"}, "types": {}}"#,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("header"), "{err}");
+}
+
+#[test]
+fn endpoint_config_rejects_an_unknown_key() {
+    for typo in [
+        "results_pathh",
+        "delete_strategyy",
+        "id_pathh",
+        "update_methd",
+    ] {
+        let err = serde_json::from_str::<EndpointConfig>(&format!(
+            r#"{{"path": "/api/sites", "{typo}": "results"}}"#
+        ))
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains(typo), "{err}");
+    }
+}
+
+#[test]
+fn config_still_accepts_every_documented_key() {
+    let config: GenericConfig = serde_json::from_str(
+        r#"{
+            "base_url": "http://localhost",
+            "headers": {"Authorization": "Token t"},
+            "types": {
+                "site": {
+                    "path": "/api/sites",
+                    "results_path": "results",
+                    "id_path": "pk",
+                    "delete_strategy": "standard",
+                    "update_method": "PUT"
+                }
+            }
+        }"#,
+    )
+    .unwrap();
+    let site = &config.types["site"];
+    assert_eq!(site.results_path.as_deref(), Some("results"));
+    assert_eq!(site.id_path, "pk");
+    assert_eq!(site.update_method, "PUT");
+}

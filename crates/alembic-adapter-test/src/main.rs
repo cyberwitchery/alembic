@@ -29,7 +29,9 @@ fn main() -> ExitCode {
         match load_cases(&path) {
             Ok(cases) => outcomes.extend(run_cases(&cli.adapter, timeout, &cases)),
             Err(e) => {
-                eprintln!("error: {e}");
+                // the cause carries what is wrong with the fixture (the stray or
+                // malformed key); the context alone only names the file.
+                eprintln!("error: {e:#}");
                 return ExitCode::from(2);
             }
         }

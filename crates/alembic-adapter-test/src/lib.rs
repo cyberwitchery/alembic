@@ -39,14 +39,17 @@ pub struct Failure {
 
 /// an adapter-specific test case: a full request and what to expect back.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Case {
     pub name: String,
     pub request: Value,
     pub expect: Expect,
 }
 
-/// the expectation for a case; `result`/`error` are optional.
+/// the expectation for a case; `result`/`error` are optional. a stray key is
+/// rejected: a typo there silently removes the assertion the case exists for.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Expect {
     pub ok: bool,
     pub result: Option<Value>,
@@ -527,4 +530,50 @@ fn drain<R: Read + Send + 'static>(mut pipe: R) -> mpsc::Receiver<Vec<u8>> {
 fn collect(rx: mpsc::Receiver<Vec<u8>>, deadline: Instant) -> Vec<u8> {
     let remaining = deadline.saturating_duration_since(Instant::now());
     rx.recv_timeout(remaining).unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{load_cases, Case, Expect};
+    use std::path::Path;
+
+    fn examples() -> &'static Path {
+        Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/cases"))
+    }
+
+    #[test]
+    fn a_case_rejects_an_unknown_key() {
+        let err = serde_json::from_str::<Case>(
+            r#"{"name": "c", "requst": {}, "request": {}, "expect": {"ok": true}}"#,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("requst"), "{err}");
+    }
+
+    #[test]
+    fn an_expectation_rejects_an_unknown_key() {
+        // a typo'd `error`/`result` used to drop the assertion and report ok,
+        // so the case certified the adapter having compared nothing.
+        for typo in ["errror", "reslt"] {
+            let err = serde_json::from_str::<Expect>(&format!(r#"{{"ok": false, "{typo}": "x"}}"#))
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains(typo), "{err}");
+        }
+    }
+
+    #[test]
+    fn an_expectation_still_accepts_ok_result_and_error() {
+        let expect: Expect =
+            serde_json::from_str(r#"{"ok": false, "result": null, "error": "boom"}"#).unwrap();
+        assert!(!expect.ok);
+        assert_eq!(expect.error.as_deref(), Some("boom"));
+    }
+
+    #[test]
+    fn the_committed_fixtures_still_load() {
+        let cases = load_cases(examples()).unwrap();
+        assert_eq!(cases.len(), 6, "every committed fixture must still parse");
+    }
 }
