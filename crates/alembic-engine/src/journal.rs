@@ -249,8 +249,8 @@ struct OpWithMeta {
     op_hash: u64,
     done: bool,
     // id the backend returned for this op, so a resumed run can resolve references
-    // into what an earlier run created. `null` for updates, emitters, and for every
-    // op in a journal written before ids were recorded.
+    // into what an earlier run created or updated. the journaling adapters return one
+    // for both; `null` in a journal written before ids were recorded.
     backend_id: Option<BackendId>,
 }
 
