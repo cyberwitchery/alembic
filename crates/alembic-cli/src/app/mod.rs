@@ -1,24 +1,22 @@
 //! cli entrypoint for alembic.
 
 pub mod config;
-mod diag;
 mod io;
 mod state;
 
 use alembic_adapter_registry::{create_backend, Plugin};
 use alembic_engine::{
-    apply_plan, build_plan, guard_schema_deletes, load_inventory, plan_write_only, render_plan,
-    ApplyReport, Backend, DriftReport, Plan,
+    apply_plan, build_plan, guard_schema_deletes, load_inventory, load_inventory_unvalidated,
+    plan_write_only, render_plan, ApplyReport, Backend, DriftReport, Plan,
 };
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand};
 use std::fs;
 use std::path::PathBuf;
 
-use self::diag::err;
 use self::io::{
-    format_validation_errors, read_plan, warn_misleading_output_extension, write_apply_report,
-    write_drift_report, write_inventory, write_plan,
+    read_plan, warn_misleading_output_extension, write_apply_report, write_drift_report,
+    write_inventory, write_plan, write_validation_report,
 };
 use self::state::load_state;
 use crate::app::config::AppConfig;
@@ -46,10 +44,10 @@ File formats are chosen by file extension:
   - inventories (IR) are authored as YAML or JSON: a .json extension is parsed as
     JSON, anything else (.yaml, .yml, or no extension) is parsed as YAML. each
     inventory carries a schema block plus optional include/imports.
-  - plans (plan --output), the drift report (plan --report --output), observed
-    or transformed IR (import --output and map --output), and the apply report
-    (apply --output) are always written as JSON, regardless of the path
-    extension.
+  - plans (plan --output), the validation report (validate --output), the drift
+    report (plan --report --output), observed or transformed IR (import --output
+    and map --output), and the apply report (apply --output) are always written
+    as JSON, regardless of the path extension.
   - apply --plan consumes a JSON plan file as produced by alembic plan.")]
 pub(crate) struct Cli {
     #[command(subcommand)]
@@ -64,6 +62,10 @@ enum Command {
         /// inventory file to validate (yaml or json).
         #[arg(short = 'f', long)]
         file: PathBuf,
+        /// where to write the json validation report; written on both outcomes,
+        /// with an empty `errors` list when the inventory validates.
+        #[arg(short = 'o', long)]
+        output: Option<PathBuf>,
     },
     /// compute a deterministic plan (desired vs observed) and write it as json.
     Plan {
@@ -193,17 +195,43 @@ fn should_detect_deletes(allow_delete: bool, report: bool) -> bool {
 
 pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
     match cli.command {
-        Command::Validate { file } => {
-            let inventory = load_inventory(&file)?;
-            let report = alembic_engine::validate(&inventory);
-            if report.is_ok() {
-                println!("ok");
-            } else {
-                for error in format_validation_errors(report, &inventory.objects) {
-                    err("validate", &error);
+        Command::Validate { file, output } => {
+            // a bad output path before there is a verdict: failing on -o
+            // afterwards reports the write in place of the validation error.
+            // is_dir is #325's own first check; the write probe behind it, which
+            // is what catches an existing unwritable path, stays there.
+            // ensure_parent_dir before the load leaves its directories behind
+            // when the load then fails; #325's preflight removes what it creates
+            if let Some(output) = &output {
+                if output.is_dir() {
+                    return Err(anyhow!(
+                        "write output: {}: is a directory",
+                        output.display()
+                    ));
                 }
-                return Err(anyhow!("validation failed"));
+                io::ensure_parent_dir(output)?;
             }
+            // the only command that loads without the loader's own validation
+            // gate: it reports the errors rather than failing on the load, which
+            // is what leaves a report to write.
+            let inventory = load_inventory_unvalidated(&file)?;
+            let report = alembic_engine::validate(&inventory);
+            let located = report.clone().located(&inventory.objects);
+            // written on both outcomes: a ci gate wants an artifact either way,
+            // and an absent file would be indistinguishable from a crash.
+            if let Some(output) = &output {
+                if let Some(msg) = warn_misleading_output_extension(output) {
+                    eprintln!("{msg}");
+                }
+                write_validation_report(output, &located)?;
+                println!("validation report written to {}", output.display());
+            }
+            // after the write, so `ok` means the whole command succeeded
+            if located.errors.is_empty() {
+                println!("ok");
+            }
+            // the human half stays the loader's own error, verbatim
+            alembic_engine::report_to_result_with_sources(report, &inventory.objects)?;
         }
         Command::Plan {
             file,

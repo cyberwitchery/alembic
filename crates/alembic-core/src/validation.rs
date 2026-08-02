@@ -5,6 +5,7 @@ use crate::ir::{
 };
 use ipnet::IpNet;
 use regex::Regex;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -13,7 +14,11 @@ use std::sync::OnceLock;
 use thiserror::Error;
 
 /// validation errors emitted during graph validation.
-#[derive(Debug, Error, Clone, PartialEq, Eq)]
+///
+/// the serialized form is adjacently tagged, so a consumer switches on `kind`
+/// and reads the named fields out of `detail` rather than parsing the message.
+#[derive(Debug, Error, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "detail", rename_all = "snake_case")]
 pub enum ValidationError {
     #[error("duplicate uid: {0}")]
     DuplicateUid(Uid),
@@ -198,7 +203,7 @@ impl ValidationError {
 }
 
 /// a validation error with optional source location.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LocatedError {
     pub error: ValidationError,
     pub source: Option<SourceLocation>,
@@ -231,6 +236,16 @@ impl fmt::Display for LocatedError {
 #[derive(Debug, Default, Clone)]
 pub struct ValidationReport {
     pub errors: Vec<ValidationError>,
+}
+
+/// a validation report whose errors carry their source location: the document
+/// form of [`ValidationReport`], and what `alembic validate --output` writes.
+///
+/// `Deserialize` is here so a consumer can read a written report back; it is
+/// never a way to feed errors into validation.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LocatedReport {
+    pub errors: Vec<LocatedError>,
 }
 
 impl ValidationReport {
@@ -302,6 +317,16 @@ impl ValidationReport {
                 LocatedError::with_source(error, source)
             })
             .collect()
+    }
+
+    /// the report as a located document, ready to serialize.
+    ///
+    /// an empty report locates to an empty `errors` list rather than to nothing,
+    /// so a passing run still has a report to write.
+    pub fn located(self, objects: &[Object]) -> LocatedReport {
+        LocatedReport {
+            errors: self.with_sources(objects),
+        }
     }
 }
 
@@ -2848,5 +2873,133 @@ mod tests {
             e,
             ValidationError::InvalidValue { expected, .. } if expected == "string"
         )));
+    }
+
+    /// the `kind` every variant serializes as. exhaustive on purpose (see uid()):
+    /// a new variant is a compile error here, so it cannot be added without its
+    /// wire name being decided. that arm is all the compiler forces, though: the
+    /// table below is what compares the name against the serialization.
+    fn wire_kind(error: &ValidationError) -> &'static str {
+        match error {
+            ValidationError::DuplicateUid(_) => "duplicate_uid",
+            ValidationError::DuplicateKey(_) => "duplicate_key",
+            ValidationError::MissingType => "missing_type",
+            ValidationError::MissingKey => "missing_key",
+            ValidationError::MissingKeyField { .. } => "missing_key_field",
+            ValidationError::ExtraKeyField { .. } => "extra_key_field",
+            ValidationError::MissingAttrField { .. } => "missing_attr_field",
+            ValidationError::ExtraAttrField { .. } => "extra_attr_field",
+            ValidationError::InvalidValue { .. } => "invalid_value",
+            ValidationError::UnknownType(_) => "unknown_type",
+            ValidationError::MissingReference { .. } => "missing_reference",
+            ValidationError::ReferenceTypeMismatch { .. } => "reference_type_mismatch",
+            ValidationError::UnknownRefTarget { .. } => "unknown_ref_target",
+            ValidationError::InvalidSchemaPattern { .. } => "invalid_schema_pattern",
+            ValidationError::ConstraintOnNonStringField { .. } => "constraint_on_non_string_field",
+            ValidationError::EmptyEnum { .. } => "empty_enum",
+            ValidationError::NonScalarKeyField { .. } => "non_scalar_key_field",
+            ValidationError::NullableKeyField { .. } => "nullable_key_field",
+        }
+    }
+
+    #[test]
+    fn every_error_variant_serializes_its_pinned_kind() {
+        // `kind` is the consumer contract (docs/cli.md), so renaming a variant is
+        // a breaking change to the wire format rather than a refactor. the table
+        // is hand-maintained: a nineteenth variant gets its wire_kind arm from the
+        // compiler, but is neither serialized nor compared until it is added here.
+        let all: [ValidationError; 18] = [
+            ValidationError::DuplicateUid(uid(1)),
+            ValidationError::DuplicateKey("dcim.site::fra1".into()),
+            ValidationError::MissingType,
+            ValidationError::MissingKey,
+            ValidationError::MissingKeyField {
+                type_name: "dcim.site".into(),
+                field: "site".into(),
+            },
+            ValidationError::ExtraKeyField {
+                type_name: "dcim.site".into(),
+                field: "bogus".into(),
+            },
+            ValidationError::MissingAttrField {
+                type_name: "dcim.site".into(),
+                field: "name".into(),
+            },
+            ValidationError::ExtraAttrField {
+                type_name: "dcim.site".into(),
+                field: "bogus".into(),
+            },
+            ValidationError::InvalidValue {
+                field: "dcim.site.name".into(),
+                expected: "string".into(),
+                actual: "42".into(),
+            },
+            ValidationError::UnknownType("dcim.nope".into()),
+            ValidationError::MissingReference {
+                field: "dcim.device.site".into(),
+                target: uid(2),
+            },
+            ValidationError::ReferenceTypeMismatch {
+                field: "dcim.device.site".into(),
+                target: uid(2),
+                expected: "dcim.site".into(),
+                actual: "dcim.device".into(),
+            },
+            ValidationError::UnknownRefTarget {
+                type_name: "dcim.device".into(),
+                field: "site".into(),
+                target: "dcim.nope".into(),
+            },
+            ValidationError::InvalidSchemaPattern {
+                type_name: "dcim.site".into(),
+                field: "site".into(),
+                pattern: "[".into(),
+                error: "unclosed character class".into(),
+            },
+            ValidationError::ConstraintOnNonStringField {
+                type_name: "dcim.site".into(),
+                field: "count".into(),
+                constraint: "pattern".into(),
+                field_type: "int".into(),
+            },
+            ValidationError::EmptyEnum {
+                type_name: "dcim.site".into(),
+                field: "status".into(),
+            },
+            ValidationError::NonScalarKeyField {
+                type_name: "dcim.site".into(),
+                field: "members".into(),
+                field_type: "list".into(),
+            },
+            ValidationError::NullableKeyField {
+                type_name: "dcim.site".into(),
+                field: "site".into(),
+            },
+        ];
+
+        for error in &all {
+            let value = serde_json::to_value(error).unwrap();
+            assert_eq!(value["kind"], json!(wire_kind(error)), "{error:?}");
+        }
+        let kinds: BTreeSet<&str> = all.iter().map(wire_kind).collect();
+        assert_eq!(kinds.len(), all.len(), "one value per variant");
+    }
+
+    #[test]
+    fn newtype_errors_carry_the_bare_inner_value_as_detail() {
+        // what adjacent tagging buys: internally tagged, a newtype variant over a
+        // scalar cannot serialize at all.
+        assert_eq!(
+            serde_json::to_value(ValidationError::DuplicateUid(uid(1))).unwrap(),
+            json!({ "kind": "duplicate_uid", "detail": uid(1).to_string() })
+        );
+        assert_eq!(
+            serde_json::to_value(ValidationError::DuplicateKey("dcim.site::fra1".into())).unwrap(),
+            json!({ "kind": "duplicate_key", "detail": "dcim.site::fra1" })
+        );
+        assert_eq!(
+            serde_json::to_value(ValidationError::UnknownType("dcim.nope".into())).unwrap(),
+            json!({ "kind": "unknown_type", "detail": "dcim.nope" })
+        );
     }
 }

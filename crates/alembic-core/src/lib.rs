@@ -7,4 +7,6 @@ pub use ir::{
     key_string, uid_v5, FieldFormat, FieldSchema, FieldType, Inventory, JsonMap, Key, Object,
     ObjectError, Schema, SourceLocation, TypeName, TypeSchema, Uid, ALEMBIC_UID_NAMESPACE,
 };
-pub use validation::{validate_inventory, LocatedError, ValidationError, ValidationReport};
+pub use validation::{
+    validate_inventory, LocatedError, LocatedReport, ValidationError, ValidationReport,
+};

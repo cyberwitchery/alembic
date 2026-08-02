@@ -3,17 +3,6 @@ use anyhow::{Context, Result};
 use std::fs;
 use std::path::Path;
 
-pub(super) fn format_validation_errors(
-    report: alembic_core::ValidationReport,
-    objects: &[alembic_core::Object],
-) -> Vec<String> {
-    report
-        .with_sources(objects)
-        .into_iter()
-        .map(|error| format!("error: {error}"))
-        .collect()
-}
-
 pub(super) fn ensure_parent_dir(path: &Path) -> Result<()> {
     match path.parent() {
         // a bare filename has an empty parent; create_dir_all("") is not portable
@@ -39,6 +28,15 @@ pub(super) fn write_drift_report(path: &Path, report: &DriftReport) -> Result<()
     ensure_parent_dir(path)?;
     let raw = serde_json::to_string_pretty(report)?;
     fs::write(path, raw).with_context(|| format!("write drift report: {}", path.display()))
+}
+
+pub(super) fn write_validation_report(
+    path: &Path,
+    report: &alembic_core::LocatedReport,
+) -> Result<()> {
+    ensure_parent_dir(path)?;
+    let raw = serde_json::to_string_pretty(report)?;
+    fs::write(path, raw).with_context(|| format!("write validation report: {}", path.display()))
 }
 
 pub(super) fn write_inventory(path: &Path, inventory: &alembic_core::Inventory) -> Result<()> {

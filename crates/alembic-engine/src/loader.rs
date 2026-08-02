@@ -24,15 +24,21 @@ struct InventoryFile {
 
 /// load a inventory file (yaml or json) and merge any includes.
 pub fn load_inventory(path: impl AsRef<Path>) -> Result<Inventory> {
+    let inventory = load_inventory_unvalidated(path)?;
+    report_to_result_with_sources(validate(&inventory), &inventory.objects)?;
+    Ok(inventory)
+}
+
+/// load and merge an inventory without validating it, for a caller that reports
+/// the validation errors itself rather than failing on the load.
+pub fn load_inventory_unvalidated(path: impl AsRef<Path>) -> Result<Inventory> {
     let mut visited = BTreeSet::new();
     let mut objects = Vec::new();
     let mut schema: Option<Schema> = None;
     let path = path.as_ref();
     load_recursive(path, &mut visited, &mut objects, &mut schema)?;
     let schema = schema.ok_or_else(|| anyhow!("inventory is missing a schema block"))?;
-    let inventory = Inventory { schema, objects };
-    report_to_result_with_sources(validate(&inventory), &inventory.objects)?;
-    Ok(inventory)
+    Ok(Inventory { schema, objects })
 }
 
 /// recursive loader with cycle-safe include handling.

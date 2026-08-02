@@ -6,10 +6,53 @@ alembic ships a single cli binary with validate, import, map, plan, and apply su
 
 ```bash
 alembic validate -f examples/inventory.yaml
+
+alembic validate -f examples/inventory.yaml -o validation.json
 ```
 
 - loads and validates an inventory file (plus includes)
 - exits non-zero on validation errors
+- `-o`/`--output` writes the same errors as json, the machine-readable half of
+  what the run prints. it is optional: the human report goes to stderr either
+  way, unchanged, and the exit code is unchanged
+
+the file is written on both outcomes: a run that validates leaves an empty
+`errors` list rather than no file, so a ci gate can tell "nothing to report"
+from "the command never got that far". the path is checked before the inventory
+is read, so an `-o` naming a directory, or one whose parent cannot be created,
+fails before there is a verdict rather than in place of one; a path that fails
+only on permissions is still reported at the write. `ok` prints after the file
+is written, so it means the whole command succeeded. the json shape:
+
+```json
+{
+  "errors": [
+    {
+      "error": {
+        "kind": "extra_attr_field",
+        "detail": { "type_name": "dcim.site", "field": "bogus" }
+      },
+      "source": { "file": "/srv/intent/inventory.yaml", "line": 13, "column": null }
+    }
+  ]
+}
+```
+
+every error carries its variant as `kind` and that variant's named fields as
+`detail`, so a consumer switches on the kind instead of matching the rendered
+message, and `source` carries the `file`/`line`/`column` the printed report
+resolves. `source` is `null` when the error cannot be resolved to an object,
+which happens two ways: `missing_type` and `missing_key` carry no type, key or
+field to resolve through, so they are `null` in every run (an object whose
+`type:` or `key:` is left empty produces one), and a schema-level error
+resolves through an object of the type it is about, so it is `null` when the
+inventory declares no objects for that type. a consumer treats `source` as
+nullable for every kind rather than for a known set. the loader canonicalizes,
+so `file` is the absolute path of the file the object was read from, not the
+path as written. `column` is always `null` today; the field is in the shape
+because the location type carries it. the report is aggregated: validation
+collects every error rather than stopping at the first, so one run is one
+complete document.
 
 ## backend config
 

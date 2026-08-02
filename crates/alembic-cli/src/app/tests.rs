@@ -182,6 +182,41 @@ fn write_apply_report_creates_missing_parent_dirs() {
 }
 
 #[test]
+fn write_validation_report_creates_missing_parent_dirs() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("nested/out/validation.json");
+    write_validation_report(&path, &alembic_core::LocatedReport::default()).unwrap();
+    assert!(path.exists());
+}
+
+#[test]
+fn validation_report_json_is_tagged_and_round_trips() {
+    // the variant and its named fields are the point: a consumer switches on
+    // `kind` and reads `detail`, rather than parsing the rendered message.
+    let report = alembic_core::LocatedReport {
+        errors: vec![alembic_core::LocatedError::with_source(
+            alembic_core::ValidationError::ExtraAttrField {
+                type_name: "dcim.site".to_string(),
+                field: "bogus".to_string(),
+            },
+            Some(alembic_core::SourceLocation::file_line(
+                "inventory.yaml",
+                13,
+            )),
+        )],
+    };
+
+    let raw = serde_json::to_string_pretty(&report).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(value["errors"][0]["error"]["kind"], "extra_attr_field");
+    assert_eq!(value["errors"][0]["error"]["detail"]["field"], "bogus");
+    assert_eq!(value["errors"][0]["source"]["line"], 13);
+
+    let read_back: alembic_core::LocatedReport = serde_json::from_str(&raw).unwrap();
+    assert_eq!(read_back, report);
+}
+
+#[test]
 fn write_drift_report_creates_missing_parent_dirs() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("nested/out/drift.json");
@@ -448,7 +483,7 @@ fn cli_command_definition_is_valid() {
 }
 
 #[test]
-fn format_validation_errors_prefers_source_locations() {
+fn located_report_prefers_source_locations() {
     let mut key = BTreeMap::new();
     key.insert("site".to_string(), serde_json::json!("fra1"));
     let key = alembic_core::Key::from(key);
@@ -470,11 +505,17 @@ fn format_validation_errors_prefers_source_locations() {
             uuid::Uuid::from_u128(1),
         )],
     };
-    let errors = format_validation_errors(report, &[object]);
+    let located = report.located(&[object]);
 
-    assert_eq!(errors.len(), 1);
-    assert!(errors[0].contains("inventory.yaml:42"));
-    assert!(errors[0].contains("duplicate uid"));
+    assert_eq!(located.errors.len(), 1);
+    let rendered = located.errors[0].to_string();
+    assert!(rendered.contains("inventory.yaml:42"));
+    assert!(rendered.contains("duplicate uid"));
+    assert_eq!(
+        located.errors[0].source.as_ref().unwrap().line,
+        Some(42),
+        "the line must survive into the document, not only into the message"
+    );
 }
 
 #[tokio::test]
@@ -507,9 +548,96 @@ objects:
     .unwrap();
 
     let cli = Cli {
-        command: Command::Validate { file: inventory },
+        command: Command::Validate {
+            file: inventory,
+            output: None,
+        },
     };
     run(cli, AppConfig::load().unwrap()).await.unwrap();
+}
+
+/// an inventory declaring `dcim.site`, with `attrs` extended by `extra`.
+fn validate_fixture(dir: &Path, extra: &str) -> PathBuf {
+    let inventory = dir.join("inventory.yaml");
+    std::fs::write(
+        &inventory,
+        format!(
+            r#"schema:
+  types:
+    dcim.site:
+      key:
+        site:
+          type: slug
+      fields:
+        name:
+          type: string
+objects:
+  - uid: "00000000-0000-0000-0000-000000000001"
+    type: dcim.site
+    key:
+      site: "fra1"
+    attrs:
+      name: "FRA1"
+{extra}"#
+        ),
+    )
+    .unwrap();
+    inventory
+}
+
+#[tokio::test]
+async fn run_validate_writes_an_empty_report_when_the_inventory_validates() {
+    // the success path writes too: a ci gate wants an artifact either way, and an
+    // absent file would be indistinguishable from a crash.
+    let dir = tempdir().unwrap();
+    let out = dir.path().join("nested/validation.json");
+    let cli = Cli {
+        command: Command::Validate {
+            file: validate_fixture(dir.path(), ""),
+            output: Some(out.clone()),
+        },
+    };
+    run(cli, AppConfig::load().unwrap()).await.unwrap();
+
+    let raw = std::fs::read_to_string(&out).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(
+        value["errors"],
+        serde_json::json!([]),
+        "a passing run writes an empty list, not a missing key: {raw}"
+    );
+}
+
+#[tokio::test]
+async fn run_validate_writes_the_located_errors_and_still_fails() {
+    let dir = tempdir().unwrap();
+    let out = dir.path().join("validation.json");
+    let cli = Cli {
+        command: Command::Validate {
+            file: validate_fixture(dir.path(), "      bogus: \"nope\"\n"),
+            output: Some(out.clone()),
+        },
+    };
+    let error = run(cli, AppConfig::load().unwrap()).await.unwrap_err();
+    assert!(
+        error.to_string().contains("validation failed"),
+        "-o must not turn a failing validation into a success: {error}"
+    );
+
+    let report: alembic_core::LocatedReport =
+        serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    assert_eq!(report.errors.len(), 1);
+    assert_eq!(
+        report.errors[0].error,
+        alembic_core::ValidationError::ExtraAttrField {
+            type_name: "dcim.site".to_string(),
+            field: "bogus".to_string(),
+        }
+    );
+    // the loader canonicalizes, so match the file name rather than the temp path
+    let source = report.errors[0].source.as_ref().expect("source location");
+    assert!(source.file.ends_with("inventory.yaml"), "{source:?}");
+    assert_eq!(source.line, Some(11));
 }
 
 #[tokio::test]
