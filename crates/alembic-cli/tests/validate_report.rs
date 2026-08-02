@@ -86,9 +86,48 @@ fn validate_output_is_written_when_the_inventory_passes() {
     assert!(bare_ok && with_ok, "stderr:\n{with_stderr}");
     assert_eq!(bare_stderr, with_stderr);
     assert!(bare_stdout.starts_with("ok"), "stdout:\n{bare_stdout}");
-    assert!(with_stdout.starts_with("ok"), "stdout:\n{with_stdout}");
+    // `ok` is the last thing printed: it reports the whole command, the write
+    // included, not the inventory alone
+    assert!(
+        with_stdout.starts_with("validation report written to") && with_stdout.ends_with("ok\n"),
+        "stdout:\n{with_stdout}"
+    );
 
     let raw = std::fs::read_to_string(&report).unwrap();
     let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
     assert_eq!(value["errors"], serde_json::json!([]), "{raw}");
+}
+
+#[test]
+fn validate_refuses_an_unusable_output_path_before_it_has_a_verdict() {
+    let dir = tempdir().unwrap();
+    // a file where the report's parent would go: create_dir_all cannot pass it
+    let blocker = dir.path().join("blocker");
+    std::fs::write(&blocker, "").unwrap();
+    let report = blocker.join("sub/validation.json");
+
+    let (passing_ok, passing_stdout, passing_stderr) =
+        run_validate(&fixture(dir.path(), ""), Some(&report));
+    assert!(!passing_ok, "an -o that cannot be written fails the run");
+    assert!(
+        passing_stdout.is_empty(),
+        "no verdict for a run that cannot deliver its document: {passing_stdout}"
+    );
+    assert!(
+        passing_stderr.contains("create output directory"),
+        "{passing_stderr}"
+    );
+
+    // and on the failure path the same refusal comes before the load, so no
+    // validation error is computed for the write error to displace
+    let (failing_ok, failing_stdout, failing_stderr) = run_validate(
+        &fixture(dir.path(), "      bogus: \"nope\"\n"),
+        Some(&report),
+    );
+    assert!(!failing_ok);
+    assert!(failing_stdout.is_empty(), "{failing_stdout}");
+    assert!(
+        failing_stderr.contains("create output directory"),
+        "{failing_stderr}"
+    );
 }

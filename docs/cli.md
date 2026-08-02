@@ -18,7 +18,10 @@ alembic validate -f examples/inventory.yaml -o validation.json
 
 the file is written on both outcomes: a run that validates leaves an empty
 `errors` list rather than no file, so a ci gate can tell "nothing to report"
-from "the command never got that far". the json shape:
+from "the command never got that far". the path is checked before the inventory
+is read, so an unwritable `-o` fails before there is a verdict rather than in
+place of one, and `ok` prints after the file is written, so it means the whole
+command succeeded. the json shape:
 
 ```json
 {
@@ -28,7 +31,7 @@ from "the command never got that far". the json shape:
         "kind": "extra_attr_field",
         "detail": { "type_name": "dcim.site", "field": "bogus" }
       },
-      "source": { "file": "inventory.yaml", "line": 13, "column": null }
+      "source": { "file": "/srv/intent/inventory.yaml", "line": 13, "column": null }
     }
   ]
 }
@@ -37,9 +40,10 @@ from "the command never got that far". the json shape:
 every error carries its variant as `kind` and that variant's named fields as
 `detail`, so a consumer switches on the kind instead of matching the rendered
 message, and `source` carries the `file`/`line`/`column` the printed report
-resolves. `column` is `null` when only the line is known. the report is
-aggregated: validation collects every error rather than stopping at the first,
-so one run is one complete document.
+resolves. the loader canonicalizes, so `file` is the absolute path of the file
+the object was read from, not the path as written. `column` is `null` when only
+the line is known. the report is aggregated: validation collects every error
+rather than stopping at the first, so one run is one complete document.
 
 ## backend config
 

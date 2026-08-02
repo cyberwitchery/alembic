@@ -2874,4 +2874,128 @@ mod tests {
             ValidationError::InvalidValue { expected, .. } if expected == "string"
         )));
     }
+
+    /// the `kind` every variant serializes as. exhaustive on purpose (see uid()):
+    /// a new variant cannot reach the wire without being named here.
+    fn wire_kind(error: &ValidationError) -> &'static str {
+        match error {
+            ValidationError::DuplicateUid(_) => "duplicate_uid",
+            ValidationError::DuplicateKey(_) => "duplicate_key",
+            ValidationError::MissingType => "missing_type",
+            ValidationError::MissingKey => "missing_key",
+            ValidationError::MissingKeyField { .. } => "missing_key_field",
+            ValidationError::ExtraKeyField { .. } => "extra_key_field",
+            ValidationError::MissingAttrField { .. } => "missing_attr_field",
+            ValidationError::ExtraAttrField { .. } => "extra_attr_field",
+            ValidationError::InvalidValue { .. } => "invalid_value",
+            ValidationError::UnknownType(_) => "unknown_type",
+            ValidationError::MissingReference { .. } => "missing_reference",
+            ValidationError::ReferenceTypeMismatch { .. } => "reference_type_mismatch",
+            ValidationError::UnknownRefTarget { .. } => "unknown_ref_target",
+            ValidationError::InvalidSchemaPattern { .. } => "invalid_schema_pattern",
+            ValidationError::ConstraintOnNonStringField { .. } => "constraint_on_non_string_field",
+            ValidationError::EmptyEnum { .. } => "empty_enum",
+            ValidationError::NonScalarKeyField { .. } => "non_scalar_key_field",
+            ValidationError::NullableKeyField { .. } => "nullable_key_field",
+        }
+    }
+
+    #[test]
+    fn every_error_variant_serializes_its_pinned_kind() {
+        // `kind` is the consumer contract (docs/cli.md), so renaming a variant is
+        // a breaking change to the wire format rather than a refactor.
+        let all: [ValidationError; 18] = [
+            ValidationError::DuplicateUid(uid(1)),
+            ValidationError::DuplicateKey("dcim.site::fra1".into()),
+            ValidationError::MissingType,
+            ValidationError::MissingKey,
+            ValidationError::MissingKeyField {
+                type_name: "dcim.site".into(),
+                field: "site".into(),
+            },
+            ValidationError::ExtraKeyField {
+                type_name: "dcim.site".into(),
+                field: "bogus".into(),
+            },
+            ValidationError::MissingAttrField {
+                type_name: "dcim.site".into(),
+                field: "name".into(),
+            },
+            ValidationError::ExtraAttrField {
+                type_name: "dcim.site".into(),
+                field: "bogus".into(),
+            },
+            ValidationError::InvalidValue {
+                field: "dcim.site.name".into(),
+                expected: "string".into(),
+                actual: "42".into(),
+            },
+            ValidationError::UnknownType("dcim.nope".into()),
+            ValidationError::MissingReference {
+                field: "dcim.device.site".into(),
+                target: uid(2),
+            },
+            ValidationError::ReferenceTypeMismatch {
+                field: "dcim.device.site".into(),
+                target: uid(2),
+                expected: "dcim.site".into(),
+                actual: "dcim.device".into(),
+            },
+            ValidationError::UnknownRefTarget {
+                type_name: "dcim.device".into(),
+                field: "site".into(),
+                target: "dcim.nope".into(),
+            },
+            ValidationError::InvalidSchemaPattern {
+                type_name: "dcim.site".into(),
+                field: "site".into(),
+                pattern: "[".into(),
+                error: "unclosed character class".into(),
+            },
+            ValidationError::ConstraintOnNonStringField {
+                type_name: "dcim.site".into(),
+                field: "count".into(),
+                constraint: "pattern".into(),
+                field_type: "int".into(),
+            },
+            ValidationError::EmptyEnum {
+                type_name: "dcim.site".into(),
+                field: "status".into(),
+            },
+            ValidationError::NonScalarKeyField {
+                type_name: "dcim.site".into(),
+                field: "members".into(),
+                field_type: "list".into(),
+            },
+            ValidationError::NullableKeyField {
+                type_name: "dcim.site".into(),
+                field: "site".into(),
+            },
+        ];
+
+        for error in &all {
+            let value = serde_json::to_value(error).unwrap();
+            assert_eq!(value["kind"], json!(wire_kind(error)), "{error:?}");
+        }
+        let kinds: BTreeSet<&str> = all.iter().map(wire_kind).collect();
+        assert_eq!(kinds.len(), all.len(), "one value per variant");
+    }
+
+    #[test]
+    fn newtype_errors_carry_the_bare_inner_value_as_detail() {
+        // what adjacent tagging buys: internally tagged, a newtype variant over a
+        // scalar cannot serialize at all.
+        assert_eq!(
+            serde_json::to_value(ValidationError::DuplicateUid(uid(1))).unwrap(),
+            json!({ "kind": "duplicate_uid", "detail": uid(1).to_string() })
+        );
+        assert_eq!(
+            serde_json::to_value(ValidationError::DuplicateKey("dcim.site::fra1".into())).unwrap(),
+            json!({ "kind": "duplicate_key", "detail": "dcim.site::fra1" })
+        );
+        assert_eq!(
+            serde_json::to_value(ValidationError::UnknownType("dcim.nope".into())).unwrap(),
+            json!({ "kind": "unknown_type", "detail": "dcim.nope" })
+        );
+    }
 }

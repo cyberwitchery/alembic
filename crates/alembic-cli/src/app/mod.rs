@@ -196,15 +196,17 @@ fn should_detect_deletes(allow_delete: bool, report: bool) -> bool {
 pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
     match cli.command {
         Command::Validate { file, output } => {
+            // a bad output path before there is a verdict: failing on -o
+            // afterwards reports the write in place of the validation error
+            if let Some(output) = &output {
+                io::ensure_parent_dir(output)?;
+            }
             // the only command that loads without the loader's own validation
             // gate: it reports the errors rather than failing on the load, which
             // is what leaves a report to write.
             let inventory = load_inventory_unvalidated(&file)?;
             let report = alembic_engine::validate(&inventory);
             let located = report.clone().located(&inventory.objects);
-            if located.errors.is_empty() {
-                println!("ok");
-            }
             // written on both outcomes: a ci gate wants an artifact either way,
             // and an absent file would be indistinguishable from a crash.
             if let Some(output) = &output {
@@ -213,6 +215,10 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                 }
                 write_validation_report(output, &located)?;
                 println!("validation report written to {}", output.display());
+            }
+            // after the write, so `ok` means the whole command succeeded
+            if located.errors.is_empty() {
+                println!("ok");
             }
             // the human half stays the loader's own error, verbatim
             alembic_engine::report_to_result_with_sources(report, &inventory.objects)?;
