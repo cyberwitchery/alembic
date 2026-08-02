@@ -233,7 +233,7 @@ impl fmt::Display for LocatedError {
 }
 
 /// aggregated validation report.
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone)]
 pub struct ValidationReport {
     pub errors: Vec<ValidationError>,
 }

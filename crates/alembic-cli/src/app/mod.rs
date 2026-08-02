@@ -199,7 +199,9 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             // a bad output path before there is a verdict: failing on -o
             // afterwards reports the write in place of the validation error.
             // is_dir is #325's own first check; the write probe behind it, which
-            // is what catches an existing unwritable path, stays there
+            // is what catches an existing unwritable path, stays there.
+            // ensure_parent_dir before the load leaves its directories behind
+            // when the load then fails; #325's preflight removes what it creates
             if let Some(output) = &output {
                 if output.is_dir() {
                     return Err(anyhow!(
