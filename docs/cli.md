@@ -254,10 +254,13 @@ means an apply is unfinished.
   run can reference objects the interrupted run created or updated, and their uid to
   backend-id mappings land in state once the plan applies in full. a journal written
   before ids were recorded still resumes, but carries no ids to recover
-- resume covers an apply that exits through an error. operations are marked done in
-  memory and the journal is written at that exit, not once per operation, so a
-  process killed mid-apply (sigkill, panic, power loss) leaves a journal recording
-  nothing done, and re-running repeats what already applied
+- the journal is append-only. an operation's record is written and flushed to disk as
+  it completes, so a process killed mid-apply (sigkill, panic, power loss) still
+  resumes from everything it had applied, not just from an apply that exited through
+  an error. the cost is one append and one fsync per operation, against the backend
+  round trip each one already pays for
+- a journal an older alembic left behind is read and rewritten in the append-only
+  format when it is loaded, so an apply interrupted before the upgrade still resumes
 
 ## map
 

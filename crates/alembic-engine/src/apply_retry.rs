@@ -69,8 +69,8 @@ pub async fn apply_non_delete_with_retries(
         for op in current {
             match driver.apply_non_delete(&op).await {
                 Ok(applied_op) => {
-                    // marked in memory only; the journal is flushed to disk at the exit
-                    // points below, not once per op (saving per op is ~100x slower).
+                    // the journal is append-only, so marking is the persist: the record
+                    // is on disk before the next op is applied against it
                     if let Some(journal) = journal.as_mut() {
                         journal.mark_op_as_done(&op, applied_op.backend_id.as_ref())?;
                     }
@@ -78,17 +78,8 @@ pub async fn apply_non_delete_with_retries(
                 }
                 Err(err) if driver.is_retryable(&err) => pending.push(op),
                 Err(err) => {
-                    // a fatal error is a clean unwind: persist progress before surfacing it
-                    // so the next run can resume from here. don't mask the original error if
-                    // the save itself fails.
                     if let Some(journal) = journal.as_mut() {
-                        match journal.save() {
-                            Ok(()) => report_resumable(journal),
-                            Err(save_err) => tracing::warn!(
-                                error = %save_err,
-                                "failed to persist journal after apply error"
-                            ),
-                        }
+                        report_resumable(journal);
                     }
                     return Err(err);
                 }
@@ -104,8 +95,8 @@ pub async fn apply_non_delete_with_retries(
         if journal.is_completed() {
             journal.delete_backing_file()?;
         } else {
-            // ops remain pending (stuck with no progress): persist so a re-run can resume
-            journal.save()?;
+            // ops remain pending (stuck with no progress): a re-run resumes from what
+            // is already on disk
             report_resumable(journal);
         }
     }
@@ -619,6 +610,8 @@ mod tests {
         resolved: BTreeMap<Uid, BackendId>,
         next_id: u64,
         fatal_on: Option<Uid>,
+        // dies without unwinding to the apply's exits, the way a sigkill does
+        kill_on: Option<Uid>,
         seen_refs: Vec<(Uid, BackendId)>,
     }
 
@@ -628,6 +621,7 @@ mod tests {
                 resolved: BTreeMap::new(),
                 next_id: 100,
                 fatal_on,
+                kill_on: None,
                 seen_refs: Vec::new(),
             }
         }
@@ -636,6 +630,7 @@ mod tests {
     #[async_trait]
     impl RetryApplyDriver for RefDriver {
         async fn apply_non_delete(&mut self, op: &Op) -> Result<AppliedOp> {
+            assert_ne!(self.kill_on, Some(op.uid()), "killed mid-apply");
             if self.fatal_on == Some(op.uid()) {
                 return Err(anyhow!("planned error"));
             }
@@ -756,6 +751,44 @@ mod tests {
             "the interrupted run's op comes back with the id it created"
         );
         assert_eq!(report.previously_applied_count, Some(1));
+    }
+
+    #[test]
+    fn a_run_killed_mid_apply_resumes_from_what_it_had_applied() {
+        let _guard = journal_guard();
+        // #46's headline, and the case an error-only resume never covered: the run
+        // dies instead of returning, so neither exit of the retry loop runs. the ops
+        // it applied are on disk anyway, because marking one is what writes it.
+        let site = Uid::from_u128(1);
+        let device = Uid::from_u128(2);
+        let ops = vec![create_op(site), create_op_referencing(device, site)];
+        let dir = tempdir().unwrap();
+        let state = crate::StateStore::new(None, crate::StateData::default())
+            .with_journal_dir(dir.path().to_path_buf());
+        let journal_path = crate::Journal::stable_file_name(dir.path(), "test", &ops);
+
+        let mut first = RefDriver::new(None);
+        first.kill_on = Some(device);
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            block_on(run_journaled_apply(&state, &ops, &mut first))
+        }));
+        assert!(outcome.is_err(), "the run must have died on the device");
+        assert!(journal_path.exists());
+
+        let mut second = RefDriver::new(None);
+        let report = block_on(run_journaled_apply(&state, &ops, &mut second)).unwrap();
+        assert_eq!(
+            second.seen_refs,
+            vec![(device, BackendId::Int(100))],
+            "the device resolves its ref into the site the killed run created"
+        );
+        assert_eq!(
+            report.applied.iter().map(|a| a.uid).collect::<Vec<_>>(),
+            vec![device],
+            "the site is not created a second time"
+        );
+        assert_eq!(report.previously_applied_count, Some(1));
+        assert!(!journal_path.exists());
     }
 
     #[test]
