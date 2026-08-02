@@ -98,36 +98,57 @@ fn validate_output_is_written_when_the_inventory_passes() {
     assert_eq!(value["errors"], serde_json::json!([]), "{raw}");
 }
 
+/// drive both inventories through `-o <output>` and assert each is refused with
+/// `expected` and no verdict: the passing one has none to print, and the failing
+/// one has a validation error the write must not displace. an inventory that
+/// cannot be loaded at all is refused the same way, which is what pins the
+/// refusal to *before* the read rather than merely instead of the verdict.
+///
+/// the two shapes below are what a check before the read can see. a path that
+/// fails only on permissions (an existing read-only parent) is still found at the
+/// write, and needs the real probe #325 puts in `preflight_output_path`.
+fn assert_refused_before_the_verdict(dir: &Path, output: &Path, expected: &str) {
+    for extra in ["", "      bogus: \"nope\"\n"] {
+        assert_refused(&fixture(dir, extra), output, expected);
+    }
+    assert_refused(&dir.join("no-such-inventory.yaml"), output, expected);
+}
+
+fn assert_refused(inventory: &Path, output: &Path, expected: &str) {
+    let (ok, stdout, stderr) = run_validate(inventory, Some(output));
+    assert!(!ok, "an -o that cannot be written fails the run");
+    assert!(
+        stdout.is_empty(),
+        "no verdict for a run that cannot deliver its document: {stdout}"
+    );
+    assert!(stderr.contains(expected), "{stderr}");
+}
+
 #[test]
-fn validate_refuses_an_unusable_output_path_before_it_has_a_verdict() {
+fn validate_refuses_an_output_parent_it_cannot_create_before_it_has_a_verdict() {
     let dir = tempdir().unwrap();
     // a file where the report's parent would go: create_dir_all cannot pass it
     let blocker = dir.path().join("blocker");
     std::fs::write(&blocker, "").unwrap();
-    let report = blocker.join("sub/validation.json");
 
-    let (passing_ok, passing_stdout, passing_stderr) =
-        run_validate(&fixture(dir.path(), ""), Some(&report));
-    assert!(!passing_ok, "an -o that cannot be written fails the run");
-    assert!(
-        passing_stdout.is_empty(),
-        "no verdict for a run that cannot deliver its document: {passing_stdout}"
+    assert_refused_before_the_verdict(
+        dir.path(),
+        &blocker.join("sub/validation.json"),
+        "create output directory",
     );
-    assert!(
-        passing_stderr.contains("create output directory"),
-        "{passing_stderr}"
-    );
+}
 
-    // and on the failure path the same refusal comes before the load, so no
-    // validation error is computed for the write error to displace
-    let (failing_ok, failing_stdout, failing_stderr) = run_validate(
-        &fixture(dir.path(), "      bogus: \"nope\"\n"),
-        Some(&report),
-    );
-    assert!(!failing_ok);
-    assert!(failing_stdout.is_empty(), "{failing_stdout}");
-    assert!(
-        failing_stderr.contains("create output directory"),
-        "{failing_stderr}"
+#[test]
+fn validate_refuses_an_output_path_that_is_a_directory_before_it_has_a_verdict() {
+    let dir = tempdir().unwrap();
+    let target = dir.path().join("adir");
+    std::fs::create_dir(&target).unwrap();
+
+    // creating the parent proves nothing about the target: without the is_dir
+    // check the write reports `Is a directory` in place of the verdict
+    assert_refused_before_the_verdict(
+        dir.path(),
+        &target,
+        &format!("write output: {}: is a directory", target.display()),
     );
 }

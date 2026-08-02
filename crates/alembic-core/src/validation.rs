@@ -2876,7 +2876,9 @@ mod tests {
     }
 
     /// the `kind` every variant serializes as. exhaustive on purpose (see uid()):
-    /// a new variant cannot reach the wire without being named here.
+    /// a new variant is a compile error here, so it cannot be added without its
+    /// wire name being decided. that arm is all the compiler forces, though: the
+    /// table below is what compares the name against the serialization.
     fn wire_kind(error: &ValidationError) -> &'static str {
         match error {
             ValidationError::DuplicateUid(_) => "duplicate_uid",
@@ -2903,7 +2905,9 @@ mod tests {
     #[test]
     fn every_error_variant_serializes_its_pinned_kind() {
         // `kind` is the consumer contract (docs/cli.md), so renaming a variant is
-        // a breaking change to the wire format rather than a refactor.
+        // a breaking change to the wire format rather than a refactor. the table
+        // is hand-maintained: a nineteenth variant gets its wire_kind arm from the
+        // compiler, but is neither serialized nor compared until it is added here.
         let all: [ValidationError; 18] = [
             ValidationError::DuplicateUid(uid(1)),
             ValidationError::DuplicateKey("dcim.site::fra1".into()),

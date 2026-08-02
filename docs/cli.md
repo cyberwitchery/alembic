@@ -19,9 +19,10 @@ alembic validate -f examples/inventory.yaml -o validation.json
 the file is written on both outcomes: a run that validates leaves an empty
 `errors` list rather than no file, so a ci gate can tell "nothing to report"
 from "the command never got that far". the path is checked before the inventory
-is read, so an unwritable `-o` fails before there is a verdict rather than in
-place of one, and `ok` prints after the file is written, so it means the whole
-command succeeded. the json shape:
+is read, so an `-o` naming a directory, or one whose parent cannot be created,
+fails before there is a verdict rather than in place of one; a path that fails
+only on permissions is still reported at the write. `ok` prints after the file
+is written, so it means the whole command succeeded. the json shape:
 
 ```json
 {

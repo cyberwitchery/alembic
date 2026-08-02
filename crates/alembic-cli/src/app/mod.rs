@@ -197,8 +197,16 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
     match cli.command {
         Command::Validate { file, output } => {
             // a bad output path before there is a verdict: failing on -o
-            // afterwards reports the write in place of the validation error
+            // afterwards reports the write in place of the validation error.
+            // is_dir is #325's own first check; the write probe behind it, which
+            // is what catches an existing unwritable path, stays there
             if let Some(output) = &output {
+                if output.is_dir() {
+                    return Err(anyhow!(
+                        "write output: {}: is a directory",
+                        output.display()
+                    ));
+                }
                 io::ensure_parent_dir(output)?;
             }
             // the only command that loads without the loader's own validation
