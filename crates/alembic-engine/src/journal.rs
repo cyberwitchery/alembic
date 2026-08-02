@@ -123,8 +123,8 @@ impl Journal {
         let file_name = Self::stable_file_name(directory, adapter_name, expected_ops);
         let contents = fs::read_to_string(&file_name)?;
 
-        let (ops, legacy) = match contents.starts_with(DOCUMENT_PREFIX) {
-            true => (parse_records(&contents, &file_name)?, false),
+        let (ops, rewrite) = match contents.starts_with(DOCUMENT_PREFIX) {
+            true => parse_records(&contents, &file_name)?,
             false => (parse_legacy(&contents, &file_name)?, true),
         };
 
@@ -158,9 +158,10 @@ impl Journal {
             ));
         }
 
-        // an older alembic wrote a single mutable document; rewrite it once, here,
-        // so every write from now on is an append.
-        let file = match legacy {
+        // neither a legacy whole-document journal nor one whose torn tail the parse
+        // dropped can be appended to as it stands. rewriting once, here, is what makes
+        // every write from now on an append.
+        let file = match rewrite {
             true => write_whole_file(&file_name, &journal.ops)?,
             false => open_for_append(&file_name)?,
         };
@@ -312,13 +313,16 @@ fn open_for_append(path: &Path) -> Result<File> {
     Ok(OpenOptions::new().append(true).open(path)?)
 }
 
-/// rebuilds the ops from the record stream. a torn final line is dropped rather than
-/// failing the load: it is the crash this format exists for, and everything before it
-/// is intact by construction.
-fn parse_records(contents: &str, path: &Path) -> Result<Vec<OpWithMeta>> {
+/// rebuilds the ops from the record stream, and reports whether a torn final line was
+/// dropped: it is the crash this format exists for, everything before it is intact by
+/// construction, and the caller has to rewrite the file rather than append after bytes
+/// that would leave a record no later load can read.
+fn parse_records(contents: &str, path: &Path) -> Result<(Vec<OpWithMeta>, bool)> {
     let mut lines: Vec<&str> = contents.split_inclusive('\n').collect();
+    let mut truncated = false;
     if lines.last().is_some_and(|line| !line.ends_with('\n')) {
         lines.pop();
+        truncated = true;
     }
 
     let version_line = lines
@@ -354,6 +358,7 @@ fn parse_records(contents: &str, path: &Path) -> Result<Vec<OpWithMeta>> {
                     "dropping an incomplete final record from the journal at {}",
                     path.display()
                 );
+                truncated = true;
                 break;
             }
             Err(err) => {
@@ -387,7 +392,7 @@ fn parse_records(contents: &str, path: &Path) -> Result<Vec<OpWithMeta>> {
         }
     }
 
-    Ok(ops)
+    Ok((ops, truncated))
 }
 
 fn parse_legacy(contents: &str, path: &Path) -> Result<Vec<OpWithMeta>> {
@@ -690,7 +695,9 @@ mod tests {
     #[test]
     fn mark_scales_to_a_large_plan() {
         // marking every op in a large plan in order completes without a quadratic
-        // blowup (no wall-clock assert, just correctness at scale).
+        // blowup (no wall-clock assert, just correctness at scale). ephemeral on
+        // purpose: a backing file would make this 5000 fsyncs, measured at 25s here,
+        // to guard the pending index rather than the io the smaller tests cover.
         const N: u128 = 5000;
         let ops: Vec<Op> = (0..N)
             .map(|i| Op::Create {
@@ -778,6 +785,65 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![(ops[0].uid(), Some(BackendId::Int(7)))]
         );
+    }
+
+    #[test]
+    fn a_resume_from_a_torn_journal_repairs_it_before_appending() {
+        // tolerating the torn tail on read is only half of it. appending after the torn
+        // bytes leaves a record the next load either drops, re-applying an op that
+        // already ran, or cannot read at all, losing every id the killed run recorded.
+        for tail in [
+            r#"--- {"done":{"op":1,"backe"#,     // the newline never landed
+            "--- {\"done\":{\"op\":1,\"backe\n", // it did, the rest of the body did not
+        ] {
+            let dir = tempdir().unwrap();
+            let ops = test_ops();
+            let path = Journal::stable_file_name(dir.path(), "torn", &ops);
+            {
+                let mut journal = Journal::load_or_create(dir.path(), "torn", &ops).unwrap();
+                journal
+                    .mark_op_as_done(&ops[0], Some(&BackendId::Int(7)))
+                    .unwrap();
+                killed(journal);
+            }
+            let mut contents = fs::read_to_string(&path).unwrap();
+            contents.push_str(tail);
+            fs::write(&path, &contents).unwrap();
+
+            // the resumed run applies the op the torn record was for, and dies again
+            {
+                let mut journal = Journal::load_or_create(dir.path(), "torn", &ops).unwrap();
+                journal
+                    .mark_op_as_done(&ops[1], Some(&BackendId::Int(8)))
+                    .unwrap();
+                killed(journal);
+            }
+            // and once more, since a merged line only reads as corruption once it is no
+            // longer the last one
+            {
+                let mut journal = Journal::load_or_create(dir.path(), "torn", &ops).unwrap();
+                journal
+                    .mark_op_as_done(&ops[2], Some(&BackendId::Int(9)))
+                    .unwrap();
+                killed(journal);
+            }
+
+            let journal = Journal::load_or_create(dir.path(), "torn", &ops).unwrap();
+            assert_eq!(
+                journal
+                    .done_applied_ops()
+                    .iter()
+                    .map(|a| (a.uid, a.backend_id.clone()))
+                    .collect::<Vec<_>>(),
+                vec![
+                    (ops[0].uid(), Some(BackendId::Int(7))),
+                    (ops[1].uid(), Some(BackendId::Int(8))),
+                    (ops[2].uid(), Some(BackendId::Int(9))),
+                ],
+                "torn with {tail:?}"
+            );
+            assert!(journal.is_completed());
+        }
     }
 
     #[test]
