@@ -447,7 +447,7 @@ impl Emitter for GenericAdapter {
             schema,
             mappings: &mappings,
         };
-        let (retry_result, previously_applied_count) =
+        let (retry_result, previously_applied_count, journal) =
             apply_non_delete_journaled(state, "generic", &creates_updates, &mut driver).await?;
         if !retry_result.pending.is_empty() {
             let missing = describe_missing_refs(&retry_result.pending, &resolved);
@@ -479,6 +479,7 @@ impl Emitter for GenericAdapter {
                 });
             }
         }
+        journal.finish()?;
 
         Ok(ApplyReport {
             applied,

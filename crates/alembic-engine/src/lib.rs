@@ -37,7 +37,7 @@ pub use adapter_ops::{
 };
 pub use apply_retry::{
     apply_non_delete_journaled, apply_non_delete_with_retries, describe_missing_refs,
-    is_missing_ref_error, RetryApplyDriver, RetryApplyResult,
+    is_missing_ref_error, ApplyJournal, RetryApplyDriver, RetryApplyResult,
 };
 pub use drift::{ChangedEntry, DriftEntry, DriftReport};
 pub use endpoint::normalize_endpoint;

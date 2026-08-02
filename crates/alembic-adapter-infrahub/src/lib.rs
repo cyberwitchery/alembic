@@ -732,7 +732,7 @@ impl Emitter for InfrahubAdapter {
             schema,
             resolved: &mut resolved,
         };
-        let (retry_result, previously_applied_count) =
+        let (retry_result, previously_applied_count, journal) =
             apply_non_delete_journaled(state, "infrahub", &creates_updates, &mut driver).await?;
         if !retry_result.pending.is_empty() {
             let missing = describe_missing_refs(&retry_result.pending, &resolved);
@@ -750,6 +750,7 @@ impl Emitter for InfrahubAdapter {
         for op in deletes {
             applied.push(self.apply_delete(&op, schema, &resolved).await?);
         }
+        journal.finish()?;
 
         Ok(ApplyReport {
             applied,
