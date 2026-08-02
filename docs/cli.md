@@ -41,13 +41,18 @@ is written, so it means the whole command succeeded. the json shape:
 every error carries its variant as `kind` and that variant's named fields as
 `detail`, so a consumer switches on the kind instead of matching the rendered
 message, and `source` carries the `file`/`line`/`column` the printed report
-resolves. `source` is `null` when the error cannot be attributed to an object,
-which is a schema-level error against a type the inventory declares no objects
-for. the loader canonicalizes, so `file` is the absolute path of the file the
-object was read from, not the path as written. `column` is always `null` today;
-the field is in the shape because the location type carries it. the report is
-aggregated: validation collects every error rather than stopping at the first,
-so one run is one complete document.
+resolves. `source` is `null` when the error cannot be resolved to an object,
+which happens two ways: `missing_type` and `missing_key` carry no type, key or
+field to resolve through, so they are `null` in every run (an object whose
+`type:` or `key:` is left empty produces one), and a schema-level error
+resolves through an object of the type it is about, so it is `null` when the
+inventory declares no objects for that type. a consumer treats `source` as
+nullable for every kind rather than for a known set. the loader canonicalizes,
+so `file` is the absolute path of the file the object was read from, not the
+path as written. `column` is always `null` today; the field is in the shape
+because the location type carries it. the report is aggregated: validation
+collects every error rather than stopping at the first, so one run is one
+complete document.
 
 ## backend config
 
