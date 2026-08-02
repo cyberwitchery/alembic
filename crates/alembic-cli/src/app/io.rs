@@ -16,18 +16,23 @@ pub(super) fn ensure_parent_dir(path: &Path) -> Result<()> {
 /// check that `path` can really be written, so a bad `-o` fails before the run
 /// pays for a backend observation and only trips at the write.
 ///
-/// `ensure_parent_dir` creates the parent and nothing else, which leaves the two
-/// ordinary bad values: a path that is itself a directory, and a parent that
-/// exists but rejects writes. probing with a real file covers both, and covers
-/// what mode bits cannot answer (a read-only mount, an acl, a full disk).
+/// `ensure_parent_dir` creates the parent and nothing else, which leaves the
+/// three ordinary bad values: a path that is itself a directory, a parent that
+/// exists but rejects writes, and an existing file that rejects writes. the last
+/// is probed by opening the target itself, the other two by writing a real file
+/// beside it, which also answers what mode bits cannot (a read-only mount, an
+/// acl).
 ///
-/// side-effect-free: it creates what it needs, probes, then removes the probe
-/// and every directory it created, deepest first, so a run that dies later
-/// leaves the filesystem as it found it. the write path still calls
-/// `ensure_parent_dir` to recreate them.
+/// side-effect-free: the target probe never truncates, and the sibling probe
+/// removes itself and every directory it had to create, deepest first, so a run
+/// that dies later leaves the filesystem as it found it. the write path still
+/// calls `ensure_parent_dir` to recreate them.
 pub(super) fn preflight_output_path(path: &Path) -> Result<()> {
     if path.is_dir() {
         return Err(anyhow!("write output: {}: is a directory", path.display()));
+    }
+    if let Some(result) = probe_existing_target(path) {
+        return result;
     }
     let created = missing_ancestors(path);
     let result = ensure_parent_dir(path).and_then(|()| probe_writable(path));
@@ -52,6 +57,23 @@ fn missing_ancestors(path: &Path) -> Vec<PathBuf> {
         current = dir.parent();
     }
     missing
+}
+
+/// an existing regular target answers for itself, which the sibling probe cannot:
+/// a file that denies writes sits under a parent that accepts them. `None` for
+/// anything else, since opening a fifo for write blocks until a reader attaches.
+fn probe_existing_target(path: &Path) -> Option<Result<()>> {
+    if !path.is_file() {
+        return None;
+    }
+    // write(true) alone, no truncate and no create: the open asks whether the
+    // write will be allowed, and the contents survive it either way.
+    match fs::OpenOptions::new().write(true).open(path) {
+        Ok(_) => Some(Ok(())),
+        // gone between the two calls; the sibling probe answers instead
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+        Err(err) => Some(Err(err).with_context(|| format!("write output: {}", path.display()))),
+    }
 }
 
 fn probe_writable(path: &Path) -> Result<()> {

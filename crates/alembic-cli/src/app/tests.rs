@@ -535,9 +535,66 @@ fn preflight_output_path_leaves_no_probe_and_no_directory() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn preflight_output_path_rejects_an_unwritable_existing_file() {
+    use std::os::unix::fs::PermissionsExt;
+    // the parent accepts writes, so the sibling probe passes it and the real
+    // write fails with EACCES after a full observation.
+    let dir = tempdir().unwrap();
+
+    // root ignores the mode bits; ask the os on a separate file rather than
+    // skipping, and assert whichever answer it gives
+    let sentinel = dir.path().join("sentinel");
+    std::fs::write(&sentinel, b"x").unwrap();
+    std::fs::set_permissions(&sentinel, std::fs::Permissions::from_mode(0o444)).unwrap();
+    let denied = std::fs::write(&sentinel, b"y").is_err();
+
+    let target = dir.path().join("plan.json");
+    std::fs::write(&target, "previous").unwrap();
+    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o444)).unwrap();
+    let result = io::preflight_output_path(&target);
+
+    // restore before asserting, so a failure still lets tempdir clean up
+    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644)).unwrap();
+    if denied {
+        let err = result.expect_err("an unwritable target is not a writable output");
+        assert!(
+            format!("{err:#}").contains("write output"),
+            "the error must name the output write: {err:#}"
+        );
+    } else {
+        result.expect("a target this user can write to is a valid output");
+    }
+    // and the probe reads the permission without touching the contents
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "previous");
+}
+
+#[cfg(unix)]
+#[test]
+fn preflight_output_path_does_not_hang_on_a_fifo() {
+    // opening a fifo for write blocks until a reader attaches, so only a regular
+    // target is probed directly. without that guard this never returns.
+    let dir = tempdir().unwrap();
+    let target = dir.path().join("fifo");
+    let made = std::process::Command::new("mkfifo")
+        .arg(&target)
+        .status()
+        .expect("mkfifo must be runnable");
+    assert!(made.success(), "mkfifo failed");
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(io::preflight_output_path(&target).is_ok());
+    });
+    rx.recv_timeout(std::time::Duration::from_secs(10))
+        .expect("the preflight must not block on a fifo");
+}
+
 #[test]
 fn preflight_output_path_accepts_an_existing_file_and_keeps_it() {
-    // overwriting an existing output is normal; the probe must not truncate it.
+    // overwriting an existing output is normal; the target probe must open it
+    // without truncating.
     let dir = tempdir().unwrap();
     let target = dir.path().join("plan.json");
     std::fs::write(&target, "previous").unwrap();
@@ -1876,6 +1933,86 @@ async fn run_plan_report_rejects_a_bad_output_path_before_observing() {
         0,
         "the output path must be rejected before the backend is observed"
     );
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn run_plan_rejects_an_unwritable_existing_output_file_before_observing() {
+    use std::os::unix::fs::PermissionsExt;
+    let _guard = cwd_lock().lock().await;
+    let server = httpmock::MockServer::start();
+    let mock = server.mock(|when, then| {
+        when.any_request();
+        then.status(500);
+    });
+
+    let dir = tempdir().unwrap();
+    let state_path = dir.path().join(".alembic").join("state.json");
+    let _env = EnvVarGuard::acquire_async(&[
+        ("ALEMBIC_STATE_BACKEND", Some("local")),
+        ("ALEMBIC_STATE_PATH", Some(state_path.to_str().unwrap())),
+    ])
+    .await;
+    let inventory = write_site_inventory(dir.path());
+    let config = dir.path().join("adapter.yaml");
+    std::fs::write(
+        &config,
+        format!(
+            "backend: nautobot\nurl: {}\ntoken: token\n",
+            server.base_url()
+        ),
+    )
+    .unwrap();
+    // an existing target that denies writes: the parent accepts them, so only a
+    // probe of the target itself catches it before the observation is paid for
+    let target = dir.path().join("plan.json");
+    std::fs::write(&target, "previous").unwrap();
+    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o444)).unwrap();
+    // root ignores the mode bits, so ask the os rather than skipping
+    let sentinel = dir.path().join("sentinel");
+    std::fs::write(&sentinel, b"x").unwrap();
+    std::fs::set_permissions(&sentinel, std::fs::Permissions::from_mode(0o444)).unwrap();
+    let denied = std::fs::write(&sentinel, b"y").is_err();
+
+    let cwd = std::env::current_dir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
+    let cli = Cli {
+        command: Command::Plan {
+            file: inventory,
+            output: Some(target.clone()),
+            backend: None,
+            backend_config: Some(config),
+            provision: false,
+            dry_run: false,
+            report: false,
+            allow_delete: false,
+        },
+    };
+    let result = run(cli, AppConfig::load().unwrap()).await;
+    std::env::set_current_dir(cwd).unwrap();
+    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+    if denied {
+        let err = result.expect_err("a bad -o must fail the run");
+        assert!(
+            format!("{err:#}").contains("write output"),
+            "the run must fail on the output path: {err:#}"
+        );
+        assert_eq!(
+            mock.calls(),
+            0,
+            "the output path must be rejected before the backend is observed"
+        );
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "previous");
+    } else {
+        // running as root: the path really is writable, so the run gets as far
+        // as the backend and dies there instead
+        let err = result.expect_err("the mock backend answers 500");
+        assert!(
+            !format!("{err:#}").contains("write output"),
+            "a writable target must not be rejected: {err:#}"
+        );
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]

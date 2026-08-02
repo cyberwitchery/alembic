@@ -172,9 +172,9 @@ without it the report leaves no file. the file is the drift report, never a plan
 (`--report` still writes no plan and saves no state), and the path is checked
 before the backend is observed, so a bad `-o` costs no backend requests. the
 check is a real write probe, not just a `mkdir -p`: a path that is a directory,
-or one under a parent that rejects writes, is rejected up front. it leaves
-nothing behind, including the directories it had to create to run. the json
-shape:
+one under a parent that rejects writes, or an existing file that rejects writes,
+is rejected up front. it leaves nothing behind, including the directories it
+had to create to run, and it never truncates an existing target. the json shape:
 
 ```json
 {
