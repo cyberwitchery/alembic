@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use uuid::Uuid;
 
 /// source location for tracking where an object was defined.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourceLocation {
     /// path to the source file.
     pub file: PathBuf,

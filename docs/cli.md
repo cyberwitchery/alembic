@@ -6,10 +6,40 @@ alembic ships a single cli binary with validate, import, map, plan, and apply su
 
 ```bash
 alembic validate -f examples/inventory.yaml
+
+alembic validate -f examples/inventory.yaml -o validation.json
 ```
 
 - loads and validates an inventory file (plus includes)
 - exits non-zero on validation errors
+- `-o`/`--output` writes the same errors as json, the machine-readable half of
+  what the run prints. it is optional: the human report goes to stderr either
+  way, unchanged, and the exit code is unchanged
+
+the file is written on both outcomes: a run that validates leaves an empty
+`errors` list rather than no file, so a ci gate can tell "nothing to report"
+from "the command never got that far". the json shape:
+
+```json
+{
+  "errors": [
+    {
+      "error": {
+        "kind": "extra_attr_field",
+        "detail": { "type_name": "dcim.site", "field": "bogus" }
+      },
+      "source": { "file": "inventory.yaml", "line": 13, "column": null }
+    }
+  ]
+}
+```
+
+every error carries its variant as `kind` and that variant's named fields as
+`detail`, so a consumer switches on the kind instead of matching the rendered
+message, and `source` carries the `file`/`line`/`column` the printed report
+resolves. `column` is `null` when only the line is known. the report is
+aggregated: validation collects every error rather than stopping at the first,
+so one run is one complete document.
 
 ## backend config
 

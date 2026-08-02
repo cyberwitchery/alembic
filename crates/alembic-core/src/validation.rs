@@ -5,6 +5,7 @@ use crate::ir::{
 };
 use ipnet::IpNet;
 use regex::Regex;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -13,7 +14,11 @@ use std::sync::OnceLock;
 use thiserror::Error;
 
 /// validation errors emitted during graph validation.
-#[derive(Debug, Error, Clone, PartialEq, Eq)]
+///
+/// the serialized form is adjacently tagged, so a consumer switches on `kind`
+/// and reads the named fields out of `detail` rather than parsing the message.
+#[derive(Debug, Error, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "detail", rename_all = "snake_case")]
 pub enum ValidationError {
     #[error("duplicate uid: {0}")]
     DuplicateUid(Uid),
@@ -198,7 +203,7 @@ impl ValidationError {
 }
 
 /// a validation error with optional source location.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LocatedError {
     pub error: ValidationError,
     pub source: Option<SourceLocation>,
@@ -228,9 +233,19 @@ impl fmt::Display for LocatedError {
 }
 
 /// aggregated validation report.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct ValidationReport {
     pub errors: Vec<ValidationError>,
+}
+
+/// a validation report whose errors carry their source location: the document
+/// form of [`ValidationReport`], and what `alembic validate --output` writes.
+///
+/// `Deserialize` is here so a consumer can read a written report back; it is
+/// never a way to feed errors into validation.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LocatedReport {
+    pub errors: Vec<LocatedError>,
 }
 
 impl ValidationReport {
@@ -302,6 +317,16 @@ impl ValidationReport {
                 LocatedError::with_source(error, source)
             })
             .collect()
+    }
+
+    /// the report as a located document, ready to serialize.
+    ///
+    /// an empty report locates to an empty `errors` list rather than to nothing,
+    /// so a passing run still has a report to write.
+    pub fn located(self, objects: &[Object]) -> LocatedReport {
+        LocatedReport {
+            errors: self.with_sources(objects),
+        }
     }
 }
 
