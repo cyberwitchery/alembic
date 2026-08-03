@@ -87,7 +87,9 @@ cargo llvm-cov --workspace --all-features --fail-under-lines 80 \
 ./scripts/ci.sh
 ```
 
-- runs fmt, clippy, tests, and coverage
+- runs fmt, clippy, cargo-deny, docs, and one instrumented test and coverage pass, in ci's order
+- needs `cargo-deny` and `cargo-llvm-cov` on the path, and exits with an install hint without them
+- the django e2e tests need django + djangorestframework importable from `python3`, and the postgres state store tests no-op unless `ALEMBIC_TEST_POSTGRES_URL` is set; ci provides both
 - local mock servers require binding to loopback; some environments may need elevated privileges
 
 ## release
