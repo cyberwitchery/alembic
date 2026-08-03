@@ -1097,6 +1097,28 @@ mod tests {
     }
 
     #[test]
+    fn a_successful_journaled_apply_says_nothing_about_the_journal() {
+        let _guard = journal_guard();
+        // the same rule through the other entry point: the borrow guard covers the engine's
+        // local journal only, so on the success path the owned one is all that may speak.
+        let ops = vec![create_op(Uid::from_u128(1))];
+        let dir = tempdir().unwrap();
+        let state = crate::StateStore::new(None, crate::StateData::default())
+            .with_journal_dir(dir.path().to_path_buf());
+
+        let logged = crate::test_log::capture(|| {
+            let mut driver = ErraticDriver {
+                countdown_to_crash: 99999,
+                applied_ops: vec![],
+            };
+            block_on(run_journaled_apply(&state, &ops, &mut driver)).unwrap();
+        })
+        .1;
+
+        assert!(!logged.contains("apply stopped"), "got: {logged}");
+    }
+
+    #[test]
     fn the_journal_outlives_a_completed_create_update_phase() {
         let _guard = journal_guard();
         // the deletes still have to run, and they are not journaled: unlinking the file
