@@ -671,10 +671,18 @@ fn output_path_is_the_one_place_every_write_site_is_named() {
         }),
         Some(out.as_path())
     );
+    assert_eq!(
+        output_path(&Command::Validate {
+            file: PathBuf::from("i.yaml"),
+            output: Some(out.clone()),
+        }),
+        Some(out.as_path())
+    );
     // the commands that write no file
     assert_eq!(
         output_path(&Command::Validate {
-            file: PathBuf::from("i.yaml")
+            file: PathBuf::from("i.yaml"),
+            output: None,
         }),
         None
     );

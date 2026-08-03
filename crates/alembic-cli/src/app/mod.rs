@@ -215,8 +215,9 @@ fn stray_map_args(file: bool, spec: bool, output: bool) -> Vec<&'static str> {
 /// exhaustively means a new command has to answer this.
 fn output_path(command: &Command) -> Option<&Path> {
     match command {
-        Command::Validate { .. } => None,
-        Command::Plan { output, .. } | Command::Apply { output, .. } => output.as_deref(),
+        Command::Validate { output, .. }
+        | Command::Plan { output, .. }
+        | Command::Apply { output, .. } => output.as_deref(),
         // the transform subcommand prints to stdout and writes no file
         Command::Map {
             action: Some(_), ..
@@ -227,29 +228,14 @@ fn output_path(command: &Command) -> Option<&Path> {
 }
 
 pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
-    // before anything expensive: every command that writes an output file pays
-    // for a backend observation or an apply first, so a bad -o must not surface
+    // before anything expensive: a command that writes an output file pays for a
+    // load, a backend observation or an apply first, so a bad -o must not surface
     // at the write. the write path recreates what the probe removed.
     if let Some(output) = output_path(&cli.command) {
         io::preflight_output_path(output)?;
     }
     match cli.command {
         Command::Validate { file, output } => {
-            // a bad output path before there is a verdict: failing on -o
-            // afterwards reports the write in place of the validation error.
-            // is_dir is #325's own first check; the write probe behind it, which
-            // is what catches an existing unwritable path, stays there.
-            // ensure_parent_dir before the load leaves its directories behind
-            // when the load then fails; #325's preflight removes what it creates
-            if let Some(output) = &output {
-                if output.is_dir() {
-                    return Err(anyhow!(
-                        "write output: {}: is a directory",
-                        output.display()
-                    ));
-                }
-                io::ensure_parent_dir(output)?;
-            }
             // the only command that loads without the loader's own validation
             // gate: it reports the errors rather than failing on the load, which
             // is what leaves a report to write.
