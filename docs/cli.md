@@ -21,9 +21,9 @@ the file is written on both outcomes: a run that validates leaves an empty
 from "the command never got that far". the path goes through the same write
 probe as `plan` and `apply`, before the inventory is read, so an `-o` naming a
 directory, one whose parent cannot be created, or one that exists and rejects
-writes, fails before there is a verdict rather than in place of one. `ok` prints
-after the file is written, so it means the whole command succeeded. the json
-shape:
+writes, fails before there is a verdict rather than in place of one, and a run
+that delivers no report leaves no directory for it behind. `ok` prints after the
+file is written, so it means the whole command succeeded. the json shape:
 
 ```json
 {

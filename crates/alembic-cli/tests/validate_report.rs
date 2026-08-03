@@ -193,3 +193,23 @@ fn validate_refuses_an_output_path_that_is_a_directory_before_it_has_a_verdict()
         &format!("write output: {}: is a directory", target.display()),
     );
 }
+
+#[test]
+fn validate_leaves_no_output_directory_behind_when_the_run_fails() {
+    // the other half of dropping the inline `ensure_parent_dir`: it ran before
+    // the load, so a run that died on the load left the report's directory
+    // behind. the probe takes back what it creates.
+    let dir = tempdir().unwrap();
+    let nested = dir.path().join("reports");
+
+    let (ok, _, stderr) = run_validate(
+        &dir.path().join("no-such-inventory.yaml"),
+        Some(&nested.join("validation.json")),
+    );
+
+    assert!(!ok, "a missing inventory fails the run: {stderr}");
+    assert!(
+        !nested.exists(),
+        "a run that delivered no report leaves no directory for it"
+    );
+}

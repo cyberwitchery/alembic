@@ -212,7 +212,9 @@ fn stray_map_args(file: bool, spec: bool, output: bool) -> Vec<&'static str> {
 
 /// the `-o`/`--output` path a command will write, if any. the one place that
 /// knows, so every write site is preflighted by construction; matching
-/// exhaustively means a new command has to answer this.
+/// exhaustively means a new *variant* has to answer this. a new `-o` on an
+/// existing variant does not: `..` absorbs it silently, so it has to be bound
+/// here by hand.
 fn output_path(command: &Command) -> Option<&Path> {
     match command {
         Command::Validate { output, .. }
