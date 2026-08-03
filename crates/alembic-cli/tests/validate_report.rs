@@ -151,8 +151,8 @@ fn validate_refuses_an_unwritable_existing_output_before_it_has_a_verdict() {
     std::fs::set_permissions(&sentinel, std::fs::Permissions::from_mode(0o444)).unwrap();
     let denied = std::fs::write(&sentinel, b"y").is_err();
 
-    // the parent accepts writes and the target is not a directory, so both of the
-    // checks this command used to carry pass it; only the write probe refuses it
+    // the parent accepts writes and the target is not a directory, so only the
+    // write probe refuses this one
     let target = dir.path().join("validation.json");
     std::fs::write(&target, "previous").unwrap();
     std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o444)).unwrap();
