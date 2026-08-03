@@ -80,6 +80,20 @@ pub fn guard_schema_deletes(preview: &ProvisionReport, allow_delete: bool) -> Re
     Ok(())
 }
 
+/// refuse a drift report over a backend that cannot observe. the report asserts
+/// what the backend holds, and a write-only backend is planned against an empty
+/// observation, so every declared object would be reported absent from a backend
+/// nothing ever read. `import` refuses the same situation for the same reason.
+pub fn guard_drift_report(backend: &Backend) -> Result<()> {
+    match backend {
+        Backend::Observer(_) | Backend::Adapter(_) => Ok(()),
+        Backend::Emitter(_) => Err(anyhow!(
+            "backend is write-only; it cannot observe state, so there is no drift \
+             to report. run `alembic plan` without --report to see what apply would emit"
+        )),
+    }
+}
+
 pub(crate) async fn apply(
     backend: &Backend,
     plan: &Plan,

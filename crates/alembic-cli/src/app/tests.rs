@@ -2145,6 +2145,134 @@ async fn run_plan_leaves_no_output_directory_when_observing_fails() {
     );
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn run_plan_report_refuses_a_write_only_backend() {
+    let _guard = cwd_lock().lock().await;
+    let dir = tempdir().unwrap();
+    let state_path = dir.path().join(".alembic").join("state.json");
+    let _env = EnvVarGuard::acquire_async(&[
+        ("ALEMBIC_STATE_BACKEND", Some("local")),
+        ("ALEMBIC_STATE_PATH", Some(state_path.to_str().unwrap())),
+    ])
+    .await;
+    // one declared object: the run this refuses used to report it `missing`,
+    // having observed nothing.
+    let inventory = write_site_inventory(dir.path());
+    // a parent that does not exist yet, so the output preflight has real work to
+    // do first: the refusal below is the guard's, not the preflight's.
+    let out = dir.path().join("nested/drift.json");
+
+    let cwd = std::env::current_dir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
+    let cli = Cli {
+        command: Command::Plan {
+            file: inventory,
+            output: Some(out.clone()),
+            backend: Some("django".to_string()),
+            backend_config: None,
+            provision: false,
+            dry_run: false,
+            report: true,
+            allow_delete: false,
+        },
+    };
+    let result = run(cli, AppConfig::load().unwrap()).await;
+    std::env::set_current_dir(cwd).unwrap();
+
+    let err = result.expect_err("a write-only backend has no drift to report");
+    let err = format!("{err:#}");
+    assert!(err.contains("write-only"), "{err}");
+    assert!(err.contains("cannot observe state"), "{err}");
+    assert!(err.contains("without --report"), "{err}");
+    // and it leaves nothing behind: no document, and the parent the preflight
+    // created to probe with is gone again.
+    assert!(!out.exists(), "a refused report must write no document");
+    assert!(!out.parent().unwrap().exists());
+    assert!(!state_path.exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn run_plan_report_refuses_an_external_adapter_declaring_emitter() {
+    let _guard = cwd_lock().lock().await;
+    let dir = tempdir().unwrap();
+    let state_path = dir.path().join(".alembic").join("state.json");
+    let _env = EnvVarGuard::acquire_async(&[
+        ("ALEMBIC_STATE_BACKEND", Some("local")),
+        ("ALEMBIC_STATE_PATH", Some(state_path.to_str().unwrap())),
+    ])
+    .await;
+    // the example stubs a successful empty `read`, so only the declared role
+    // stands between the report and an observation of nothing.
+    let example_binary = find_example_binary("emitter_role_adapter");
+    let inventory = write_site_inventory(dir.path());
+    let config = dir.path().join("backend.yaml");
+    std::fs::write(
+        &config,
+        format!(
+            "backend: external\ncommand: \"{}\"\ntimeout_seconds: 5\n",
+            example_binary.to_str().unwrap()
+        ),
+    )
+    .unwrap();
+
+    let cwd = std::env::current_dir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
+    let cli = Cli {
+        command: Command::Plan {
+            file: inventory,
+            output: None,
+            backend: Some("external".to_string()),
+            backend_config: Some(config),
+            provision: false,
+            dry_run: false,
+            report: true,
+            allow_delete: false,
+        },
+    };
+    let result = run(cli, AppConfig::load().unwrap()).await;
+    std::env::set_current_dir(cwd).unwrap();
+
+    let err = result.expect_err("a declared emitter has no drift to report");
+    assert!(format!("{err:#}").contains("write-only"), "{err:#}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn run_plan_without_report_still_plans_a_write_only_backend() {
+    let _guard = cwd_lock().lock().await;
+    let dir = tempdir().unwrap();
+    let state_path = dir.path().join(".alembic").join("state.json");
+    let _env = EnvVarGuard::acquire_async(&[
+        ("ALEMBIC_STATE_BACKEND", Some("local")),
+        ("ALEMBIC_STATE_PATH", Some(state_path.to_str().unwrap())),
+    ])
+    .await;
+    let inventory = write_site_inventory(dir.path());
+    let out = dir.path().join("plan.json");
+
+    let cwd = std::env::current_dir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
+    let cli = Cli {
+        command: Command::Plan {
+            file: inventory,
+            output: Some(out.clone()),
+            backend: Some("django".to_string()),
+            backend_config: None,
+            provision: false,
+            dry_run: false,
+            report: false,
+            allow_delete: false,
+        },
+    };
+    let result = run(cli, AppConfig::load().unwrap()).await;
+    std::env::set_current_dir(cwd).unwrap();
+
+    // the all-creates plan is what apply will emit, so it stays: only the
+    // report, which claims to have observed, is refused.
+    result.expect("plan without --report is unaffected");
+    let raw = std::fs::read_to_string(&out).unwrap();
+    assert!(raw.contains("\"create\""), "{raw}");
+}
+
 #[test]
 fn should_detect_deletes_forces_on_for_report() {
     // report mode never applies the plan, so it forces delete-detection on to

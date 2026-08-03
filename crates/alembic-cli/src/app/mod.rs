@@ -6,8 +6,9 @@ mod state;
 
 use alembic_adapter_registry::{create_backend, Plugin};
 use alembic_engine::{
-    apply_plan, build_plan, guard_schema_deletes, load_inventory, load_inventory_unvalidated,
-    plan_write_only, render_plan, ApplyReport, Backend, DriftReport, Plan,
+    apply_plan, build_plan, guard_drift_report, guard_schema_deletes, load_inventory,
+    load_inventory_unvalidated, plan_write_only, render_plan, ApplyReport, Backend, DriftReport,
+    Plan,
 };
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand};
@@ -265,6 +266,12 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             let mut state = load_state().await?;
             let plugins = search_for_plugins(&config);
             let backend = create_backend(&plugins, backend.as_deref(), backend_config)?;
+            // a drift report asserts what the backend holds; one that observes
+            // nothing would report every declared object absent, so refuse it
+            // before provisioning or a request.
+            if report {
+                guard_drift_report(&backend)?;
+            }
             // read-only schema preview: what apply's ensure_schema would provision,
             // writing nothing. skipped when --provision actually provisions now, and
             // for observer/emitter backends that cannot provision schema at all. all
