@@ -194,6 +194,21 @@ fn validate_refuses_an_output_path_that_is_a_directory_before_it_has_a_verdict()
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn validate_accepts_a_character_device_output() {
+    // `-o /dev/null` is how a run is observed and its document thrown away. the
+    // preflight asks the target, not `/dev`, which takes no new file.
+    let dir = tempdir().unwrap();
+    let (ok, stdout, stderr) = run_validate(&fixture(dir.path(), ""), Some(Path::new("/dev/null")));
+
+    assert!(ok, "stderr:\n{stderr}");
+    assert!(
+        stdout.starts_with("validation report written to") && stdout.ends_with("ok\n"),
+        "the run reaches its work and its write: {stdout}"
+    );
+}
+
 #[test]
 fn validate_leaves_no_output_directory_behind_when_the_run_fails() {
     // the other half of dropping the inline `ensure_parent_dir`: it ran before

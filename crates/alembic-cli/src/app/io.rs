@@ -59,11 +59,11 @@ fn missing_ancestors(path: &Path) -> Vec<PathBuf> {
     missing
 }
 
-/// an existing regular target answers for itself, which the sibling probe cannot:
-/// a file that denies writes sits under a parent that accepts them. `None` for
-/// anything else, since opening a fifo for write blocks until a reader attaches.
+/// an existing target answers for itself, which the sibling probe cannot: the
+/// two differ in both directions, a file that denies writes under a parent that
+/// accepts them and `/dev/null` under a parent that does not.
 fn probe_existing_target(path: &Path) -> Option<Result<()>> {
-    if !path.is_file() {
+    if !answers_its_own_open(path) {
         return None;
     }
     // write(true) alone, no truncate and no create: the open asks whether the
@@ -74,6 +74,22 @@ fn probe_existing_target(path: &Path) -> Option<Result<()>> {
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
         Err(err) => Some(Err(err).with_context(|| format!("write output: {}", path.display()))),
     }
+}
+
+/// a regular file and a character device both settle `O_WRONLY` at once; opening
+/// a fifo for write blocks until a reader attaches, so it goes to the sibling
+/// probe instead.
+#[cfg(unix)]
+fn answers_its_own_open(path: &Path) -> bool {
+    use std::os::unix::fs::FileTypeExt;
+    fs::metadata(path)
+        .map(|meta| meta.is_file() || meta.file_type().is_char_device())
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn answers_its_own_open(path: &Path) -> bool {
+    path.is_file()
 }
 
 fn probe_writable(path: &Path) -> Result<()> {

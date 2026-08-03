@@ -591,6 +591,16 @@ fn preflight_output_path_does_not_hang_on_a_fifo() {
         .expect("the preflight must not block on a fifo");
 }
 
+#[cfg(unix)]
+#[test]
+fn preflight_output_path_accepts_a_character_device() {
+    // the other side of that guard: /dev/null settles its own open at once, and
+    // its parent takes no new file, so the sibling probe answers the wrong
+    // question and refuses a target the write accepts.
+    let target = Path::new("/dev/null");
+    io::preflight_output_path(target).expect("/dev/null is a writable output");
+}
+
 #[test]
 fn preflight_output_path_accepts_an_existing_file_and_keeps_it() {
     // overwriting an existing output is normal; the target probe must open it
