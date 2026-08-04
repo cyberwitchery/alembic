@@ -475,6 +475,244 @@ fn warn_misleading_output_extension_allows_no_extension() {
 }
 
 #[test]
+fn preflight_output_path_rejects_a_directory() {
+    // `-o outdir` where outdir exists: creating the parent says nothing, and the
+    // real write fails with EISDIR after a full observation.
+    let dir = tempdir().unwrap();
+    let target = dir.path().join("outdir");
+    std::fs::create_dir(&target).unwrap();
+    let err = io::preflight_output_path(&target).expect_err("a directory is not a writable output");
+    assert!(
+        format!("{err:#}").contains("is a directory"),
+        "the error must name the reason: {err:#}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn preflight_output_path_rejects_an_unwritable_parent() {
+    use std::os::unix::fs::PermissionsExt;
+    // the parent exists and needs no creating, so ensure_parent_dir passes it and
+    // the write fails with EACCES.
+    let dir = tempdir().unwrap();
+    let readonly = dir.path().join("ro");
+    std::fs::create_dir(&readonly).unwrap();
+    std::fs::set_permissions(&readonly, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+    // root ignores the mode bits, so the path really is writable there and a
+    // rejection would be the wrong answer; assert whichever the os actually gives
+    let denied = std::fs::write(readonly.join("direct"), b"").is_err();
+    let result = io::preflight_output_path(&readonly.join("drift.json"));
+
+    // restore before asserting, so a failure still lets tempdir clean up
+    std::fs::set_permissions(&readonly, std::fs::Permissions::from_mode(0o755)).unwrap();
+    if denied {
+        let err = result.expect_err("a read-only parent is not a writable output");
+        assert!(
+            format!("{err:#}").contains("write output"),
+            "the error must name the output write: {err:#}"
+        );
+    } else {
+        result.expect("a parent this user can write to is a valid output");
+    }
+}
+
+#[test]
+fn preflight_output_path_leaves_no_probe_and_no_directory() {
+    // side-effect-free: it creates the missing parents to probe them, then takes
+    // every one back, so a run that dies later leaves nothing behind.
+    let dir = tempdir().unwrap();
+    let target = dir.path().join("brand").join("new").join("plan.json");
+    io::preflight_output_path(&target).expect("a fresh nested path is writable");
+    assert!(
+        !dir.path().join("brand").exists(),
+        "the probe must remove every directory it created"
+    );
+    assert_eq!(
+        std::fs::read_dir(dir.path()).unwrap().count(),
+        0,
+        "and leave no probe file"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn preflight_output_path_rejects_an_unwritable_existing_file() {
+    use std::os::unix::fs::PermissionsExt;
+    // the parent accepts writes, so the sibling probe passes it and the real
+    // write fails with EACCES after a full observation.
+    let dir = tempdir().unwrap();
+
+    // root ignores the mode bits; ask the os on a separate file rather than
+    // skipping, and assert whichever answer it gives
+    let sentinel = dir.path().join("sentinel");
+    std::fs::write(&sentinel, b"x").unwrap();
+    std::fs::set_permissions(&sentinel, std::fs::Permissions::from_mode(0o444)).unwrap();
+    let denied = std::fs::write(&sentinel, b"y").is_err();
+
+    let target = dir.path().join("plan.json");
+    std::fs::write(&target, "previous").unwrap();
+    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o444)).unwrap();
+    let result = io::preflight_output_path(&target);
+
+    // restore before asserting, so a failure still lets tempdir clean up
+    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644)).unwrap();
+    if denied {
+        let err = result.expect_err("an unwritable target is not a writable output");
+        assert!(
+            format!("{err:#}").contains("write output"),
+            "the error must name the output write: {err:#}"
+        );
+    } else {
+        result.expect("a target this user can write to is a valid output");
+    }
+    // and the probe reads the permission without touching the contents
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "previous");
+}
+
+#[cfg(unix)]
+#[test]
+fn preflight_output_path_does_not_hang_on_a_fifo() {
+    // opening a fifo for write blocks until a reader attaches, so only a regular
+    // target is probed directly. without that guard this never returns.
+    let dir = tempdir().unwrap();
+    let target = dir.path().join("fifo");
+    let made = std::process::Command::new("mkfifo")
+        .arg(&target)
+        .status()
+        .expect("mkfifo must be runnable");
+    assert!(made.success(), "mkfifo failed");
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(io::preflight_output_path(&target).is_ok());
+    });
+    rx.recv_timeout(std::time::Duration::from_secs(10))
+        .expect("the preflight must not block on a fifo");
+}
+
+#[cfg(unix)]
+#[test]
+fn preflight_output_path_accepts_a_character_device() {
+    // the other side of that guard: /dev/null settles its own open at once, and
+    // its parent takes no new file, so the sibling probe answers the wrong
+    // question and refuses a target the write accepts.
+    let target = Path::new("/dev/null");
+    io::preflight_output_path(target).expect("/dev/null is a writable output");
+}
+
+#[test]
+fn preflight_output_path_accepts_an_existing_file_and_keeps_it() {
+    // overwriting an existing output is normal; the target probe must open it
+    // without truncating.
+    let dir = tempdir().unwrap();
+    let target = dir.path().join("plan.json");
+    std::fs::write(&target, "previous").unwrap();
+    io::preflight_output_path(&target).expect("an existing writable file is a fine output");
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "previous");
+    // and the write path still recreates what the probe removed
+    let plan = Plan {
+        schema: Schema::default(),
+        ops: vec![],
+        summary: None,
+        schema_preview: None,
+    };
+    write_plan(&target, &plan).unwrap();
+    assert_eq!(read_plan(&target).unwrap().ops.len(), 0);
+}
+
+#[test]
+fn preflight_output_path_accepts_a_bare_filename() {
+    // a bare filename has an empty parent, which create_dir_all cannot take.
+    let dir = tempdir().unwrap();
+    let cwd = std::env::current_dir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
+    let result = io::preflight_output_path(Path::new("plan.json"));
+    let leftovers = std::fs::read_dir(dir.path()).unwrap().count();
+    std::env::set_current_dir(cwd).unwrap();
+    result.expect("a bare filename in a writable cwd is a valid output");
+    assert_eq!(leftovers, 0, "the probe must clean up after itself");
+}
+
+#[test]
+fn output_path_is_the_one_place_every_write_site_is_named() {
+    // the chokepoint: a command that writes a file must report its path here, or
+    // it goes unchecked.
+    let out = PathBuf::from("out.json");
+    assert_eq!(
+        output_path(&Command::Plan {
+            file: PathBuf::from("i.yaml"),
+            output: Some(out.clone()),
+            backend: None,
+            backend_config: None,
+            provision: false,
+            dry_run: false,
+            report: false,
+            allow_delete: false,
+        }),
+        Some(out.as_path())
+    );
+    assert_eq!(
+        output_path(&Command::Apply {
+            plan: PathBuf::from("p.json"),
+            output: Some(out.clone()),
+            backend: None,
+            backend_config: None,
+            allow_delete: false,
+            interactive: false,
+        }),
+        Some(out.as_path())
+    );
+    assert_eq!(
+        output_path(&Command::Import {
+            output: out.clone(),
+            file: PathBuf::from("i.yaml"),
+            backend: None,
+            backend_config: None,
+        }),
+        Some(out.as_path())
+    );
+    assert_eq!(
+        output_path(&Command::Map {
+            action: None,
+            file: None,
+            spec: None,
+            output: Some(out.clone()),
+        }),
+        Some(out.as_path())
+    );
+    assert_eq!(
+        output_path(&Command::Validate {
+            file: PathBuf::from("i.yaml"),
+            output: Some(out.clone()),
+        }),
+        Some(out.as_path())
+    );
+    // the commands that write no file
+    assert_eq!(
+        output_path(&Command::Validate {
+            file: PathBuf::from("i.yaml"),
+            output: None,
+        }),
+        None
+    );
+    assert_eq!(
+        output_path(&Command::Map {
+            action: Some(MapAction::Transform {
+                spec: PathBuf::from("s.yaml"),
+                name: "t".into(),
+                value: "1".into(),
+                args: vec![],
+            }),
+            file: None,
+            spec: None,
+            output: None,
+        }),
+        None
+    );
+}
+
+#[test]
 fn cli_command_definition_is_valid() {
     // clap's own assertions over the derived command: catches duplicate flags,
     // malformed help, broken conflicts, etc. at test time rather than at runtime.
@@ -1715,6 +1953,198 @@ async fn run_plan_report_rejects_a_bad_output_path_before_observing() {
     );
 }
 
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn run_plan_rejects_an_unwritable_existing_output_file_before_observing() {
+    use std::os::unix::fs::PermissionsExt;
+    let _guard = cwd_lock().lock().await;
+    let server = httpmock::MockServer::start();
+    let mock = server.mock(|when, then| {
+        when.any_request();
+        then.status(500);
+    });
+
+    let dir = tempdir().unwrap();
+    let state_path = dir.path().join(".alembic").join("state.json");
+    let _env = EnvVarGuard::acquire_async(&[
+        ("ALEMBIC_STATE_BACKEND", Some("local")),
+        ("ALEMBIC_STATE_PATH", Some(state_path.to_str().unwrap())),
+    ])
+    .await;
+    let inventory = write_site_inventory(dir.path());
+    let config = dir.path().join("adapter.yaml");
+    std::fs::write(
+        &config,
+        format!(
+            "backend: nautobot\nurl: {}\ntoken: token\n",
+            server.base_url()
+        ),
+    )
+    .unwrap();
+    // an existing target that denies writes: the parent accepts them, so only a
+    // probe of the target itself catches it before the observation is paid for
+    let target = dir.path().join("plan.json");
+    std::fs::write(&target, "previous").unwrap();
+    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o444)).unwrap();
+    // root ignores the mode bits, so ask the os rather than skipping
+    let sentinel = dir.path().join("sentinel");
+    std::fs::write(&sentinel, b"x").unwrap();
+    std::fs::set_permissions(&sentinel, std::fs::Permissions::from_mode(0o444)).unwrap();
+    let denied = std::fs::write(&sentinel, b"y").is_err();
+
+    let cwd = std::env::current_dir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
+    let cli = Cli {
+        command: Command::Plan {
+            file: inventory,
+            output: Some(target.clone()),
+            backend: None,
+            backend_config: Some(config),
+            provision: false,
+            dry_run: false,
+            report: false,
+            allow_delete: false,
+        },
+    };
+    let result = run(cli, AppConfig::load().unwrap()).await;
+    std::env::set_current_dir(cwd).unwrap();
+    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+    if denied {
+        let err = result.expect_err("a bad -o must fail the run");
+        assert!(
+            format!("{err:#}").contains("write output"),
+            "the run must fail on the output path: {err:#}"
+        );
+        assert_eq!(
+            mock.calls(),
+            0,
+            "the output path must be rejected before the backend is observed"
+        );
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "previous");
+    } else {
+        // running as root: the path really is writable, so the run gets as far
+        // as the backend and dies there instead
+        let err = result.expect_err("the mock backend answers 500");
+        assert!(
+            !format!("{err:#}").contains("write output"),
+            "a writable target must not be rejected: {err:#}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn run_plan_rejects_an_output_path_that_is_a_directory_before_observing() {
+    let _guard = cwd_lock().lock().await;
+    let server = httpmock::MockServer::start();
+    let mock = server.mock(|when, then| {
+        when.any_request();
+        then.status(500);
+    });
+
+    let dir = tempdir().unwrap();
+    let state_path = dir.path().join(".alembic").join("state.json");
+    let _env = EnvVarGuard::acquire_async(&[
+        ("ALEMBIC_STATE_BACKEND", Some("local")),
+        ("ALEMBIC_STATE_PATH", Some(state_path.to_str().unwrap())),
+    ])
+    .await;
+    let inventory = write_site_inventory(dir.path());
+    let config = dir.path().join("adapter.yaml");
+    std::fs::write(
+        &config,
+        format!(
+            "backend: nautobot\nurl: {}\ntoken: token\n",
+            server.base_url()
+        ),
+    )
+    .unwrap();
+    // an existing directory: the parent is creatable, so only a real write probe
+    // catches it, and without one the run pays for a full observation first
+    let target = dir.path().join("outdir");
+    std::fs::create_dir(&target).unwrap();
+
+    let cwd = std::env::current_dir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
+    let cli = Cli {
+        command: Command::Plan {
+            file: inventory,
+            output: Some(target),
+            backend: None,
+            backend_config: Some(config),
+            provision: false,
+            dry_run: false,
+            report: false,
+            allow_delete: false,
+        },
+    };
+    let result = run(cli, AppConfig::load().unwrap()).await;
+    std::env::set_current_dir(cwd).unwrap();
+
+    let err = result.expect_err("a bad -o must fail the run");
+    assert!(
+        format!("{err:#}").contains("is a directory"),
+        "the run must fail on the output path: {err:#}"
+    );
+    assert_eq!(
+        mock.calls(),
+        0,
+        "the output path must be rejected before the backend is observed"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn run_plan_leaves_no_output_directory_when_observing_fails() {
+    let _guard = cwd_lock().lock().await;
+    let server = httpmock::MockServer::start();
+    let _mock = server.mock(|when, then| {
+        when.any_request();
+        then.status(500);
+    });
+
+    let dir = tempdir().unwrap();
+    let state_path = dir.path().join(".alembic").join("state.json");
+    let _env = EnvVarGuard::acquire_async(&[
+        ("ALEMBIC_STATE_BACKEND", Some("local")),
+        ("ALEMBIC_STATE_PATH", Some(state_path.to_str().unwrap())),
+    ])
+    .await;
+    let inventory = write_site_inventory(dir.path());
+    let config = dir.path().join("adapter.yaml");
+    std::fs::write(
+        &config,
+        format!(
+            "backend: nautobot\nurl: {}\ntoken: token\n",
+            server.base_url()
+        ),
+    )
+    .unwrap();
+    let out_dir = dir.path().join("brand_new_dir");
+
+    let cwd = std::env::current_dir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
+    let cli = Cli {
+        command: Command::Plan {
+            file: inventory,
+            output: Some(out_dir.join("plan.json")),
+            backend: None,
+            backend_config: Some(config),
+            provision: false,
+            dry_run: false,
+            report: false,
+            allow_delete: false,
+        },
+    };
+    let result = run(cli, AppConfig::load().unwrap()).await;
+    std::env::set_current_dir(cwd).unwrap();
+
+    result.expect_err("observing a 500 backend must fail the run");
+    assert!(
+        !out_dir.exists(),
+        "a plan that never got to write must leave no output directory behind"
+    );
+}
+
 #[test]
 fn should_detect_deletes_forces_on_for_report() {
     // report mode never applies the plan, so it forces delete-detection on to
@@ -1744,6 +2174,110 @@ fn report_and_dry_run_conflict() {
     // `Cli` is not `Debug`, so unwrap the error via `Option` rather than `expect_err`.
     let err = result.err().expect("--report and --dry-run must conflict");
     assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+}
+
+#[test]
+fn output_and_dry_run_conflict() {
+    use clap::Parser;
+    // --dry-run prints the plan and writes no file, so a passed -o was accepted
+    // and dropped in silence: exit 0, no file, not even the extension warning.
+    let result = Cli::try_parse_from([
+        "alembic",
+        "plan",
+        "-f",
+        "inventory.yaml",
+        "-o",
+        "plan.json",
+        "--dry-run",
+    ]);
+    // `Cli` is not `Debug`, so unwrap the error via `Option` rather than `expect_err`.
+    let err = result.err().expect("-o and --dry-run must conflict");
+    assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+
+    // --dry-run alone still parses: -o is not required under it.
+    assert!(
+        Cli::try_parse_from(["alembic", "plan", "-f", "inventory.yaml", "--dry-run"]).is_ok(),
+        "--dry-run without -o must still parse"
+    );
+    // and -o stays valid under --report, which does write the file.
+    assert!(
+        Cli::try_parse_from([
+            "alembic",
+            "plan",
+            "-f",
+            "inventory.yaml",
+            "-o",
+            "drift.json",
+            "--report",
+        ])
+        .is_ok(),
+        "--report -o must still parse"
+    );
+}
+
+#[test]
+fn map_transform_rejects_the_inventory_flow_args() {
+    use clap::Parser;
+    // the same accepted-and-dropped defect one command over: `map transform`
+    // carries its own --spec and prints to stdout, so -f/--spec/-o at the map
+    // level went nowhere. rejected by the parser, like -o with --dry-run, so
+    // both spellings of "this arg has nowhere to go" exit the same way.
+    for stray in [
+        ["-f", "in.yaml"],
+        ["--spec", "outer.yaml"],
+        ["-o", "out.json"],
+    ] {
+        let result = Cli::try_parse_from([
+            "alembic",
+            "map",
+            stray[0],
+            stray[1],
+            "transform",
+            "--spec",
+            "spec.yaml",
+            "lower",
+            "\"NXOS\"",
+        ]);
+        // `Cli` is not `Debug`, so unwrap the error via `Option` rather than `expect_err`.
+        let err = result
+            .err()
+            .unwrap_or_else(|| panic!("map {} must conflict with transform", stray[0]));
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+        assert!(
+            err.to_string().contains(stray[0].trim_start_matches('-')),
+            "the error must name the stray arg: {err}"
+        );
+    }
+
+    // transform without them still parses, and so does the inventory flow that
+    // owns those args when no subcommand is given.
+    assert!(
+        Cli::try_parse_from([
+            "alembic",
+            "map",
+            "transform",
+            "--spec",
+            "spec.yaml",
+            "lower",
+            "\"NXOS\"",
+        ])
+        .is_ok(),
+        "transform with no stray args must parse"
+    );
+    assert!(
+        Cli::try_parse_from([
+            "alembic",
+            "map",
+            "-f",
+            "in.yaml",
+            "--spec",
+            "spec.yaml",
+            "-o",
+            "out.json",
+        ])
+        .is_ok(),
+        "the map inventory flow must still parse"
+    );
 }
 
 #[test]

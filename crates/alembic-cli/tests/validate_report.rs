@@ -104,9 +104,9 @@ fn validate_output_is_written_when_the_inventory_passes() {
 /// cannot be loaded at all is refused the same way, which is what pins the
 /// refusal to *before* the read rather than merely instead of the verdict.
 ///
-/// the two shapes below are what a check before the read can see. a path that
-/// fails only on permissions (an existing read-only parent) is still found at the
-/// write, and needs the real probe #325 puts in `preflight_output_path`.
+/// every bad shape is refused here: `preflight_output_path` runs ahead of the
+/// whole command, so one that fails only on permissions is caught with the rest
+/// rather than at the write.
 fn assert_refused_before_the_verdict(dir: &Path, output: &Path, expected: &str) {
     for extra in ["", "      bogus: \"nope\"\n"] {
         assert_refused(&fixture(dir, extra), output, expected);
@@ -138,6 +138,47 @@ fn validate_refuses_an_output_parent_it_cannot_create_before_it_has_a_verdict() 
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn validate_refuses_an_unwritable_existing_output_before_it_has_a_verdict() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempdir().unwrap();
+
+    // root ignores the mode bits, so ask the os on a separate file rather than
+    // skipping, and assert whichever answer it gives
+    let sentinel = dir.path().join("sentinel");
+    std::fs::write(&sentinel, b"x").unwrap();
+    std::fs::set_permissions(&sentinel, std::fs::Permissions::from_mode(0o444)).unwrap();
+    let denied = std::fs::write(&sentinel, b"y").is_err();
+
+    // the parent accepts writes and the target is not a directory, so only the
+    // write probe refuses this one
+    let target = dir.path().join("validation.json");
+    std::fs::write(&target, "previous").unwrap();
+    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o444)).unwrap();
+
+    if denied {
+        assert_refused_before_the_verdict(dir.path(), &target, "write output");
+        // before the *read*, not merely before the verdict: loading a missing
+        // inventory is the side effect that would otherwise report first
+        let missing = dir.path().join("no-such-inventory.yaml");
+        let (_, _, stderr) = run_validate(&missing, Some(&target));
+        assert!(
+            !stderr.contains("load inventory"),
+            "the inventory must not be read: {stderr}"
+        );
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap(),
+            "previous",
+            "and the probe must not touch the contents"
+        );
+    } else {
+        let (ok, _, stderr) = run_validate(&fixture(dir.path(), ""), Some(&target));
+        assert!(ok, "a target this user can write to is an output: {stderr}");
+    }
+}
+
 #[test]
 fn validate_refuses_an_output_path_that_is_a_directory_before_it_has_a_verdict() {
     let dir = tempdir().unwrap();
@@ -150,5 +191,40 @@ fn validate_refuses_an_output_path_that_is_a_directory_before_it_has_a_verdict()
         dir.path(),
         &target,
         &format!("write output: {}: is a directory", target.display()),
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn validate_accepts_a_character_device_output() {
+    // `-o /dev/null` is how a run is observed and its document thrown away. the
+    // preflight asks the target, not `/dev`, which takes no new file.
+    let dir = tempdir().unwrap();
+    let (ok, stdout, stderr) = run_validate(&fixture(dir.path(), ""), Some(Path::new("/dev/null")));
+
+    assert!(ok, "stderr:\n{stderr}");
+    assert!(
+        stdout.starts_with("validation report written to") && stdout.ends_with("ok\n"),
+        "the run reaches its work and its write: {stdout}"
+    );
+}
+
+#[test]
+fn validate_leaves_no_output_directory_behind_when_the_run_fails() {
+    // the other half of dropping the inline `ensure_parent_dir`: it ran before
+    // the load, so a run that died on the load left the report's directory
+    // behind. the probe takes back what it creates.
+    let dir = tempdir().unwrap();
+    let nested = dir.path().join("reports");
+
+    let (ok, _, stderr) = run_validate(
+        &dir.path().join("no-such-inventory.yaml"),
+        Some(&nested.join("validation.json")),
+    );
+
+    assert!(!ok, "a missing inventory fails the run: {stderr}");
+    assert!(
+        !nested.exists(),
+        "a run that delivered no report leaves no directory for it"
     );
 }

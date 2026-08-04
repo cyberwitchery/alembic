@@ -12,7 +12,7 @@ use alembic_engine::{
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use self::io::{
     read_plan, warn_misleading_output_extension, write_apply_report, write_drift_report,
@@ -28,8 +28,6 @@ use self::state::{resolve_state_backend_config, state_path, StateBackendConfig};
 use alembic_adapter_django::emit::Runner;
 #[cfg(test)]
 use alembic_engine::PostgresTlsMode;
-#[cfg(test)]
-use std::path::Path;
 
 /// top-level cli definition.
 #[derive(Parser)]
@@ -73,8 +71,14 @@ enum Command {
         #[arg(short = 'f', long)]
         file: PathBuf,
         /// where to write the json plan, or the json drift report under
-        /// --report; required unless --report or --dry-run.
-        #[arg(short = 'o', long, required_unless_present_any = ["report", "dry_run"])]
+        /// --report; required unless --report or --dry-run, and rejected with
+        /// --dry-run, which prints the plan instead of writing it.
+        #[arg(
+            short = 'o',
+            long,
+            required_unless_present_any = ["report", "dry_run"],
+            conflicts_with = "dry_run"
+        )]
         output: Option<PathBuf>,
         /// backend name (netbox, nautobot, infrahub, generic, peeringdb, django,
         /// external); credentials come from the environment.
@@ -123,6 +127,10 @@ enum Command {
         interactive: bool,
     },
     /// transform an ir inventory into another ir inventory (ir -> ir).
+    // `transform` carries its own --spec and prints to stdout, so the inventory
+    // flow's args have nowhere to go under it. rejected at parse time, like -o
+    // with --dry-run, rather than by a hand-written check with its own exit code
+    #[command(args_conflicts_with_subcommands = true)]
     Map {
         #[command(subcommand)]
         action: Option<MapAction>,
@@ -193,24 +201,34 @@ fn should_detect_deletes(allow_delete: bool, report: bool) -> bool {
     allow_delete || report
 }
 
+/// the `-o`/`--output` path a command will write, if any. the one place that
+/// knows, so every write site is preflighted by construction; matching
+/// exhaustively means a new *variant* has to answer this. a new `-o` on an
+/// existing variant does not: `..` absorbs it silently, so it has to be bound
+/// here by hand.
+fn output_path(command: &Command) -> Option<&Path> {
+    match command {
+        Command::Validate { output, .. }
+        | Command::Plan { output, .. }
+        | Command::Apply { output, .. } => output.as_deref(),
+        // the transform subcommand prints to stdout and writes no file
+        Command::Map {
+            action: Some(_), ..
+        } => None,
+        Command::Map { output, .. } => output.as_deref(),
+        Command::Import { output, .. } => Some(output),
+    }
+}
+
 pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
+    // before anything expensive: a command that writes an output file pays for a
+    // load, a backend observation or an apply first, so a bad -o must not surface
+    // at the write. the write path recreates what the probe removed.
+    if let Some(output) = output_path(&cli.command) {
+        io::preflight_output_path(output)?;
+    }
     match cli.command {
         Command::Validate { file, output } => {
-            // a bad output path before there is a verdict: failing on -o
-            // afterwards reports the write in place of the validation error.
-            // is_dir is #325's own first check; the write probe behind it, which
-            // is what catches an existing unwritable path, stays there.
-            // ensure_parent_dir before the load leaves its directories behind
-            // when the load then fails; #325's preflight removes what it creates
-            if let Some(output) = &output {
-                if output.is_dir() {
-                    return Err(anyhow!(
-                        "write output: {}: is a directory",
-                        output.display()
-                    ));
-                }
-                io::ensure_parent_dir(output)?;
-            }
             // the only command that loads without the loader's own validation
             // gate: it reports the errors rather than failing on the load, which
             // is what leaves a report to write.
@@ -247,14 +265,6 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             let mut state = load_state().await?;
             let plugins = search_for_plugins(&config);
             let backend = create_backend(&plugins, backend.as_deref(), backend_config)?;
-            // a bad output path before the backend is observed: plan and report
-            // are both written after observing, so a late failure costs a full
-            // observation for nothing. --dry-run writes no file at all
-            if !dry_run {
-                if let Some(output) = &output {
-                    io::ensure_parent_dir(output)?;
-                }
-            }
             // read-only schema preview: what apply's ensure_schema would provision,
             // writing nothing. skipped when --provision actually provisions now, and
             // for observer/emitter backends that cannot provision schema at all. all
@@ -348,11 +358,6 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             let backend = create_backend(&plugins, backend.as_deref(), backend_config)?;
             // reject a backend that cannot apply before reading the plan or prompting
             backend.emitter()?;
-            // and a bad output path before writing to the backend: failing on -o
-            // after a successful apply would report failure for a run that landed
-            if let Some(output) = &output {
-                io::ensure_parent_dir(output)?;
-            }
             let plan = read_plan(&plan)?;
 
             let plan = if interactive {
@@ -429,6 +434,8 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                 value,
                 args,
             }) => {
+                // file/spec/output are rejected against this subcommand at parse
+                // time (args_conflicts_with_subcommands), so they are None here
                 let spec = alembic_engine::load_map_spec(&spec)?;
                 let parse_json = |label: &str, raw: &str| -> Result<serde_json::Value> {
                     serde_json::from_str(raw).map_err(|err| {

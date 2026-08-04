@@ -18,11 +18,12 @@ alembic validate -f examples/inventory.yaml -o validation.json
 
 the file is written on both outcomes: a run that validates leaves an empty
 `errors` list rather than no file, so a ci gate can tell "nothing to report"
-from "the command never got that far". the path is checked before the inventory
-is read, so an `-o` naming a directory, or one whose parent cannot be created,
-fails before there is a verdict rather than in place of one; a path that fails
-only on permissions is still reported at the write. `ok` prints after the file
-is written, so it means the whole command succeeded. the json shape:
+from "the command never got that far". the path goes through the same write
+probe as `plan` and `apply`, before the inventory is read, so an `-o` naming a
+directory, one whose parent cannot be created, or one that exists and rejects
+writes, fails before there is a verdict rather than in place of one, and a run
+that delivers no report leaves no directory for it behind. `ok` prints after the
+file is written, so it means the whole command succeeded. the json shape:
 
 ```json
 {
@@ -139,7 +140,7 @@ NETBOX_URL=https://netbox.example.com NETBOX_TOKEN=$NETBOX_TOKEN \
 - honors `--allow-delete` if you want delete ops
 - without `--provision`, plan asks the backend for a read-only schema preview (what `apply`'s `ensure_schema` would create/delete, writing nothing) and prints it to stderr as `schema preview: ...`; the machine-readable copy rides in the plan's `schema_preview`. backends that cannot preview report `schema preview: unavailable for this backend`
 - `--provision` runs adapter provisioning (`ensure_schema`) before observing backend state; provisioning that would delete custom object types/fields the inventory no longer declares is blocked unless `--allow-delete` is also given (such deletes cascade to their objects on the backend)
-- `--dry-run` prints the raw plan json instead of writing it (no `-o`/`--output` needed)
+- `--dry-run` prints the raw plan json instead of writing it; it writes no file, so `-o`/`--output` is rejected with it at parse time rather than accepted and ignored
 - `--report` prints a read-only drift report and exits without writing a plan file or saving state; `-o`/`--output` writes that report as json (optional: without it the report is the printed summary only)
 - `--report` and `--dry-run` are mutually exclusive (both exit without applying); passing both is rejected at parse time
 - `--provision` cannot be combined with `--dry-run` (rejected at parse time): a `--dry-run` preview promises not to write, but `--provision` still writes backend schema (`ensure_schema`). combining `--provision` with `--report` stays allowed as the documented "provision schema, then preview drift" workflow (see below)
@@ -171,7 +172,15 @@ document the summary prints. it is optional: the summary prints either way, and
 without it the report leaves no file. the file is the drift report, never a plan
 (`--report` still writes no plan and saves no state), and the path is checked
 before the backend is observed, so a bad `-o` costs no backend requests. the
-json shape:
+check is a real write probe, not just a `mkdir -p`: a path that is a directory,
+an existing file that rejects writes, or a new one under a parent that rejects
+writes, is rejected up front. an existing target answers for itself, so
+`-o /dev/null` is accepted whatever `/dev` allows; a fifo cannot be opened
+without blocking, so it is judged by its parent instead, which is why
+`-o /dev/stdout` is refused when stdout is a pipe. the probe writes a real file
+to answer, but leaves nothing behind: that file and every directory it had to
+create are removed again, and an existing target is opened without being
+truncated. the json shape:
 
 ```json
 {
@@ -255,13 +264,14 @@ return from `write` (see `docs/external-adapters.md`).
 
 it is written on the success path only, so a report file means the whole plan
 applied; a failed apply leaves the previous run's file untouched rather than
-writing a partial one, and the output path is checked before the apply starts,
-so a bad `-o` fails before the backend is written to. the `applied` list covers
-the current run's ops: after a resume, the ops the interrupted run applied
-appear under `resumed` instead, in the same shape, each with the backend id its
-write returned. that list is present only on a resumed run, and is empty for a
-journal written before ids were recorded. `--interactive` reports the ops you
-approved, not the ops in the plan.
+writing a partial one, and the output path is write-probed before the apply
+starts, so a bad `-o` fails before the backend is written to rather than failing
+an apply that landed. the `applied` list covers the current run's ops: after a
+resume, the ops the interrupted run applied appear under `resumed` instead, in
+the same shape, each with the backend id its write returned. that list is
+present only on a resumed run, and is empty for a journal written before ids
+were recorded. `--interactive` reports the ops you approved, not the ops in the
+plan.
 
 state (`docs/state.md`) is cumulative and keyed by uid, and the journal is
 deleted once apply succeeds, so this is the only per-run artifact: the file a ci
@@ -337,6 +347,7 @@ alembic map transform --spec examples/map.yaml site_code '"fra1"'
   writing a spec's starlark transforms (see `docs/map.md`, transforms)
 - extra positional arguments are json-encoded transform arguments
 - prints the typed result as json; `fail()` exits non-zero with the message
+- it carries its own `--spec` and prints to stdout, so `map`'s own `-f`/`--file`, `--spec` and `-o`/`--output` have nowhere to go here and are rejected at parse time rather than dropped
 
 ## import
 
