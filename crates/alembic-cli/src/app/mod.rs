@@ -268,7 +268,7 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             let backend = create_backend(&plugins, backend.as_deref(), backend_config)?;
             // a drift report asserts what the backend holds; one that observes
             // nothing would report every declared object absent, so refuse it
-            // before provisioning or a request.
+            // before provisioning or a backend read or write.
             if report {
                 guard_drift_report(&backend)?;
             }

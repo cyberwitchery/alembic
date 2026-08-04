@@ -170,12 +170,12 @@ store.
 every category is an assertion about observed backend state, so `--report`
 requires a backend that can observe, and refuses a write-only (emitter) one in
 the terms `import` refuses it (`backend is write-only; it cannot observe
-state`), before provisioning and before any read or write. such a backend is
-planned against an empty observation, so the report would otherwise list every
-declared object as `missing` from a backend nothing had read, say the same
-thing forever however much had already been emitted, and never populate
-`extra`. plain `plan` is unaffected: against an emitter it still plans every
-declared object as a create, which is what `apply` emits.
+state`), before provisioning and before any backend read or write. such a
+backend is planned against an empty observation, so the report would otherwise
+list every declared object as `missing` from a backend nothing had read, say
+the same thing forever however much had already been emitted, and never
+populate `extra`. plain `plan` is unaffected: against an emitter it still plans
+every declared object as a create, which is what `apply` emits.
 
 `-o`/`--output` writes the same report as json, the machine-readable half of the
 document the summary prints. it is optional: the summary prints either way, and
