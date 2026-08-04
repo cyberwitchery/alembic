@@ -254,7 +254,11 @@ note that apply has no transaction semantics. writes land on the backend one at 
 
 the per-run record of what this apply wrote: one entry per applied op, carrying
 the backend id the write returned (an integer or a string, whichever the backend
-uses), plus the `provision` report of what `ensure_schema` created or deleted.
+uses), plus the `provision` report of what this apply provisioned. that report
+covers both passes: what `ensure_schema` created or deleted, and the tags the
+write created. tags are derived from the plan's ops rather than from the schema,
+so only the write pass knows them and `plan --provision`'s schema preview cannot
+report them.
 `backend_id` is absent when the write returns none: a delete, which leaves no
 object behind, or an emitter backend such as `django`, which assigns no ids of
 its own and keys the emitted objects by uid. `previously_applied_count` is

@@ -265,6 +265,24 @@ pub struct ProvisionReport {
 }
 
 impl ProvisionReport {
+    /// fold another report in. one apply provisions in two passes -- `ensure_schema`
+    /// fills the schema categories, `write` fills the tags it creates from the ops --
+    /// so both have to reach the same report.
+    pub fn merge(&mut self, other: ProvisionReport) {
+        self.created_fields.extend(other.created_fields);
+        self.created_tags.extend(other.created_tags);
+        self.created_object_types.extend(other.created_object_types);
+        self.created_object_fields
+            .extend(other.created_object_fields);
+        self.deprecated_object_types
+            .extend(other.deprecated_object_types);
+        self.deprecated_object_fields
+            .extend(other.deprecated_object_fields);
+        self.deleted_object_types.extend(other.deleted_object_types);
+        self.deleted_object_fields
+            .extend(other.deleted_object_fields);
+    }
+
     pub fn is_empty(&self) -> bool {
         self.created_fields.is_empty()
             && self.created_tags.is_empty()

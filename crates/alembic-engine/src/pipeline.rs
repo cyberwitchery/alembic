@@ -128,7 +128,9 @@ pub(crate) async fn apply(
 
     let ordered = sort_ops_for_apply(&plan.ops, &plan.schema);
     let mut report = emitter.write(&plan.schema, &ordered, state).await?;
-    report.provision = provision;
+    // write provisions too: tags come from the plan's ops, so only the write pass
+    // knows them. merging keeps both passes instead of the schema pass winning.
+    report.provision.merge(provision);
 
     // ops an interrupted run applied: their mappings exist nowhere else, since it
     // never reached a state save. only ever set one, never clear on a `None` -- a

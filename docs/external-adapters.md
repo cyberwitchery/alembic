@@ -142,6 +142,12 @@ response:
 }
 ```
 
+the result may also carry a `provision` key, in the same shape `ensure_schema`
+returns, for anything the write itself provisioned. this is for what only the ops
+reveal: the built-in netbox and nautobot adapters create the tags their objects
+reference here, since a schema pass cannot know them. the host merges it with the
+`ensure_schema` report, so fill only the categories your write actually created.
+
 ### ensure_schema
 
 request:
@@ -177,7 +183,8 @@ the report has eight keys, all optional and defaulting to an empty list, so an
 adapter that only ever creates can send the four `created_*` keys alone. all eight
 are counted back to the operator on a provisioning run (`provision: 1 object types
 created, 1 object fields deleted`). the two `deleted_*` lists are also read by the
-host: see the gate under `preview_schema`.
+host: see the gate under `preview_schema`. `created_tags` may also be answered from
+`write` instead, when the tags come from the ops rather than the schema.
 
 ### preview_schema
 

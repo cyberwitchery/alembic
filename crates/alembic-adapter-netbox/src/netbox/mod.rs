@@ -826,90 +826,23 @@ mod tests {
         assert_eq!(report.applied.len(), 3);
     }
 
-    #[tokio::test]
-    async fn apply_creates_missing_tags() {
-        let server = MockServer::start();
-        let dir = tempdir().unwrap();
-        let state = StateStore::load(dir.path().join("state.json")).unwrap();
-        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
-
-        let _object_types = mock_list(
-            &server,
-            "/api/core/object-types/",
-            json!([{
-                "app_label": "dcim",
-                "model": "site",
-                "rest_api_endpoint": "/api/dcim/sites/",
-                "features": ["custom-fields", "tags"]
-            }]),
-        );
-        let _custom_fields = server.mock(|when, then| {
-            when.method(GET).path("/api/extras/custom-fields/");
-            then.status(200).json_body(page(json!([])));
-        });
-        let _tags = server.mock(|when, then| {
-            when.method(GET)
-                .path("/api/extras/tags/")
-                .query_param("limit", "200")
-                .query_param("offset", "0");
-            then.status(200).json_body(page(json!([])));
-        });
-        let _tag_create = server.mock(|when, then| {
-            when.method(POST).path("/api/extras/tags/");
-            then.status(201)
-                .json_body(json!({"id": 1, "name": "fabric", "slug": "fabric"}));
-        });
-        let _site_create = server.mock(|when, then| {
-            when.method(POST).path("/api/dcim/sites/");
-            then.status(201)
-                .json_body(json!({ "id": 1, "name": "FRA1", "slug": "fra1" }));
-        });
-
-        let mut attrs = std::collections::BTreeMap::new();
-        attrs.insert("name".to_string(), json!("FRA1"));
-        attrs.insert("slug".to_string(), json!("fra1"));
-        attrs.insert("tags".to_string(), json!(["fabric"]));
-
-        let ops = vec![Op::Create {
-            uid: uid(1),
-            type_name: TypeName::new("dcim.site"),
-            desired: alembic_core::Object {
-                uid: uid(1),
-                type_name: TypeName::new("dcim.site"),
-                key: Key::default(),
-                attrs: alembic_core::JsonMap::from(attrs),
-                source: None,
-            },
-        }];
-
-        let schema = alembic_core::Schema {
+    fn tagged_site_schema() -> alembic_core::Schema {
+        let string_field = |required: bool| alembic_core::FieldSchema {
+            r#type: alembic_core::FieldType::String,
+            required,
+            nullable: !required,
+            description: None,
+            format: None,
+            pattern: None,
+        };
+        alembic_core::Schema {
             types: std::collections::BTreeMap::from([(
                 "dcim.site".to_string(),
                 alembic_core::TypeSchema {
                     key: std::collections::BTreeMap::new(),
                     fields: std::collections::BTreeMap::from([
-                        (
-                            "name".to_string(),
-                            alembic_core::FieldSchema {
-                                r#type: alembic_core::FieldType::String,
-                                required: true,
-                                nullable: false,
-                                description: None,
-                                format: None,
-                                pattern: None,
-                            },
-                        ),
-                        (
-                            "slug".to_string(),
-                            alembic_core::FieldSchema {
-                                r#type: alembic_core::FieldType::String,
-                                required: true,
-                                nullable: false,
-                                description: None,
-                                format: None,
-                                pattern: None,
-                            },
-                        ),
+                        ("name".to_string(), string_field(true)),
+                        ("slug".to_string(), string_field(true)),
                         (
                             "tags".to_string(),
                             alembic_core::FieldSchema {
@@ -926,10 +859,155 @@ mod tests {
                     ]),
                 },
             )]),
-        };
+        }
+    }
 
-        let report = adapter.write(&schema, &ops, &state).await.unwrap();
+    fn tagged_site_ops(tags: serde_json::Value) -> Vec<Op> {
+        let mut attrs = std::collections::BTreeMap::new();
+        attrs.insert("name".to_string(), json!("FRA1"));
+        attrs.insert("slug".to_string(), json!("fra1"));
+        attrs.insert("tags".to_string(), tags);
+        vec![Op::Create {
+            uid: uid(1),
+            type_name: TypeName::new("dcim.site"),
+            desired: alembic_core::Object {
+                uid: uid(1),
+                type_name: TypeName::new("dcim.site"),
+                key: Key::default(),
+                attrs: alembic_core::JsonMap::from(attrs),
+                source: None,
+            },
+        }]
+    }
+
+    /// object types, custom fields and the site create every tag test needs.
+    fn mock_tagged_site(server: &MockServer) {
+        mock_list(
+            server,
+            "/api/core/object-types/",
+            json!([{
+                "app_label": "dcim",
+                "model": "site",
+                "rest_api_endpoint": "/api/dcim/sites/",
+                "features": ["custom-fields", "tags"]
+            }]),
+        );
+        server.mock(|when, then| {
+            when.method(GET).path("/api/extras/custom-fields/");
+            then.status(200).json_body(page(json!([])));
+        });
+        server.mock(|when, then| {
+            when.method(POST).path("/api/dcim/sites/");
+            then.status(201)
+                .json_body(json!({ "id": 1, "name": "FRA1", "slug": "fra1" }));
+        });
+    }
+
+    #[tokio::test]
+    async fn apply_creates_missing_tags() {
+        let server = MockServer::start();
+        let dir = tempdir().unwrap();
+        let state = StateStore::load(dir.path().join("state.json")).unwrap();
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
+
+        mock_tagged_site(&server);
+        let _tags = server.mock(|when, then| {
+            when.method(GET)
+                .path("/api/extras/tags/")
+                .query_param("limit", "200")
+                .query_param("offset", "0");
+            then.status(200).json_body(page(json!([])));
+        });
+        let _tag_create = server.mock(|when, then| {
+            when.method(POST).path("/api/extras/tags/");
+            then.status(201)
+                .json_body(json!({"id": 1, "name": "fabric", "slug": "fabric"}));
+        });
+
+        let report = adapter
+            .write(
+                &tagged_site_schema(),
+                &tagged_site_ops(json!(["fabric"])),
+                &state,
+            )
+            .await
+            .unwrap();
         assert_eq!(report.applied.len(), 1);
+        assert_eq!(report.provision.created_tags, vec!["fabric".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn apply_does_not_report_tags_the_backend_already_has() {
+        let server = MockServer::start();
+        let dir = tempdir().unwrap();
+        let state = StateStore::load(dir.path().join("state.json")).unwrap();
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
+
+        mock_tagged_site(&server);
+        let _tags = server.mock(|when, then| {
+            when.method(GET)
+                .path("/api/extras/tags/")
+                .query_param("limit", "200")
+                .query_param("offset", "0");
+            then.status(200)
+                .json_body(page(json!([{"id": 1, "name": "fabric", "slug": "fabric"}])));
+        });
+        let _tag_create = server.mock(|when, then| {
+            when.method(POST).path("/api/extras/tags/");
+            then.status(201)
+                .json_body(json!({"id": 2, "name": "edge", "slug": "edge"}));
+        });
+
+        let report = adapter
+            .write(
+                &tagged_site_schema(),
+                &tagged_site_ops(json!(["fabric", "edge"])),
+                &state,
+            )
+            .await
+            .unwrap();
+        // only the one this run actually posted.
+        assert_eq!(report.provision.created_tags, vec!["edge".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn apply_does_not_report_a_tag_that_lost_the_create_race() {
+        let server = MockServer::start();
+        let dir = tempdir().unwrap();
+        let state = StateStore::load(dir.path().join("state.json")).unwrap();
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
+
+        mock_tagged_site(&server);
+        // the first fetch sees no tags, so `fabric` is planned; the re-fetch after the
+        // create fails sees it, i.e. someone else created it in between.
+        let first_fetch = std::sync::atomic::AtomicBool::new(true);
+        let _tags_empty = server.mock(|when, then| {
+            when.method(GET)
+                .path("/api/extras/tags/")
+                .is_true(move |_| first_fetch.swap(false, std::sync::atomic::Ordering::SeqCst));
+            then.status(200).json_body(page(json!([])));
+        });
+        let _tags_present = server.mock(|when, then| {
+            when.method(GET).path("/api/extras/tags/");
+            then.status(200)
+                .json_body(page(json!([{"id": 1, "name": "fabric", "slug": "fabric"}])));
+        });
+        let _tag_create = server.mock(|when, then| {
+            when.method(POST).path("/api/extras/tags/");
+            then.status(400)
+                .json_body(json!({"name": ["tag with this name already exists."]}));
+        });
+
+        let report = adapter
+            .write(
+                &tagged_site_schema(),
+                &tagged_site_ops(json!(["fabric"])),
+                &state,
+            )
+            .await
+            .unwrap();
+        assert_eq!(report.applied.len(), 1);
+        assert!(report.provision.created_tags.is_empty());
     }
 
     #[tokio::test]
