@@ -23,11 +23,11 @@ pub trait RetryApplyDriver {
     fn resume(&mut self, _resumed: &[AppliedOp]) {}
 }
 
-pub async fn apply_non_delete_with_retries(
+pub async fn apply_non_delete_with_retries<'a>(
     ops: &[Op],
-    mut journal: Option<&mut Journal>,
+    mut journal: Option<&'a mut Journal>,
     driver: &mut impl RetryApplyDriver,
-) -> Result<RetryApplyResult> {
+) -> Result<(RetryApplyResult, JournalGuard<'a>)> {
     let mut applied = Vec::new();
     let mut resumed = Vec::new();
     let mut pending: Vec<Op> = ops
@@ -91,21 +91,24 @@ pub async fn apply_non_delete_with_retries(
         }
     }
 
-    if let Some(journal) = journal.as_mut() {
-        if journal.is_completed() {
-            journal.delete_backing_file()?;
-        } else {
+    // the backing file outlives this loop either way: the deletes still have to run,
+    // and they are what a re-run must not lose the creates and updates to
+    if let Some(journal) = journal.as_deref() {
+        if !journal.is_completed() {
             // ops remain pending (stuck with no progress): a re-run resumes from what
             // is already on disk
             report_resumable(journal);
         }
     }
 
-    Ok(RetryApplyResult {
-        applied,
-        pending,
-        resumed,
-    })
+    Ok((
+        RetryApplyResult {
+            applied,
+            pending,
+            resumed,
+        },
+        JournalGuard::borrowed(journal),
+    ))
 }
 
 /// tell the user what the interrupted apply left behind. resuming is automatic and
@@ -127,24 +130,120 @@ fn report_resumable(journal: &Journal) {
     );
 }
 
+/// the journal, handed back to the caller so it outlives the whole apply. deletes are
+/// not journaled but still have to run, and until they do the file is what a re-run
+/// recovers the creates and updates from; `finish` drops it once the apply is through.
+///
+/// `must_use` only catches discarding the whole returned tuple; a caller that binds the
+/// guard and never `finish`es it compiles, and the `Drop` notice is what reports that.
+#[derive(Debug)]
+#[must_use = "the deletes still have to run: `finish` the journal once they are through, or the file stays behind"]
+pub struct JournalGuard<'a>(Option<JournalRef<'a>>);
+
+/// `apply_non_delete_journaled` builds the journal itself and hands it back owned; a
+/// caller driving the retry loop with its own journal gets a guard over the borrow, so
+/// there is one rule for both.
+#[derive(Debug)]
+enum JournalRef<'a> {
+    Owned(Journal),
+    Borrowed(&'a mut Journal),
+}
+
+impl JournalRef<'_> {
+    fn get(&self) -> &Journal {
+        match self {
+            Self::Owned(journal) => journal,
+            Self::Borrowed(journal) => journal,
+        }
+    }
+
+    fn get_mut(&mut self) -> &mut Journal {
+        match self {
+            Self::Owned(journal) => journal,
+            Self::Borrowed(journal) => journal,
+        }
+    }
+}
+
+impl<'a> JournalGuard<'a> {
+    fn borrowed(journal: Option<&'a mut Journal>) -> Self {
+        Self(journal.map(JournalRef::Borrowed))
+    }
+
+    fn owned(journal: Option<Journal>) -> Self {
+        Self(journal.map(JournalRef::Owned))
+    }
+
+    /// the apply is through, deletes included: there is nothing left to resume.
+    pub fn finish(mut self) -> Result<()> {
+        match self.0.take() {
+            Some(mut journal) => journal.get_mut().delete_backing_file(),
+            None => Ok(()),
+        }
+    }
+
+    /// this guard is not the one that outlives the apply: give it up without reporting,
+    /// leaving that to the caller's own guard. also ends the borrow it held.
+    fn disarm(mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for JournalGuard<'_> {
+    fn drop(&mut self) {
+        // the retry loop reports its own exits, so the only case left here is a delete
+        // phase that never finished, and `finish` takes the journal so it says nothing
+        if let Some(journal) = self
+            .0
+            .as_ref()
+            .map(JournalRef::get)
+            .filter(|journal| journal.is_completed())
+        {
+            report_unfinished_deletes(journal);
+        }
+    }
+}
+
+/// every create and update applied, then the delete phase failed or died. warn-level
+/// like `report_resumable`, and for the same reason: the file left behind is the
+/// difference between a re-run that skips them and one that re-applies them all.
+fn report_unfinished_deletes(journal: &Journal) {
+    let Some(path) = journal
+        .backing_file_path()
+        .filter(|_| journal.op_count() > 0)
+    else {
+        return;
+    };
+    tracing::warn!(
+        "apply stopped during the delete phase; the journal at {} records all {} create/update operations as applied, and re-running the same plan skips them and re-issues the deletes",
+        path.display(),
+        journal.op_count()
+    );
+}
+
 /// journal-wiring shared by the internal apply-adapters: build the journal from `state`,
-/// run the retry loop, and return the result plus the resumed count (`None` when none),
-/// ready for `ApplyReport::previously_applied_count`.
+/// run the retry loop, and return the result, the resumed count (`None` when none) ready
+/// for `ApplyReport::previously_applied_count`, and the journal to `finish` after the
+/// caller's delete phase.
 pub async fn apply_non_delete_journaled(
     state: &crate::StateStore,
     adapter_name: &str,
     creates_updates: &[Op],
     driver: &mut impl RetryApplyDriver,
-) -> Result<(RetryApplyResult, Option<usize>)> {
+) -> Result<(RetryApplyResult, Option<usize>, JournalGuard<'static>)> {
     let mut journal = match state.journal_dir() {
         Some(dir) => Some(Journal::load_or_create(dir, adapter_name, creates_updates)?),
         None => None,
     };
-    let result = apply_non_delete_with_retries(creates_updates, journal.as_mut(), driver).await?;
+    let (result, borrowed) =
+        apply_non_delete_with_retries(creates_updates, journal.as_mut(), driver).await?;
+    // the borrow guard covers the local only; the owned one below is what the caller keeps
+    borrowed.disarm();
     let previously_applied = result.resumed.len();
     Ok((
         result,
         (previously_applied > 0).then_some(previously_applied),
+        JournalGuard::owned(journal),
     ))
 }
 
@@ -349,7 +448,7 @@ mod tests {
             mode: Mode::RetryThenOk,
         };
 
-        let result = apply_non_delete_with_retries(&ops, None, &mut driver)
+        let (result, _) = apply_non_delete_with_retries(&ops, None, &mut driver)
             .await
             .unwrap();
 
@@ -367,7 +466,7 @@ mod tests {
             mode: Mode::AlwaysRetry,
         };
 
-        let result = apply_non_delete_with_retries(&ops, None, &mut driver)
+        let (result, _) = apply_non_delete_with_retries(&ops, None, &mut driver)
             .await
             .unwrap();
 
@@ -405,7 +504,7 @@ mod tests {
             mode: Mode::Fatal,
         };
 
-        let result = apply_non_delete_with_retries(&ops, None, &mut driver)
+        let (result, _) = apply_non_delete_with_retries(&ops, None, &mut driver)
             .await
             .unwrap();
 
@@ -512,7 +611,7 @@ mod tests {
                 applied_ops: vec![],
             };
             let mut journal = Journal::load_or_create(dir.path(), "resume_test", &ops).unwrap();
-            let result = block_on(apply_non_delete_with_retries(
+            let (result, _) = block_on(apply_non_delete_with_retries(
                 &ops,
                 Some(&mut journal),
                 &mut driver,
@@ -582,12 +681,24 @@ mod tests {
         ops: &[Op],
         driver: &mut impl RetryApplyDriver,
     ) -> Result<crate::ApplyReport> {
+        run_journaled_apply_with_deletes(state, ops, driver, Ok(())).await
+    }
+
+    /// the adapters' shape down to the order: retry loop, early return on leftover
+    /// pending ops, the unjournaled delete phase (`deletes` stands in for it), then
+    /// `finish` on the success path only.
+    async fn run_journaled_apply_with_deletes(
+        state: &crate::StateStore,
+        ops: &[Op],
+        driver: &mut impl RetryApplyDriver,
+        deletes: Result<()>,
+    ) -> Result<crate::ApplyReport> {
         let creates_updates: Vec<Op> = ops
             .iter()
             .filter(|op| !matches!(op, Op::Delete { .. }))
             .cloned()
             .collect();
-        let (result, previously_applied_count) =
+        let (result, previously_applied_count, journal) =
             apply_non_delete_journaled(state, "test", &creates_updates, driver).await?;
         if !result.pending.is_empty() {
             let resolved: BTreeMap<Uid, BackendId> = BTreeMap::new();
@@ -596,6 +707,8 @@ mod tests {
                 describe_missing_refs(&result.pending, &resolved)
             ));
         }
+        deletes?;
+        journal.finish()?;
         Ok(crate::ApplyReport {
             applied: result.applied,
             resumed: result.resumed,
@@ -919,12 +1032,13 @@ mod tests {
                 mode: Mode::AlwaysRetryUid(stuck),
             };
             let mut journal = Journal::load_or_create(dir.path(), "stuck", &ops).unwrap();
-            block_on(apply_non_delete_with_retries(
+            let (result, _) = block_on(apply_non_delete_with_retries(
                 &ops,
                 Some(&mut journal),
                 &mut driver,
             ))
-            .unwrap()
+            .unwrap();
+            result
         });
 
         assert_eq!(result.pending.len(), 1);
@@ -976,11 +1090,210 @@ mod tests {
                 Some(&mut journal),
                 &mut driver,
             ))
+            .unwrap()
+            .1
+            .finish()
             .unwrap();
         })
         .1;
 
         assert!(!logged.contains("apply stopped"), "got: {logged}");
+    }
+
+    #[test]
+    fn a_successful_journaled_apply_says_nothing_about_the_journal() {
+        let _guard = journal_guard();
+        // the same rule through the other entry point: the borrow guard covers the engine's
+        // local journal only, so on the success path the owned one is all that may speak.
+        let ops = vec![create_op(Uid::from_u128(1))];
+        let dir = tempdir().unwrap();
+        let state = crate::StateStore::new(None, crate::StateData::default())
+            .with_journal_dir(dir.path().to_path_buf());
+
+        let logged = crate::test_log::capture(|| {
+            let mut driver = ErraticDriver {
+                countdown_to_crash: 99999,
+                applied_ops: vec![],
+            };
+            block_on(run_journaled_apply(&state, &ops, &mut driver)).unwrap();
+        })
+        .1;
+
+        assert!(!logged.contains("apply stopped"), "got: {logged}");
+    }
+
+    #[test]
+    fn the_journal_outlives_a_completed_create_update_phase() {
+        let _guard = journal_guard();
+        // the deletes still have to run, and they are not journaled: unlinking the file
+        // as the last create landed is what left a delete-phase crash with no record.
+        let ops = vec![create_op(Uid::from_u128(1))];
+        let dir = tempdir().unwrap();
+        let state = crate::StateStore::new(None, crate::StateData::default())
+            .with_journal_dir(dir.path().to_path_buf());
+        let journal_path = Journal::stable_file_name(dir.path(), "test", &ops);
+
+        let mut driver = ErraticDriver {
+            countdown_to_crash: 99999,
+            applied_ops: vec![],
+        };
+        let (result, _, journal) = block_on(apply_non_delete_journaled(
+            &state,
+            "test",
+            &ops,
+            &mut driver,
+        ))
+        .unwrap();
+
+        assert_eq!(result.applied.len(), 1);
+        assert!(journal_path.exists(), "the retry loop must not unlink it");
+        journal.finish().unwrap();
+        assert!(!journal_path.exists(), "finish is what unlinks it");
+    }
+
+    #[test]
+    fn a_delete_phase_that_never_finished_leaves_the_journal_and_says_so() {
+        let _guard = journal_guard();
+        let ops = vec![create_op(Uid::from_u128(1)), create_op(Uid::from_u128(2))];
+        let dir = tempdir().unwrap();
+        let state = crate::StateStore::new(None, crate::StateData::default())
+            .with_journal_dir(dir.path().to_path_buf());
+        let journal_path = Journal::stable_file_name(dir.path(), "test", &ops);
+
+        let logged = crate::test_log::capture(|| {
+            let mut driver = ErraticDriver {
+                countdown_to_crash: 99999,
+                applied_ops: vec![],
+            };
+            block_on(run_journaled_apply_with_deletes(
+                &state,
+                &ops,
+                &mut driver,
+                Err(anyhow!("the backend refused the delete")),
+            ))
+            .expect_err("the delete phase fails");
+        })
+        .1;
+
+        assert!(journal_path.exists(), "a re-run has to find it");
+        assert!(
+            logged.contains("apply stopped during the delete phase"),
+            "got: {logged}"
+        );
+        assert!(
+            logged.contains(&journal_path.display().to_string()),
+            "the message names the journal file, got: {logged}"
+        );
+        assert!(logged.contains("re-issues the deletes"), "got: {logged}");
+    }
+
+    #[test]
+    fn an_unfinished_create_update_phase_is_not_reported_twice() {
+        let _guard = journal_guard();
+        // the retry loop reports this case itself, and the journal reaches the guard
+        // dropped rather than finished, so the notice must not come out twice.
+        let stuck = Uid::from_u128(2);
+        let ops = vec![create_op(Uid::from_u128(1)), create_op(stuck)];
+        let dir = tempdir().unwrap();
+        let state = crate::StateStore::new(None, crate::StateData::default())
+            .with_journal_dir(dir.path().to_path_buf());
+
+        let logged = crate::test_log::capture(|| {
+            let mut driver = TestDriver {
+                attempts: 0,
+                mode: Mode::AlwaysRetryUid(stuck),
+            };
+            block_on(run_journaled_apply(&state, &ops, &mut driver))
+                .expect_err("leftover pending ops end the apply");
+        })
+        .1;
+
+        assert_eq!(logged.matches("apply stopped").count(), 1, "got: {logged}");
+        assert!(!logged.contains("delete phase"), "got: {logged}");
+    }
+
+    #[test]
+    fn an_external_caller_driving_the_retry_loop_leaves_nothing_to_resume() {
+        let _guard = journal_guard();
+        // the sdk surface an out-of-tree adapter builds against: its own journal, no
+        // `apply_non_delete_journaled`. the file is this caller's to clean up too.
+        let ops = vec![create_op(Uid::from_u128(1)), create_op(Uid::from_u128(2))];
+        let dir = tempdir().unwrap();
+        let journal_path = Journal::stable_file_name(dir.path(), "external", &ops);
+
+        {
+            let mut driver = ErraticDriver {
+                countdown_to_crash: 99999,
+                applied_ops: vec![],
+            };
+            let mut journal = Journal::load_or_create(dir.path(), "external", &ops).unwrap();
+            block_on(apply_non_delete_with_retries(
+                &ops,
+                Some(&mut journal),
+                &mut driver,
+            ))
+            .unwrap()
+            .1
+            .finish()
+            .unwrap();
+        }
+        assert!(
+            !journal_path.exists(),
+            "an apply through with its deletes leaves nothing to resume"
+        );
+
+        // the same plan again: it has to be applied, not resumed off a run that finished.
+        let mut driver = ErraticDriver {
+            countdown_to_crash: 99999,
+            applied_ops: vec![],
+        };
+        let mut journal = Journal::load_or_create(dir.path(), "external", &ops).unwrap();
+        let (result, _) = block_on(apply_non_delete_with_retries(
+            &ops,
+            Some(&mut journal),
+            &mut driver,
+        ))
+        .unwrap();
+
+        assert_eq!(
+            driver.applied_ops.len(),
+            2,
+            "the backend is written to again"
+        );
+        assert!(result.resumed.is_empty(), "nothing was resumed");
+    }
+
+    #[test]
+    fn a_retry_loop_journal_dropped_without_finish_stays_for_the_re_run() {
+        let _guard = journal_guard();
+        // the same caller, its deletes not through: one rule, so the notice and the file
+        // left behind are the ones `apply_non_delete_journaled` gives its own adapters.
+        let ops = vec![create_op(Uid::from_u128(1))];
+        let dir = tempdir().unwrap();
+        let journal_path = Journal::stable_file_name(dir.path(), "external", &ops);
+
+        let logged = crate::test_log::capture(|| {
+            let mut driver = ErraticDriver {
+                countdown_to_crash: 99999,
+                applied_ops: vec![],
+            };
+            let mut journal = Journal::load_or_create(dir.path(), "external", &ops).unwrap();
+            drop(
+                block_on(apply_non_delete_with_retries(
+                    &ops,
+                    Some(&mut journal),
+                    &mut driver,
+                ))
+                .unwrap(),
+            );
+        })
+        .1;
+
+        assert!(journal_path.exists(), "a re-run has to find it");
+        assert!(
+            logged.contains("apply stopped during the delete phase"),
+            "got: {logged}"
+        );
     }
 
     #[tokio::test]

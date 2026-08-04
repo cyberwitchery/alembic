@@ -193,7 +193,7 @@ impl Emitter for NetBoxAdapter {
             schema,
             custom_fields_by_type: &custom_fields_by_type,
         };
-        let (retry_result, previously_applied_count) =
+        let (retry_result, previously_applied_count, journal) =
             apply_non_delete_journaled(state, "netbox", &creates_updates, &mut driver).await?;
 
         if !retry_result.pending.is_empty() {
@@ -259,6 +259,7 @@ impl Emitter for NetBoxAdapter {
                 });
             }
         }
+        journal.finish()?;
 
         Ok(ApplyReport {
             applied,

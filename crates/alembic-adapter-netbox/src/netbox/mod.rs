@@ -1253,6 +1253,176 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_failed_delete_phase_leaves_a_journal_the_re_run_skips_the_creates_from() {
+        // deletes run after the creates and are not journaled. the journal used to be
+        // unlinked the moment the last create landed, so a delete-phase failure left
+        // nothing on disk and the re-run posted every create again, straight into the
+        // backend's uniqueness constraint.
+        use httpmock::Method::DELETE;
+
+        let dir = tempdir().unwrap();
+        let state = StateStore::load(dir.path().join("state.json"))
+            .unwrap()
+            .with_journal_dir(dir.path().to_path_buf());
+
+        let site_schema = alembic_core::Schema {
+            types: std::collections::BTreeMap::from([(
+                "dcim.site".to_string(),
+                alembic_core::TypeSchema {
+                    key: std::collections::BTreeMap::from([(
+                        "slug".to_string(),
+                        alembic_core::FieldSchema {
+                            r#type: alembic_core::FieldType::String,
+                            required: true,
+                            nullable: false,
+                            description: None,
+                            format: None,
+                            pattern: None,
+                        },
+                    )]),
+                    fields: std::collections::BTreeMap::from([(
+                        "name".to_string(),
+                        alembic_core::FieldSchema {
+                            r#type: alembic_core::FieldType::String,
+                            required: true,
+                            nullable: false,
+                            description: None,
+                            format: None,
+                            pattern: None,
+                        },
+                    )]),
+                },
+            )]),
+        };
+        let ops = vec![
+            Op::Create {
+                uid: uid(1),
+                type_name: TypeName::new("dcim.site"),
+                desired: obj(
+                    uid(1),
+                    "dcim.site",
+                    key("slug", json!("fra1")),
+                    json!({ "name": "FRA1" }),
+                ),
+            },
+            Op::Delete {
+                uid: uid(2),
+                type_name: TypeName::new("dcim.site"),
+                key: key("slug", json!("ber1")),
+                backend_id: Some(alembic_engine::BackendId::Int(2)),
+            },
+        ];
+        let creates: Vec<Op> = ops
+            .iter()
+            .filter(|op| !matches!(op, Op::Delete { .. }))
+            .cloned()
+            .collect();
+        let journal_path =
+            alembic_engine::Journal::stable_file_name(dir.path(), "netbox", &creates);
+
+        // run 1: the create lands, the backend refuses the delete.
+        let first = MockServer::start();
+        let _types = mock_list(
+            &first,
+            "/api/core/object-types/",
+            json!([{
+                "app_label": "dcim",
+                "model": "site",
+                "rest_api_endpoint": "/api/dcim/sites/",
+                "features": ["custom-fields", "tags"]
+            }]),
+        );
+        let _fields = first.mock(|when, then| {
+            when.method(GET).path("/api/extras/custom-fields/");
+            then.status(200).json_body(page(json!([])));
+        });
+        let first_create = first.mock(|when, then| {
+            when.method(POST).path("/api/dcim/sites/");
+            then.status(201)
+                .json_body(json!({ "id": 1, "slug": "fra1" }));
+        });
+        let first_delete = first.mock(|when, then| {
+            when.method(DELETE).path("/api/dcim/sites/");
+            then.status(500).json_body(json!({ "detail": "boom" }));
+        });
+
+        let adapter = NetBoxAdapter::new(&first.base_url(), "token").unwrap();
+        adapter
+            .write(&site_schema, &ops, &state)
+            .await
+            .expect_err("the delete phase must fail");
+        first_create.assert_calls(1);
+        first_delete.assert_calls(1);
+
+        assert!(
+            journal_path.exists(),
+            "the journal has to outlive the delete phase"
+        );
+        let journal =
+            alembic_engine::Journal::load_or_create(dir.path(), "netbox", &creates).unwrap();
+        assert!(
+            journal.is_completed(),
+            "every create is recorded done before the deletes run"
+        );
+        assert_eq!(
+            journal
+                .done_applied_ops()
+                .iter()
+                .map(|op| (op.uid, op.backend_id.clone()))
+                .collect::<Vec<_>>(),
+            vec![(uid(1), Some(alembic_engine::BackendId::Int(1)))],
+        );
+        drop(journal);
+
+        // run 2 against a backend that now accepts the delete: the site is not created
+        // a second time.
+        let second = MockServer::start();
+        let _types = mock_list(
+            &second,
+            "/api/core/object-types/",
+            json!([{
+                "app_label": "dcim",
+                "model": "site",
+                "rest_api_endpoint": "/api/dcim/sites/",
+                "features": ["custom-fields", "tags"]
+            }]),
+        );
+        let _fields = second.mock(|when, then| {
+            when.method(GET).path("/api/extras/custom-fields/");
+            then.status(200).json_body(page(json!([])));
+        });
+        let second_create = second.mock(|when, then| {
+            when.method(POST).path("/api/dcim/sites/");
+            then.status(201)
+                .json_body(json!({ "id": 9, "slug": "fra1" }));
+        });
+        let second_delete = second.mock(|when, then| {
+            when.method(DELETE).path("/api/dcim/sites/");
+            then.status(204);
+        });
+
+        let adapter = NetBoxAdapter::new(&second.base_url(), "token").unwrap();
+        let report = adapter.write(&site_schema, &ops, &state).await.unwrap();
+
+        second_create.assert_calls(0);
+        second_delete.assert_calls(1);
+        assert_eq!(report.previously_applied_count, Some(1));
+        assert_eq!(
+            report.resumed.iter().map(|op| op.uid).collect::<Vec<_>>(),
+            vec![uid(1)],
+        );
+        assert_eq!(
+            report.applied.iter().map(|op| op.uid).collect::<Vec<_>>(),
+            vec![uid(2)],
+            "only the delete is left to apply"
+        );
+        assert!(
+            !journal_path.exists(),
+            "the finished apply drops the journal"
+        );
+    }
+
+    #[tokio::test]
     async fn observe_handles_empty_types_list() {
         let server = MockServer::start();
         let dir = tempdir().unwrap();

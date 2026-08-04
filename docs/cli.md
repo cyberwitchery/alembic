@@ -226,7 +226,7 @@ alembic apply -p plan.json -o apply-report.json \
   configured in the backend config
 - `-o`/`--output` writes the apply report as json (optional; without it apply writes no artifact, as before)
 
-note that apply has no transaction semantics. state is persisted after each successful write, so a crash partway through leaves backend objects with no corresponding cleanup and no rollback.
+note that apply has no transaction semantics. writes land on the backend one at a time and there is no rollback, so a crash partway through leaves backend objects behind with no corresponding cleanup. state is saved once, after the whole apply returns, not per write; the journal is what carries a crashed run's progress until then (see below).
 
 ### apply report
 
@@ -288,9 +288,20 @@ means an apply is unfinished.
 - the journal is keyed to the plan. editing the plan and re-running starts a fresh
   journal rather than resuming into a changed set of operations, and the old one is
   left behind
-- deletes are not journaled. they run after the creates and updates, and the journal
-  is deleted once those complete, so a failure during the delete phase gets no
-  notice, even though every create/update has applied by then
+- deletes are not journaled, but the journal outlives them. they run after the creates
+  and updates, and the file is removed only once the deletes are through, so a
+  failure during the delete phase resumes like any other: the re-run skips every
+  create and update and re-issues the deletes, which the adapters treat as a no-op
+  when the object is already gone. it reports that case in its own words:
+
+  ```
+  WARN apply stopped during the delete phase; the journal at ./.alembic/netbox_journal_16459615207231411390.yaml records all 12 create/update operations as applied, and re-running the same plan skips them and re-issues the deletes
+  ```
+- the journal is removed at the end of the adapter's write, and state is saved just
+  after, so a crash in that window leaves the created objects on the backend with
+  neither a journal nor a state mapping naming them; the next run plans them as
+  creates again. that window is one file write wide, against the whole delete phase
+  before this, but it is not zero
 - nothing is said when a run fails before applying anything (an unreachable backend,
   say): there is no progress to resume from
 - the journal records the backend id each create or update returned, so the resumed
