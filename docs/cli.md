@@ -270,7 +270,9 @@ it is written on the success path only, so a report file means the whole plan
 applied; a failed apply leaves the previous run's file untouched rather than
 writing a partial one, and the output path is write-probed before the apply
 starts, so a bad `-o` fails before the backend is written to rather than failing
-an apply that landed. the `applied` list covers the current run's ops: after a
+an apply that landed. tags are created before the ops, so a failed apply can
+leave a tag behind that no report names, in that run or the resumed one, which
+sees it as existing. the `applied` list covers the current run's ops: after a
 resume, the ops the interrupted run applied appear under `resumed` instead, in
 the same shape, each with the backend id its write returned. that list is
 present only on a resumed run, and is empty for a journal written before ids

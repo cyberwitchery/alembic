@@ -230,12 +230,12 @@ pub struct ApplyReport {
     /// number of previously applied operations, only set when apply is accompanied by a journal
     #[serde(skip_serializing_if = "Option::is_none")]
     pub previously_applied_count: Option<usize>,
-    /// schema provisioning report (populated when ensure_schema runs).
+    /// provisioning report, merged from both passes: `ensure_schema` and `write`.
     #[serde(default)]
     pub provision: ProvisionReport,
 }
 
-/// report from ensure_schema provisioning.
+/// report of what an apply provisioned, across `ensure_schema` and `write`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ProvisionReport {
     /// custom fields created on the backend.
@@ -269,29 +269,48 @@ impl ProvisionReport {
     /// fills the schema categories, `write` fills the tags it creates from the ops --
     /// so both have to reach the same report.
     pub fn merge(&mut self, other: ProvisionReport) {
-        self.created_fields.extend(other.created_fields);
-        self.created_tags.extend(other.created_tags);
-        self.created_object_types.extend(other.created_object_types);
-        self.created_object_fields
-            .extend(other.created_object_fields);
-        self.deprecated_object_types
-            .extend(other.deprecated_object_types);
+        // destructured without `..` here, in is_empty and in Display: a category
+        // added later has to answer in all three rather than be dropped in silence.
+        let ProvisionReport {
+            created_fields,
+            created_tags,
+            created_object_types,
+            created_object_fields,
+            deprecated_object_types,
+            deprecated_object_fields,
+            deleted_object_types,
+            deleted_object_fields,
+        } = other;
+        self.created_fields.extend(created_fields);
+        self.created_tags.extend(created_tags);
+        self.created_object_types.extend(created_object_types);
+        self.created_object_fields.extend(created_object_fields);
+        self.deprecated_object_types.extend(deprecated_object_types);
         self.deprecated_object_fields
-            .extend(other.deprecated_object_fields);
-        self.deleted_object_types.extend(other.deleted_object_types);
-        self.deleted_object_fields
-            .extend(other.deleted_object_fields);
+            .extend(deprecated_object_fields);
+        self.deleted_object_types.extend(deleted_object_types);
+        self.deleted_object_fields.extend(deleted_object_fields);
     }
 
     pub fn is_empty(&self) -> bool {
-        self.created_fields.is_empty()
-            && self.created_tags.is_empty()
-            && self.created_object_types.is_empty()
-            && self.created_object_fields.is_empty()
-            && self.deprecated_object_types.is_empty()
-            && self.deprecated_object_fields.is_empty()
-            && self.deleted_object_types.is_empty()
-            && self.deleted_object_fields.is_empty()
+        let ProvisionReport {
+            created_fields,
+            created_tags,
+            created_object_types,
+            created_object_fields,
+            deprecated_object_types,
+            deprecated_object_fields,
+            deleted_object_types,
+            deleted_object_fields,
+        } = self;
+        created_fields.is_empty()
+            && created_tags.is_empty()
+            && created_object_types.is_empty()
+            && created_object_fields.is_empty()
+            && deprecated_object_types.is_empty()
+            && deprecated_object_fields.is_empty()
+            && deleted_object_types.is_empty()
+            && deleted_object_fields.is_empty()
     }
 }
 
@@ -301,16 +320,27 @@ impl fmt::Display for ProvisionReport {
             return write!(f, "no schema changes");
         }
 
+        let ProvisionReport {
+            created_fields,
+            created_tags,
+            created_object_types,
+            created_object_fields,
+            deprecated_object_types,
+            deprecated_object_fields,
+            deleted_object_types,
+            deleted_object_fields,
+        } = self;
+
         let mut first = true;
         let sections: &[(&str, &[String])] = &[
-            ("fields created", &self.created_fields),
-            ("tags created", &self.created_tags),
-            ("object types created", &self.created_object_types),
-            ("object fields created", &self.created_object_fields),
-            ("object types deprecated", &self.deprecated_object_types),
-            ("object fields deprecated", &self.deprecated_object_fields),
-            ("object types deleted", &self.deleted_object_types),
-            ("object fields deleted", &self.deleted_object_fields),
+            ("fields created", created_fields),
+            ("tags created", created_tags),
+            ("object types created", created_object_types),
+            ("object fields created", created_object_fields),
+            ("object types deprecated", deprecated_object_types),
+            ("object fields deprecated", deprecated_object_fields),
+            ("object types deleted", deleted_object_types),
+            ("object fields deleted", deleted_object_fields),
         ];
 
         for (label, items) in sections {
