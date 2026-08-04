@@ -177,9 +177,10 @@ an existing file that rejects writes, or a new one under a parent that rejects
 writes, is rejected up front. an existing target answers for itself, so
 `-o /dev/null` is accepted whatever `/dev` allows; a fifo cannot be opened
 without blocking, so it is judged by its parent instead, which is why
-`-o /dev/stdout` is refused when stdout is a pipe. it leaves nothing behind,
-including the directories it had to create to run, and it never truncates an
-existing target. the json shape:
+`-o /dev/stdout` is refused when stdout is a pipe. the probe writes a real file
+to answer, but leaves nothing behind: that file and every directory it had to
+create are removed again, and an existing target is opened without being
+truncated. the json shape:
 
 ```json
 {
@@ -265,12 +266,12 @@ it is written on the success path only, so a report file means the whole plan
 applied; a failed apply leaves the previous run's file untouched rather than
 writing a partial one, and the output path is write-probed before the apply
 starts, so a bad `-o` fails before the backend is written to rather than failing
-an apply that landed. the `applied` list covers
-the current run's ops: after a resume, the ops the interrupted run applied
-appear under `resumed` instead, in the same shape, each with the backend id its
-write returned. that list is present only on a resumed run, and is empty for a
-journal written before ids were recorded. `--interactive` reports the ops you
-approved, not the ops in the plan.
+an apply that landed. the `applied` list covers the current run's ops: after a
+resume, the ops the interrupted run applied appear under `resumed` instead, in
+the same shape, each with the backend id its write returned. that list is
+present only on a resumed run, and is empty for a journal written before ids
+were recorded. `--interactive` reports the ops you approved, not the ops in the
+plan.
 
 state (`docs/state.md`) is cumulative and keyed by uid, and the journal is
 deleted once apply succeeds, so this is the only per-run artifact: the file a ci
@@ -335,7 +336,7 @@ alembic map transform --spec examples/map.yaml site_code '"fra1"'
   writing a spec's starlark transforms (see `docs/map.md`, transforms)
 - extra positional arguments are json-encoded transform arguments
 - prints the typed result as json; `fail()` exits non-zero with the message
-- it carries its own `--spec` and prints to stdout, so `map`'s own `-f`/`--file`, `--spec` and `-o`/`--output` have nowhere to go here and are rejected rather than dropped
+- it carries its own `--spec` and prints to stdout, so `map`'s own `-f`/`--file`, `--spec` and `-o`/`--output` have nowhere to go here and are rejected at parse time rather than dropped
 
 ## import
 

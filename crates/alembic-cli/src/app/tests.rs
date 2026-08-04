@@ -2215,67 +2215,68 @@ fn output_and_dry_run_conflict() {
     );
 }
 
-#[tokio::test]
-async fn map_transform_rejects_the_inventory_flow_args() {
+#[test]
+fn map_transform_rejects_the_inventory_flow_args() {
+    use clap::Parser;
     // the same accepted-and-dropped defect one command over: `map transform`
     // carries its own --spec and prints to stdout, so -f/--spec/-o at the map
-    // level went nowhere.
-    let dir = tempdir().unwrap();
-    let spec = dir.path().join("spec.yaml");
-    std::fs::write(&spec, "schema:\n  types: {}\nrules: []\n").unwrap();
-
-    for (file, top_spec, output, expected) in [
-        (true, false, false, "-f/--file"),
-        (false, true, false, "--spec"),
-        (false, false, true, "-o/--output"),
+    // level went nowhere. rejected by the parser, like -o with --dry-run, so
+    // both spellings of "this arg has nowhere to go" exit the same way.
+    for stray in [
+        ["-f", "in.yaml"],
+        ["--spec", "outer.yaml"],
+        ["-o", "out.json"],
     ] {
-        let cli = Cli {
-            command: Command::Map {
-                action: Some(MapAction::Transform {
-                    spec: spec.clone(),
-                    name: "lower".into(),
-                    value: "\"NXOS\"".into(),
-                    args: vec![],
-                }),
-                file: file.then(|| PathBuf::from("in.yaml")),
-                spec: top_spec.then(|| spec.clone()),
-                output: output.then(|| dir.path().join("out.json")),
-            },
-        };
-        let err = run(cli, AppConfig::load().unwrap())
-            .await
-            .expect_err("a stray inventory-flow arg must be rejected");
+        let result = Cli::try_parse_from([
+            "alembic",
+            "map",
+            stray[0],
+            stray[1],
+            "transform",
+            "--spec",
+            "spec.yaml",
+            "lower",
+            "\"NXOS\"",
+        ]);
+        // `Cli` is not `Debug`, so unwrap the error via `Option` rather than `expect_err`.
+        let err = result
+            .err()
+            .unwrap_or_else(|| panic!("map {} must conflict with transform", stray[0]));
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
         assert!(
-            format!("{err:#}").contains(expected),
-            "the error must name the stray arg: {err:#}"
+            err.to_string().contains(stray[0].trim_start_matches('-')),
+            "the error must name the stray arg: {err}"
         );
     }
 
-    // and the plain invocation still works
-    let cli = Cli {
-        command: Command::Map {
-            action: Some(MapAction::Transform {
-                spec: spec.clone(),
-                name: "lower".into(),
-                value: "\"NXOS\"".into(),
-                args: vec![],
-            }),
-            file: None,
-            spec: None,
-            output: None,
-        },
-    };
-    run(cli, AppConfig::load().unwrap())
-        .await
-        .expect("transform with no stray args must run");
-}
-
-#[test]
-fn stray_map_args_names_every_offender() {
-    assert!(stray_map_args(false, false, false).is_empty());
-    assert_eq!(
-        stray_map_args(true, true, true),
-        vec!["-f/--file", "--spec", "-o/--output"]
+    // transform without them still parses, and so does the inventory flow that
+    // owns those args when no subcommand is given.
+    assert!(
+        Cli::try_parse_from([
+            "alembic",
+            "map",
+            "transform",
+            "--spec",
+            "spec.yaml",
+            "lower",
+            "\"NXOS\"",
+        ])
+        .is_ok(),
+        "transform with no stray args must parse"
+    );
+    assert!(
+        Cli::try_parse_from([
+            "alembic",
+            "map",
+            "-f",
+            "in.yaml",
+            "--spec",
+            "spec.yaml",
+            "-o",
+            "out.json",
+        ])
+        .is_ok(),
+        "the map inventory flow must still parse"
     );
 }
 

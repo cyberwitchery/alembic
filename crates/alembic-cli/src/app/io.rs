@@ -23,10 +23,12 @@ pub(super) fn ensure_parent_dir(path: &Path) -> Result<()> {
 /// beside it, which also answers what mode bits cannot (a read-only mount, an
 /// acl).
 ///
-/// side-effect-free: the target probe never truncates, and the sibling probe
-/// removes itself and every directory it had to create, deepest first, so a run
-/// that dies later leaves the filesystem as it found it. the write path still
-/// calls `ensure_parent_dir` to recreate them.
+/// it leaves nothing behind, which is not the same as touching nothing: the
+/// sibling probe does write a real file, and the target probe does open the
+/// target. neither lasts. the open never truncates, and the probe file and every
+/// directory it had to create are removed again, deepest first, so a run that
+/// dies later leaves the filesystem as it found it. the write path still calls
+/// `ensure_parent_dir` to recreate them.
 pub(super) fn preflight_output_path(path: &Path) -> Result<()> {
     if path.is_dir() {
         return Err(anyhow!("write output: {}: is a directory", path.display()));

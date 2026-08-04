@@ -127,6 +127,10 @@ enum Command {
         interactive: bool,
     },
     /// transform an ir inventory into another ir inventory (ir -> ir).
+    // `transform` carries its own --spec and prints to stdout, so the inventory
+    // flow's args have nowhere to go under it. rejected at parse time, like -o
+    // with --dry-run, rather than by a hand-written check with its own exit code
+    #[command(args_conflicts_with_subcommands = true)]
     Map {
         #[command(subcommand)]
         action: Option<MapAction>,
@@ -195,19 +199,6 @@ fn confirm(prompt: &str) -> Result<bool> {
 /// remain governed solely by `--allow-delete`.
 fn should_detect_deletes(allow_delete: bool, report: bool) -> bool {
     allow_delete || report
-}
-
-/// the `alembic map` args the `transform` subcommand cannot act on, named as the
-/// user passed them.
-fn stray_map_args(file: bool, spec: bool, output: bool) -> Vec<&'static str> {
-    [
-        file.then_some("-f/--file"),
-        spec.then_some("--spec"),
-        output.then_some("-o/--output"),
-    ]
-    .into_iter()
-    .flatten()
-    .collect()
 }
 
 /// the `-o`/`--output` path a command will write, if any. the one place that
@@ -438,21 +429,14 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             output,
         } => match action {
             Some(MapAction::Transform {
-                spec: transform_spec,
+                spec,
                 name,
                 value,
                 args,
             }) => {
-                // the subcommand carries its own --spec and prints to stdout, so
-                // the inventory flow's args have nowhere to go here
-                let stray = stray_map_args(file.is_some(), spec.is_some(), output.is_some());
-                if !stray.is_empty() {
-                    return Err(anyhow!(
-                        "alembic map transform does not take {}; it takes its own --spec and prints the result to stdout",
-                        stray.join(" or ")
-                    ));
-                }
-                let spec = alembic_engine::load_map_spec(&transform_spec)?;
+                // file/spec/output are rejected against this subcommand at parse
+                // time (args_conflicts_with_subcommands), so they are None here
+                let spec = alembic_engine::load_map_spec(&spec)?;
                 let parse_json = |label: &str, raw: &str| -> Result<serde_json::Value> {
                     serde_json::from_str(raw).map_err(|err| {
                         anyhow!(
