@@ -179,10 +179,10 @@ response:
 }
 ```
 
-the report has eight keys, all optional and defaulting to an empty list, so an
-adapter that only ever creates can send the four `created_*` keys alone. all eight
-are counted back to the operator on a provisioning run (`provision: 1 object types
-created, 1 object fields deleted`). the two `deleted_*` lists are also read by the
+every key of the report is optional and defaults to an empty list, so an adapter
+that only ever creates can send the `created_*` keys alone. each of them is
+counted back to the operator on a provisioning run (`provision: 1 object types
+created, 1 object fields deleted`). the `deleted_*` lists are also read by the
 host: see the gate under `preview_schema`. `created_tags` may also be answered from
 `write` instead, when the tags come from the ops rather than the schema.
 
@@ -219,7 +219,7 @@ request:
 
 response (a report, or `"result": null` when preview is unsupported). this one
 would provision one new type and drop one field, so it trips the gate unless the
-operator passed `--allow-delete`, and it omits the six keys that are empty:
+operator passed `--allow-delete`, and it omits the keys that are empty:
 
 ```json
 {

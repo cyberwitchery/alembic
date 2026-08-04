@@ -69,8 +69,21 @@ pub fn guard_schema_deletes(preview: &ProvisionReport, allow_delete: bool) -> Re
     if allow_delete {
         return Ok(());
     }
-    let deleted_types = preview.deleted_object_types.len();
-    let deleted_fields = preview.deleted_object_fields.len();
+    // destructured without `..`, like the folds on the type: a category added
+    // later has to be classified as destructive or not, rather than default to
+    // not and provision past this gate in silence.
+    let ProvisionReport {
+        created_fields: _,
+        created_tags: _,
+        created_object_types: _,
+        created_object_fields: _,
+        deprecated_object_types: _,
+        deprecated_object_fields: _,
+        deleted_object_types,
+        deleted_object_fields,
+    } = preview;
+    let deleted_types = deleted_object_types.len();
+    let deleted_fields = deleted_object_fields.len();
     if deleted_types > 0 || deleted_fields > 0 {
         return Err(anyhow!(
             "provisioning would delete schema ({deleted_types} type(s), \

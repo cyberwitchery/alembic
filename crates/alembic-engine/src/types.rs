@@ -269,8 +269,8 @@ impl ProvisionReport {
     /// fills the schema categories, `write` fills the tags it creates from the ops --
     /// so both have to reach the same report.
     pub fn merge(&mut self, other: ProvisionReport) {
-        // destructured without `..` here, in is_empty and in Display: a category
-        // added later has to answer in all three rather than be dropped in silence.
+        // every reader of these categories destructures without `..`: a category
+        // added later has to answer in each rather than be dropped in silence.
         let ProvisionReport {
             created_fields,
             created_tags,
