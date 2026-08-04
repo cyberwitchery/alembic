@@ -170,7 +170,7 @@ store.
 every category is an assertion about observed backend state, so `--report`
 requires a backend that can observe, and refuses a write-only (emitter) one in
 the terms `import` refuses it (`backend is write-only; it cannot observe
-state`), before provisioning and before any backend request. such a backend is
+state`), before provisioning and before any read or write. such a backend is
 planned against an empty observation, so the report would otherwise list every
 declared object as `missing` from a backend nothing had read, say the same
 thing forever however much had already been emitted, and never populate

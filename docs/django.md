@@ -34,6 +34,9 @@ a silently ignored key. that matters most for the two booleans: a discarded
 - the backend cannot report existing state, so `plan` diffs against an empty
   observation and produces an all-creates plan, one op per object.
 - `import` is rejected up front: there is nothing to observe.
+- `plan --report` is rejected for the same reason. a drift report asserts what
+  the backend holds, so over this backend it would report every declared object
+  missing on every run, having read nothing. plain `plan` is unaffected.
 - `apply` skips adapter provisioning (`ensure_schema`); the generated migrations
   are the schema.
 - the ir uid is the model's primary key, so re-running `apply` converges the
@@ -85,5 +88,3 @@ two structural rejections apply to the schema as a whole:
 
 - the generated app is a scaffold. schema changes regenerate the models, but
   reconciling them with migrations you have already applied is yours.
-- there is no drift to observe, so `plan --report` compares against an empty
-  observation and reports every declared object as missing on every run.

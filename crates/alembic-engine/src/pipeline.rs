@@ -1,5 +1,7 @@
 use crate::pretty_printing::{bullet_list, comma_separated};
-use crate::types::{ApplyReport, Backend, Emitter, ObservedState, Observer, Plan, ProvisionReport};
+use crate::types::{
+    ApplyReport, Backend, Emitter, ObservedState, Observer, Plan, ProvisionReport, CANNOT_OBSERVE,
+};
 use crate::StateStore;
 use crate::{sort_ops_for_apply, BackendId};
 use alembic_core::{key_string, Inventory, TypeName};
@@ -88,8 +90,8 @@ pub fn guard_drift_report(backend: &Backend) -> Result<()> {
     match backend {
         Backend::Observer(_) | Backend::Adapter(_) => Ok(()),
         Backend::Emitter(_) => Err(anyhow!(
-            "backend is write-only; it cannot observe state, so there is no drift \
-             to report. run `alembic plan` without --report to see what apply would emit"
+            "{CANNOT_OBSERVE}, so there is no drift to report. run `alembic plan` \
+             without --report to see what apply would emit"
         )),
     }
 }
