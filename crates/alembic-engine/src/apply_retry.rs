@@ -27,7 +27,7 @@ pub async fn apply_non_delete_with_retries<'a>(
     ops: &[Op],
     mut journal: Option<&'a mut Journal>,
     driver: &mut impl RetryApplyDriver,
-) -> Result<(RetryApplyResult, ApplyJournal<'a>)> {
+) -> Result<(RetryApplyResult, JournalGuard<'a>)> {
     let mut applied = Vec::new();
     let mut resumed = Vec::new();
     let mut pending: Vec<Op> = ops
@@ -107,7 +107,7 @@ pub async fn apply_non_delete_with_retries<'a>(
             pending,
             resumed,
         },
-        ApplyJournal::borrowed(journal),
+        JournalGuard::borrowed(journal),
     ))
 }
 
@@ -133,9 +133,12 @@ fn report_resumable(journal: &Journal) {
 /// the journal, handed back to the caller so it outlives the whole apply. deletes are
 /// not journaled but still have to run, and until they do the file is what a re-run
 /// recovers the creates and updates from; `finish` drops it once the apply is through.
+///
+/// `must_use` only catches discarding the whole returned tuple; a caller that binds the
+/// guard and never `finish`es it compiles, and the `Drop` notice is what reports that.
 #[derive(Debug)]
 #[must_use = "the deletes still have to run: `finish` the journal once they are through, or the file stays behind"]
-pub struct ApplyJournal<'a>(Option<JournalRef<'a>>);
+pub struct JournalGuard<'a>(Option<JournalRef<'a>>);
 
 /// `apply_non_delete_journaled` builds the journal itself and hands it back owned; a
 /// caller driving the retry loop with its own journal gets a guard over the borrow, so
@@ -162,7 +165,7 @@ impl JournalRef<'_> {
     }
 }
 
-impl<'a> ApplyJournal<'a> {
+impl<'a> JournalGuard<'a> {
     fn borrowed(journal: Option<&'a mut Journal>) -> Self {
         Self(journal.map(JournalRef::Borrowed))
     }
@@ -179,13 +182,14 @@ impl<'a> ApplyJournal<'a> {
         }
     }
 
-    /// hand the journal on to a guard that outlives this one, which also ends the borrow.
-    fn detach(mut self) {
+    /// this guard is not the one that outlives the apply: give it up without reporting,
+    /// leaving that to the caller's own guard. also ends the borrow it held.
+    fn disarm(mut self) {
         self.0 = None;
     }
 }
 
-impl Drop for ApplyJournal<'_> {
+impl Drop for JournalGuard<'_> {
     fn drop(&mut self) {
         // the retry loop reports its own exits, so the only case left here is a delete
         // phase that never finished, and `finish` takes the journal so it says nothing
@@ -226,7 +230,7 @@ pub async fn apply_non_delete_journaled(
     adapter_name: &str,
     creates_updates: &[Op],
     driver: &mut impl RetryApplyDriver,
-) -> Result<(RetryApplyResult, Option<usize>, ApplyJournal<'static>)> {
+) -> Result<(RetryApplyResult, Option<usize>, JournalGuard<'static>)> {
     let mut journal = match state.journal_dir() {
         Some(dir) => Some(Journal::load_or_create(dir, adapter_name, creates_updates)?),
         None => None,
@@ -234,12 +238,12 @@ pub async fn apply_non_delete_journaled(
     let (result, borrowed) =
         apply_non_delete_with_retries(creates_updates, journal.as_mut(), driver).await?;
     // the borrow guard covers the local only; the owned one below is what the caller keeps
-    borrowed.detach();
+    borrowed.disarm();
     let previously_applied = result.resumed.len();
     Ok((
         result,
         (previously_applied > 0).then_some(previously_applied),
-        ApplyJournal::owned(journal),
+        JournalGuard::owned(journal),
     ))
 }
 
