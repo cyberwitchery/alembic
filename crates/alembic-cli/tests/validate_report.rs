@@ -125,6 +125,38 @@ fn assert_refused(inventory: &Path, output: &Path, expected: &str) {
 }
 
 #[test]
+fn validate_warns_about_a_yaml_output_and_still_writes_it() {
+    // the warning rides with the write rather than being copied to each `-o`
+    // site, so a site that has one has the other.
+    let dir = tempdir().unwrap();
+    let report = dir.path().join("validation.yaml");
+
+    let (ok, stdout, stderr) = run_validate(&fixture(dir.path(), ""), Some(&report));
+
+    assert!(
+        ok,
+        "a misleading extension is a nudge, not an error: {stderr}"
+    );
+    assert!(
+        stderr.contains(&format!(
+            "warning: --output `{}` is written as JSON despite the .yaml extension",
+            report.display()
+        )),
+        "stderr:\n{stderr}"
+    );
+    assert!(
+        stdout.starts_with("validation report written to"),
+        "stdout:\n{stdout}"
+    );
+    let raw = std::fs::read_to_string(&report).unwrap();
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&raw).unwrap()["errors"],
+        serde_json::json!([]),
+        "{raw}"
+    );
+}
+
+#[test]
 fn validate_refuses_an_output_parent_it_cannot_create_before_it_has_a_verdict() {
     let dir = tempdir().unwrap();
     // a file where the report's parent would go: create_dir_all cannot pass it
