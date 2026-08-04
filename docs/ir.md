@@ -65,6 +65,8 @@ fields:
 
 `format` supports: `slug`, `ip_address`, `cidr`, `prefix`, `mac`, `uuid`.
 
+a `date`, `datetime` or `time` value is rfc 3339: `2026-08-01`, `22:00:00` (fractional seconds optional), and the two joined by `t` with an optional `z` or `+HH:MM` offset (`2026-08-01T22:00:00Z`). lowercase `t` and `z` are accepted, and the offset is optional, so a naive `2026-08-01T22:00:00` is valid. the calendar is checked too, not only the shape, so `2026-02-30` and `2026-13-01` are errors.
+
 `nullable` also shapes provisioned schema: the django adapter emits `null=True`. it does the same for any non-text field that is not `required`, since a django column without `null=True` is NOT NULL whatever the form layer says. optional text fields hold the empty string instead, and optional `json`/`list`/`map` fields get `default=dict`/`default=list`.
 
 composite types take a further mandatory key alongside `type`: `list` takes `item`, `map` takes `value`, `enum` takes `values`, `ref` and `list_ref` take `target`.
