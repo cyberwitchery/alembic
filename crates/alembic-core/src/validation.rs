@@ -1026,8 +1026,11 @@ fn is_rfc3339_date(raw: &str) -> bool {
     ) else {
         return false;
     };
+    // year 0 is rejected like a leap second is, and for the same reason: python's
+    // `datetime`, which the django adapter's date columns go through, has
+    // `MINYEAR = 1`. `\d{4}` already caps the top end at `MAXYEAR`.
     // a month outside 1..=12 has no days, so the day check rejects it too.
-    (1..=days_in_month(year, month)).contains(&day)
+    year != 0 && (1..=days_in_month(year, month)).contains(&day)
 }
 
 /// rfc 3339 `partial-time`, with optional fractional seconds.
@@ -2998,6 +3001,13 @@ mod tests {
         assert!(accepts(FieldType::Date, "2024-02-29"));
         assert!(rejects(FieldType::Date, "2100-02-29"));
         assert!(accepts(FieldType::Date, "2000-02-29"));
+        // year 0 is rejected (see `is_rfc3339_date`), and the gregorian rule
+        // would otherwise call it a leap year.
+        assert!(rejects(FieldType::Date, "0000-01-01"));
+        assert!(rejects(FieldType::Date, "0000-02-29"));
+        // the bounds themselves validate; this is not a narrower range check.
+        assert!(accepts(FieldType::Date, "0001-01-01"));
+        assert!(accepts(FieldType::Date, "9999-12-31"));
     }
 
     #[test]
@@ -3031,6 +3041,8 @@ mod tests {
         assert!(rejects(FieldType::Datetime, "2026-08-01"));
         // both halves are checked as they are on their own types.
         assert!(rejects(FieldType::Datetime, "2026-02-30T22:00:00Z"));
+        assert!(rejects(FieldType::Datetime, "0000-01-01T22:00:00Z"));
+        assert!(accepts(FieldType::Datetime, "0001-01-01T22:00:00Z"));
         assert!(rejects(FieldType::Datetime, "2026-08-01T25:00:00Z"));
         assert!(rejects(FieldType::Datetime, "2026-08-01T22:00:00+24:00"));
         assert!(rejects(FieldType::Datetime, "2026-08-01T22:00:00+02:60"));
