@@ -11,16 +11,19 @@ use std::fmt::Display;
 use std::path::PathBuf;
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AppConfig {
     pub plugins_dir: PathBuf,
 }
 
 impl AppConfig {
     fn figment() -> Figment {
+        // `app::state` shares the prefix and reads its variables directly, so taking
+        // only this struct's keys keeps `deny_unknown_fields` off `ALEMBIC_STATE_*`.
         Figment::from(Serialized::defaults(Self::default()))
             .merge(Yaml::file("alembic.yaml"))
             .merge(Yaml::file("alembic.yml"))
-            .merge(Env::prefixed("ALEMBIC_"))
+            .merge(Env::prefixed("ALEMBIC_").only(&["plugins_dir"]))
     }
 
     pub(crate) fn load() -> Result<AppConfig, AppConfigError> {

@@ -5,12 +5,19 @@ the following order:
 
 1. built-in app defaults
 2. keys set in `alembic.yaml` (or `alembic.yml`), placed in the working directory
-3. environment variables with the prefix `ALEMBIC_`
+3. environment variables named after a configuration key, with the prefix `ALEMBIC_`
+
+the config file rejects a key it does not know. typos surface as errors,
+not silently ignored settings.
 
 ## available configuration keys
 
 - `plugins_dir` where the alembic cli will look for plugin
   configuration files (which must have the file ending `.yaml` or `.yml`).
+
+the `ALEMBIC_STATE_*` variables are a separate, env-only surface: they select the
+state backend rather than a configuration key, and cannot be set in
+`alembic.yaml`. see [state](state.md) for the full list.
 
 ## examples
 
