@@ -16,13 +16,15 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use self::io::{
-    read_plan, warn_misleading_output_extension, write_apply_report, write_drift_report,
-    write_inventory, write_plan, write_validation_report,
+    read_plan, write_apply_report, write_drift_report, write_inventory, write_plan,
+    write_validation_report,
 };
 use self::state::load_state;
 use crate::app::config::AppConfig;
 use alembic_core::TypeName;
 
+#[cfg(test)]
+use self::io::warn_misleading_output_extension;
 #[cfg(test)]
 use self::state::{resolve_state_backend_config, state_path, StateBackendConfig};
 #[cfg(test)]
@@ -239,9 +241,6 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             // written on both outcomes: a ci gate wants an artifact either way,
             // and an absent file would be indistinguishable from a crash.
             if let Some(output) = &output {
-                if let Some(msg) = warn_misleading_output_extension(output) {
-                    eprintln!("{msg}");
-                }
                 write_validation_report(output, &located)?;
                 println!("validation report written to {}", output.display());
             }
@@ -328,9 +327,6 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                 // the machine-readable half of the same report: a drift document,
                 // never a plan, and still no state save
                 if let Some(output) = &output {
-                    if let Some(msg) = warn_misleading_output_extension(output) {
-                        eprintln!("{msg}");
-                    }
                     write_drift_report(output, &drift)?;
                     println!("\ndrift report written to {}", output.display());
                 }
@@ -341,9 +337,6 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                 let Some(output) = output else {
                     return Err(anyhow!("--output is required unless --report or --dry-run"));
                 };
-                if let Some(msg) = warn_misleading_output_extension(&output) {
-                    eprintln!("{msg}");
-                }
                 write_plan(&output, &plan)?;
                 state.save_async().await?;
                 // human-readable, per-op view of what apply would do (see before
@@ -422,9 +415,6 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             // machine-readable record of what this run wrote, on the success
             // path only: state.json is cumulative and the journal is gone by now.
             if let Some(output) = output {
-                if let Some(msg) = warn_misleading_output_extension(&output) {
-                    eprintln!("{msg}");
-                }
                 write_apply_report(&output, &report)?;
                 println!("apply report written to {}", output.display());
             }
@@ -469,9 +459,6 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                 let input = load_inventory(&file)?;
                 let spec = alembic_engine::load_map_spec(&spec)?;
                 let inventory = alembic_engine::compile_map(&input, &spec)?;
-                if let Some(msg) = warn_misleading_output_extension(&output) {
-                    eprintln!("{msg}");
-                }
                 write_inventory(&output, &inventory)?;
                 println!("ir written to {}", output.display());
             }
@@ -491,9 +478,6 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             let report =
                 alembic_engine::import_inventory(backend.observer()?, &inventory.schema, &types)
                     .await?;
-            if let Some(msg) = warn_misleading_output_extension(&output) {
-                eprintln!("{msg}");
-            }
             write_inventory(&output, &report.inventory)?;
             println!("inventory written to {}", output.display());
         }

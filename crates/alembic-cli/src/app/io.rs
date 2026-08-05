@@ -1,5 +1,6 @@
 use alembic_engine::{ApplyReport, DriftReport, Plan};
 use anyhow::{anyhow, Context, Result};
+use serde::Serialize;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -116,37 +117,40 @@ fn probe_path(path: &Path) -> PathBuf {
     }
 }
 
-pub(super) fn write_plan(path: &Path, plan: &Plan) -> Result<()> {
+/// every `-o` write: warn on a misleading extension, then write `value` as
+/// pretty json. one call so a new output cannot keep the write and silently
+/// lose the warning; unlike the preflight, the warning has no `output_path` to
+/// gate it. announcing stays with the caller, which is per-site and interleaved.
+fn write_output<T: Serialize>(path: &Path, what: &str, value: &T) -> Result<()> {
+    if let Some(msg) = warn_misleading_output_extension(path) {
+        eprintln!("{msg}");
+    }
     ensure_parent_dir(path)?;
-    let raw = serde_json::to_string_pretty(plan)?;
-    fs::write(path, raw).with_context(|| format!("write plan: {}", path.display()))
+    let raw = serde_json::to_string_pretty(value)?;
+    fs::write(path, raw).with_context(|| format!("write {what}: {}", path.display()))
+}
+
+pub(super) fn write_plan(path: &Path, plan: &Plan) -> Result<()> {
+    write_output(path, "plan", plan)
 }
 
 pub(super) fn write_apply_report(path: &Path, report: &ApplyReport) -> Result<()> {
-    ensure_parent_dir(path)?;
-    let raw = serde_json::to_string_pretty(report)?;
-    fs::write(path, raw).with_context(|| format!("write apply report: {}", path.display()))
+    write_output(path, "apply report", report)
 }
 
 pub(super) fn write_drift_report(path: &Path, report: &DriftReport) -> Result<()> {
-    ensure_parent_dir(path)?;
-    let raw = serde_json::to_string_pretty(report)?;
-    fs::write(path, raw).with_context(|| format!("write drift report: {}", path.display()))
+    write_output(path, "drift report", report)
 }
 
 pub(super) fn write_validation_report(
     path: &Path,
     report: &alembic_core::LocatedReport,
 ) -> Result<()> {
-    ensure_parent_dir(path)?;
-    let raw = serde_json::to_string_pretty(report)?;
-    fs::write(path, raw).with_context(|| format!("write validation report: {}", path.display()))
+    write_output(path, "validation report", report)
 }
 
 pub(super) fn write_inventory(path: &Path, inventory: &alembic_core::Inventory) -> Result<()> {
-    ensure_parent_dir(path)?;
-    let raw = serde_json::to_string_pretty(inventory)?;
-    fs::write(path, raw).with_context(|| format!("write ir: {}", path.display()))
+    write_output(path, "ir", inventory)
 }
 
 pub(super) fn read_plan(path: &Path) -> Result<Plan> {
@@ -158,9 +162,10 @@ pub(super) fn read_plan(path: &Path) -> Result<Plan> {
 /// warning that the file is written as JSON despite its name; `None` otherwise
 /// (any other extension, or none).
 ///
-/// pure: it returns the message instead of printing, so callers choose the sink
-/// (stderr) and it stays unit-testable. this is a gentle nudge, never an error:
-/// the file is still written and existing workflows keep working.
+/// it returns the message rather than printing it so it stays unit-testable;
+/// `write_output` is the only caller and puts it on stderr. this is a gentle
+/// nudge, never an error: the file is still written and existing workflows keep
+/// working.
 pub(super) fn warn_misleading_output_extension(path: &Path) -> Option<String> {
     let ext = path.extension().and_then(|s| s.to_str())?;
     if ext.eq_ignore_ascii_case("yaml") || ext.eq_ignore_ascii_case("yml") {
