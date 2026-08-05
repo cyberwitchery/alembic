@@ -1263,6 +1263,26 @@ fn guard_schema_deletes_gate() {
 }
 
 #[test]
+fn guard_drift_report_refuses_a_write_only_backend() {
+    let adapter = || TestAdapter {
+        observed: ObservedState::default(),
+        report: ApplyReport::default(),
+    };
+    // an emitter is planned against an empty observation, so a report over it
+    // would assert absence it never read.
+    let emitter = Backend::Emitter(Box::new(adapter()));
+    let err = guard_drift_report(&emitter).unwrap_err().to_string();
+    // one string, not two: re-inlining a literal at either site breaks this.
+    let refused_by_import = emitter.observer().err().unwrap().to_string();
+    assert!(err.starts_with(&refused_by_import), "{err}");
+    assert!(err.contains("without --report"), "{err}");
+
+    // an observer still reports drift, it just cannot apply it.
+    guard_drift_report(&Backend::Observer(Box::new(adapter()))).unwrap();
+    guard_drift_report(&Backend::Adapter(Box::new(adapter()))).unwrap();
+}
+
+#[test]
 fn apply_plan_blocks_schema_deletes_without_flag() {
     let adapter = TestAdapter {
         observed: ObservedState::default(),

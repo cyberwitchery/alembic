@@ -358,14 +358,16 @@ pub enum Backend {
     Adapter(Box<dyn Adapter>),
 }
 
+/// every refusal of an observation over an emitter opens with these words, so
+/// rewording one rewords all of them.
+pub(crate) const CANNOT_OBSERVE: &str = "backend is write-only; it cannot observe state";
+
 impl Backend {
     pub fn observer(&self) -> anyhow::Result<&dyn Observer> {
         match self {
             Backend::Observer(observer) => Ok(observer.as_ref()),
             Backend::Adapter(adapter) => Ok(adapter.as_ref()),
-            Backend::Emitter(_) => Err(anyhow::anyhow!(
-                "backend is write-only; it cannot observe state"
-            )),
+            Backend::Emitter(_) => Err(anyhow::anyhow!(CANNOT_OBSERVE)),
         }
     }
 

@@ -231,9 +231,10 @@ the adapter contract the adapter implements. the result carries a `role`:
 
 - `observer`: read-only. the host calls `read` but never `write`; `apply`
   rejects the backend up front.
-- `emitter`: write-only. the host calls `write` but never `read`; `plan` plans
-  every declared object as a create against an empty observation, and `import`
-  rejects the backend up front instead of observing nothing.
+- `emitter`: write-only. the host calls `write` but never `read`; plain `plan`
+  plans every declared object as a create against an empty observation, while
+  `import` and `plan --report` reject the backend up front instead of
+  observing nothing.
 - `adapter`: read+write; the host may call every method.
 
 an adapter that does not answer capabilities (the unknown-method error, or any

@@ -135,7 +135,7 @@ NETBOX_URL=https://netbox.example.com NETBOX_TOKEN=$NETBOX_TOKEN \
 ```
 
 - creates a deterministic plan
-- against a write-only (emitter) backend such as `django`, which cannot report existing state, plan produces an all-creates plan against an empty observation
+- against a write-only (emitter) backend such as `django`, which cannot report existing state, plain `plan` produces an all-creates plan against an empty observation, while `--report` is rejected up front (see below)
 - writes json plan to the `-o`/`--output` path (required only for this default write path), and prints a human-readable per-op summary of that plan (create/update/delete, with per-field `from -> to` for updates; long categories are truncated) so you can read what apply would do before applying
 - honors `--allow-delete` if you want delete ops
 - without `--provision`, plan asks the backend for a read-only schema preview (what `apply`'s `ensure_schema` would create/delete, writing nothing) and prints it to stderr as `schema preview: ...`; the machine-readable copy rides in the plan's `schema_preview`. backends that cannot preview report `schema preview: unavailable for this backend`
@@ -166,6 +166,18 @@ standalone human-readable summary grouped into three categories:
 it is one-way by construction: it only ever describes how observed state diverges
 from intent and never writes observed state back into the inventory or state
 store.
+
+every category is an assertion about observed backend state, so `--report`
+requires a backend that can observe, and refuses a write-only (emitter) one in
+the terms `import` refuses it (`backend is write-only; it cannot observe
+state`), before provisioning and before any backend read or write. an `-o` that
+cannot be written is still reported first, since that check runs for every
+command before any backend is built. such a backend is planned against an empty
+observation, so the report would otherwise list every declared object as
+`missing` from a backend nothing had read, say the same thing forever however
+much had already been emitted, and never populate `extra`. plain `plan` is
+unaffected: against an emitter it still plans every declared object as a create,
+which is what `apply` emits.
 
 `-o`/`--output` writes the same report as json, the machine-readable half of the
 document the summary prints. it is optional: the summary prints either way, and
