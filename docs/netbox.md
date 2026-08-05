@@ -33,7 +33,9 @@ and supported feature set.
 - on apply, custom fields and tags are only sent when the object type advertises support
   via the `features` set.
 - tags the applied objects reference but the backend lacks are created at apply, not
-  during schema provisioning.
+  during schema provisioning. a successful apply lists them in `provision.created_tags`;
+  a tag that already existed is not listed. they are created before the ops, so an apply
+  that fails afterwards leaves a tag no report names, in that run or the resumed one.
 
 ## custom objects (netbox custom objects plugin)
 

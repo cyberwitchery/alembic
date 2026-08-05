@@ -1577,6 +1577,91 @@ fn apply_plan_emitter_writes_and_provisions_nothing() {
     );
 }
 
+/// provisions in both passes of one apply: a field from `ensure_schema`, a tag
+/// from `write` (tags come from the ops, so only the write pass knows them).
+struct TwoPassAdapter;
+
+#[async_trait::async_trait]
+impl Observer for TwoPassAdapter {
+    async fn read(
+        &self,
+        _schema: &alembic_core::Schema,
+        _types: &[TypeName],
+        _state: &StateStore,
+    ) -> anyhow::Result<ObservedState> {
+        Ok(ObservedState::default())
+    }
+}
+
+#[async_trait::async_trait]
+impl Emitter for TwoPassAdapter {
+    async fn write(
+        &self,
+        _schema: &alembic_core::Schema,
+        _ops: &[Op],
+        _state: &StateStore,
+    ) -> anyhow::Result<ApplyReport> {
+        Ok(ApplyReport {
+            provision: ProvisionReport {
+                created_tags: vec!["fabric".to_string()],
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl Adapter for TwoPassAdapter {
+    async fn ensure_schema(
+        &self,
+        _schema: &alembic_core::Schema,
+    ) -> anyhow::Result<ProvisionReport> {
+        Ok(ProvisionReport {
+            created_fields: vec!["dcim.site.role".to_string()],
+            ..Default::default()
+        })
+    }
+}
+
+fn empty_plan() -> Plan {
+    Plan {
+        schema: Schema {
+            types: BTreeMap::new(),
+        },
+        ops: vec![],
+        summary: None,
+        schema_preview: None,
+    }
+}
+
+#[test]
+fn apply_plan_merges_both_provision_passes() {
+    let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
+    let backend = Backend::Adapter(Box::new(TwoPassAdapter));
+    let report =
+        futures::executor::block_on(apply_plan(&backend, &empty_plan(), &mut state, true)).unwrap();
+    // the write pass survives instead of being overwritten by ensure_schema's report,
+    assert_eq!(report.provision.created_tags, vec!["fabric".to_string()]);
+    // and ensure_schema's categories still come through.
+    assert_eq!(
+        report.provision.created_fields,
+        vec!["dcim.site.role".to_string()]
+    );
+}
+
+#[test]
+fn apply_plan_keeps_an_emitters_write_provision() {
+    let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
+    // the emitter arm has no ensure_schema report of its own; merging an empty one
+    // must not blank what write reported.
+    let backend = Backend::Emitter(Box::new(TwoPassAdapter));
+    let report =
+        futures::executor::block_on(apply_plan(&backend, &empty_plan(), &mut state, true)).unwrap();
+    assert_eq!(report.provision.created_tags, vec!["fabric".to_string()]);
+    assert!(report.provision.created_fields.is_empty());
+}
+
 #[test]
 fn apply_plan_rejects_read_only_observer() {
     let adapter = TestAdapter {

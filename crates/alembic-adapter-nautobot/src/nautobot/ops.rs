@@ -110,12 +110,13 @@ impl Emitter for NautobotAdapter {
             }
         }
 
+        let mut created_tags = Vec::new();
         let tag_names = collect_tag_names(ops, |tn| registry.info_for(tn).map(|i| i.features))?;
         if !tag_names.is_empty() {
             let mut existing = self.client.fetch_tags().await?;
             let missing: Vec<String> = tag_names.difference(&existing).cloned().collect();
             if !missing.is_empty() {
-                self.create_tags(&missing).await?;
+                created_tags = self.create_tags(&missing).await?;
                 for tag in missing {
                     existing.insert(tag);
                 }
@@ -268,7 +269,10 @@ impl Emitter for NautobotAdapter {
             applied,
             resumed,
             previously_applied_count,
-            ..Default::default()
+            provision: ProvisionReport {
+                created_tags,
+                ..Default::default()
+            },
         })
     }
 }
@@ -505,8 +509,11 @@ impl NautobotAdapter {
         Ok(Some(id))
     }
 
-    async fn create_tags(&self, tags: &[String]) -> Result<()> {
+    /// returns the tags this call created. a tag that lost the race and already
+    /// existed is not one of them.
+    async fn create_tags(&self, tags: &[String]) -> Result<Vec<String>> {
         let resource = self.client.extras().tags();
+        let mut created = Vec::new();
         for tag in tags {
             let payload = serde_json::json!({
                 "name": tag,
@@ -520,8 +527,9 @@ impl NautobotAdapter {
                 }
                 return Err(err.into());
             }
+            created.push(tag.clone());
         }
-        Ok(())
+        Ok(created)
     }
 
     async fn create_custom_field(

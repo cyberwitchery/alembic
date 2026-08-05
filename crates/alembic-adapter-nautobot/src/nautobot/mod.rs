@@ -110,6 +110,48 @@ mod tests {
         StateStore::load(dir.join("state.json")).unwrap()
     }
 
+    // site_schema plus the tags field the tag tests apply.
+    fn tagged_site_schema() -> Schema {
+        let mut schema = site_schema();
+        schema.types.get_mut("dcim.site").unwrap().fields.insert(
+            "tags".to_string(),
+            field(FieldType::List {
+                item: Box::new(FieldType::String),
+            }),
+        );
+        schema
+    }
+
+    fn tagged_site_ops(tags: serde_json::Value) -> Vec<Op> {
+        vec![Op::Create {
+            uid: uid(1),
+            type_name: TypeName::new("dcim.site"),
+            desired: Object::new(
+                uid(1),
+                TypeName::new("dcim.site"),
+                key("name", json!("FRA1")),
+                attrs(json!({ "name": "FRA1", "slug": "fra1", "tags": tags })),
+            )
+            .unwrap(),
+        }]
+    }
+
+    // nautobot's tag serializer requires content_types.
+    fn tag_body(id: &str, name: &str) -> serde_json::Value {
+        json!({ "id": id, "name": name, "slug": name, "content_types": [] })
+    }
+
+    fn mock_site_create(server: &MockServer) {
+        let _m = server.mock(|when, then| {
+            when.method(POST).path("/api/dcim/sites/");
+            then.status(201).json_body(json!({
+                "id": "11111111-1111-1111-1111-111111111111",
+                "name": "FRA1",
+                "slug": "fra1"
+            }));
+        });
+    }
+
     #[tokio::test]
     async fn observe_reads_objects_and_maps_backend_id() {
         let server = MockServer::start();
@@ -488,5 +530,113 @@ mod tests {
         );
         // read-only: the custom-field create endpoint saw zero writes.
         cf_create.assert_calls(0);
+    }
+
+    #[tokio::test]
+    async fn apply_creates_missing_tags() {
+        let server = MockServer::start();
+        let dir = tempdir().unwrap();
+        mock_content_types(&server);
+        mock_empty_custom_fields(&server);
+        mock_site_create(&server);
+        let _tags = server.mock(|when, then| {
+            when.method(GET).path("/api/extras/tags/");
+            then.status(200).json_body(page(json!([])));
+        });
+        let _tag_create = server.mock(|when, then| {
+            when.method(POST).path("/api/extras/tags/");
+            then.status(201)
+                .json_body(tag_body("22222222-2222-2222-2222-222222222222", "fabric"));
+        });
+
+        let adapter = NautobotAdapter::new(&server.base_url(), "token").unwrap();
+        let report = adapter
+            .write(
+                &tagged_site_schema(),
+                &tagged_site_ops(json!(["fabric"])),
+                &state(dir.path()),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(report.applied.len(), 1);
+        assert_eq!(report.provision.created_tags, vec!["fabric".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn apply_does_not_report_tags_the_backend_already_has() {
+        let server = MockServer::start();
+        let dir = tempdir().unwrap();
+        mock_content_types(&server);
+        mock_empty_custom_fields(&server);
+        mock_site_create(&server);
+        let _tags = server.mock(|when, then| {
+            when.method(GET).path("/api/extras/tags/");
+            then.status(200).json_body(page(json!([tag_body(
+                "22222222-2222-2222-2222-222222222222",
+                "fabric"
+            )])));
+        });
+        let _tag_create = server.mock(|when, then| {
+            when.method(POST).path("/api/extras/tags/");
+            then.status(201)
+                .json_body(tag_body("33333333-3333-3333-3333-333333333333", "edge"));
+        });
+
+        let adapter = NautobotAdapter::new(&server.base_url(), "token").unwrap();
+        let report = adapter
+            .write(
+                &tagged_site_schema(),
+                &tagged_site_ops(json!(["fabric", "edge"])),
+                &state(dir.path()),
+            )
+            .await
+            .unwrap();
+
+        // only the one this run actually posted.
+        assert_eq!(report.provision.created_tags, vec!["edge".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn apply_does_not_report_a_tag_that_lost_the_create_race() {
+        let server = MockServer::start();
+        let dir = tempdir().unwrap();
+        mock_content_types(&server);
+        mock_empty_custom_fields(&server);
+        mock_site_create(&server);
+        // the first fetch sees no tags, so `fabric` is planned; the re-fetch after the
+        // create fails sees it, i.e. someone else created it in between.
+        let first_fetch = std::sync::atomic::AtomicBool::new(true);
+        let _tags_empty = server.mock(|when, then| {
+            when.method(GET)
+                .path("/api/extras/tags/")
+                .is_true(move |_| first_fetch.swap(false, std::sync::atomic::Ordering::SeqCst));
+            then.status(200).json_body(page(json!([])));
+        });
+        let _tags_present = server.mock(|when, then| {
+            when.method(GET).path("/api/extras/tags/");
+            then.status(200).json_body(page(json!([tag_body(
+                "22222222-2222-2222-2222-222222222222",
+                "fabric"
+            )])));
+        });
+        let _tag_create = server.mock(|when, then| {
+            when.method(POST).path("/api/extras/tags/");
+            then.status(400)
+                .json_body(json!({"name": ["tag with this name already exists."]}));
+        });
+
+        let adapter = NautobotAdapter::new(&server.base_url(), "token").unwrap();
+        let report = adapter
+            .write(
+                &tagged_site_schema(),
+                &tagged_site_ops(json!(["fabric"])),
+                &state(dir.path()),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(report.applied.len(), 1);
+        assert!(report.provision.created_tags.is_empty());
     }
 }

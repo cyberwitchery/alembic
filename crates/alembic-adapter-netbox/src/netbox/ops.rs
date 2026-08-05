@@ -106,12 +106,13 @@ impl Emitter for NetBoxAdapter {
             }
         }
 
+        let mut created_tags = Vec::new();
         let tag_names = collect_tag_names(ops, |tn| registry.info_for(tn).map(|i| i.features))?;
         if !tag_names.is_empty() {
             let mut existing = self.client.fetch_tags().await?;
             let missing: Vec<String> = tag_names.difference(&existing).cloned().collect();
             if !missing.is_empty() {
-                self.create_tags(&missing).await?;
+                created_tags = self.create_tags(&missing).await?;
                 for tag in missing {
                     existing.insert(tag);
                 }
@@ -265,7 +266,10 @@ impl Emitter for NetBoxAdapter {
             applied,
             resumed,
             previously_applied_count,
-            ..Default::default()
+            provision: ProvisionReport {
+                created_tags,
+                ..Default::default()
+            },
         })
     }
 }
@@ -289,7 +293,6 @@ impl Adapter for NetBoxAdapter {
             .await?;
 
         let mut created_fields = Vec::new();
-        let created_tags = Vec::new();
         let mut created_object_types = Vec::new();
         let mut created_object_fields = Vec::new();
         let mut deleted_object_types = Vec::new();
@@ -409,7 +412,8 @@ impl Adapter for NetBoxAdapter {
 
         Ok(ProvisionReport {
             created_fields,
-            created_tags,
+            // tags are derived from the plan's ops, so only `write` creates them.
+            created_tags: Vec::new(),
             created_object_types,
             created_object_fields,
             deprecated_object_types: Vec::new(),
@@ -729,8 +733,11 @@ impl NetBoxAdapter {
         Ok(Some(id))
     }
 
-    async fn create_tags(&self, tags: &[String]) -> Result<()> {
+    /// returns the tags this call created. a tag that lost the race and already
+    /// existed is not one of them.
+    async fn create_tags(&self, tags: &[String]) -> Result<Vec<String>> {
         let resource = self.client.extras().tags();
+        let mut created = Vec::new();
         for tag in tags {
             let payload = serde_json::json!({
                 "name": tag,
@@ -744,8 +751,9 @@ impl NetBoxAdapter {
                 }
                 return Err(err.into());
             }
+            created.push(tag.clone());
         }
-        Ok(())
+        Ok(created)
     }
 
     async fn create_custom_field(

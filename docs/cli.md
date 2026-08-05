@@ -266,7 +266,11 @@ note that apply has no transaction semantics. writes land on the backend one at 
 
 the per-run record of what this apply wrote: one entry per applied op, carrying
 the backend id the write returned (an integer or a string, whichever the backend
-uses), plus the `provision` report of what `ensure_schema` created or deleted.
+uses), plus the `provision` report of what this apply provisioned. that report
+covers both passes: what `ensure_schema` created or deleted, and the tags the
+write created. tags are derived from the plan's ops rather than from the schema,
+so only the write pass knows them and `plan --provision`'s schema preview cannot
+report them.
 `backend_id` is absent when the write returns none: a delete, which leaves no
 object behind, or an emitter backend such as `django`, which assigns no ids of
 its own and keys the emitted objects by uid. `previously_applied_count` is
@@ -278,7 +282,9 @@ it is written on the success path only, so a report file means the whole plan
 applied; a failed apply leaves the previous run's file untouched rather than
 writing a partial one, and the output path is write-probed before the apply
 starts, so a bad `-o` fails before the backend is written to rather than failing
-an apply that landed. the `applied` list covers the current run's ops: after a
+an apply that landed. tags are created before the ops, so a failed apply can
+leave a tag behind that no report names, in that run or the resumed one, which
+sees it as existing. the `applied` list covers the current run's ops: after a
 resume, the ops the interrupted run applied appear under `resumed` instead, in
 the same shape, each with the backend id its write returned. that list is
 present only on a resumed run, and is empty for a journal written before ids
