@@ -890,7 +890,7 @@ fn validate_field_value(
                 report.errors.push(ValidationError::InvalidValue {
                     field: format!("{type_name}.{field}"),
                     expected: field_type_label(&field_schema.r#type),
-                    actual: value_type_label(value),
+                    actual: mismatch_actual(value, &field_schema.r#type),
                 });
             }
         }
@@ -913,10 +913,12 @@ fn validate_ref(
     report: &mut ValidationReport,
 ) {
     let Some(uid) = parse_uid(value) else {
+        // `parse_uid` fails on both halves of the check, so it takes the same
+        // split as the field types: a uuid check on a string is a format check.
         report.errors.push(ValidationError::InvalidValue {
             field: format!("{type_name}.{field}"),
             expected: "uuid".to_string(),
-            actual: value_type_label(value),
+            actual: mismatch_actual(value, &FieldType::Uuid),
         });
         return;
     };
@@ -1013,8 +1015,22 @@ fn format_label(format: &FieldFormat) -> String {
     }
 }
 
-fn value_matches_type(value: &Value, field_type: &FieldType) -> bool {
+/// how a field type checks its value: as a textual check on a string, or as a
+/// json-type test. the one list `value_matches_type` and `mismatch_actual` read.
+enum ValueCheck {
+    Text(fn(&str) -> bool),
+    Json(fn(&Value) -> bool),
+}
+
+fn type_check(field_type: &FieldType) -> ValueCheck {
     match field_type {
+        // format-typed fields with an unambiguous textual format must hold a
+        // string that matches it, mirroring how the `format:` constraint validates.
+        FieldType::Uuid => ValueCheck::Text(|raw| matches_format(&FieldFormat::Uuid, raw)),
+        FieldType::Cidr => ValueCheck::Text(|raw| matches_format(&FieldFormat::Cidr, raw)),
+        FieldType::Prefix => ValueCheck::Text(|raw| matches_format(&FieldFormat::Prefix, raw)),
+        FieldType::Mac => ValueCheck::Text(|raw| matches_format(&FieldFormat::Mac, raw)),
+        FieldType::Slug => ValueCheck::Text(|raw| matches_format(&FieldFormat::Slug, raw)),
         FieldType::String
         | FieldType::Text
         | FieldType::Date
@@ -1024,31 +1040,26 @@ fn value_matches_type(value: &Value, field_type: &FieldType) -> bool {
         // carry NetBox-style masked addresses (`10.0.0.10/24`) that the strict
         // `IpAddr` format rejects, so whether it should accept a mask is a
         // convention decision left to the maintainer rather than guessed here.
-        | FieldType::IpAddress => value.is_string(),
-        // format-typed fields with an unambiguous textual format must hold a
-        // string that matches it, mirroring how the `format:` constraint validates.
-        FieldType::Uuid => value_matches_format(value, &FieldFormat::Uuid),
-        FieldType::Cidr => value_matches_format(value, &FieldFormat::Cidr),
-        FieldType::Prefix => value_matches_format(value, &FieldFormat::Prefix),
-        FieldType::Mac => value_matches_format(value, &FieldFormat::Mac),
-        FieldType::Slug => value_matches_format(value, &FieldFormat::Slug),
-        FieldType::Int => value.is_i64() || value.is_u64(),
-        FieldType::Float => value.as_f64().is_some() || value.is_i64() || value.is_u64(),
-        FieldType::Bool => value.is_boolean(),
-        FieldType::Json => true,
-        FieldType::Enum { .. } => value.is_string(),
-        FieldType::List { .. } => value.is_array(),
-        FieldType::Map { .. } => value.is_object(),
-        FieldType::Ref { .. } | FieldType::ListRef { .. } => true,
+        | FieldType::IpAddress
+        | FieldType::Enum { .. } => ValueCheck::Json(Value::is_string),
+        FieldType::Int => ValueCheck::Json(|value| value.is_i64() || value.is_u64()),
+        FieldType::Float => {
+            ValueCheck::Json(|value| value.as_f64().is_some() || value.is_i64() || value.is_u64())
+        }
+        FieldType::Bool => ValueCheck::Json(Value::is_boolean),
+        FieldType::List { .. } => ValueCheck::Json(Value::is_array),
+        FieldType::Map { .. } => ValueCheck::Json(Value::is_object),
+        FieldType::Json | FieldType::Ref { .. } | FieldType::ListRef { .. } => {
+            ValueCheck::Json(|_| true)
+        }
     }
 }
 
-/// a value satisfies a format-typed field when it is a string matching that format.
-fn value_matches_format(value: &Value, format: &FieldFormat) -> bool {
-    value
-        .as_str()
-        .map(|raw| matches_format(format, raw))
-        .unwrap_or(false)
+fn value_matches_type(value: &Value, field_type: &FieldType) -> bool {
+    match type_check(field_type) {
+        ValueCheck::Text(check) => value.as_str().is_some_and(check),
+        ValueCheck::Json(check) => check(value),
+    }
 }
 
 fn field_type_label(field_type: &FieldType) -> String {
@@ -1084,6 +1095,15 @@ fn value_type_label(value: &Value) -> String {
         Value::String(_) => "string".to_string(),
         Value::Array(_) => "array".to_string(),
         Value::Object(_) => "object".to_string(),
+    }
+}
+
+/// which half of a failed check to name: a string failing a textual check failed
+/// the format, so it echoes the value; anything else names its json type.
+fn mismatch_actual(value: &Value, field_type: &FieldType) -> String {
+    match (value.as_str(), type_check(field_type)) {
+        (Some(raw), ValueCheck::Text(_)) => raw.to_string(),
+        _ => value_type_label(value),
     }
 }
 
@@ -2634,6 +2654,20 @@ mod tests {
             .any(|e| matches!(e, ValidationError::InvalidValue { .. }))
     }
 
+    /// the `expected`/`actual` pair of the first `InvalidValue` in the report.
+    fn invalid_value_pair(report: &ValidationReport) -> (String, String) {
+        report
+            .errors
+            .iter()
+            .find_map(|e| match e {
+                ValidationError::InvalidValue {
+                    expected, actual, ..
+                } => Some((expected.clone(), actual.clone())),
+                _ => None,
+            })
+            .expect("expected an InvalidValue")
+    }
+
     #[test]
     fn format_slug_accepts_valid_and_rejects_invalid() {
         assert!(check(&fmt_field(FieldFormat::Slug), &json!("leaf-01"))
@@ -2722,7 +2756,7 @@ mod tests {
 
     #[test]
     fn type_ip_address_accepts_any_string_including_masked() {
-        // `ip_address` is a plain string check (see value_matches_type)
+        // `ip_address` is a plain string check (see type_check)
         assert!(
             check(&typed_field(FieldType::IpAddress), &json!("10.0.0.10/24"))
                 .errors
@@ -2778,6 +2812,66 @@ mod tests {
             &typed_field(FieldType::Slug),
             &json!("Leaf01")
         )));
+    }
+
+    #[test]
+    fn format_typed_mismatch_names_the_value() {
+        // a string reaching the error path failed the format, not the json type,
+        // so the message names it the way a `format:` constraint does.
+        let cases = [
+            (FieldType::Uuid, "not-a-uuid", "uuid"),
+            (FieldType::Cidr, "not-a-cidr", "cidr"),
+            (FieldType::Prefix, "10.0.0.1", "prefix"),
+            (FieldType::Mac, "not-a-mac", "mac"),
+            (FieldType::Slug, "Leaf01", "slug"),
+        ];
+        for (field_type, raw, expected) in cases {
+            let report = check(&typed_field(field_type.clone()), &json!(raw));
+            assert_eq!(
+                invalid_value_pair(&report),
+                (expected.to_string(), raw.to_string()),
+                "{field_type:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn wrong_json_type_names_the_type() {
+        // the naive "echo every string" fix breaks this one: an int field holding
+        // "7" failed on the json type, and `got 7` would hide that.
+        assert_eq!(
+            invalid_value_pair(&check(&typed_field(FieldType::Int), &json!("7"))),
+            ("int".to_string(), "string".to_string())
+        );
+        // and a format-typed field can still fail on the json type.
+        assert_eq!(
+            invalid_value_pair(&check(&typed_field(FieldType::Mac), &json!(42))),
+            ("mac".to_string(), "number".to_string())
+        );
+    }
+
+    #[test]
+    fn ref_mismatch_names_the_malformed_uuid() {
+        let target = "device".to_string();
+        let field = typed_field(FieldType::Ref {
+            target: target.clone(),
+        });
+        assert_eq!(
+            invalid_value_pair(&check(&field, &json!("not-a-uuid"))),
+            ("uuid".to_string(), "not-a-uuid".to_string())
+        );
+        assert_eq!(
+            invalid_value_pair(&check(&field, &json!(42))),
+            ("uuid".to_string(), "number".to_string())
+        );
+        // list_ref reaches the same check per element.
+        assert_eq!(
+            invalid_value_pair(&check(
+                &typed_field(FieldType::ListRef { target }),
+                &json!(["not-a-uuid"])
+            )),
+            ("uuid".to_string(), "not-a-uuid".to_string())
+        );
     }
 
     #[test]
