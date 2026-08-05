@@ -2191,6 +2191,60 @@ async fn run_plan_report_refuses_a_write_only_backend() {
     assert!(!state_path.exists());
 }
 
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn run_plan_report_reports_an_unwritable_output_ahead_of_the_refusal() {
+    use std::os::unix::fs::PermissionsExt;
+    // both are wrong at once. the output preflight (#325) runs for every command
+    // before a backend is built, so it answers first, and the refusal below never
+    // gets to speak. docs/cli.md says so; this is what keeps that true.
+    let _guard = cwd_lock().lock().await;
+    let dir = tempdir().unwrap();
+    let state_path = dir.path().join(".alembic").join("state.json");
+    let _env = EnvVarGuard::acquire_async(&[
+        ("ALEMBIC_STATE_BACKEND", Some("local")),
+        ("ALEMBIC_STATE_PATH", Some(state_path.to_str().unwrap())),
+    ])
+    .await;
+    let inventory = write_site_inventory(dir.path());
+    // an existing target that denies writes, under a parent that allows them
+    let out = dir.path().join("drift.json");
+    std::fs::write(&out, "previous").unwrap();
+    std::fs::set_permissions(&out, std::fs::Permissions::from_mode(0o444)).unwrap();
+    // root ignores the mode bits, so ask the os rather than skipping
+    let sentinel = dir.path().join("sentinel");
+    std::fs::write(&sentinel, b"x").unwrap();
+    std::fs::set_permissions(&sentinel, std::fs::Permissions::from_mode(0o444)).unwrap();
+    if std::fs::write(&sentinel, b"y").is_ok() {
+        return;
+    }
+
+    let cwd = std::env::current_dir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
+    let cli = Cli {
+        command: Command::Plan {
+            file: inventory,
+            output: Some(out.clone()),
+            backend: Some("django".to_string()),
+            backend_config: None,
+            provision: false,
+            dry_run: false,
+            report: true,
+            allow_delete: false,
+        },
+    };
+    let result = run(cli, AppConfig::load().unwrap()).await;
+    std::env::set_current_dir(cwd).unwrap();
+
+    let err = format!("{:#}", result.expect_err("an unwritable -o must fail"));
+    assert!(err.contains("write output:"), "{err}");
+    assert!(
+        !err.contains("write-only"),
+        "the path check answers first, not the refusal: {err}"
+    );
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), "previous");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn run_plan_report_refuses_an_external_adapter_declaring_emitter() {
     let _guard = cwd_lock().lock().await;
