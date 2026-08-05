@@ -85,7 +85,8 @@ jobs:
       - name: Install Django deps
         run: |
           python -m pip install --upgrade pip
-          python -m pip install django djangorestframework django-filter drf-spectacular
+          # drf still imports cc_delim_re, which django 6.1 removed; drop the pin when drf supports 6.1
+          python -m pip install 'django<6.1' djangorestframework django-filter drf-spectacular
 
       - name: Provision postgres state table
         env:

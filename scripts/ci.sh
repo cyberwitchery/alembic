@@ -29,7 +29,7 @@ echo "--- Tests & Coverage ---"
 # ci sets ALEMBIC_DJANGO_PYTHON too, and with it set the django tests panic rather than skip
 if ! python3 -c 'import django, rest_framework, django_filters, drf_spectacular' >/dev/null 2>&1; then
     echo "Error: the django e2e packages are not importable from python3."
-    echo "Install them with: python3 -m pip install django djangorestframework django-filter drf-spectacular"
+    echo "Install them with: python3 -m pip install 'django<6.1' djangorestframework django-filter drf-spectacular"
     exit 1
 fi
 export ALEMBIC_DJANGO_PYTHON=python3
