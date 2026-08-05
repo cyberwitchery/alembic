@@ -1007,8 +1007,10 @@ fn time_regex() -> &'static Regex {
 fn datetime_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
+        // a lowercase zone is rejected like a leap second is: python's `datetime` takes
+        // any separator character, but only an uppercase `Z`.
         Regex::new(
-            r"^(\d{4}-\d{2}-\d{2})[Tt](\d{2}:\d{2}:\d{2}(?:\.\d+)?)(?:[Zz]|([+-]\d{2}:\d{2}))?$",
+            r"^(\d{4}-\d{2}-\d{2})[Tt](\d{2}:\d{2}:\d{2}(?:\.\d+)?)(?:Z|([+-]\d{2}:\d{2}))?$",
         )
         .unwrap()
     })
@@ -3030,8 +3032,10 @@ mod tests {
     fn type_datetime_enforces_rfc3339() {
         // the value `examples/walkthroughs/custom-model.yaml` carries.
         assert!(accepts(FieldType::Datetime, "2026-08-01T22:00:00Z"));
-        // rfc 3339 permits the lowercase separator and zone.
-        assert!(accepts(FieldType::Datetime, "2026-08-01t22:00:00z"));
+        // rfc 3339 permits both in lowercase; python takes the separator, not the zone.
+        assert!(accepts(FieldType::Datetime, "2026-08-01t22:00:00Z"));
+        assert!(rejects(FieldType::Datetime, "2026-08-01T22:00:00z"));
+        assert!(rejects(FieldType::Datetime, "2026-08-01t22:00:00z"));
         assert!(accepts(FieldType::Datetime, "2026-08-01T22:00:00+02:00"));
         assert!(accepts(FieldType::Datetime, "2026-08-01T22:00:00-05:30"));
         // the offset is optional here, deliberately (see `type_check`).
