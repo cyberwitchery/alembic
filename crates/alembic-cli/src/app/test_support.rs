@@ -119,6 +119,22 @@ impl Runner for FixtureRunner {
     }
 }
 
+/// cargo exports `CARGO_BIN_EXE_<name>` for bins but nothing for examples, so the
+/// path comes from `CARGO_TARGET_DIR` instead (an absolute value replaces the root).
+pub(crate) fn example_binary(name: &str) -> PathBuf {
+    let target_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join(std::env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| "target".to_string()));
+    let path = target_dir.join("debug").join("examples").join(name);
+    assert!(
+        path.exists(),
+        "example `{name}` is not built at {}: selecting a single test target does not build examples, so run `cargo test -p alembic-cli` or `cargo build --examples` first",
+        path.display()
+    );
+    path
+}
+
 pub(crate) fn write_minimal_inventory(dir: &Path) -> PathBuf {
     let inventory = dir.join("inventory.yaml");
     std::fs::write(&inventory, "schema:\n  types: {}\nobjects: []\n").unwrap();
