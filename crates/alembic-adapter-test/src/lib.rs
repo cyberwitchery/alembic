@@ -65,38 +65,48 @@ pub fn run_builtin(adapter: &[String], timeout: Duration) -> Vec<Outcome> {
     // a declared emitter does not implement read (the host never sends it one),
     // so its liveness check is an empty write instead of the empty read forced
     // on observers and full adapters.
-    let liveness = match role {
-        ExternalRole::Emitter => check(
-            adapter,
-            timeout,
+    let (liveness_name, method, request) = match role {
+        ExternalRole::Emitter => (
             "protocol/write-empty",
-            &request_bytes(&json!({
+            "write",
+            json!({
                 "version": version,
                 "setup": {},
                 "method": "write",
                 "schema": { "types": {} },
                 "ops": [],
                 "state": {}
-            })),
-            "write",
-            Expectation::MustSucceed,
+            }),
         ),
-        ExternalRole::Observer | ExternalRole::Adapter => check(
-            adapter,
-            timeout,
+        ExternalRole::Observer | ExternalRole::Adapter => (
             "protocol/read-empty",
-            &request_bytes(&json!({
+            "read",
+            json!({
                 "version": version,
                 "setup": {},
                 "method": "read",
                 "schema": { "types": {} },
                 "types": [],
                 "state": {}
-            })),
-            "read",
-            Expectation::MustSucceed,
+            }),
         ),
     };
+    // the version probe is that same request with an unsupported version, so it
+    // rides a method the role implements. sent as a read, an emitter refuses it
+    // for role reasons and answers the probe without ever reading `version`.
+    let mismatched = {
+        let mut mismatched = request.clone();
+        mismatched["version"] = json!(version + 1);
+        mismatched
+    };
+    let liveness = check(
+        adapter,
+        timeout,
+        liveness_name,
+        &request_bytes(&request),
+        method,
+        Expectation::MustSucceed,
+    );
     vec![
         check(
             adapter,
@@ -110,15 +120,8 @@ pub fn run_builtin(adapter: &[String], timeout: Duration) -> Vec<Outcome> {
             adapter,
             timeout,
             "protocol/version-mismatch",
-            &request_bytes(&json!({
-                "version": version + 1,
-                "setup": {},
-                "method": "read",
-                "schema": { "types": {} },
-                "types": [],
-                "state": {}
-            })),
-            "read",
+            &request_bytes(&mismatched),
+            method,
             Expectation::MustError,
         ),
         check(

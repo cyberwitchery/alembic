@@ -2,25 +2,12 @@
 //! preview as a failure, not as a capability gap. needs a subprocess because the
 //! report goes to stderr via `eprintln!`, which libtest's capture can't intercept.
 
-use std::path::{Path, PathBuf};
 use std::process::Command;
 use tempfile::tempdir;
 
-/// llvm-cov runs `--tests` in its own target dir, which never gets examples.
-fn example_binary(name: &str) -> PathBuf {
-    let mut path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .find(|p| p.join("target").exists())
-        .expect("workspace target dir")
-        .join("target");
-    if std::env::var("CI").is_ok() {
-        path.push("ci");
-    }
-    path.push("debug");
-    path.push("examples");
-    path.push(name);
-    path
-}
+mod support;
+
+use support::example_binary;
 
 #[test]
 fn plan_reports_a_preview_error_as_a_failure() {
