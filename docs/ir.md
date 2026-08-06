@@ -65,7 +65,9 @@ fields:
 
 `format` supports: `slug`, `ip_address`, `cidr`, `prefix`, `mac`, `uuid`.
 
-a `date`, `datetime` or `time` value is rfc 3339: `2026-08-01`, `22:00:00` (fractional seconds optional), and the two joined by `t` with an optional `Z` or `+HH:MM` offset (`2026-08-01T22:00:00Z`). the separator is accepted in either case, and the offset is optional, so a naive `2026-08-01T22:00:00` is valid. the calendar is checked too, not only the shape, so `2026-02-30` and `2026-13-01` are errors. three values rfc 3339 itself permits are refused: a leap second (`23:59:60`), year `0000`, and a lowercase zone (`2026-08-01T22:00:00z`). python's `datetime` refuses all three, and the django adapter's date columns go through it, so accepting them would pass `validate` and fail at apply. `0001-01-01` and `9999-12-31` are valid.
+a `date`, `datetime` or `time` value is rfc 3339: `2026-08-01`, `22:00:00` (fractional seconds optional), and the two joined by `T` with an optional `Z` or `+HH:MM` offset (`2026-08-01T22:00:00Z`). the separator is accepted in either case, the offset is optional, so a naive `2026-08-01T22:00:00` is valid, and digits are ascii. the calendar is checked too, not only the shape, so `2026-02-30` and `2026-13-01` are errors, and `0001-01-01` and `9999-12-31` are valid.
+
+this is one canonical shape rather than the union of what the backends parse, so it is tighter than some of them: a backend that also takes `2026-8-1`, `22:00`, a space separator or `+0200` will not see those from alembic. three values rfc 3339 itself permits are refused, because no backend column holds them: a leap second (`23:59:60`), year `0000`, and a lowercase zone (`2026-08-01T22:00:00z`, where only the separator may be lowercase).
 
 `nullable` also shapes provisioned schema: the django adapter emits `null=True`. it does the same for any non-text field that is not `required`, since a django column without `null=True` is NOT NULL whatever the form layer says. optional text fields hold the empty string instead, and optional `json`/`list`/`map` fields get `default=dict`/`default=list`.
 
