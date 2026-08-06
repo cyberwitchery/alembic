@@ -69,5 +69,10 @@ schema:
 
 - float handling relies on `NumberAttribute` (infrahub uses `BigInt`). ensure your
   schema types align if floats are required.
+- `date` and `time` are provisioned as infrahub `DateTime` attributes, since infrahub
+  has no date-only or time-only kind. infrahub therefore answers a `date` field with a
+  full timestamp, which is a `datetime` and not a `date`: such a field drifts on every
+  plan, and `import` writes an inventory that does not re-validate. declare those fields
+  as `datetime` when infrahub is the backend.
 - repository mode updates `.infrahub.yml` and writes the schema file, but does not
   commit or push git changes.

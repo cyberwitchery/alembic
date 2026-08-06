@@ -994,6 +994,123 @@ fn mac_regex() -> &'static Regex {
     RE.get_or_init(|| Regex::new(r"^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$").unwrap())
 }
 
+// rfc 3339 spells every numeric field as `DIGIT`, which is ascii 0-9. `\d` in the
+// `regex` crate is unicode by default, so it would also match `٥` and every other
+// `\p{Nd}`; the classes are written out like `slug_regex` and `mac_regex` already
+// do. this is not only a spec point: every group but the fractional seconds is
+// re-read by `parse::<u32>()`, which refuses a non-ascii digit, so the fraction
+// was the one place a `\d` reached the verdict on its own.
+fn date_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"^([0-9]{4})-([0-9]{2})-([0-9]{2})$").unwrap())
+}
+
+fn time_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"^([0-9]{2}):([0-9]{2}):([0-9]{2})(?:\.[0-9]+)?$").unwrap())
+}
+
+fn datetime_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        // a lowercase zone is rejected like a leap second is: django takes any
+        // separator character, but only an uppercase `Z` (measured, see the
+        // module comment on `is_rfc3339_date`).
+        Regex::new(
+            r"^([0-9]{4}-[0-9]{2}-[0-9]{2})[Tt]([0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?)(?:Z|([+-][0-9]{2}:[0-9]{2}))?$",
+        )
+        .unwrap()
+    })
+}
+
+/// rfc 3339 `full-date`, calendar included: a shape alone accepts `2026-02-30`.
+///
+/// rfc 3339 is the whole rule, and the ir stays vendor-neutral by fixing one
+/// canonical shape rather than tracking any backend's parser. that makes the ir
+/// deliberately **tighter** than the backends in places, which is the point: the
+/// django adapter writes a fixture that `manage.py loaddata` parses, and django
+/// 6.0 also takes `2026-8-1`, `22:00`, a space separator and `+0200`. none of
+/// those are rfc 3339 and none are accepted here.
+///
+/// three values rfc 3339 itself permits are refused, and there the reason is the
+/// backend rather than the spec: they pass `validate` and then fail at apply.
+/// measured against django 6.0.8, `<Date|Time|DateTime>Field::to_python`, which
+/// is the call `loaddata` makes:
+///
+/// | value | django |
+/// | --- | --- |
+/// | `0000-01-01` | refused |
+/// | `23:59:60` | refused |
+/// | `2026-08-01T22:00:00z` | refused (only the separator may be lowercase) |
+///
+/// `crates/alembic-cli/tests/django_e2e.rs` drives the accepted shapes through a
+/// real `loaddata`, so the half of this that says "django takes it" is a test and
+/// not a claim.
+fn is_rfc3339_date(raw: &str) -> bool {
+    let Some(caps) = date_regex().captures(raw) else {
+        return false;
+    };
+    let (Ok(year), Ok(month), Ok(day)) = (
+        caps[1].parse::<u32>(),
+        caps[2].parse::<u32>(),
+        caps[3].parse::<u32>(),
+    ) else {
+        return false;
+    };
+    // year 0 is rejected like a leap second is, and for the same reason: django's
+    // date columns cannot hold it. `[0-9]{4}` already caps the top end at 9999,
+    // which django takes.
+    // a month outside 1..=12 has no days, so the day check rejects it too.
+    year != 0 && (1..=days_in_month(year, month)).contains(&day)
+}
+
+/// rfc 3339 `partial-time`, with optional fractional seconds.
+fn is_rfc3339_time(raw: &str) -> bool {
+    let Some(caps) = time_regex().captures(raw) else {
+        return false;
+    };
+    // a leap second (`:60`) is rejected: django's `TimeField` and `DateTimeField`
+    // cannot hold one (see `is_rfc3339_date`).
+    digits_within(&caps[1], 23) && digits_within(&caps[2], 59) && digits_within(&caps[3], 59)
+}
+
+/// rfc 3339 `date-time`, except that the offset is optional (see `type_check`).
+fn is_rfc3339_datetime(raw: &str) -> bool {
+    let Some(caps) = datetime_regex().captures(raw) else {
+        return false;
+    };
+    is_rfc3339_date(&caps[1])
+        && is_rfc3339_time(&caps[2])
+        && caps
+            .get(3)
+            .is_none_or(|offset| is_rfc3339_offset(offset.as_str()))
+}
+
+/// the shape (`+HH:MM`) is fixed by the regex; only the ranges are left open.
+fn is_rfc3339_offset(raw: &str) -> bool {
+    let Some((hour, minute)) = raw[1..].split_once(':') else {
+        return false;
+    };
+    digits_within(hour, 23) && digits_within(minute, 59)
+}
+
+fn digits_within(raw: &str, max: u32) -> bool {
+    matches!(raw.parse::<u32>(), Ok(value) if value <= max)
+}
+
+fn days_in_month(year: u32, month: u32) -> u32 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        // the full gregorian rule: 2100 is not a leap year, 2000 is.
+        2 if year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400)) => {
+            29
+        }
+        2 => 28,
+        _ => 0,
+    }
+}
+
 fn matches_format(format: &FieldFormat, raw: &str) -> bool {
     match format {
         FieldFormat::Slug => slug_regex().is_match(raw),
@@ -1031,11 +1148,13 @@ fn type_check(field_type: &FieldType) -> ValueCheck {
         FieldType::Prefix => ValueCheck::Text(|raw| matches_format(&FieldFormat::Prefix, raw)),
         FieldType::Mac => ValueCheck::Text(|raw| matches_format(&FieldFormat::Mac, raw)),
         FieldType::Slug => ValueCheck::Text(|raw| matches_format(&FieldFormat::Slug, raw)),
+        // rfc 3339. the offset on `datetime` is optional: the ir is vendor-neutral and
+        // django and netbox both take a naive one, so requiring it would reject what they accept.
+        FieldType::Date => ValueCheck::Text(is_rfc3339_date),
+        FieldType::Datetime => ValueCheck::Text(is_rfc3339_datetime),
+        FieldType::Time => ValueCheck::Text(is_rfc3339_time),
         FieldType::String
         | FieldType::Text
-        | FieldType::Date
-        | FieldType::Datetime
-        | FieldType::Time
         // `ip_address` stays a plain string check: the canonical IPAM examples
         // carry NetBox-style masked addresses (`10.0.0.10/24`) that the strict
         // `IpAddr` format rejects, so whether it should accept a mask is a
@@ -2668,6 +2787,16 @@ mod tests {
             .expect("expected an InvalidValue")
     }
 
+    fn accepts(field_type: FieldType, value: &str) -> bool {
+        check(&typed_field(field_type), &json!(value))
+            .errors
+            .is_empty()
+    }
+
+    fn rejects(field_type: FieldType, value: &str) -> bool {
+        has_invalid_value(&check(&typed_field(field_type), &json!(value)))
+    }
+
     #[test]
     fn format_slug_accepts_valid_and_rejects_invalid() {
         assert!(check(&fmt_field(FieldFormat::Slug), &json!("leaf-01"))
@@ -2824,6 +2953,9 @@ mod tests {
             (FieldType::Prefix, "10.0.0.1", "prefix"),
             (FieldType::Mac, "not-a-mac", "mac"),
             (FieldType::Slug, "Leaf01", "slug"),
+            (FieldType::Date, "2026-02-30", "date"),
+            (FieldType::Datetime, "2026-08-01T22:00:00z", "datetime"),
+            (FieldType::Time, "23:59:60", "time"),
         ];
         for (field_type, raw, expected) in cases {
             let report = check(&typed_field(field_type.clone()), &json!(raw));
@@ -2872,6 +3004,111 @@ mod tests {
             )),
             ("uuid".to_string(), "not-a-uuid".to_string())
         );
+    }
+
+    #[test]
+    fn type_date_enforces_rfc3339() {
+        assert!(accepts(FieldType::Date, "2026-08-01"));
+        assert!(rejects(FieldType::Date, "not a timestamp"));
+        assert!(rejects(FieldType::Date, "2026-8-1"));
+        assert!(rejects(FieldType::Date, "2026-08-01T22:00:00Z"));
+        // ascii digits only, as rfc 3339 spells `DIGIT`.
+        assert!(rejects(FieldType::Date, "٢٠٢٦-٠٨-٠١"));
+        // a non-string is rejected as it was before the format check.
+        assert!(has_invalid_value(&check(
+            &typed_field(FieldType::Date),
+            &json!(20260801)
+        )));
+    }
+
+    #[test]
+    fn type_date_checks_the_calendar() {
+        // the shape alone accepts every one of these.
+        assert!(rejects(FieldType::Date, "2026-13-01"));
+        assert!(rejects(FieldType::Date, "2026-00-01"));
+        assert!(rejects(FieldType::Date, "2026-02-30"));
+        assert!(rejects(FieldType::Date, "2026-04-31"));
+        assert!(rejects(FieldType::Date, "2026-01-00"));
+        // leap years by the full gregorian rule.
+        assert!(rejects(FieldType::Date, "2026-02-29"));
+        assert!(accepts(FieldType::Date, "2024-02-29"));
+        assert!(rejects(FieldType::Date, "2100-02-29"));
+        assert!(accepts(FieldType::Date, "2000-02-29"));
+        // year 0 is rejected (see `is_rfc3339_date`), and the gregorian rule
+        // would otherwise call it a leap year.
+        assert!(rejects(FieldType::Date, "0000-01-01"));
+        assert!(rejects(FieldType::Date, "0000-02-29"));
+        // the bounds themselves validate; this is not a narrower range check.
+        assert!(accepts(FieldType::Date, "0001-01-01"));
+        assert!(accepts(FieldType::Date, "9999-12-31"));
+    }
+
+    #[test]
+    fn type_time_enforces_rfc3339() {
+        assert!(accepts(FieldType::Time, "22:00:00"));
+        assert!(accepts(FieldType::Time, "22:00:00.123456"));
+        assert!(rejects(FieldType::Time, "25:00:00"));
+        assert!(rejects(FieldType::Time, "12:60:00"));
+        // a leap second is rejected (see `is_rfc3339_time`).
+        assert!(rejects(FieldType::Time, "23:59:60"));
+        assert!(rejects(FieldType::Time, "22:00"));
+        assert!(rejects(FieldType::Time, "not a timestamp"));
+        // rfc 3339's `DIGIT` is ascii. the hour/minute/second groups are re-read
+        // by `parse::<u32>()`, which refuses these anyway, but the fractional
+        // seconds are only ever shape-checked, so a unicode-aware `\d` there
+        // decided the verdict on its own.
+        assert!(rejects(FieldType::Time, "22:00:00.٥"));
+        assert!(rejects(FieldType::Time, "٢٢:00:00"));
+        assert!(has_invalid_value(&check(
+            &typed_field(FieldType::Time),
+            &json!(2200)
+        )));
+    }
+
+    #[test]
+    fn type_datetime_enforces_rfc3339() {
+        // the value `examples/walkthroughs/custom-model.yaml` carries.
+        assert!(accepts(FieldType::Datetime, "2026-08-01T22:00:00Z"));
+        // rfc 3339 permits both in lowercase; python takes the separator, not the zone.
+        assert!(accepts(FieldType::Datetime, "2026-08-01t22:00:00Z"));
+        assert!(rejects(FieldType::Datetime, "2026-08-01T22:00:00z"));
+        assert!(rejects(FieldType::Datetime, "2026-08-01t22:00:00z"));
+        assert!(accepts(FieldType::Datetime, "2026-08-01T22:00:00+02:00"));
+        assert!(accepts(FieldType::Datetime, "2026-08-01T22:00:00-05:30"));
+        // the offset is optional here, deliberately (see `type_check`).
+        assert!(accepts(FieldType::Datetime, "2026-08-01T22:00:00"));
+        assert!(rejects(FieldType::Datetime, "not a timestamp"));
+        assert!(rejects(FieldType::Datetime, "2026-08-01 22:00:00"));
+        assert!(rejects(FieldType::Datetime, "2026-08-01"));
+        // both halves are checked as they are on their own types.
+        assert!(rejects(FieldType::Datetime, "2026-02-30T22:00:00Z"));
+        assert!(rejects(FieldType::Datetime, "0000-01-01T22:00:00Z"));
+        assert!(accepts(FieldType::Datetime, "0001-01-01T22:00:00Z"));
+        assert!(rejects(FieldType::Datetime, "2026-08-01T25:00:00Z"));
+        assert!(rejects(FieldType::Datetime, "2026-08-01T22:00:00+24:00"));
+        assert!(rejects(FieldType::Datetime, "2026-08-01T22:00:00+02:60"));
+        // ascii digits only, in the fraction as everywhere else. this one is a
+        // no-regression pin rather than a red-green case: the time half is
+        // re-checked by `is_rfc3339_time`, so `datetime_regex`'s own digit
+        // classes could rot without it going red. they are written out anyway,
+        // so the three regexes do not disagree about what a digit is.
+        assert!(rejects(FieldType::Datetime, "2026-08-01T22:00:00.٥Z"));
+        assert!(has_invalid_value(&check(
+            &typed_field(FieldType::Datetime),
+            &json!(true)
+        )));
+    }
+
+    #[test]
+    fn type_datetime_accepts_what_import_reads_back() {
+        // netbox and nautobot return fractional seconds and an explicit offset,
+        // and `import` writes them into ir that is validated on the next load.
+        assert!(accepts(FieldType::Datetime, "2026-08-04T20:11:22.123456Z"));
+        assert!(accepts(
+            FieldType::Datetime,
+            "2026-08-04T20:11:22.123456+00:00"
+        ));
+        assert!(accepts(FieldType::Datetime, "2026-08-04T20:11:22+00:00"));
     }
 
     #[test]
