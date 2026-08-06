@@ -2257,14 +2257,14 @@ async fn run_plan_report_refuses_an_external_adapter_declaring_emitter() {
     .await;
     // the example stubs a successful empty `read`, so only the declared role
     // stands between the report and an observation of nothing.
-    let example_binary = find_example_binary("emitter_role_adapter");
+    let adapter = example_binary("emitter_role_adapter");
     let inventory = write_site_inventory(dir.path());
     let config = dir.path().join("backend.yaml");
     std::fs::write(
         &config,
         format!(
             "backend: external\ncommand: \"{}\"\ntimeout_seconds: 5\n",
-            example_binary.to_str().unwrap()
+            adapter.to_str().unwrap()
         ),
     )
     .unwrap();
@@ -2663,10 +2663,10 @@ async fn minimal_external_adapter() {
     // this test depends on the example "minimal_external_adapter" in this crate.
     // note that `cargo test` will build all examples, so we can expect the binary to exist.
 
-    let example_binary = find_example_binary("minimal_external_adapter");
+    let adapter = example_binary("minimal_external_adapter");
 
     let config = AdapterConfig::External(ExternalConfig {
-        command: Some(example_binary.to_str().unwrap().to_string()),
+        command: Some(adapter.to_str().unwrap().to_string()),
         args: Vec::new(),
         working_dir: None,
         env: BTreeMap::new(),
@@ -2707,7 +2707,7 @@ async fn run_plan_provision_fails_closed_on_preview_error() {
     ])
     .await;
 
-    let example_binary = find_example_binary("preview_error_adapter");
+    let adapter = example_binary("preview_error_adapter");
     let inventory = write_minimal_inventory(dir.path());
     let out_path = dir.path().join("plan.json");
     let config_path = dir.path().join("backend.yaml");
@@ -2715,7 +2715,7 @@ async fn run_plan_provision_fails_closed_on_preview_error() {
         &config_path,
         format!(
             "backend: external\ncommand: \"{}\"\ntimeout_seconds: 5\n",
-            example_binary.to_str().unwrap()
+            adapter.to_str().unwrap()
         ),
     )
     .unwrap();
@@ -2742,25 +2742,4 @@ async fn run_plan_provision_fails_closed_on_preview_error() {
         err.to_string().contains("preview failed for test"),
         "expected the propagated preview error, got: {err:#}"
     );
-}
-
-fn find_example_binary(name: &str) -> PathBuf {
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let target_dir = manifest_dir
-        .ancestors()
-        .find(|p| p.join("target").exists())
-        .unwrap()
-        .join("target");
-
-    let mut example_binary = target_dir;
-
-    if std::env::var("CI").is_ok() {
-        example_binary.push("ci");
-    }
-
-    example_binary.push("debug");
-    example_binary.push("examples");
-    example_binary.push(name);
-
-    example_binary
 }
