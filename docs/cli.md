@@ -138,7 +138,7 @@ NETBOX_URL=https://netbox.example.com NETBOX_TOKEN=$NETBOX_TOKEN \
 - against a write-only (emitter) backend such as `django`, which cannot report existing state, plain `plan` produces an all-creates plan against an empty observation, while `--report` is rejected up front (see below)
 - writes json plan to the `-o`/`--output` path (required only for this default write path), and prints a human-readable per-op summary of that plan (create/update/delete, with per-field `from -> to` for updates; long categories are truncated) so you can read what apply would do before applying
 - honors `--allow-delete` if you want delete ops
-- without `--provision`, plan asks the backend for a read-only schema preview (what `apply`'s `ensure_schema` would create/delete, writing nothing) and prints it to stderr as `schema preview: ...`; the machine-readable copy rides in the plan's `schema_preview`. backends that cannot preview report `schema preview: unavailable for this backend`
+- without `--provision`, plan asks the backend for a read-only schema preview (what `apply`'s `ensure_schema` would create/delete, writing nothing) and prints it to stderr as `schema preview: ...`; the machine-readable copy rides in the plan's `schema_preview`, and under `--report` (which writes no plan) in the drift report's. backends that cannot preview report `schema preview: unavailable for this backend`
 - `--provision` runs adapter provisioning (`ensure_schema`) before observing backend state; provisioning that would delete custom object types/fields the inventory no longer declares is blocked unless `--allow-delete` is also given (such deletes cascade to their objects on the backend)
 - `--dry-run` prints the raw plan json instead of writing it; it writes no file, so `-o`/`--output` is rejected with it at parse time rather than accepted and ignored
 - `--report` prints a read-only drift report and exits without writing a plan file or saving state; `-o`/`--output` writes that report as json (optional: without it the report is the printed summary only)
@@ -204,17 +204,25 @@ truncated. the json shape:
     }
   ],
   "missing": [{ "type_name": "dcim.device", "key": { "name": "leaf02" } }],
-  "extra": [{ "type_name": "dcim.device", "key": { "name": "leaf01" } }]
+  "extra": [{ "type_name": "dcim.device", "key": { "name": "leaf01" } }],
+  "schema_preview": { "created_fields": ["dcim.device.asset_tag"] }
 }
 ```
 
 every category is always present, so an empty one reads as "no drift here"
 rather than a missing key, and a report with three empty lists is the json form
-of `no drift: observed backend state matches declared intent`. `extra` is
-populated whether or not `--allow-delete` was passed: report mode forces
-delete-detection on so unmanaged backend objects surface. reading the file back
-is a read of a diff, not a way to adopt observed state: there is deliberately no
-write-back mode (#56).
+of `no drift: observed backend state matches declared intent`. `schema_preview`
+is not a category and so does not follow that rule: it is the same preview the
+plan file carries (shape in `docs/external-adapters.md`), copied here because
+`--report` writes no plan, and it is omitted entirely when the backend cannot
+preview, or was not asked to (under `--provision` a preview would describe work
+the run already did), rather than written as an empty object, which would claim
+there is nothing to provision. it describes pending schema work, not object
+divergence, so it counts towards neither the summary's counts nor "no drift".
+`extra` is populated whether or not `--allow-delete` was passed: report mode
+forces delete-detection on so unmanaged backend objects surface. reading the
+file back is a read of a diff, not a way to adopt observed state: there is
+deliberately no write-back mode (#56).
 
 note that combining `--report` with `--provision` is not fully read-only:
 `--provision` still runs adapter provisioning (`ensure_schema`) against the
