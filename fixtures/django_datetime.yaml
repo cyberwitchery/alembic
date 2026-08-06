@@ -1,0 +1,85 @@
+# drives crates/alembic-cli/tests/django_e2e.rs: every shape `validate` accepts
+# for `date`, `datetime` and `time`, at the edges of the accepted set. `apply`
+# runs `manage.py loaddata`, which parses each value through the real
+# `DateField`/`DateTimeField`/`TimeField`, so a shape validate takes and django
+# refuses fails the apply rather than passing unnoticed.
+schema:
+  types:
+    ops.window:
+      key:
+        name:
+          type: slug
+      fields:
+        name:
+          type: string
+        starts_on:
+          type: date
+        starts_at:
+          type: datetime
+        opens_at:
+          type: time
+objects:
+  # the year bounds: `0001-01-01` and `9999-12-31` both validate, so both must load.
+  - uid: "cccccccc-0000-0000-0000-000000000001"
+    type: ops.window
+    key:
+      name: "lower-bound"
+    attrs:
+      name: "lower bound"
+      starts_on: "0001-01-01"
+      starts_at: "0001-01-01T00:00:00Z"
+      opens_at: "00:00:00"
+
+  - uid: "cccccccc-0000-0000-0000-000000000002"
+    type: ops.window
+    key:
+      name: "upper-bound"
+    attrs:
+      name: "upper bound"
+      starts_on: "9999-12-31"
+      starts_at: "9999-12-31T23:59:59Z"
+      opens_at: "23:59:59"
+
+  # a leap day, a positive offset, and fractional seconds.
+  - uid: "cccccccc-0000-0000-0000-000000000003"
+    type: ops.window
+    key:
+      name: "leap-day"
+    attrs:
+      name: "leap day"
+      starts_on: "2024-02-29"
+      starts_at: "2024-02-29T12:00:00+02:00"
+      opens_at: "12:00:00.123456"
+
+  # the offset is deliberately optional, so a naive datetime has to load too.
+  - uid: "cccccccc-0000-0000-0000-000000000004"
+    type: ops.window
+    key:
+      name: "naive"
+    attrs:
+      name: "naive"
+      starts_on: "2026-08-01"
+      starts_at: "2026-08-01T22:00:00"
+      opens_at: "22:00:00"
+
+  # a lowercase separator (rfc 3339 permits it, and django takes it) and a
+  # negative half-hour offset.
+  - uid: "cccccccc-0000-0000-0000-000000000005"
+    type: ops.window
+    key:
+      name: "lowercase-separator"
+    attrs:
+      name: "lowercase separator"
+      starts_on: "2026-08-01"
+      starts_at: "2026-08-01t22:00:00Z"
+      opens_at: "05:30:00.5"
+
+  - uid: "cccccccc-0000-0000-0000-000000000006"
+    type: ops.window
+    key:
+      name: "negative-offset"
+    attrs:
+      name: "negative offset"
+      starts_on: "2026-08-01"
+      starts_at: "2026-08-01T22:00:00-05:30"
+      opens_at: "22:00:00"
