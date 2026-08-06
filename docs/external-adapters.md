@@ -306,8 +306,12 @@ inventory and a schema preview each succeed with a right-shaped payload, so an
 adapter that errors on every request does not pass. the runner probes
 `capabilities` first: a declared emitter is never sent a read by the host, so its
 liveness check is an empty write instead of the empty read, and it may answer
-`read` with an error. answering `capabilities` itself with the unknown-method
-error stays conformant and means the default read+write role.
+`read` with an error. the version probe rides that same role-appropriate method,
+so an emitter is sent an unsupported-version write: probed with a read it would
+refuse for role reasons, answering the check without ever reading `version`. the
+malformed-json and unknown-method probes need no such care, since both are
+expected to error whatever the role. answering `capabilities` itself with the
+unknown-method error stays conformant and means the default read+write role.
 
 to exercise `read`, `write`, and `ensure_schema` against your own fake or
 disposable backend, pass `--cases` a file or directory of cases. a case is a

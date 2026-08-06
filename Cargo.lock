@@ -148,11 +148,13 @@ dependencies = [
 name = "alembic-adapter-test"
 version = "0.8.0"
 dependencies = [
+ "alembic-core",
  "alembic-engine",
  "anyhow",
  "clap",
  "serde",
  "serde_json",
+ "serde_yaml_ng",
 ]
 
 [[package]]
