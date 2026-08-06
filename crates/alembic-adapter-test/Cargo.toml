@@ -16,3 +16,8 @@ anyhow.workspace = true
 clap.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+
+# the example adapters the conformance tests run against
+[dev-dependencies]
+alembic-core.workspace = true
+serde_yaml.workspace = true

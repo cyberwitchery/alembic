@@ -2,12 +2,41 @@
 //! cli surface an adapter author actually runs (argument parsing, the report, and
 //! the 0/1/2 exit codes) is exercised, not just the library.
 
+use std::path::PathBuf;
 use std::process::Command;
 
 const BIN: &str = env!("CARGO_BIN_EXE_alembic-adapter-test");
 
 fn manifest(rel: &str) -> String {
     format!("{}/{}", env!("CARGO_MANIFEST_DIR"), rel)
+}
+
+fn example_binary(name: &str) -> PathBuf {
+    let mut path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .find(|p| p.join("target").exists())
+        .expect("workspace target dir")
+        .join("target");
+    if std::env::var("CI").is_ok() {
+        path.push("ci");
+    }
+    path.push("debug");
+    path.push("examples");
+    path.push(name);
+    path
+}
+
+/// run the built-in checks against an example adapter, returning (exit code, stdout).
+fn run_builtin_against(example: &str) -> (Option<i32>, String) {
+    let out = Command::new(BIN)
+        .arg("--")
+        .arg(example_binary(example))
+        .output()
+        .expect("run binary");
+    (
+        out.status.code(),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+    )
 }
 
 fn python3_available() -> bool {
@@ -33,6 +62,38 @@ fn passes_against_the_python_example() {
     );
     assert!(stdout.contains("protocol/read-empty"), "{stdout}");
     assert!(stdout.contains("passed"), "{stdout}");
+}
+
+#[test]
+fn an_sdk_emitter_passes_every_built_in_check() {
+    // the sdk rejects an unsupported version before setup and before dispatch, so
+    // an emitter built on it answers the version probe whichever method it rides.
+    // this is the check that the org's emit-only adapters stay green.
+    let (code, stdout) = run_builtin_against("sdk_emitter");
+    assert_eq!(code, Some(0), "{stdout}");
+    assert!(stdout.contains("protocol/write-empty"), "{stdout}");
+    assert!(
+        !stdout.contains("FAILED"),
+        "an sdk emitter must pass every built-in check; {stdout}"
+    );
+}
+
+#[test]
+fn an_emitter_that_ignores_the_version_fails_the_version_probe() {
+    // the probe used to be sent as a `read`, which a declared emitter refuses for
+    // role reasons -- so this adapter passed it without ever reading `version`.
+    let (code, stdout) = run_builtin_against("version_blind_emitter");
+    assert_eq!(code, Some(1), "{stdout}");
+    let mismatch = stdout
+        .lines()
+        .find(|line| line.contains("protocol/version-mismatch"))
+        .expect("the version-mismatch check must run");
+    assert!(
+        mismatch.contains("FAILED"),
+        "a version-blind emitter must fail the version probe; {stdout}"
+    );
+    // and only that check: the rest of the suite still certifies it.
+    assert!(stdout.contains("5 passed, 1 failed"), "{stdout}");
 }
 
 #[test]
