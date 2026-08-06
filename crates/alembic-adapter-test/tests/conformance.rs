@@ -227,7 +227,14 @@ fn declared_emitter_with_erroring_read_passes() {
     // the emit-only shape from issue #117: the adapter declares the emitter
     // role and errors on read. the runner skips the empty read for a declared
     // emitter and probes liveness with an empty write instead.
-    let script = r#"req=$(cat); case "$req" in
+    // the version gate comes first, as the sdk's does: without it the emitter
+    // would fail the version probe, which now rides the same write.
+    let script = r#"req=$(cat)
+    case "$req" in
+      *'"version":1'*) ;;
+      *) printf '{"ok":false,"error":"unsupported protocol version"}'; exit 0 ;;
+    esac
+    case "$req" in
       *'"method":"capabilities"'*) printf '{"ok":true,"result":{"role":"emitter"}}' ;;
       *'"method":"write"'*) printf '{"ok":true,"result":{"applied":[]}}' ;;
       *'"method":"preview_schema"'*) printf '{"ok":true,"result":null}' ;;
@@ -277,6 +284,40 @@ fn accepts_multiline_json() {
     );
     let read = find(&outcomes, "protocol/read-empty");
     assert!(read.passed(), "multiline json rejected: {:?}", read.failure);
+}
+
+#[test]
+fn version_mismatch_follows_the_declared_role() {
+    // a declared emitter refuses read for role reasons, so a probe sent as a read
+    // is answered without the adapter ever reading `version`. this adapter is
+    // version-blind and must still be caught.
+    let script = r#"req=$(cat); case "$req" in
+      *'"method":"capabilities"'*) printf '{"ok":true,"result":{"role":"emitter"}}' ;;
+      *'"method":"write"'*) printf '{"ok":true,"result":{"applied":[]}}' ;;
+      *'"method":"preview_schema"'*) printf '{"ok":true,"result":null}' ;;
+      *) printf '{"ok":false,"error":"read is not supported"}' ;;
+    esac"#;
+    let outcomes = run_builtin(&sh(script), TIMEOUT);
+    let mismatch = find(&outcomes, "protocol/version-mismatch");
+    assert!(
+        !mismatch.passed(),
+        "the version probe must ride a method the emitter implements"
+    );
+    assert!(
+        message(mismatch).contains("expected a structured error"),
+        "{}",
+        message(mismatch)
+    );
+    // an observer keeps the read: it implements read and refuses write, so the
+    // probe would be vacuous the other way round.
+    let script = r#"req=$(cat); case "$req" in
+      *'"method":"capabilities"'*) printf '{"ok":true,"result":{"role":"observer"}}' ;;
+      *'"method":"read"'*) printf '{"ok":true,"result":[]}' ;;
+      *'"method":"preview_schema"'*) printf '{"ok":true,"result":null}' ;;
+      *) printf '{"ok":false,"error":"write is not supported"}' ;;
+    esac"#;
+    let outcomes = run_builtin(&sh(script), TIMEOUT);
+    assert!(!find(&outcomes, "protocol/version-mismatch").passed());
 }
 
 #[test]
