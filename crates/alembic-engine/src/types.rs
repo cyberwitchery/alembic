@@ -236,7 +236,7 @@ pub struct ApplyReport {
 }
 
 /// report of what an apply provisioned, across `ensure_schema` and `write`.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ProvisionReport {
     /// custom fields created on the backend.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

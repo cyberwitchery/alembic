@@ -1894,6 +1894,151 @@ objects:
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn run_plan_report_carries_the_schema_preview_into_the_drift_report() {
+    use serde_json::json;
+
+    let _guard = cwd_lock().lock().await;
+    let server = nautobot_plan_server(json!([{ "id": "uuid-leaf01", "name": "leaf01" }]));
+    // the native-field probe preview issues before deciding a declared field is
+    // custom; without it the preview errors and never reaches the report.
+    server.mock(|when, then| {
+        when.method(httpmock::Method::GET)
+            .path("/api/dcim/devices/")
+            .query_param("limit", "1");
+        then.status(200).json_body(json!({
+            "count": 0,
+            "next": null,
+            "previous": null,
+            "results": []
+        }));
+    });
+    let dir = tempdir().unwrap();
+    let state_path = dir.path().join(".alembic").join("state.json");
+    let _env = EnvVarGuard::acquire_async(&[
+        ("ALEMBIC_STATE_BACKEND", Some("local")),
+        ("ALEMBIC_STATE_PATH", Some(state_path.to_str().unwrap())),
+    ])
+    .await;
+    let inventory = dir.path().join("inventory.yaml");
+    let out = dir.path().join("drift.json");
+    let config = dir.path().join("adapter.yaml");
+    // asset_tag is not native to dcim.device and the backend has no custom
+    // fields, so the preview reports one field apply would create.
+    std::fs::write(
+        &inventory,
+        r#"
+schema:
+  types:
+    dcim.device:
+      key:
+        name:
+          type: string
+      fields:
+        name:
+          type: string
+        asset_tag:
+          type: string
+objects:
+  - uid: "00000000-0000-0000-0000-000000000002"
+    type: dcim.device
+    key:
+      name: "leaf02"
+    attrs:
+      name: "leaf02"
+      asset_tag: "AT-2"
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        &config,
+        format!(
+            "backend: nautobot\nurl: {}\ntoken: token\n",
+            server.base_url()
+        ),
+    )
+    .unwrap();
+
+    let cwd = std::env::current_dir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
+    let cli = Cli {
+        command: Command::Plan {
+            file: inventory,
+            output: Some(out.clone()),
+            backend: None,
+            backend_config: Some(config),
+            provision: false,
+            dry_run: false,
+            report: true,
+            allow_delete: false,
+        },
+    };
+    let result = run(cli, AppConfig::load().unwrap()).await;
+    std::env::set_current_dir(cwd).unwrap();
+    result.unwrap();
+
+    let raw = std::fs::read_to_string(&out).unwrap();
+    let drift: DriftReport = serde_json::from_str(&raw).unwrap();
+    let preview = drift.schema_preview.unwrap_or_else(|| {
+        panic!("the preview the run already computed must ride in the file: {raw}")
+    });
+    assert_eq!(preview.created_fields, vec!["dcim.device.asset_tag"]);
+    // the drift categories are unaffected by the preview riding along.
+    assert_eq!(drift.missing.len(), 1);
+    assert_eq!(drift.extra.len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn run_plan_report_omits_the_schema_preview_when_the_backend_cannot_preview() {
+    // the compatibility claim, measured: a backend answering Ok(None) writes the
+    // same three-key document it wrote before the preview was carried.
+    let _guard = cwd_lock().lock().await;
+    let dir = tempdir().unwrap();
+    let state_path = dir.path().join(".alembic").join("state.json");
+    let _env = EnvVarGuard::acquire_async(&[
+        ("ALEMBIC_STATE_BACKEND", Some("local")),
+        ("ALEMBIC_STATE_PATH", Some(state_path.to_str().unwrap())),
+    ])
+    .await;
+
+    let example_binary = find_example_binary("minimal_external_adapter");
+    let inventory = write_minimal_inventory(dir.path());
+    let out = dir.path().join("drift.json");
+    let config = dir.path().join("backend.yaml");
+    std::fs::write(
+        &config,
+        format!(
+            "backend: external\ncommand: \"{}\"\ntimeout_seconds: 5\n",
+            example_binary.to_str().unwrap()
+        ),
+    )
+    .unwrap();
+
+    let cwd = std::env::current_dir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
+    let cli = Cli {
+        command: Command::Plan {
+            file: inventory,
+            output: Some(out.clone()),
+            backend: Some("external".to_string()),
+            backend_config: Some(config),
+            provision: false,
+            dry_run: false,
+            report: true,
+            allow_delete: false,
+        },
+    };
+    let result = run(cli, AppConfig::load().unwrap()).await;
+    std::env::set_current_dir(cwd).unwrap();
+    result.unwrap();
+
+    let raw = std::fs::read_to_string(&out).unwrap();
+    assert_eq!(
+        raw, "{\n  \"changed\": [],\n  \"missing\": [],\n  \"extra\": []\n}",
+        "a backend that cannot preview must write byte-identical json"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn run_plan_report_rejects_a_bad_output_path_before_observing() {
     let _guard = cwd_lock().lock().await;
     let server = httpmock::MockServer::start();

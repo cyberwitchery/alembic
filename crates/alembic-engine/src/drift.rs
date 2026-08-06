@@ -6,7 +6,7 @@
 //! from intent and never writes observed state back into the inventory or state
 //! store. there is deliberately no "adopt observed" mode.
 
-use crate::types::{FieldChange, Op, Plan};
+use crate::types::{FieldChange, Op, Plan, ProvisionReport};
 use alembic_core::{key_string, Key, TypeName};
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -37,7 +37,8 @@ pub struct DriftEntry {
 /// [`changed`](DriftReport::changed), creates become
 /// [`missing`](DriftReport::missing) (declared but absent from the backend), and
 /// deletes become [`extra`](DriftReport::extra) (present on the backend but not
-/// declared). it is a one-way projection only, never a write path.
+/// declared), and the plan's schema preview is carried across unchanged. it is
+/// a one-way projection only, never a write path.
 ///
 /// `Deserialize` is here so a consumer can read a written report back; it is
 /// never a way to feed observed state into an inventory or state store.
@@ -49,6 +50,12 @@ pub struct DriftReport {
     pub missing: Vec<DriftEntry>,
     /// objects present in the backend but not declared in intent.
     pub extra: Vec<DriftEntry>,
+    /// read-only preview of the schema provisioning apply would perform, carried
+    /// from the plan. `None` when the backend cannot preview schema (or was not
+    /// asked). not a drift category: it counts towards neither `len` nor
+    /// `is_empty`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema_preview: Option<ProvisionReport>,
 }
 
 impl DriftReport {
@@ -82,6 +89,7 @@ impl DriftReport {
                 }),
             }
         }
+        report.schema_preview = plan.schema_preview.clone();
         report
     }
 
@@ -320,6 +328,41 @@ mod tests {
         assert!(report.changed[0].changes.is_empty());
     }
 
+    #[test]
+    fn carries_the_schema_preview_from_the_plan() {
+        let mut plan = plan_with(vec![create_op(1, "dcim.site", "ams1")]);
+        plan.schema_preview = Some(ProvisionReport {
+            created_fields: vec!["dcim.site.asset_tag".to_string()],
+            ..Default::default()
+        });
+        let report = DriftReport::from_plan(&plan);
+        assert_eq!(report.schema_preview, plan.schema_preview);
+    }
+
+    #[test]
+    fn a_plan_without_a_preview_yields_a_report_without_one() {
+        let report = DriftReport::from_plan(&plan_with(vec![create_op(1, "dcim.site", "ams1")]));
+        assert_eq!(report.schema_preview, None);
+    }
+
+    #[test]
+    fn the_schema_preview_is_not_a_drift_category() {
+        // it describes pending schema work, not object divergence, so a report
+        // carrying only a preview is still "no drift".
+        let mut plan = plan_with(vec![]);
+        plan.schema_preview = Some(ProvisionReport {
+            created_fields: vec!["dcim.site.asset_tag".to_string()],
+            ..Default::default()
+        });
+        let report = DriftReport::from_plan(&plan);
+        assert!(report.is_empty());
+        assert_eq!(report.len(), 0);
+        assert_eq!(
+            report.to_string(),
+            "no drift: observed backend state matches declared intent"
+        );
+    }
+
     // --- display ---
 
     #[test]
@@ -380,5 +423,46 @@ mod tests {
         assert_eq!(value["changed"][0]["changes"][0]["to"], "new");
         assert_eq!(value["missing"][0]["key"]["slug"], "ams1");
         assert_eq!(value["extra"][0]["key"]["slug"], "leaf01");
+    }
+
+    #[test]
+    fn omits_the_schema_preview_when_the_plan_has_none() {
+        // the three categories are the whole document for a backend that cannot
+        // preview, exactly as before the preview was carried.
+        let raw = serde_json::to_string(&DriftReport::default()).unwrap();
+        assert_eq!(raw, r#"{"changed":[],"missing":[],"extra":[]}"#);
+    }
+
+    #[test]
+    fn writes_an_empty_preview_as_an_empty_object() {
+        // present and empty is "nothing to provision", which is the steady state
+        // once the backend already carries every declared field; absent above is
+        // "cannot preview". the two must not serialize alike.
+        let mut plan = plan_with(vec![]);
+        plan.schema_preview = Some(ProvisionReport::default());
+        let raw = serde_json::to_string(&DriftReport::from_plan(&plan)).unwrap();
+        assert_eq!(
+            raw,
+            r#"{"changed":[],"missing":[],"extra":[],"schema_preview":{}}"#
+        );
+    }
+
+    #[test]
+    fn serializes_the_schema_preview_alongside_the_categories() {
+        let mut plan = plan_with(vec![]);
+        plan.schema_preview = Some(ProvisionReport {
+            created_fields: vec!["dcim.site.asset_tag".to_string()],
+            ..Default::default()
+        });
+        let report = DriftReport::from_plan(&plan);
+        let value: serde_json::Value = serde_json::to_value(&report).unwrap();
+        assert_eq!(
+            value["schema_preview"]["created_fields"][0],
+            "dcim.site.asset_tag"
+        );
+
+        // and reads back, so a consumer sees what apply would provision.
+        let round: DriftReport = serde_json::from_value(value).unwrap();
+        assert_eq!(round, report);
     }
 }
