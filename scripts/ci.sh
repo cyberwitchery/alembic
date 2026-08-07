@@ -27,12 +27,13 @@ RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 
 echo "--- Tests & Coverage ---"
 # ci sets ALEMBIC_DJANGO_PYTHON too, and with it set the django tests panic rather than skip
-if ! python3 -c 'import django, rest_framework, django_filters, drf_spectacular' >/dev/null 2>&1; then
-    echo "Error: the django e2e packages are not importable from python3."
-    echo "Install them with: python3 -m pip install 'django<6.1' djangorestframework django-filter drf-spectacular"
+: "${ALEMBIC_DJANGO_PYTHON:=python3}"
+if ! "$ALEMBIC_DJANGO_PYTHON" -c 'import django, rest_framework, django_filters, drf_spectacular' >/dev/null 2>&1; then
+    echo "Error: the django e2e packages are not importable from $ALEMBIC_DJANGO_PYTHON."
+    echo "Install them with: $ALEMBIC_DJANGO_PYTHON -m pip install 'django<6.1' djangorestframework django-filter drf-spectacular"
     exit 1
 fi
-export ALEMBIC_DJANGO_PYTHON=python3
+export ALEMBIC_DJANGO_PYTHON
 if [ -z "${ALEMBIC_TEST_POSTGRES_URL:-}" ]; then
     echo "Note: ALEMBIC_TEST_POSTGRES_URL is unset, so the postgres state store tests no-op. ci runs them against a service."
 fi
