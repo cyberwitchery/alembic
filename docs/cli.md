@@ -386,6 +386,7 @@ alembic import -f examples/inventory.yaml -o observed.json \
 
 - `-f` is your inventory; its `schema` selects which types to observe.
 - `-o` receives the observed inventory (ir).
+- output is validated against the inventory's schema before it is written; see `docs/engine.md`.
 - import neither reads nor locks the state store; it observes in the canonical uid space.
 - `peeringdb` uses `PEERINGDB_API_KEY` for authentication
 
