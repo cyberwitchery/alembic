@@ -245,7 +245,11 @@ alembic apply -p plan.json -o apply-report.json \
 - applies a plan file
 - deletes are blocked unless `--allow-delete` is provided; this covers both object deletes and destructive schema provisioning (deleting custom object types/fields the inventory no longer declares, which cascades to their objects)
 - `--interactive` prompts per operation and applies only approved ops
-  through the same engine path used by non-interactive apply
+  through the same engine path used by non-interactive apply. one answer is read
+  from stdin per operation, so scripted answers work (`printf 'y\nn\ny\n' |
+  alembic apply -i ...`); if stdin ends before every operation has been answered
+  the run returns an error naming that operation, rather than declining the rest
+  on your behalf. drop `--interactive` to apply the whole plan
 - the `peeringdb` backend is read-only; apply will return an error
 - apply runs adapter provisioning (`ensure_schema`) before writes on read+write
   backends; for netbox this can create custom fields, custom object types, and
