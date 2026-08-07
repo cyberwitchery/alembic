@@ -265,7 +265,7 @@ fn undeclared_types_to_result(
     if counts.is_empty() {
         return Ok(());
     }
-    // an empty request means every declared type, as every adapter reads it.
+    // an empty request means every declared type to the built-in adapters; external ones decide.
     let requested: Vec<&str> = if types.is_empty() {
         schema.types.keys().map(String::as_str).collect()
     } else {
@@ -278,10 +278,17 @@ fn undeclared_types_to_result(
     for (name, count) in counts {
         message.push_str(&format!("- {name}: {count} object(s)\n"));
     }
-    message.push_str(&format!(
-        "import asked for {}; these came back unasked, so they are the adapter's, not a gap in the schema in `-f`",
-        requested.join(", ")
-    ));
+    // with nothing declared the cause is the `-f`, so naming the list would point away from it.
+    if requested.is_empty() {
+        message.push_str(
+            "the schema in `-f` declares no types, so import asked for nothing and every observed type is undeclared",
+        );
+    } else {
+        message.push_str(&format!(
+            "import asked for {}; these came back unasked, so they are the adapter's, not a gap in the schema in `-f`",
+            requested.join(", ")
+        ));
+    }
     Err(anyhow!(message))
 }
 
@@ -1152,6 +1159,23 @@ mod tests {
         let error = import_err(observed, &schema);
         assert!(error.contains("- custom.thing: 1 object(s)"), "{error}");
         assert!(error.contains("import asked for dcim.cable"), "{error}");
+    }
+
+    #[test]
+    fn import_names_the_empty_schema_rather_than_an_empty_list() {
+        // the cli asks for `schema.types.keys()`, so an empty schema empties both
+        // branches of the request. naming the list would render as nothing and
+        // point away from the `-f`, which is the cause in this one case.
+        let observed = observed_of(&[("custom.thing", "id=x1", json!({ "anything": "goes" }))]);
+        let schema = schema_of(&[]);
+
+        let error = import_err(observed, &schema);
+        assert!(error.contains("- custom.thing: 1 object(s)"), "{error}");
+        assert!(
+            error.contains("the schema in `-f` declares no types, so import asked for nothing"),
+            "{error}"
+        );
+        assert!(!error.contains("asked for ;"), "{error}");
     }
 
     #[test]
