@@ -2000,7 +2000,7 @@ async fn run_plan_report_omits_the_schema_preview_when_the_backend_cannot_previe
     ])
     .await;
 
-    let example_binary = find_example_binary("minimal_external_adapter");
+    let adapter = example_binary("minimal_external_adapter");
     let inventory = write_minimal_inventory(dir.path());
     let out = dir.path().join("drift.json");
     let config = dir.path().join("backend.yaml");
@@ -2008,7 +2008,7 @@ async fn run_plan_report_omits_the_schema_preview_when_the_backend_cannot_previe
         &config,
         format!(
             "backend: external\ncommand: \"{}\"\ntimeout_seconds: 5\n",
-            example_binary.to_str().unwrap()
+            adapter.to_str().unwrap()
         ),
     )
     .unwrap();
