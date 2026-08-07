@@ -63,9 +63,10 @@ pub async fn import_inventory(
         schema: schema.clone(),
         objects: inventory_objects,
     };
-    // an unresolved ref reaches validation as `expected uuid, got number`, the
-    // symptom; import still holds the observation, so it names the cause first.
-    // imported objects carry no source, so `..._with_sources` would add nothing.
+    // both name a cause validation can only report as a symptom, and import
+    // still holds the observation and the types it asked for. imported objects
+    // carry no source, so `..._with_sources` would add nothing.
+    undeclared_types_to_result(&inventory, schema, types)?;
     unresolved_refs_to_result(unresolved_refs(&inventory, &mappings, &observed_ids))?;
     crate::report_to_result(crate::validate(&inventory))?;
 
@@ -100,7 +101,7 @@ fn bootstrap_mappings(
     observed_ids: &BTreeMap<String, BTreeSet<BackendId>>,
 ) -> StateMappings {
     // an object with no backend id seeds nothing, and one whose type the schema
-    // omits is refused later as an unknown type, so it seeds nothing either.
+    // omits is refused later as an undeclared type, so it seeds nothing either.
     let mut pending: Vec<_> = objects
         .iter()
         .filter_map(|object| {
@@ -175,7 +176,7 @@ fn key_refs_settled(
 /// materialize one observed object against the full index: refs normalized, key
 /// re-derived from the normalized attrs since a ref-typed key field may have
 /// moved. a type absent from the schema passes through untouched, matching
-/// `project_attrs`; validation then refuses it as an unknown type.
+/// `project_attrs`; import then refuses it as an undeclared type.
 fn materialize(
     schema: &Schema,
     object: &ObservedObject,
@@ -212,9 +213,10 @@ struct UnresolvedRef {
 enum UnresolvedCause {
     /// the target is not in the observation at all.
     Unobserved,
-    /// the target was observed, but its own key refs form a cycle, so it never
-    /// settled and has no uid to point at.
-    KeyRefCycle,
+    /// the target was observed but never mapped to a uid. this tests absence
+    /// from the index, not a cycle; an undeclared type is the other way to be
+    /// absent and is refused first, which leaves key refs that never settle.
+    Unmapped,
     /// the target has a uid and this copy of the ref kept the backend id anyway:
     /// only `attrs` is normalized, so a key field `derive_key` fell back to the
     /// observed key for is whatever the adapter sent.
@@ -230,9 +232,9 @@ impl fmt::Display for UnresolvedRef {
                 "no {} with that backend id was observed, so there is no uid to point at; import reads only the types the schema in `-f` declares",
                 self.target
             ),
-            UnresolvedCause::KeyRefCycle => write!(
+            UnresolvedCause::Unmapped => write!(
                 f,
-                "the {} it names is keyed on a reference cycle, so no uid can be derived for it",
+                "the {} it names was observed but never mapped to a uid: its own key refs never settle, so it is keyed on a reference cycle",
                 self.target
             ),
             UnresolvedCause::NotRewritten(uid) => write!(
@@ -242,6 +244,45 @@ impl fmt::Display for UnresolvedRef {
             ),
         }
     }
+}
+
+/// an observed type the schema does not declare. validation can only call it
+/// `unknown type`, which reads as a gap in the user's own `-f`; import knows the
+/// list it asked for, so it says the type came back from the adapter unasked.
+/// refusing it here is also what leaves `UnresolvedCause::Unmapped` a cycle.
+fn undeclared_types_to_result(
+    inventory: &Inventory,
+    schema: &Schema,
+    types: &[TypeName],
+) -> Result<()> {
+    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    for object in &inventory.objects {
+        let name = object.type_name.as_str();
+        if !schema.types.contains_key(name) {
+            *counts.entry(name).or_default() += 1;
+        }
+    }
+    if counts.is_empty() {
+        return Ok(());
+    }
+    // an empty request means every declared type, as every adapter reads it.
+    let requested: Vec<&str> = if types.is_empty() {
+        schema.types.keys().map(String::as_str).collect()
+    } else {
+        types.iter().map(TypeName::as_str).collect()
+    };
+    let mut message = format!(
+        "import failed: {} observed type(s) are not declared by the schema, so the inventory would not validate:\n",
+        counts.len()
+    );
+    for (name, count) in counts {
+        message.push_str(&format!("- {name}: {count} object(s)\n"));
+    }
+    message.push_str(&format!(
+        "import asked for {}; these came back unasked, so they are the adapter's, not a gap in the schema in `-f`",
+        requested.join(", ")
+    ));
+    Err(anyhow!(message))
 }
 
 fn unresolved_refs_to_result(unresolved: Vec<UnresolvedRef>) -> Result<()> {
@@ -381,7 +422,7 @@ fn classify_ref(
             .get(target)
             .is_some_and(|ids| ids.contains(&backend_id)) =>
         {
-            UnresolvedCause::KeyRefCycle
+            UnresolvedCause::Unmapped
         }
         None => UnresolvedCause::Unobserved,
     };
@@ -401,8 +442,8 @@ fn classify_ref(
 /// imported inventory fail `validate_inventory` with `ExtraAttrField`, so we
 /// mirror that check here (validation.rs: `type_schema.fields.contains_key`) and
 /// drop the offending keys, warning once per key for the import. types absent
-/// from the schema are left untouched, since validation refuses the whole object
-/// as an unknown type and projecting its attrs would say nothing more. key fields
+/// from the schema are left untouched, since import refuses the whole object as
+/// an undeclared type and projecting its attrs would say nothing more. key fields
 /// are never touched; they validate separately against `type_schema.key`.
 fn project_attrs(
     schema: &Schema,
@@ -839,7 +880,7 @@ mod tests {
         ] {
             assert!(
                 error.contains(&format!(
-                    "{field} -> {target} {id}: the {target} it names is keyed on a reference cycle"
+                    "{field} -> {target} {id}: the {target} it names was observed but never mapped to a uid"
                 )),
                 "{error}"
             );
@@ -930,6 +971,95 @@ mod tests {
         assert!(error.contains("-> b.interface 99"), "{error}");
     }
 
+    /// import one `c.cable` whose `interface` field carries the given type and
+    /// value, against a schema declaring a `b.interface` nothing observes.
+    fn unresolved_in(field_type: FieldType, value: serde_json::Value) -> String {
+        let string_field = typed_field(FieldType::String);
+        let schema = Schema {
+            types: BTreeMap::from([
+                (
+                    "b.interface".to_string(),
+                    typed_type(&[("name", string_field.clone())], &[]),
+                ),
+                (
+                    "c.cable".to_string(),
+                    typed_type(
+                        &[("name", string_field)],
+                        &[("interface", typed_field(field_type))],
+                    ),
+                ),
+            ]),
+        };
+        let observed = observed_of(&[(
+            "c.cable",
+            "name=c1",
+            json!({ "name": "c1", "interface": value }),
+        )]);
+        import_err(observed, &schema)
+    }
+
+    fn interface_ref() -> FieldType {
+        FieldType::Ref {
+            target: "b.interface".to_string(),
+        }
+    }
+
+    #[test]
+    fn import_reports_every_unresolved_ref_of_a_list_ref() {
+        // `scan_refs` has an arm per ref-bearing field type and the other tests
+        // only drive the plain `Ref`. a list of refs reports every element, not
+        // just the first.
+        let error = unresolved_in(
+            FieldType::ListRef {
+                target: "b.interface".to_string(),
+            },
+            json!([98, 99]),
+        );
+        assert!(
+            error.contains("2 reference(s) could not be resolved"),
+            "{error}"
+        );
+        assert!(
+            error.contains("c.cable.interface -> b.interface 98"),
+            "{error}"
+        );
+        assert!(
+            error.contains("c.cable.interface -> b.interface 99"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn import_reports_an_unresolved_ref_nested_in_a_list() {
+        // `List` recurses on its item type, so a ref reached through it is
+        // labelled with the field that holds the list.
+        let error = unresolved_in(
+            FieldType::List {
+                item: Box::new(interface_ref()),
+            },
+            json!([99]),
+        );
+        assert!(
+            error.contains("c.cable.interface -> b.interface 99"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn import_reports_an_unresolved_ref_nested_in_a_map() {
+        // `Map` recurses on its value type; keys hold no refs.
+        let error = unresolved_in(
+            FieldType::Map {
+                value: Box::new(interface_ref()),
+            },
+            json!({ "primary": 99 }),
+        );
+        assert!(
+            error.contains("c.cable.interface -> b.interface 99"),
+            "{error}"
+        );
+    }
+
     #[test]
     fn import_refuses_a_key_ref_the_adapter_reported_only_in_the_key() {
         // the external protocol carries `key` and `attrs` independently, and only
@@ -1008,10 +1138,10 @@ mod tests {
 
     #[test]
     fn import_refuses_a_type_absent_from_the_schema() {
-        // an observed type the schema does not declare is passed through with its
-        // attrs untouched, and `validate` reports it as `unknown type`, so the
-        // file would load nowhere. the cli asks for the schema's types and nothing
-        // else, so this is an adapter answering with types it was not asked for.
+        // an observed type the schema does not declare would load nowhere, and
+        // `validate` can only call it `unknown type`, which reads as the schema
+        // in `-f` missing an entry. import asks for the schema's types and
+        // nothing else, so it names the list it asked for instead.
         let observed = observed_of(&[(
             "custom.thing",
             "id=x1",
@@ -1020,7 +1150,38 @@ mod tests {
         let schema = schema_of(&[("dcim.cable", &["cable"], &["label"])]);
 
         let error = import_err(observed, &schema);
-        assert!(error.contains("unknown type: custom.thing"), "{error}");
+        assert!(error.contains("- custom.thing: 1 object(s)"), "{error}");
+        assert!(error.contains("import asked for dcim.cable"), "{error}");
+    }
+
+    #[test]
+    fn import_refuses_a_ref_to_an_undeclared_type_as_undeclared_not_as_a_cycle() {
+        // red-green for the classifier: a ref to an object whose type the schema
+        // omits looks observed-but-unmapped, and used to be reported as a cycle
+        // that does not exist. the undeclared type is the real cause.
+        let string_field = typed_field(FieldType::String);
+        let schema = Schema {
+            types: BTreeMap::from([(
+                "c.cable".to_string(),
+                typed_type(
+                    &[("name", string_field)],
+                    &[("interface", ref_field("b.interface"))],
+                ),
+            )]),
+        };
+
+        let observed = observed_of(&[
+            (
+                "c.cable",
+                "name=c1",
+                json!({ "name": "c1", "interface": 2 }),
+            ),
+            ("b.interface", "name=eth0", json!({ "name": "eth0" })),
+        ]);
+
+        let error = import_err(observed, &schema);
+        assert!(error.contains("- b.interface: 1 object(s)"), "{error}");
+        assert!(!error.contains("reference cycle"), "{error}");
     }
 
     #[test]
