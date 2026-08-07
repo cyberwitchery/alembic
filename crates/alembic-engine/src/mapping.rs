@@ -59,6 +59,20 @@ pub fn custom_field_type_for_schema(field: &FieldSchema) -> String {
     }
 }
 
+/// the declared `pattern:` a backend custom field should enforce as
+/// `validation_regex`, or `None` when it would enforce nothing. takes the
+/// already-mapped backend type string because a regex only constrains text, and
+/// core allows a `pattern` on json/ref/date/datetime/time fields too.
+pub fn validation_regex_for_schema<'a>(
+    field: &'a FieldSchema,
+    backend_type: &str,
+) -> Option<&'a str> {
+    if !matches!(backend_type, "text" | "longtext") {
+        return None;
+    }
+    field.pattern.as_deref()
+}
+
 /// extract tag names from a JSON value returned by a backend.
 ///
 /// accepts arrays of strings or objects with `"name"` / `"slug"` fields,
@@ -161,6 +175,39 @@ mod tests {
             })),
             "json"
         );
+    }
+
+    #[test]
+    fn test_validation_regex_for_schema() {
+        let with_pattern = FieldSchema {
+            r#type: FieldType::String,
+            required: false,
+            nullable: true,
+            description: None,
+            format: None,
+            pattern: Some("^[A-Z]{3}$".to_string()),
+        };
+        assert_eq!(
+            validation_regex_for_schema(&with_pattern, "text"),
+            Some("^[A-Z]{3}$")
+        );
+        // netbox's custom-object equivalent of `text`.
+        assert_eq!(
+            validation_regex_for_schema(&with_pattern, "longtext"),
+            Some("^[A-Z]{3}$")
+        );
+        // a regex on a non-text backend field constrains nothing.
+        for backend_type in ["json", "object", "date", "datetime", "integer"] {
+            assert_eq!(
+                validation_regex_for_schema(&with_pattern, backend_type),
+                None
+            );
+        }
+        let without_pattern = FieldSchema {
+            pattern: None,
+            ..with_pattern
+        };
+        assert_eq!(validation_regex_for_schema(&without_pattern, "text"), None);
     }
 
     #[test]

@@ -1,6 +1,7 @@
 use super::client::{is_404_anyhow, CustomObjectField, CustomObjectType};
 use super::mapping::{
     build_tag_inputs, custom_field_type_for_schema, slugify, supports_feature, tags_from_value,
+    validation_regex_for_schema,
 };
 use super::registry::ObjectTypeRegistry;
 use super::state::{resolved_from_state, state_mappings};
@@ -763,29 +764,9 @@ impl NetBoxAdapter {
         field_name: &str,
         field_schema: &FieldSchema,
     ) -> Result<bool> {
-        let field_type = custom_field_type_for_schema(field_schema);
-        let mut payload = Map::new();
-        payload.insert("name".to_string(), Value::String(field_name.to_string()));
-        payload.insert("label".to_string(), Value::String(field_name.to_string()));
-        payload.insert("type".to_string(), Value::String(field_type));
-        // netbox keys a custom field's object_types by the django content type
-        // (`ipam.ipaddress`), not the endpoint form (`ipam.ip_address`); the two
-        // diverge for every multi-word model, and posting the endpoint form 400s.
-        payload.insert(
-            "object_types".to_string(),
-            Value::Array(vec![Value::String(content_type.to_string())]),
-        );
-        if field_schema.required {
-            payload.insert("required".to_string(), Value::Bool(true));
-        }
-        if let Some(description) = &field_schema.description {
-            payload.insert(
-                "description".to_string(),
-                Value::String(description.clone()),
-            );
-        }
+        let payload = custom_field_payload(content_type, field_name, field_schema);
         let resource = self.client.extras().custom_fields();
-        match resource.create(&Value::Object(payload)).await {
+        match resource.create(&payload).await {
             Ok(_) => Ok(true),
             Err(err) => {
                 let existing = self.client.fetch_custom_fields().await?;
@@ -1706,6 +1687,39 @@ fn custom_object_field_needs_create(field_name: &str, field_exists: bool) -> Res
     Ok(true)
 }
 
+/// the create payload for a custom field on a native netbox model.
+fn custom_field_payload(content_type: &str, field_name: &str, field_schema: &FieldSchema) -> Value {
+    let field_type = custom_field_type_for_schema(field_schema);
+    let validation_regex = validation_regex_for_schema(field_schema, &field_type);
+    let mut payload = Map::new();
+    payload.insert("name".to_string(), Value::String(field_name.to_string()));
+    payload.insert("label".to_string(), Value::String(field_name.to_string()));
+    payload.insert("type".to_string(), Value::String(field_type));
+    // netbox keys a custom field's object_types by the django content type
+    // (`ipam.ipaddress`), not the endpoint form (`ipam.ip_address`); the two
+    // diverge for every multi-word model, and posting the endpoint form 400s.
+    payload.insert(
+        "object_types".to_string(),
+        Value::Array(vec![Value::String(content_type.to_string())]),
+    );
+    if field_schema.required {
+        payload.insert("required".to_string(), Value::Bool(true));
+    }
+    if let Some(description) = &field_schema.description {
+        payload.insert(
+            "description".to_string(),
+            Value::String(description.clone()),
+        );
+    }
+    if let Some(pattern) = validation_regex {
+        payload.insert(
+            "validation_regex".to_string(),
+            Value::String(pattern.to_string()),
+        );
+    }
+    Value::Object(payload)
+}
+
 fn custom_object_field_payload(
     registry: &ObjectTypeRegistry,
     custom_object_type_id: u64,
@@ -1713,6 +1727,7 @@ fn custom_object_field_payload(
     field_schema: &FieldSchema,
     is_key: bool,
 ) -> Result<Value> {
+    let field_type = custom_object_field_type(&field_schema.r#type);
     let mut payload = Map::new();
     payload.insert(
         "custom_object_type".to_string(),
@@ -1720,17 +1735,14 @@ fn custom_object_field_payload(
     );
     payload.insert("name".to_string(), Value::String(field_name.to_string()));
     payload.insert("label".to_string(), Value::String(title_case(field_name)));
-    payload.insert(
-        "type".to_string(),
-        Value::String(custom_object_field_type(&field_schema.r#type).to_string()),
-    );
+    payload.insert("type".to_string(), Value::String(field_type.to_string()));
     if is_key || field_schema.required {
         payload.insert("required".to_string(), Value::Bool(true));
     }
-    if let Some(pattern) = &field_schema.pattern {
+    if let Some(pattern) = validation_regex_for_schema(field_schema, field_type) {
         payload.insert(
             "validation_regex".to_string(),
-            Value::String(pattern.clone()),
+            Value::String(pattern.to_string()),
         );
     }
 
@@ -2409,5 +2421,81 @@ mod test_normalization {
         assert_eq!(pairs.len(), 2);
         assert!(pairs.iter().any(|p| p == &json!(["name", "leaf01"])));
         assert!(pairs.iter().any(|p| p == &json!(["site", "5"])));
+    }
+
+    fn field_schema(r#type: FieldType, pattern: Option<&str>) -> FieldSchema {
+        FieldSchema {
+            r#type,
+            required: false,
+            nullable: true,
+            description: None,
+            format: None,
+            pattern: pattern.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn test_custom_field_payload_carries_declared_pattern() {
+        let payload = custom_field_payload(
+            "dcim.device",
+            "asset_tag",
+            &field_schema(FieldType::String, Some("^[A-Z]{3}$")),
+        );
+        assert_eq!(payload.get("type").unwrap(), &json!("text"));
+        assert_eq!(
+            payload.get("validation_regex").unwrap(),
+            &json!("^[A-Z]{3}$")
+        );
+    }
+
+    #[test]
+    fn test_custom_field_payload_omits_regex_without_pattern() {
+        let payload = custom_field_payload(
+            "dcim.device",
+            "asset_tag",
+            &field_schema(FieldType::String, None),
+        );
+        assert!(payload.get("validation_regex").is_none());
+    }
+
+    #[test]
+    fn test_custom_field_payload_skips_pattern_on_json_field() {
+        // core allows a pattern on `json`; the backend field it maps to would
+        // enforce nothing, so the regex stays home.
+        let payload = custom_field_payload(
+            "dcim.device",
+            "meta",
+            &field_schema(FieldType::Json, Some("^[A-Z]{3}$")),
+        );
+        assert_eq!(payload.get("type").unwrap(), &json!("json"));
+        assert!(payload.get("validation_regex").is_none());
+    }
+
+    #[test]
+    fn test_custom_object_field_payload_guards_pattern_by_type() {
+        let registry = ObjectTypeRegistry::default();
+        let payload = custom_object_field_payload(
+            &registry,
+            7,
+            "asset_tag",
+            &field_schema(FieldType::String, Some("^[A-Z]{3}$")),
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            payload.get("validation_regex").unwrap(),
+            &json!("^[A-Z]{3}$")
+        );
+
+        let payload = custom_object_field_payload(
+            &registry,
+            7,
+            "meta",
+            &field_schema(FieldType::Json, Some("^[A-Z]{3}$")),
+            false,
+        )
+        .unwrap();
+        assert_eq!(payload.get("type").unwrap(), &json!("json"));
+        assert!(payload.get("validation_regex").is_none());
     }
 }

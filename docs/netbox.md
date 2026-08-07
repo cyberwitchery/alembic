@@ -32,6 +32,9 @@ and supported feature set.
 - observe flattens `custom_fields` and `tags` into `attrs` for diffing and import.
 - on apply, custom fields and tags are only sent when the object type advertises support
   via the `features` set.
+- provisioning creates missing custom fields on apply; the schema preview reports them.
+- a declared `pattern:` on a text-typed field is provisioned as the custom field's
+  `validation_regex`, so the backend enforces it too; an existing field is not updated.
 - tags the applied objects reference but the backend lacks are created at apply, not
   during schema provisioning. a successful apply lists them in `provision.created_tags`;
   a tag that already existed is not listed. they are created before the ops, so an apply
