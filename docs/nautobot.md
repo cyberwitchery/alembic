@@ -45,6 +45,22 @@ token: nautobot_xxx_replace_me
   a tag that already existed is not listed. they are created before the ops, so an apply
   that fails afterwards leaves a tag no report names, in that run or the resumed one.
 
+a declared type is provisioned as the nautobot custom field type below. `ref` and
+`list_ref` are never provisioned as custom fields.
+
+| declared | nautobot |
+| --- | --- |
+| `string`, `text`, `uuid`, `time`, `ip_address`, `cidr`, `prefix`, `mac`, `slug`, `enum` | `text` |
+| `int` | `integer` |
+| `float` | `json` |
+| `bool` | `boolean` |
+| `date` | `date` |
+| `datetime` | `datetime` |
+| `json`, `list`, `map` | `json` |
+
+nautobot has no decimal custom field type, so a `float` is stored as `json` to keep it a
+number: a text field reads back quoted, which fails validation on `import`.
+
 ## custom objects
 
 nautobot does not expose a core api for dynamic custom object types. schema types must

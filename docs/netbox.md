@@ -40,6 +40,20 @@ and supported feature set.
   a tag that already existed is not listed. they are created before the ops, so an apply
   that fails afterwards leaves a tag no report names, in that run or the resumed one.
 
+a declared type is provisioned as the netbox custom field type below. `ref` and `list_ref`
+are never provisioned as custom fields; see custom objects.
+
+| declared | netbox |
+| --- | --- |
+| `string`, `uuid`, `time`, `ip_address`, `cidr`, `prefix`, `mac`, `slug`, `enum` | `text` |
+| `text` | `longtext` |
+| `int` | `integer` |
+| `float` | `decimal` |
+| `bool` | `boolean` |
+| `date` | `date` |
+| `datetime` | `datetime` |
+| `json`, `list`, `map` | `json` |
+
 ## custom objects (netbox custom objects plugin)
 
 if the schema includes types that are not present in netbox core object types, the adapter

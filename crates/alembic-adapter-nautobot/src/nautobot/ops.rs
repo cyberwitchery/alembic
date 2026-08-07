@@ -1509,4 +1509,16 @@ mod tests {
         assert_eq!(payload.get("type").unwrap(), &json!("json"));
         assert!(payload.get("validation_regex").is_none());
     }
+
+    #[test]
+    fn test_custom_field_payload_types_a_float_as_json() {
+        // nautobot's CustomFieldTypeChoices has no `decimal`, and its `text`
+        // reads back as a json string, which the ir's float check rejects.
+        let payload = custom_field_payload(
+            "dcim.device",
+            "ratio",
+            &field_schema(FieldType::Float, None),
+        );
+        assert_eq!(payload.get("type").unwrap(), &json!("json"));
+    }
 }
