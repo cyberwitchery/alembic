@@ -2,7 +2,7 @@
 //! cli surface an adapter author actually runs (argument parsing, the report, and
 //! the 0/1/2 exit codes) is exercised, not just the library.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use tempfile::tempdir;
 
@@ -12,18 +12,19 @@ fn manifest(rel: &str) -> String {
     format!("{}/{}", env!("CARGO_MANIFEST_DIR"), rel)
 }
 
+/// cargo exports `CARGO_BIN_EXE_<name>` for bins but nothing for examples, so the
+/// path comes from `CARGO_TARGET_DIR` instead (an absolute value replaces the root).
 fn example_binary(name: &str) -> PathBuf {
-    let mut path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .find(|p| p.join("target").exists())
-        .expect("workspace target dir")
-        .join("target");
-    if std::env::var("CI").is_ok() {
-        path.push("ci");
-    }
-    path.push("debug");
-    path.push("examples");
-    path.push(name);
+    let target_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join(std::env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| "target".to_string()));
+    let path = target_dir.join("debug").join("examples").join(name);
+    assert!(
+        path.exists(),
+        "example `{name}` is not built at {}: selecting a single test target does not build examples, so run `cargo test -p alembic-adapter-test` or `cargo build --examples` first",
+        path.display()
+    );
     path
 }
 
