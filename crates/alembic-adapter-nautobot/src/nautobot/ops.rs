@@ -1,5 +1,6 @@
 use super::mapping::{
     build_tag_inputs, custom_field_type_for_schema, slugify, supports_feature, tags_from_value,
+    validation_regex_for_schema,
 };
 use super::registry::ObjectTypeRegistry;
 use super::state::{resolved_from_state, state_mappings};
@@ -538,30 +539,9 @@ impl NautobotAdapter {
         field_name: &str,
         field_schema: &FieldSchema,
     ) -> Result<bool> {
-        let field_type = custom_field_type_for_schema(field_schema);
-        let mut payload = Map::new();
-        // nautobot 2.x identifies a custom field by `key`, not `name`: the writable
-        // serializer has no `name`, so sending it lets nautobot derive `key` from
-        // `label` (slugified), and a non-slug field name then never matches the
-        // `field.key` the read/detect/write paths key on. set `key` = field name.
-        payload.insert("key".to_string(), Value::String(field_name.to_string()));
-        payload.insert("label".to_string(), Value::String(field_name.to_string()));
-        payload.insert("type".to_string(), Value::String(field_type));
-        payload.insert(
-            "content_types".to_string(),
-            Value::Array(vec![Value::String(type_name.as_str().to_string())]),
-        );
-        if field_schema.required {
-            payload.insert("required".to_string(), Value::Bool(true));
-        }
-        if let Some(description) = &field_schema.description {
-            payload.insert(
-                "description".to_string(),
-                Value::String(description.clone()),
-            );
-        }
+        let payload = custom_field_payload(type_name.as_str(), field_name, field_schema);
         let resource = self.client.extras().custom_fields();
-        match resource.create(&Value::Object(payload)).await {
+        match resource.create(&payload).await {
             Ok(_) => Ok(true),
             Err(err) => {
                 let existing = self.client.fetch_custom_fields().await?;
@@ -581,6 +561,40 @@ impl NautobotAdapter {
             }
         }
     }
+}
+
+/// the create payload for a custom field on a nautobot model.
+fn custom_field_payload(content_type: &str, field_name: &str, field_schema: &FieldSchema) -> Value {
+    let field_type = custom_field_type_for_schema(field_schema);
+    let validation_regex = validation_regex_for_schema(field_schema, &field_type);
+    let mut payload = Map::new();
+    // nautobot 2.x identifies a custom field by `key`, not `name`: the writable
+    // serializer has no `name`, so sending it lets nautobot derive `key` from
+    // `label` (slugified), and a non-slug field name then never matches the
+    // `field.key` the read/detect/write paths key on. set `key` = field name.
+    payload.insert("key".to_string(), Value::String(field_name.to_string()));
+    payload.insert("label".to_string(), Value::String(field_name.to_string()));
+    payload.insert("type".to_string(), Value::String(field_type));
+    payload.insert(
+        "content_types".to_string(),
+        Value::Array(vec![Value::String(content_type.to_string())]),
+    );
+    if field_schema.required {
+        payload.insert("required".to_string(), Value::Bool(true));
+    }
+    if let Some(description) = &field_schema.description {
+        payload.insert(
+            "description".to_string(),
+            Value::String(description.clone()),
+        );
+    }
+    if let Some(pattern) = validation_regex {
+        payload.insert(
+            "validation_regex".to_string(),
+            Value::String(pattern.to_string()),
+        );
+    }
+    Value::Object(payload)
 }
 
 fn extract_attrs(value: Value) -> Result<(String, JsonMap)> {
@@ -1446,5 +1460,53 @@ mod tests {
             body: String::new(),
         };
         assert!(is_conflict_error(&err));
+    }
+
+    fn field_schema(r#type: FieldType, pattern: Option<&str>) -> FieldSchema {
+        FieldSchema {
+            r#type,
+            required: false,
+            nullable: true,
+            description: None,
+            format: None,
+            pattern: pattern.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn test_custom_field_payload_carries_declared_pattern() {
+        let payload = custom_field_payload(
+            "dcim.device",
+            "asset_tag",
+            &field_schema(FieldType::String, Some("^[A-Z]{3}$")),
+        );
+        assert_eq!(payload.get("type").unwrap(), &json!("text"));
+        assert_eq!(
+            payload.get("validation_regex").unwrap(),
+            &json!("^[A-Z]{3}$")
+        );
+    }
+
+    #[test]
+    fn test_custom_field_payload_omits_regex_without_pattern() {
+        let payload = custom_field_payload(
+            "dcim.device",
+            "asset_tag",
+            &field_schema(FieldType::String, None),
+        );
+        assert!(payload.get("validation_regex").is_none());
+    }
+
+    #[test]
+    fn test_custom_field_payload_skips_pattern_on_json_field() {
+        // core allows a pattern on `json`; the backend field it maps to would
+        // enforce nothing, so the regex stays home.
+        let payload = custom_field_payload(
+            "dcim.device",
+            "meta",
+            &field_schema(FieldType::Json, Some("^[A-Z]{3}$")),
+        );
+        assert_eq!(payload.get("type").unwrap(), &json!("json"));
+        assert!(payload.get("validation_regex").is_none());
     }
 }
