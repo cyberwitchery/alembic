@@ -3007,6 +3007,16 @@ mod tests {
     }
 
     #[test]
+    fn type_float_rejects_a_numeric_string() {
+        // a backend that stores a float as text reads it back quoted, and import
+        // hard-validates what it writes, so such a backend field is lossy.
+        assert!(rejects(FieldType::Float, "1.5"));
+        assert!(check(&typed_field(FieldType::Float), &json!(1.5))
+            .errors
+            .is_empty());
+    }
+
+    #[test]
     fn type_date_enforces_rfc3339() {
         assert!(accepts(FieldType::Date, "2026-08-01"));
         assert!(rejects(FieldType::Date, "not a timestamp"));

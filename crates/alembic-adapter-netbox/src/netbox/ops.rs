@@ -1687,9 +1687,21 @@ fn custom_object_field_needs_create(field_name: &str, field_exists: bool) -> Res
     Ok(true)
 }
 
+/// netbox's `extras/custom-fields/` accepts more types than the netbox+nautobot
+/// intersection the shared map stays on, so upgrade the cells netbox's own
+/// custom-object path already carries. its object/multiobject arms have no
+/// equivalent here: ref/listref are skipped before a native field is created.
+fn native_custom_field_type(field_schema: &FieldSchema) -> String {
+    match field_schema.r#type {
+        FieldType::Float => "decimal".to_string(),
+        FieldType::Text => "longtext".to_string(),
+        _ => custom_field_type_for_schema(field_schema),
+    }
+}
+
 /// the create payload for a custom field on a native netbox model.
 fn custom_field_payload(content_type: &str, field_name: &str, field_schema: &FieldSchema) -> Value {
-    let field_type = custom_field_type_for_schema(field_schema);
+    let field_type = native_custom_field_type(field_schema);
     let validation_regex = validation_regex_for_schema(field_schema, &field_type);
     let mut payload = Map::new();
     payload.insert("name".to_string(), Value::String(field_name.to_string()));
@@ -2469,6 +2481,43 @@ mod test_normalization {
         );
         assert_eq!(payload.get("type").unwrap(), &json!("json"));
         assert!(payload.get("validation_regex").is_none());
+    }
+
+    #[test]
+    fn test_custom_field_payload_uses_netbox_native_types() {
+        let float = custom_field_payload(
+            "dcim.device",
+            "ratio",
+            &field_schema(FieldType::Float, None),
+        );
+        assert_eq!(float.get("type").unwrap(), &json!("decimal"));
+        let text =
+            custom_field_payload("dcim.device", "notes", &field_schema(FieldType::Text, None));
+        assert_eq!(text.get("type").unwrap(), &json!("longtext"));
+        // the two provisioning paths agree on the types both can express.
+        for r#type in [FieldType::Float, FieldType::Text] {
+            assert_eq!(
+                custom_field_payload("dcim.device", "f", &field_schema(r#type.clone(), None))
+                    .get("type")
+                    .unwrap(),
+                &json!(custom_object_field_type(&r#type)),
+            );
+        }
+    }
+
+    #[test]
+    fn test_custom_field_payload_keeps_pattern_on_longtext() {
+        // `longtext` is still text, so a declared pattern still constrains it.
+        let payload = custom_field_payload(
+            "dcim.device",
+            "notes",
+            &field_schema(FieldType::Text, Some("^[A-Z]{3}$")),
+        );
+        assert_eq!(payload.get("type").unwrap(), &json!("longtext"));
+        assert_eq!(
+            payload.get("validation_regex").unwrap(),
+            &json!("^[A-Z]{3}$")
+        );
     }
 
     #[test]

@@ -37,7 +37,9 @@ pub fn slugify(input: &str) -> String {
 pub fn custom_field_type_for_schema(field: &FieldSchema) -> String {
     match field.r#type {
         FieldType::Int => "integer".to_string(),
-        FieldType::Float => "decimal".to_string(),
+        // nautobot has no `decimal`, and its `text` reads back as a json string
+        // the ir's float check rejects; netbox upgrades this to `decimal`.
+        FieldType::Float => "json".to_string(),
         FieldType::Bool => "boolean".to_string(),
         FieldType::Date => "date".to_string(),
         FieldType::Datetime => "datetime".to_string(),
@@ -121,16 +123,74 @@ mod tests {
         assert_eq!(slugify("---test---"), "test");
     }
 
-    #[test]
-    fn test_custom_field_type_for_schema() {
-        let schema = |r#type| FieldSchema {
+    /// the backend custom-field type strings netbox and nautobot both accept,
+    /// from their generated clients' own enums. netbox spells its multi-valued
+    /// selection `multiselect` and nautobot `multi-select`, so neither is here.
+    const BOTH_BACKENDS_ACCEPT: &[&str] = &[
+        "boolean", "date", "datetime", "integer", "json", "select", "text", "url",
+    ];
+
+    fn schema(r#type: FieldType) -> FieldSchema {
+        FieldSchema {
             r#type,
             required: false,
             nullable: true,
             description: None,
             format: None,
             pattern: None,
-        };
+        }
+    }
+
+    /// every variant of the ir's field type, so the sweep below is a property of
+    /// the map rather than of the cases someone thought to list.
+    fn every_field_type() -> Vec<FieldType> {
+        vec![
+            FieldType::String,
+            FieldType::Text,
+            FieldType::Int,
+            FieldType::Float,
+            FieldType::Bool,
+            FieldType::Uuid,
+            FieldType::Date,
+            FieldType::Datetime,
+            FieldType::Time,
+            FieldType::Json,
+            FieldType::IpAddress,
+            FieldType::Cidr,
+            FieldType::Prefix,
+            FieldType::Mac,
+            FieldType::Slug,
+            FieldType::Enum {
+                values: vec!["a".to_string()],
+            },
+            FieldType::List {
+                item: Box::new(FieldType::String),
+            },
+            FieldType::Map {
+                value: Box::new(FieldType::String),
+            },
+            FieldType::Ref {
+                target: "site".to_string(),
+            },
+            FieldType::ListRef {
+                target: "site".to_string(),
+            },
+        ]
+    }
+
+    #[test]
+    fn test_shared_map_stays_within_the_backend_intersection() {
+        for r#type in every_field_type() {
+            let mapped = custom_field_type_for_schema(&schema(r#type.clone()));
+            assert!(
+                BOTH_BACKENDS_ACCEPT.contains(&mapped.as_str()),
+                "{type:?} maps to `{mapped}`, which not both backends accept"
+            );
+        }
+    }
+
+    #[test]
+    fn test_custom_field_type_for_schema() {
         assert_eq!(
             custom_field_type_for_schema(&schema(FieldType::String)),
             "text"
@@ -141,7 +201,7 @@ mod tests {
         );
         assert_eq!(
             custom_field_type_for_schema(&schema(FieldType::Float)),
-            "decimal"
+            "json"
         );
         assert_eq!(
             custom_field_type_for_schema(&schema(FieldType::Bool)),
