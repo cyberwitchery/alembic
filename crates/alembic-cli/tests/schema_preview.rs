@@ -7,7 +7,7 @@ use tempfile::tempdir;
 
 mod support;
 
-use support::example_binary;
+use support::{bin_path, example_binary};
 
 #[test]
 fn plan_reports_a_preview_error_as_a_failure() {
@@ -24,7 +24,7 @@ fn plan_reports_a_preview_error_as_a_failure() {
     )
     .expect("write backend config");
 
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_alembic"));
+    let mut cmd = Command::new(bin_path());
     cmd.env("ALEMBIC_STATE_PATH", dir.path().join("state.json"));
     cmd.arg("plan")
         .arg("-f")

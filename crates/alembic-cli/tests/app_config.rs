@@ -2,17 +2,12 @@
 //! without swallowing the `ALEMBIC_*` variables it shares its prefix with. needs a
 //! subprocess because the config comes from the process environment and the cwd.
 
+mod support;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use support::{bin_path, fixture_path};
 use tempfile::tempdir;
-
-fn fixture_path(name: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..")
-        .join("fixtures")
-        .join(name)
-}
 
 fn inventory(dir: &Path) -> PathBuf {
     let path = dir.join("inventory.yaml");
@@ -22,7 +17,7 @@ fn inventory(dir: &Path) -> PathBuf {
 
 /// runs in `dir`, so an `alembic.yaml` written there is the one that gets loaded.
 fn run_validate(dir: &Path, envs: &[(&str, &str)]) -> (bool, String) {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_alembic"));
+    let mut cmd = Command::new(bin_path());
     cmd.current_dir(dir).arg("validate").arg("-f");
     cmd.arg(inventory(dir));
     for (key, value) in envs {
@@ -84,7 +79,7 @@ fn the_plugins_dir_variable_still_reaches_the_config() {
 
     // `apply` logs the plugin dir it looked in; the read-only backend stops the
     // run before it touches anything.
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_alembic"));
+    let mut cmd = Command::new(bin_path());
     cmd.current_dir(dir.path())
         .env("RUST_LOG", "debug")
         .env("ALEMBIC_PLUGINS_DIR", &plugins)
