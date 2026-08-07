@@ -182,13 +182,20 @@ enum MapAction {
     },
 }
 
-fn confirm(prompt: &str) -> Result<bool> {
+/// eof is not an answer: `read_line` returns `Ok(0)` leaving the line empty,
+/// which would read as a decline nobody gave.
+fn confirm(description: &str) -> Result<bool> {
     use std::io::{self, Write};
     let mut stdout = io::stdout();
-    stdout.write_all(prompt.as_bytes())?;
+    write!(stdout, "{description}? [y/N] ")?;
     stdout.flush()?;
     let mut input = String::new();
-    io::stdin().read_line(&mut input)?;
+    if io::stdin().read_line(&mut input)? == 0 {
+        return Err(anyhow!(
+            "stdin ended before `{description}` was answered; drop --interactive \
+             to apply the whole plan non-interactively"
+        ));
+    }
     Ok(matches!(input.trim().to_lowercase().as_str(), "y" | "yes"))
 }
 
@@ -374,28 +381,26 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                 let ordered = alembic_engine::sort_ops_for_apply(&plan.ops, &plan.schema);
                 let mut approved = Vec::new();
                 for op in ordered {
-                    let prompt = match &op {
+                    let description = match &op {
                         alembic_engine::Op::Create {
                             type_name, desired, ..
                         } => format!(
-                            "create {} {}? [y/N] ",
+                            "create {} {}",
                             type_name,
                             alembic_core::key_string(&desired.key)
                         ),
                         alembic_engine::Op::Update {
                             type_name, desired, ..
                         } => format!(
-                            "update {} {}? [y/N] ",
+                            "update {} {}",
                             type_name,
                             alembic_core::key_string(&desired.key)
                         ),
-                        alembic_engine::Op::Delete { type_name, key, .. } => format!(
-                            "delete {} {}? [y/N] ",
-                            type_name,
-                            alembic_core::key_string(key)
-                        ),
+                        alembic_engine::Op::Delete { type_name, key, .. } => {
+                            format!("delete {} {}", type_name, alembic_core::key_string(key))
+                        }
                     };
-                    if confirm(&prompt)? {
+                    if confirm(&description)? {
                         approved.push(op);
                     }
                 }
