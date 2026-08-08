@@ -962,7 +962,7 @@ fn is_conflict_error(err: &nautobot::Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alembic_core::FieldSchema;
+    use alembic_core::{format_regex, FieldFormat, FieldSchema};
     use serde_json::json;
 
     #[test]
@@ -1573,6 +1573,78 @@ mod tests {
             &field_schema(FieldType::Json, Some("^[A-Z]{3}$")),
         );
         assert_eq!(payload.get("type").unwrap(), &json!("json"));
+        assert!(payload.get("validation_regex").is_none());
+    }
+
+    #[test]
+    fn test_custom_field_payload_carries_declared_format() {
+        let mut schema = field_schema(FieldType::String, None);
+        schema.format = Some(FieldFormat::Mac);
+        let payload = custom_field_payload("dcim.device", "bmc_mac", &schema);
+        assert_eq!(payload.get("type").unwrap(), &json!("text"));
+        assert_eq!(
+            payload.get("validation_regex").unwrap(),
+            &json!(format_regex(&FieldFormat::Mac))
+        );
+    }
+
+    #[test]
+    fn test_custom_field_payload_carries_the_format_a_type_implies() {
+        // nautobot flattens every one of these to `text`, so the regex is the
+        // only place the declared semantic survives.
+        for (r#type, format) in [
+            (FieldType::Mac, FieldFormat::Mac),
+            (FieldType::Uuid, FieldFormat::Uuid),
+            (FieldType::Cidr, FieldFormat::Cidr),
+            (FieldType::Prefix, FieldFormat::Prefix),
+            (FieldType::Slug, FieldFormat::Slug),
+        ] {
+            let payload = custom_field_payload("dcim.device", "f", &field_schema(r#type, None));
+            assert_eq!(payload.get("type").unwrap(), &json!("text"));
+            assert_eq!(
+                payload.get("validation_regex").unwrap(),
+                &json!(format_regex(&format))
+            );
+        }
+    }
+
+    #[test]
+    fn test_custom_field_payload_leaves_ip_address_unconstrained() {
+        // core checks an `ip_address`-typed value as a plain string, so any
+        // regex here would reject values alembic's own validator accepts.
+        let payload = custom_field_payload(
+            "dcim.device",
+            "mgmt",
+            &field_schema(FieldType::IpAddress, None),
+        );
+        assert_eq!(payload.get("type").unwrap(), &json!("text"));
+        assert!(payload.get("validation_regex").is_none());
+    }
+
+    #[test]
+    fn test_custom_field_payload_prefers_pattern_over_format() {
+        let mut schema = field_schema(FieldType::Mac, Some("^[A-Z]{3}$"));
+        schema.format = Some(FieldFormat::Mac);
+        let payload = custom_field_payload("dcim.device", "asset_tag", &schema);
+        assert_eq!(
+            payload.get("validation_regex").unwrap(),
+            &json!("^[A-Z]{3}$")
+        );
+    }
+
+    #[test]
+    fn test_custom_field_payload_skips_format_on_select() {
+        // an enum maps to `select`, which the text gate excludes; a `format:`
+        // on one goes the same way a `pattern:` does.
+        let mut schema = field_schema(
+            FieldType::Enum {
+                values: vec!["a".to_string(), "b".to_string()],
+            },
+            None,
+        );
+        schema.format = Some(FieldFormat::Slug);
+        let payload = custom_field_payload("dcim.device", "state", &schema);
+        assert_eq!(payload.get("type").unwrap(), &json!("select"));
         assert!(payload.get("validation_regex").is_none());
     }
 

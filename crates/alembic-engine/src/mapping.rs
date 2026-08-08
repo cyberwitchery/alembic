@@ -1,6 +1,6 @@
 //! shared mapping helpers used by multiple adapters.
 
-use alembic_core::{FieldSchema, FieldType};
+use alembic_core::{format_for_field_type, format_regex, FieldSchema, FieldType};
 use anyhow::{anyhow, Result};
 use serde_json::Value;
 use std::collections::BTreeSet;
@@ -61,8 +61,9 @@ pub fn custom_field_type_for_schema(field: &FieldSchema) -> String {
     }
 }
 
-/// the declared `pattern:` a backend custom field should enforce as
-/// `validation_regex`, or `None` when it would enforce nothing. takes the
+/// the regex a backend custom field should enforce as `validation_regex`, or
+/// `None` when it would enforce nothing: the declared `pattern:`, else the
+/// declared `format:`, else the format the field's type carries. takes the
 /// already-mapped backend type string because a regex only constrains text, and
 /// core allows a `pattern` on json/ref/date/datetime/time fields too.
 pub fn validation_regex_for_schema<'a>(
@@ -72,7 +73,15 @@ pub fn validation_regex_for_schema<'a>(
     if !matches!(backend_type, "text" | "longtext") {
         return None;
     }
-    field.pattern.as_deref()
+    // an author-written constraint beats a derived one.
+    if let Some(pattern) = field.pattern.as_deref() {
+        return Some(pattern);
+    }
+    field
+        .format
+        .clone()
+        .or_else(|| format_for_field_type(&field.r#type))
+        .map(|format| format_regex(&format))
 }
 
 /// extract tag names from a JSON value returned by a backend.
@@ -114,6 +123,7 @@ pub fn supports_feature(features: &BTreeSet<String>, candidates: &[&str]) -> boo
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alembic_core::FieldFormat;
     use serde_json::json;
 
     #[test]
@@ -268,6 +278,54 @@ mod tests {
             ..with_pattern
         };
         assert_eq!(validation_regex_for_schema(&without_pattern, "text"), None);
+    }
+
+    #[test]
+    fn test_validation_regex_resolves_pattern_then_format_then_type() {
+        let base = FieldSchema {
+            r#type: FieldType::String,
+            required: false,
+            nullable: true,
+            description: None,
+            format: None,
+            pattern: None,
+        };
+        let declared = FieldSchema {
+            format: Some(FieldFormat::Mac),
+            ..base.clone()
+        };
+        assert_eq!(
+            validation_regex_for_schema(&declared, "text"),
+            Some(format_regex(&FieldFormat::Mac))
+        );
+        // an author-written pattern beats the derived one.
+        let both = FieldSchema {
+            pattern: Some("^[A-Z]{3}$".to_string()),
+            ..declared.clone()
+        };
+        assert_eq!(
+            validation_regex_for_schema(&both, "text"),
+            Some("^[A-Z]{3}$")
+        );
+        // the type carries the format on its own.
+        for (r#type, format) in [
+            (FieldType::Mac, FieldFormat::Mac),
+            (FieldType::Uuid, FieldFormat::Uuid),
+            (FieldType::Cidr, FieldFormat::Cidr),
+            (FieldType::Prefix, FieldFormat::Prefix),
+            (FieldType::Slug, FieldFormat::Slug),
+        ] {
+            let typed = FieldSchema {
+                r#type,
+                ..base.clone()
+            };
+            assert_eq!(
+                validation_regex_for_schema(&typed, "text"),
+                Some(format_regex(&format))
+            );
+        }
+        // a declared format on a non-text backend field still constrains nothing.
+        assert_eq!(validation_regex_for_schema(&declared, "select"), None);
     }
 
     #[test]

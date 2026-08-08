@@ -986,12 +986,12 @@ fn validate_string_constraints(
 
 fn slug_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^[a-z0-9]+(?:[a-z0-9_-]*[a-z0-9])?$").unwrap())
+    RE.get_or_init(|| Regex::new(format_regex(&FieldFormat::Slug)).unwrap())
 }
 
 fn mac_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$").unwrap())
+    RE.get_or_init(|| Regex::new(format_regex(&FieldFormat::Mac)).unwrap())
 }
 
 // rfc 3339 spells every numeric field as `DIGIT`, which is ascii 0-9. `\d` in the
@@ -1118,6 +1118,59 @@ fn matches_format(format: &FieldFormat, raw: &str) -> bool {
         FieldFormat::Cidr | FieldFormat::Prefix => raw.parse::<IpNet>().is_ok(),
         FieldFormat::Mac => mac_regex().is_match(raw),
         FieldFormat::Uuid => Uid::parse_str(raw).is_ok(),
+    }
+}
+
+/// the regex a backend with no native type for `format` should install to
+/// enforce it. the contract: every entry is the widest regex that still accepts
+/// everything `matches_format` accepts. looser is safe (core rejected a bad
+/// value long before the backend saw it); stricter is a bug, because the
+/// backend would then reject a value alembic's own validator passed, and the
+/// operator would only learn at apply time. a test below walks a corpus to hold
+/// the two sides to that.
+pub fn format_regex(format: &FieldFormat) -> &'static str {
+    match format {
+        FieldFormat::Slug => r"^[a-z0-9]+(?:[a-z0-9_-]*[a-z0-9])?$",
+        // `IpAddr` parses ipv4-mapped ipv6 (`::ffff:192.168.0.1`), which mixes
+        // colons and dots, so the ipv6 arm takes both.
+        FieldFormat::IpAddress => r"^([0-9]{1,3}\.){3}[0-9]{1,3}$|^[0-9a-fA-F:.]+$",
+        FieldFormat::Cidr | FieldFormat::Prefix => r"^[0-9a-fA-F:\./]+$",
+        FieldFormat::Mac => r"^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$",
+        // `Uuid::parse_str` takes the simple, braced and urn spellings as well
+        // as the hyphenated one, so the canonical 8-4-4-4-12 form alone would
+        // be stricter than the check.
+        FieldFormat::Uuid => {
+            r"^(?:urn:uuid:)?\{?[0-9a-fA-F]{8}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{12}\}?$"
+        }
+    }
+}
+
+/// the format a field type carries in its own right, for the types `type_check`
+/// validates through `matches_format`. `None` for the rest, `ip_address`
+/// included: core checks that one as a plain string, so any regex would be
+/// stricter than the check.
+pub fn format_for_field_type(field_type: &FieldType) -> Option<FieldFormat> {
+    match field_type {
+        FieldType::Uuid => Some(FieldFormat::Uuid),
+        FieldType::Cidr => Some(FieldFormat::Cidr),
+        FieldType::Prefix => Some(FieldFormat::Prefix),
+        FieldType::Mac => Some(FieldFormat::Mac),
+        FieldType::Slug => Some(FieldFormat::Slug),
+        FieldType::String
+        | FieldType::Text
+        | FieldType::Int
+        | FieldType::Float
+        | FieldType::Bool
+        | FieldType::Date
+        | FieldType::Datetime
+        | FieldType::Time
+        | FieldType::Json
+        | FieldType::IpAddress
+        | FieldType::Enum { .. }
+        | FieldType::List { .. }
+        | FieldType::Map { .. }
+        | FieldType::Ref { .. }
+        | FieldType::ListRef { .. } => None,
     }
 }
 
@@ -2868,6 +2921,120 @@ mod tests {
             &fmt_field(FieldFormat::Uuid),
             &json!("not-a-uuid")
         )));
+    }
+
+    // every value a `format_regex` entry has to keep accepting, mixed across
+    // formats on purpose: a regex only has to be wide enough for the values its
+    // own `matches_format` arm passes, so the corpus is shared and the
+    // invariant filters it.
+    const FORMAT_CORPUS: &[&str] = &[
+        // slug
+        "a",
+        "9",
+        "web-01",
+        "web_01",
+        "a-b_c-9",
+        "0000",
+        "Web-01",
+        "-lead",
+        "trail-",
+        // ipv4 and ipv6, including the ipv4-mapped spelling that mixes both
+        "10.0.0.10",
+        "0.0.0.0",
+        "255.255.255.255",
+        "::1",
+        "::",
+        "2001:db8::1",
+        "2001:0db8:0000:0000:0000:0000:0000:0001",
+        "fe80::a00:27ff:fe4e:66a1",
+        "::ffff:192.168.0.1",
+        "::ffff:0:0",
+        "10.0.0.10/24",
+        // prefixes at both ends of the mask range
+        "10.0.0.0/8",
+        "0.0.0.0/0",
+        "192.168.1.1/32",
+        "2001:db8::/32",
+        "::/0",
+        "2001:db8::1/128",
+        // mac, both separators and both cases
+        "aa:bb:cc:dd:ee:ff",
+        "AA:BB:CC:DD:EE:FF",
+        "aa-bb-cc-dd-ee-ff",
+        "00:00:00:00:00:00",
+        "aA:bB:cC:dD:eE:fF",
+        "aa:bb:cc:dd:ee",
+        // every uuid spelling `Uuid::parse_str` takes
+        "67e55044-10b1-426f-9247-bb680e5fe0c8",
+        "67E55044-10B1-426F-9247-BB680E5FE0C8",
+        "00000000-0000-0000-0000-000000000000",
+        "67e5504410b1426f9247bb680e5fe0c8",
+        "67E5504410B1426F9247BB680E5FE0C8",
+        "{67e55044-10b1-426f-9247-bb680e5fe0c8}",
+        "urn:uuid:67e55044-10b1-426f-9247-bb680e5fe0c8",
+        // neither a format nor a regex should take these
+        "",
+        " ",
+        "not-a-uuid",
+        "hello world",
+        "10.0.0.256",
+    ];
+
+    // the contract on `format_regex`: looser than `matches_format` is safe,
+    // stricter installs a backend constraint that rejects what core accepts.
+    #[test]
+    fn format_regex_accepts_everything_matches_format_does() {
+        for format in [
+            FieldFormat::Slug,
+            FieldFormat::IpAddress,
+            FieldFormat::Cidr,
+            FieldFormat::Prefix,
+            FieldFormat::Mac,
+            FieldFormat::Uuid,
+        ] {
+            let re = Regex::new(format_regex(&format)).unwrap();
+            for value in FORMAT_CORPUS {
+                if matches_format(&format, value) {
+                    assert!(
+                        re.is_match(value),
+                        "{format:?} accepts {value:?} but its regex rejects it"
+                    );
+                }
+            }
+        }
+    }
+
+    // the type-implied table may only name types core itself checks through
+    // `matches_format`; a type checked some other way has no format to carry.
+    #[test]
+    fn type_implied_format_agrees_with_the_type_check() {
+        for (field_type, expected) in [
+            (FieldType::Uuid, Some(FieldFormat::Uuid)),
+            (FieldType::Cidr, Some(FieldFormat::Cidr)),
+            (FieldType::Prefix, Some(FieldFormat::Prefix)),
+            (FieldType::Mac, Some(FieldFormat::Mac)),
+            (FieldType::Slug, Some(FieldFormat::Slug)),
+            (FieldType::IpAddress, None),
+            (FieldType::Time, None),
+            (FieldType::String, None),
+            (FieldType::Text, None),
+            (FieldType::Int, None),
+            (FieldType::Json, None),
+            (FieldType::Enum { values: vec![] }, None),
+        ] {
+            assert_eq!(format_for_field_type(&field_type), expected);
+            if let Some(format) = expected {
+                for value in FORMAT_CORPUS {
+                    assert_eq!(
+                        check(&typed_field(field_type.clone()), &json!(value))
+                            .errors
+                            .is_empty(),
+                        matches_format(&format, value),
+                        "type {field_type:?} and format {format:?} disagree on {value:?}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
