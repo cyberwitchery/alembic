@@ -45,6 +45,21 @@ files: <comma-separated paths>
 <at most 3 bullets for non-obvious context>
 ```
 
+## changelog
+
+`CHANGELOG.md` is read by users of the cli, not by the person who wrote the
+change. one bullet per change, **100 words maximum**.
+
+say what changed, what it means for a run, and what to do about it. leave out
+the archaeology: which issue's design was half-built, which function held the
+bug, what the old code did line by line, why the alternative was rejected. that
+belongs in the pr description, and it is already there.
+
+mark `**breaking**` only when a command someone runs, or a file someone wrote,
+now behaves differently. a changed rust signature is not breaking: every
+reverse dependency of the engine crates is in this workspace, so no external
+caller exists to break. mention it in the bullet, do not mark it.
+
 # rust
 
 this is a rust project. write idiomatic rust: prefer ownership over references where it simplifies code, use `?` for error propagation, and leverage the type system to make invalid states unrepresentable.
