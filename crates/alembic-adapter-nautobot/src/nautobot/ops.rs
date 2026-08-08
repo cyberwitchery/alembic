@@ -542,13 +542,27 @@ impl NautobotAdapter {
         let payload = custom_field_payload(type_name.as_str(), field_name, field_schema);
         let resource = self.client.extras().custom_fields();
         match resource.create(&payload).await {
-            Ok(_) => Ok(true),
+            Ok(created) => {
+                let choices = declared_choices(field_schema);
+                if !choices.is_empty() {
+                    let id = created
+                        .id
+                        .ok_or_else(|| anyhow!("custom field create returned no id"))?;
+                    self.create_custom_field_choices(&id.to_string(), choices)
+                        .await?;
+                }
+                Ok(true)
+            }
             Err(err) => {
                 let existing = self.client.fetch_custom_fields().await?;
                 if existing
                     .get(type_name.as_str())
                     .is_some_and(|fields| fields.contains(field_name))
                 {
+                    // choices belong to the create, so an existing field keeps the
+                    // ones it was created with: this adapter never updates a field
+                    // it did not create (the same rule `validation_regex` follows),
+                    // and re-posting them would duplicate whoever won the race.
                     tracing::warn!(
                         type_name = %type_name,
                         field = %field_name,
@@ -561,11 +575,63 @@ impl NautobotAdapter {
             }
         }
     }
+
+    /// one choice per declared value, weighted in declaration order so nautobot
+    /// lists them the way the model declares them. nautobot's writable custom
+    /// field carries no inline `choices`, so they can only follow the create.
+    ///
+    /// posts through a json resource, not `extras().custom_field_choices()`:
+    /// that one decodes into the generated `CustomFieldChoice`, whose nested
+    /// `custom_field.id` generates as an empty struct, so a create nautobot
+    /// accepted would still fail to decode.
+    async fn create_custom_field_choices(&self, field_id: &str, values: &[String]) -> Result<()> {
+        let resource: Resource<Value> = self
+            .client
+            .resource("extras/custom-field-choices/".to_string());
+        for (index, value) in values.iter().enumerate() {
+            let payload = serde_json::json!({
+                "value": value,
+                "weight": (index + 1) * 100,
+                "custom_field": field_id,
+            });
+            resource
+                .create(&payload)
+                .await
+                .with_context(|| format!("creating custom field choice {value}"))?;
+        }
+        Ok(())
+    }
+}
+
+/// nautobot enforces a declared enum itself, so upgrade the cell the shared
+/// netbox+nautobot map has to flatten to `text`: a `select` carries its values
+/// as per-field choices, unlike netbox's separately named choice sets.
+fn nautobot_custom_field_type(field_schema: &FieldSchema) -> String {
+    match &field_schema.r#type {
+        FieldType::Enum { .. } => "select".to_string(),
+        FieldType::List { item } if matches!(**item, FieldType::Enum { .. }) => {
+            "multi-select".to_string()
+        }
+        _ => custom_field_type_for_schema(field_schema),
+    }
+}
+
+/// the values a `select`/`multi-select` field offers, in declaration order.
+/// empty for every other type.
+fn declared_choices(field_schema: &FieldSchema) -> &[String] {
+    match &field_schema.r#type {
+        FieldType::Enum { values } => values,
+        FieldType::List { item } => match &**item {
+            FieldType::Enum { values } => values,
+            _ => &[],
+        },
+        _ => &[],
+    }
 }
 
 /// the create payload for a custom field on a nautobot model.
 fn custom_field_payload(content_type: &str, field_name: &str, field_schema: &FieldSchema) -> Value {
-    let field_type = custom_field_type_for_schema(field_schema);
+    let field_type = nautobot_custom_field_type(field_schema);
     let validation_regex = validation_regex_for_schema(field_schema, &field_type);
     let mut payload = Map::new();
     // nautobot 2.x identifies a custom field by `key`, not `name`: the writable
@@ -1508,6 +1574,149 @@ mod tests {
         );
         assert_eq!(payload.get("type").unwrap(), &json!("json"));
         assert!(payload.get("validation_regex").is_none());
+    }
+
+    // a field that already exists keeps the choices it was created with: the
+    // create is the only thing that writes them, so a converged apply (and a
+    // lost race) posts none and duplicates nothing.
+    #[tokio::test]
+    async fn test_existing_custom_field_posts_no_choices() {
+        use httpmock::Method::{GET, POST};
+        use httpmock::MockServer;
+
+        let server = MockServer::start();
+        let _create = server.mock(|when, then| {
+            when.method(POST).path("/api/extras/custom-fields/");
+            then.status(400)
+                .json_body(json!({ "key": ["already exists"] }));
+        });
+        let _list = server.mock(|when, then| {
+            when.method(GET).path("/api/extras/custom-fields/");
+            then.status(200).json_body(json!({
+                "count": 1,
+                "next": null,
+                "previous": null,
+                "results": [{
+                    "id": "44444444-4444-4444-4444-444444444444",
+                    "key": "tier",
+                    "label": "tier",
+                    "content_types": ["dcim.site"],
+                    "type": {},
+                }],
+            }));
+        });
+        let choices = server.mock(|when, then| {
+            when.method(POST).path("/api/extras/custom-field-choices/");
+            then.status(201).json_body(json!({ "value": "core" }));
+        });
+
+        let adapter = NautobotAdapter::new(&server.base_url(), "token").unwrap();
+        let created = adapter
+            .create_custom_field(
+                &TypeName::new("dcim.site"),
+                "tier",
+                &field_schema(
+                    FieldType::Enum {
+                        values: vec!["core".to_string(), "edge".to_string()],
+                    },
+                    None,
+                ),
+            )
+            .await
+            .unwrap();
+
+        assert!(!created);
+        choices.assert_calls(0);
+    }
+
+    #[test]
+    fn test_custom_field_payload_types_an_enum_as_select() {
+        // nautobot's CustomFieldTypeChoices spells these `select` / `multi-select`.
+        let payload = custom_field_payload(
+            "dcim.device",
+            "tier",
+            &field_schema(
+                FieldType::Enum {
+                    values: vec!["core".to_string(), "edge".to_string()],
+                },
+                None,
+            ),
+        );
+        assert_eq!(payload.get("type").unwrap(), &json!("select"));
+
+        let payload = custom_field_payload(
+            "dcim.device",
+            "roles",
+            &field_schema(
+                FieldType::List {
+                    item: Box::new(FieldType::Enum {
+                        values: vec!["core".to_string()],
+                    }),
+                },
+                None,
+            ),
+        );
+        assert_eq!(payload.get("type").unwrap(), &json!("multi-select"));
+    }
+
+    #[test]
+    fn test_custom_field_payload_types_a_plain_list_as_json() {
+        // only a list *of enum* is a multi-select; every other list stays json.
+        let payload = custom_field_payload(
+            "dcim.device",
+            "aliases",
+            &field_schema(
+                FieldType::List {
+                    item: Box::new(FieldType::String),
+                },
+                None,
+            ),
+        );
+        assert_eq!(payload.get("type").unwrap(), &json!("json"));
+    }
+
+    #[test]
+    fn test_custom_field_payload_skips_pattern_on_enum_field() {
+        // core allows a pattern alongside enum values; a select constrains by its
+        // choices, and nautobot enforces validation_regex on text only.
+        let payload = custom_field_payload(
+            "dcim.device",
+            "tier",
+            &field_schema(
+                FieldType::Enum {
+                    values: vec!["core".to_string(), "edge".to_string()],
+                },
+                Some("^[a-z]+$"),
+            ),
+        );
+        assert_eq!(payload.get("type").unwrap(), &json!("select"));
+        assert!(payload.get("validation_regex").is_none());
+    }
+
+    #[test]
+    fn test_declared_choices_keeps_declaration_order() {
+        let values = vec!["core".to_string(), "agg".to_string(), "edge".to_string()];
+        assert_eq!(
+            declared_choices(&field_schema(
+                FieldType::Enum {
+                    values: values.clone()
+                },
+                None
+            )),
+            values.as_slice()
+        );
+        assert_eq!(
+            declared_choices(&field_schema(
+                FieldType::List {
+                    item: Box::new(FieldType::Enum {
+                        values: values.clone()
+                    })
+                },
+                None
+            )),
+            values.as_slice()
+        );
+        assert!(declared_choices(&field_schema(FieldType::String, None)).is_empty());
     }
 
     #[test]

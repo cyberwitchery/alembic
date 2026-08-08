@@ -50,16 +50,27 @@ a declared type is provisioned as the nautobot custom field type below. `ref` an
 
 | declared | nautobot |
 | --- | --- |
-| `string`, `text`, `uuid`, `time`, `ip_address`, `cidr`, `prefix`, `mac`, `slug`, `enum` | `text` |
+| `string`, `text`, `uuid`, `time`, `ip_address`, `cidr`, `prefix`, `mac`, `slug` | `text` |
 | `int` | `integer` |
 | `float` | `json` |
 | `bool` | `boolean` |
 | `date` | `date` |
 | `datetime` | `datetime` |
+| `enum` | `select` |
+| `list` of `enum` | `multi-select` |
 | `json`, `list`, `map` | `json` |
 
 nautobot has no decimal custom field type, so a `float` is stored as `json` to keep it a
 number: a text field reads back quoted, which fails validation on `import`.
+
+a `select` is created with one choice per declared value, weighted in declaration order.
+choices are written by the create alone, so a field the backend already has keeps the
+choices it was created with, like every other property of an existing field. a run that
+fails partway through the choices leaves the field created and its remaining choices
+unwritten; the next run finds the field present and does not resume them.
+
+a declared `pattern:` is not provisioned on a `select`: nautobot enforces
+`validation_regex` on text fields only, and the choices are the constraint.
 
 ## custom objects
 
