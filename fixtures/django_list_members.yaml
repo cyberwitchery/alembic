@@ -1,0 +1,20 @@
+# a declared list carries its element type into the generated model, so the api
+# it generates rejects a member `validate` would have rejected.
+schema:
+  types:
+    dcim.interface:
+      key: {name: {type: slug}}
+      fields:
+        name: {type: string}
+        modes: {type: list, item: {type: enum, values: [access, trunk]}}
+        peers: {type: list, item: {type: mac}}
+        tags: {type: list, item: {type: string}}
+objects:
+  - uid: "44444444-4444-4444-4444-444444444444"
+    type: dcim.interface
+    key: {name: "eth0"}
+    attrs:
+      name: "eth0"
+      modes: ["access", "trunk"]
+      peers: ["aa:bb:cc:dd:ee:ff", "AA-BB-CC-DD-EE-FF"]
+      tags: ["anything", "goes"]

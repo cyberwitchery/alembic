@@ -51,6 +51,25 @@ the `generated_*.py` files (`generated_models.py`, `generated_admin.py`,
 creates is yours to edit: treat the app as a starting point, not an artifact to
 regenerate over.
 
+## declared constraints
+
+a scalar field carries what it declares: `format:` and `pattern:` become
+`RegexValidator`s, a `cidr`, `prefix` or `mac` type becomes one from its own
+format, an `enum` becomes the field's `choices`, and `uuid` and `slug` get the
+django fields that already check them.
+
+a `list` is a `JSONField`, which has no native element type, so a declared
+element is carried as a member check (`_ListMembers`) instead: a `list` of
+`enum` takes only the declared values, and a `list` of `uuid`, `cidr`,
+`prefix`, `mac` or `slug` only members matching that format. every other
+element type, and a `map`'s value type, stays plain json: there is no django
+check for those that is not an approximation. no check is stricter than
+`validate`, so nothing alembic accepts is rejected here.
+
+the checks run on `full_clean()` and on the drf serializers, so the generated
+api enforces them; `loaddata` does not run validators, so the fixture loads
+whatever `validate` passed.
+
 ## optional packages
 
 the generated app only declares what the target interpreter can honour:

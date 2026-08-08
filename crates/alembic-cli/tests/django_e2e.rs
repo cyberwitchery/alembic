@@ -11,6 +11,7 @@ use tempfile::tempdir;
 /// written into the temp dir and run with the configured interpreter.
 const DRIVE_API: &str = include_str!("support/drive_django_api.py");
 const DRIVE_DATETIME: &str = include_str!("support/drive_django_datetime.py");
+const DRIVE_LIST_MEMBERS: &str = include_str!("support/drive_django_list_members.py");
 
 #[test]
 fn django_e2e_minimal() {
@@ -173,6 +174,58 @@ fn django_loads_every_date_shape_validate_accepts() {
     print!(
         "{}",
         run_command_capture(drive, "read back the django date columns")
+    );
+}
+
+#[test]
+fn django_generated_api_enforces_a_declared_list_element() {
+    let python = python_path();
+    if !django_available(&python) {
+        eprintln!(
+            "skipping django list member e2e; django + djangorestframework not available for {python}"
+        );
+        return;
+    }
+
+    let out = tempdir().expect("temp dir");
+    let app_out = out.path().join("app");
+    let config = write_django_config(out.path(), &app_out);
+    let plan = out.path().join("plan.json");
+    let state = out.path().join("state.json");
+
+    let mut plan_cmd = Command::new(bin_path());
+    plan_cmd.env("ALEMBIC_STATE_PATH", &state);
+    plan_cmd.args([
+        "plan",
+        "--backend-config",
+        config.to_str().unwrap(),
+        "-f",
+        fixture_path("django_list_members.yaml").to_str().unwrap(),
+        "-o",
+        plan.to_str().unwrap(),
+    ]);
+    run_command(plan_cmd, "plan django list member fixture");
+
+    // apply runs makemigrations, so a member check django cannot serialize into
+    // a migration fails right here rather than at the api.
+    let mut apply_cmd = Command::new(bin_path());
+    apply_cmd.env("ALEMBIC_STATE_PATH", &state);
+    apply_cmd.args([
+        "apply",
+        "--backend-config",
+        config.to_str().unwrap(),
+        "--plan",
+        plan.to_str().unwrap(),
+    ]);
+    run_command(apply_cmd, "apply django list member fixture");
+
+    let script = out.path().join("drive_django_list_members.py");
+    fs::write(&script, DRIVE_LIST_MEMBERS).expect("write the list driver into the temp dir");
+    let mut drive = Command::new(&python);
+    drive.arg(&script).arg(&app_out);
+    print!(
+        "{}",
+        run_command_capture(drive, "validate through the django list columns")
     );
 }
 

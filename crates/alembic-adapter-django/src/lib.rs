@@ -92,6 +92,36 @@ const URLS_TEMPLATE: &str = include_str!("../templates/urls.py.tpl");
 /// two blank lines between top-level definitions, as pep8 wants them.
 const BLOCK_SEPARATOR: &str = "\n\n\n";
 
+/// a list is a plain `JSONField`, so a declared element type has no native slot:
+/// this carries it as a member check instead. the leading underscore keeps the
+/// name clear of the model classes, which never start with one.
+const MEMBER_VALIDATOR_CLASS: &str = r#"@deconstructible
+class _ListMembers:
+    """checks every member of a list against its declared element type."""
+
+    def __init__(self, choices=None, regex=None):
+        self.choices = choices
+        self.regex = regex
+
+    def __call__(self, value):
+        if not isinstance(value, (list, tuple)):
+            raise ValidationError(
+                "expected a list, got %(got)s", params={"got": type(value).__name__}
+            )
+        for member in value:
+            if self.choices is not None and member not in self.choices:
+                raise ValidationError(
+                    "%(member)s is not one of %(choices)s",
+                    params={"member": member, "choices": ", ".join(self.choices)},
+                )
+            if self.regex is not None and not (
+                isinstance(member, str) and re.search(self.regex, member)
+            ):
+                raise ValidationError(
+                    "%(member)s does not match %(regex)s",
+                    params={"member": member, "regex": self.regex},
+                )"#;
+
 #[derive(Debug)]
 struct ModelSpec {
     type_name: String,
@@ -122,6 +152,8 @@ struct FieldSpec {
     nullable: bool,
     choices: Option<Vec<String>>,
     validators: Vec<String>,
+    /// a list's declared element check, rendered alongside `validators`.
+    member_validator: Option<String>,
     help_text: Option<String>,
 }
 
@@ -428,20 +460,37 @@ fn render_files(models: &[ModelSpec], options: &DjangoEmitOptions) -> DjangoFile
         .collect();
     let view_import = import_line("from .generated_views import ", &view_names);
 
-    let mut model_imports = vec!["import uuid".to_string(), String::new()];
+    let has_field = |predicate: fn(&FieldSpec) -> bool| {
+        models
+            .iter()
+            .any(|model| model.fields.iter().any(&predicate))
+    };
+    let member_validators = has_field(|field| field.member_validator.is_some());
+
+    let mut model_imports = Vec::new();
+    if member_validators {
+        model_imports.push("import re".to_string());
+    }
+    model_imports.push("import uuid".to_string());
+    model_imports.push(String::new());
     model_imports.push("from django.db import models".to_string());
-    if models
-        .iter()
-        .any(|model| model.fields.iter().any(|f| !f.validators.is_empty()))
-    {
+    if has_field(|field| !field.validators.is_empty()) {
         model_imports.push("from django.core.validators import RegexValidator".to_string());
     }
+    if member_validators {
+        model_imports.push("from django.core.exceptions import ValidationError".to_string());
+        model_imports.push("from django.utils.deconstruct import deconstructible".to_string());
+    }
 
+    let mut model_blocks = render_blocks(models, render_model_block);
+    if member_validators {
+        model_blocks = format!("{MEMBER_VALIDATOR_CLASS}{BLOCK_SEPARATOR}{model_blocks}");
+    }
     let models_file = render_template(
         MODELS_TEMPLATE,
         &[
             ("imports", model_imports.join("\n")),
-            ("models", render_blocks(models, render_model_block)),
+            ("models", model_blocks),
         ],
     );
     let admin = if options.emit_admin {
@@ -529,8 +578,14 @@ fn render_field(model: &ModelSpec, field: &FieldSpec) -> String {
             .join(", ");
         args.push(format!("choices=[{choice_items}]"));
     }
-    if !field.validators.is_empty() {
-        args.push(format!("validators=[{}]", field.validators.join(", ")));
+    let validators: Vec<&str> = field
+        .validators
+        .iter()
+        .chain(field.member_validator.iter())
+        .map(String::as_str)
+        .collect();
+    if !validators.is_empty() {
+        args.push(format!("validators=[{}]", validators.join(", ")));
     }
     if let Some(help_text) = &field.help_text {
         args.push(format!("help_text={}", py_str(help_text)));
@@ -962,6 +1017,7 @@ fn field_spec_from_schema(
 ) -> FieldSpec {
     let mut validators = Vec::new();
     let mut choices = None;
+    let mut member_validator = None;
 
     if let Some(format) = &schema.format {
         validators.push(format_validator(format));
@@ -1001,7 +1057,10 @@ fn field_spec_from_schema(
             choices = Some(values.clone());
             DjangoFieldType::Char
         }
-        FieldType::List { .. } => DjangoFieldType::Json { list: true },
+        FieldType::List { item } => {
+            member_validator = member_check(item).as_ref().map(render_member_check);
+            DjangoFieldType::Json { list: true }
+        }
         FieldType::Map { .. } => DjangoFieldType::Json { list: false },
         FieldType::Ref { target } => DjangoFieldType::ForeignKey {
             target: class_name_for_type(target),
@@ -1021,7 +1080,39 @@ fn field_spec_from_schema(
         nullable,
         choices,
         validators,
+        member_validator,
         help_text: schema.description.clone(),
+    }
+}
+
+/// the element constraints a list column can carry. an enum's members and a
+/// format-typed item's regex are exactly what core checks each entry against;
+/// every other element type has no django check that is not an approximation,
+/// so it gets none.
+enum MemberCheck {
+    Choices(Vec<String>),
+    Regex(&'static str),
+}
+
+fn member_check(item: &FieldType) -> Option<MemberCheck> {
+    match item {
+        FieldType::Enum { values } => Some(MemberCheck::Choices(values.clone())),
+        _ => alembic_core::format_for_field_type(item)
+            .map(|format| MemberCheck::Regex(alembic_core::format_regex(&format))),
+    }
+}
+
+fn render_member_check(check: &MemberCheck) -> String {
+    match check {
+        MemberCheck::Choices(values) => format!(
+            "_ListMembers(choices=[{}])",
+            values
+                .iter()
+                .map(|value| py_str(value))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        MemberCheck::Regex(pattern) => format!("_ListMembers(regex={})", py_str(pattern)),
     }
 }
 
@@ -1377,6 +1468,224 @@ mod tests {
         let models = generated(&emit_to_temp(&inventory), GENERATED_MODELS);
         assert!(models.contains(
             "tags = models.ManyToManyField(\"DcimTag\", related_name=\"dcimdevice_tags\", blank=True)"
+        ));
+    }
+
+    fn list_field_models(item: FieldType) -> String {
+        let inventory = Inventory {
+            schema: schema_of(vec![(
+                "dcim.interface",
+                type_schema(
+                    vec![("name", field(FieldType::Slug))],
+                    vec![(
+                        "members",
+                        field(FieldType::List {
+                            item: Box::new(item),
+                        }),
+                    )],
+                ),
+            )]),
+            objects: vec![],
+        };
+        generated(&emit_to_temp(&inventory), GENERATED_MODELS)
+    }
+
+    #[test]
+    fn list_of_enum_carries_its_declared_members() {
+        let models = list_field_models(FieldType::Enum {
+            values: vec!["access".to_string(), "trunk".to_string()],
+        });
+        assert!(
+            models.contains(
+                "members = models.JSONField(validators=[_ListMembers(choices=[\"access\", \"trunk\"])])"
+            ),
+            "{models}"
+        );
+        assert!(models.contains("class _ListMembers:"), "{models}");
+        assert!(models.contains("import re"), "{models}");
+        assert!(
+            models.contains("from django.utils.deconstruct import deconstructible"),
+            "{models}"
+        );
+        // the member check is not a RegexValidator, so nothing imports one.
+        assert!(!models.contains("import RegexValidator"), "{models}");
+    }
+
+    #[test]
+    fn list_of_format_typed_items_carries_the_format_regex() {
+        let models = list_field_models(FieldType::Mac);
+        assert!(
+            models.contains(&format!(
+                "members = models.JSONField(validators=[_ListMembers(regex={})])",
+                py_str(alembic_core::format_regex(&FieldFormat::Mac))
+            )),
+            "{models}"
+        );
+    }
+
+    #[test]
+    fn list_of_plain_strings_carries_no_member_check() {
+        // a string element has no declared constraint to carry, so the column
+        // stays a bare JSONField and the helper is not emitted.
+        let models = list_field_models(FieldType::String);
+        assert!(models.contains("members = models.JSONField()"), "{models}");
+        assert!(!models.contains("_ListMembers"), "{models}");
+        assert!(!models.contains("import re"), "{models}");
+    }
+
+    #[test]
+    fn map_values_carry_no_member_check() {
+        // maps stay plain json, as they do on the nautobot backend.
+        let inventory = Inventory {
+            schema: schema_of(vec![(
+                "dcim.interface",
+                type_schema(
+                    vec![("name", field(FieldType::Slug))],
+                    vec![(
+                        "labels",
+                        field(FieldType::Map {
+                            value: Box::new(FieldType::Enum {
+                                values: vec!["access".to_string()],
+                            }),
+                        }),
+                    )],
+                ),
+            )]),
+            objects: vec![],
+        };
+        let models = generated(&emit_to_temp(&inventory), GENERATED_MODELS);
+        assert!(models.contains("labels = models.JSONField()"), "{models}");
+        assert!(!models.contains("_ListMembers"), "{models}");
+    }
+
+    /// what core's own checker makes of `[member]` in a declared `list` field.
+    fn core_accepts_member(item: &FieldType, member: &Value) -> bool {
+        core_accepts(
+            field(FieldType::List {
+                item: Box::new(item.clone()),
+            }),
+            json!([member]),
+        )
+    }
+
+    fn core_accepts(schema: FieldSchema, value: Value) -> bool {
+        let inventory = Inventory {
+            schema: schema_of(vec![(
+                "dcim.interface",
+                type_schema(
+                    vec![("name", field(FieldType::Slug))],
+                    vec![("members", schema)],
+                ),
+            )]),
+            objects: vec![obj(
+                1,
+                "dcim.interface",
+                "name=eth0",
+                attrs_map(vec![("members", value)]),
+            )],
+        };
+        alembic_core::validate_inventory(&inventory)
+            .errors
+            .is_empty()
+    }
+
+    /// what the emitted member check makes of the same value. a regex check runs
+    /// through core's own `pattern` machinery, the engine django's `re.search`
+    /// stands in for, and rejects a non-string as the generated `_ListMembers`
+    /// does.
+    fn check_accepts_member(check: &Option<MemberCheck>, member: &Value) -> bool {
+        match check {
+            None => true,
+            Some(MemberCheck::Choices(values)) => member
+                .as_str()
+                .is_some_and(|raw| values.iter().any(|value| value == raw)),
+            Some(MemberCheck::Regex(pattern)) => {
+                let mut schema = field(FieldType::String);
+                schema.pattern = Some((*pattern).to_string());
+                core_accepts(schema, member.clone())
+            }
+        }
+    }
+
+    #[test]
+    fn member_check_never_rejects_what_core_accepts() {
+        let items = vec![
+            FieldType::Enum {
+                values: vec!["access".to_string(), "trunk".to_string()],
+            },
+            FieldType::Mac,
+            FieldType::Cidr,
+            FieldType::Prefix,
+            FieldType::Uuid,
+            FieldType::Slug,
+            FieldType::IpAddress,
+            FieldType::String,
+            FieldType::Int,
+            FieldType::Bool,
+            FieldType::Date,
+            FieldType::Json,
+        ];
+        let members = vec![
+            json!("access"),
+            json!("trunk"),
+            json!("ACCESS"),
+            json!("bogus"),
+            json!(""),
+            json!("aa:bb:cc:dd:ee:ff"),
+            json!("AA-BB-CC-DD-EE-FF"),
+            json!("aabbccddeeff"),
+            json!("10.0.0.0/24"),
+            json!("2001:db8::/32"),
+            json!("::ffff:192.168.0.1"),
+            json!("192.168.0.1"),
+            json!("f47ac10b-58cc-4372-a567-0e02b2c3d479"),
+            json!("f47ac10b58cc4372a5670e02b2c3d479"),
+            json!("{f47ac10b-58cc-4372-a567-0e02b2c3d479}"),
+            json!("urn:uuid:f47ac10b-58cc-4372-a567-0e02b2c3d479"),
+            json!("fra1"),
+            json!("fra-1_a"),
+            json!("Fra1"),
+            json!("with space"),
+            json!("with\nnewline"),
+            json!("ünïcödé"),
+            json!("2024-01-01"),
+            json!("2024-01-01T00:00:00Z"),
+            json!(7),
+            json!(1.5),
+            json!(true),
+            json!(null),
+            json!(["nested"]),
+            json!({"nested": "object"}),
+        ];
+
+        for item in &items {
+            let check = member_check(item);
+            for member in &members {
+                if core_accepts_member(item, member) {
+                    assert!(
+                        check_accepts_member(&check, member),
+                        "core accepts {member} as a {item:?} member, the generated check rejects it"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn member_check_rejects_an_undeclared_member() {
+        // the other half of the invariant: a check that accepted everything
+        // would satisfy `member_check_never_rejects_what_core_accepts` too.
+        let enum_check = member_check(&FieldType::Enum {
+            values: vec!["access".to_string(), "trunk".to_string()],
+        });
+        assert!(!check_accepts_member(&enum_check, &json!("bogus")));
+        assert!(check_accepts_member(&enum_check, &json!("access")));
+
+        let mac_check = member_check(&FieldType::Mac);
+        assert!(!check_accepts_member(&mac_check, &json!("not-a-mac")));
+        assert!(check_accepts_member(
+            &mac_check,
+            &json!("aa:bb:cc:dd:ee:ff")
         ));
     }
 
