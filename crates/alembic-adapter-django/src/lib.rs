@@ -1041,16 +1041,10 @@ fn format_for_field_type(field_type: &FieldType) -> FieldFormat {
 }
 
 fn format_validator(format: &FieldFormat) -> String {
-    let pattern = match format {
-        FieldFormat::Slug => "^[a-z0-9]+(?:[a-z0-9_-]*[a-z0-9])?$",
-        FieldFormat::IpAddress => "^([0-9]{1,3}\\.){3}[0-9]{1,3}$|^[0-9a-fA-F:]+$",
-        FieldFormat::Cidr | FieldFormat::Prefix => "^[0-9a-fA-F:\\./]+$",
-        FieldFormat::Mac => "^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$",
-        FieldFormat::Uuid => {
-            "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
-        }
-    };
-    format!("RegexValidator({})", py_str(pattern))
+    format!(
+        "RegexValidator({})",
+        py_str(alembic_core::format_regex(format))
+    )
 }
 
 fn write_if_missing(path: impl AsRef<Path>, contents: &str) -> Result<()> {

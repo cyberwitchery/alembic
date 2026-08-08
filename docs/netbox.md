@@ -34,7 +34,9 @@ and supported feature set.
   via the `features` set.
 - provisioning creates missing custom fields on apply; the schema preview reports them.
 - a declared `pattern:` on a text-typed field is provisioned as the custom field's
-  `validation_regex`, so the backend enforces it too; an existing field is not updated.
+  `validation_regex`, and a declared `format:`, or the format a `uuid`, `cidr`, `prefix`,
+  `mac` or `slug` type carries, is provisioned the same way when no `pattern:` overrides
+  it, so the backend enforces them too; an existing field is not updated.
 - tags the applied objects reference but the backend lacks are created at apply, not
   during schema provisioning. a successful apply lists them in `provision.created_tags`;
   a tag that already existed is not listed. they are created before the ops, so an apply

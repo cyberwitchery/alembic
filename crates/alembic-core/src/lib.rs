@@ -8,5 +8,6 @@ pub use ir::{
     ObjectError, Schema, SourceLocation, TypeName, TypeSchema, Uid, ALEMBIC_UID_NAMESPACE,
 };
 pub use validation::{
-    validate_inventory, LocatedError, LocatedReport, ValidationError, ValidationReport,
+    format_for_field_type, format_regex, validate_inventory, LocatedError, LocatedReport,
+    ValidationError, ValidationReport,
 };
