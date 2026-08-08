@@ -19,23 +19,10 @@ pub fn python_path() -> String {
     std::env::var("ALEMBIC_DJANGO_PYTHON").unwrap_or_else(|_| "python3".to_string())
 }
 
+/// cargo sets `CARGO_BIN_EXE_<name>` when it builds an integration test, so this
+/// resolves at compile time. examples get no such variable, hence `example_binary`.
 pub fn bin_path() -> PathBuf {
-    let env_keys = ["CARGO_BIN_EXE_alembic"];
-    for key in env_keys {
-        if let Ok(value) = std::env::var(key) {
-            return PathBuf::from(value);
-        }
-    }
-    let target_dir = std::env::var("CARGO_TARGET_DIR")
-        .ok()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("..")
-                .join("..")
-                .join("target")
-        });
-    target_dir.join("debug").join("alembic")
+    PathBuf::from(env!("CARGO_BIN_EXE_alembic"))
 }
 
 /// cargo exports `CARGO_BIN_EXE_<name>` for bins but nothing for examples, so the

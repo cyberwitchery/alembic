@@ -9,14 +9,14 @@ use tempfile::tempdir;
 
 mod support;
 
-use support::{example_binary, fixture_path};
+use support::{bin_path, example_binary, fixture_path};
 
 /// run `apply --backend peeringdb [--interactive]` over a create-only plan,
 /// returning (success, stdout, stderr).
 fn run_apply_peeringdb(interactive: bool) -> (bool, String, String) {
     let out = tempdir().expect("create temp dir");
     let plan = fixture_path("minimal_plan.json");
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_alembic"));
+    let mut cmd = Command::new(bin_path());
     cmd.env("ALEMBIC_STATE_PATH", out.path().join("state.json"));
     cmd.arg("apply").arg("--backend").arg("peeringdb");
     if interactive {
@@ -48,7 +48,7 @@ fn run_apply_interactive(answers: Option<&str>) -> (bool, String, String) {
         ),
     )
     .expect("write backend config");
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_alembic"));
+    let mut cmd = Command::new(bin_path());
     cmd.env("ALEMBIC_STATE_PATH", out.path().join("state.json"));
     cmd.arg("apply")
         .arg("--backend")

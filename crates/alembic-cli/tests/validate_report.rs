@@ -2,8 +2,11 @@
 //! without changing what it tells the operator. needs a subprocess because the
 //! human half is the error anyhow prints on the way out of `main`.
 
+mod support;
+
 use std::path::Path;
 use std::process::Command;
+use support::bin_path;
 use tempfile::tempdir;
 
 /// an inventory declaring `dcim.site`, with `attrs` extended by `extra`.
@@ -37,7 +40,7 @@ objects:
 
 /// run `validate -f <inventory> [-o <output>]`, returning (success, stdout, stderr).
 fn run_validate(inventory: &Path, output: Option<&Path>) -> (bool, String, String) {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_alembic"));
+    let mut cmd = Command::new(bin_path());
     cmd.arg("validate").arg("-f").arg(inventory);
     if let Some(output) = output {
         cmd.arg("-o").arg(output);
