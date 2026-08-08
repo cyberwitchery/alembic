@@ -48,12 +48,16 @@ files: <comma-separated paths>
 ## changelog
 
 `CHANGELOG.md` is read by users of the cli, not by the person who wrote the
-change. one bullet per change, **100 words maximum**.
+change. one bullet per change: what changed, what it means for a run, and what
+to do about it.
 
-say what changed, what it means for a run, and what to do about it. leave out
-the archaeology: which issue's design was half-built, which function held the
-bug, what the old code did line by line, why the alternative was rejected. that
-belongs in the pr description, and it is already there.
+that purpose sets the length, and the house style is terse, so an entry is as
+short as it can be and still answer those three. a reader scanning for their
+own breakage does not need which issue's design was half-built, which function
+held the bug, what the old code did line by line, or why the alternative was
+rejected. that belongs in the pr description, and it is already there. an entry
+that runs long is usually carrying that material rather than saying more about
+the change.
 
 mark `**breaking**` only when a command someone runs, or a file someone wrote,
 now behaves differently. a changed rust signature is not breaking: every
