@@ -3,7 +3,7 @@
 use crate::emit::{CommandRunner, DjangoConfig};
 use alembic_core::{key_string, FieldFormat, FieldType, Inventory, Object, Schema, TypeSchema};
 use alembic_engine::{pluralize, AppliedOp, ApplyReport, Emitter, Op, StateStore};
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
@@ -1049,10 +1049,13 @@ fn format_validator(format: &FieldFormat) -> String {
 
 fn write_if_missing(path: impl AsRef<Path>, contents: &str) -> Result<()> {
     let path = path.as_ref();
-    if path.exists() {
+    if path
+        .try_exists()
+        .with_context(|| format!("check {}", path.display()))?
+    {
         return Ok(());
     }
-    fs::write(path, contents)?;
+    fs::write(path, contents).with_context(|| format!("write {}", path.display()))?;
     Ok(())
 }
 
@@ -1067,8 +1070,12 @@ fn render_template(template: &str, vars: &[(&str, String)]) -> String {
 
 fn write_user_file(path: impl AsRef<Path>, contents: &str, defaults: &[&str]) -> Result<()> {
     let path = path.as_ref();
-    if path.exists() {
-        let existing = fs::read_to_string(path)?;
+    if path
+        .try_exists()
+        .with_context(|| format!("check {}", path.display()))?
+    {
+        let existing =
+            fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
         let normalized = existing.trim().replace("\r\n", "\n");
         let is_default = defaults
             .iter()
@@ -1077,7 +1084,7 @@ fn write_user_file(path: impl AsRef<Path>, contents: &str, defaults: &[&str]) ->
             return Ok(());
         }
     }
-    fs::write(path, contents)?;
+    fs::write(path, contents).with_context(|| format!("write {}", path.display()))?;
     Ok(())
 }
 
@@ -1969,5 +1976,88 @@ mod tests {
         let routes = render_routes_block(&models);
         assert!(routes.contains("router.register(\"prefixes\", PrefixViewSet)"));
         assert!(routes.contains("router.register(\"gateways\", GatewayViewSet)"));
+    }
+
+    /// a parent that is a regular file makes the stat fail with `NotADirectory`
+    /// rather than answering absent. the write that follows fails too, so what
+    /// this pins is that the failure names the path and the stat, not an
+    /// unlabelled `Not a directory` from somewhere in the emit.
+    #[test]
+    fn write_if_missing_reports_a_stat_it_could_not_make() {
+        let dir = tempdir().unwrap();
+        let blocker = dir.path().join("blocker");
+        fs::write(&blocker, "regular file").unwrap();
+
+        let err = write_if_missing(blocker.join("extensions.py"), "new").unwrap_err();
+
+        assert!(
+            format!("{err:#}").contains("extensions.py"),
+            "the error must name the path: {err:#}"
+        );
+    }
+
+    #[test]
+    fn write_user_file_reports_a_stat_it_could_not_make() {
+        let dir = tempdir().unwrap();
+        let blocker = dir.path().join("blocker");
+        fs::write(&blocker, "regular file").unwrap();
+
+        let err = write_user_file(blocker.join("models.py"), "new", &[]).unwrap_err();
+
+        assert!(
+            format!("{err:#}").contains("models.py"),
+            "the error must name the path: {err:#}"
+        );
+    }
+
+    /// the ordinary failure is a stat that succeeded: a dangling symlink the
+    /// write follows nowhere, or a directory where a file was expected.
+    #[cfg(unix)]
+    #[test]
+    fn write_helpers_name_the_path_when_the_stat_succeeded() {
+        let dir = tempdir().unwrap();
+
+        let dangling = dir.path().join("extensions.py");
+        std::os::unix::fs::symlink("nowhere/target.py", &dangling).unwrap();
+        let err = write_if_missing(&dangling, "new").unwrap_err();
+        assert!(
+            format!("{err:#}").contains("extensions.py"),
+            "the write must name the path: {err:#}"
+        );
+
+        let dangling = dir.path().join("models.py");
+        std::os::unix::fs::symlink("nowhere/target.py", &dangling).unwrap();
+        let err = write_user_file(&dangling, "new", &[]).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("models.py"),
+            "the write must name the path: {err:#}"
+        );
+
+        let as_dir = dir.path().join("settings.py");
+        fs::create_dir(&as_dir).unwrap();
+        let err = write_user_file(&as_dir, "new", &[]).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("settings.py"),
+            "the read must name the path: {err:#}"
+        );
+    }
+
+    /// the absent case still writes, and an existing non-default file is still
+    /// preserved: `ENOENT` stays `Ok(false)`.
+    #[test]
+    fn write_helpers_still_treat_enoent_as_absent() {
+        let dir = tempdir().unwrap();
+
+        let fresh = dir.path().join("fresh.py");
+        write_if_missing(&fresh, "generated").unwrap();
+        assert_eq!(fs::read_to_string(&fresh).unwrap(), "generated");
+        write_if_missing(&fresh, "second").unwrap();
+        assert_eq!(fs::read_to_string(&fresh).unwrap(), "generated");
+
+        let user = dir.path().join("user.py");
+        write_user_file(&user, "stub", &[]).unwrap();
+        fs::write(&user, "hand written").unwrap();
+        write_user_file(&user, "stub", &["stub"]).unwrap();
+        assert_eq!(fs::read_to_string(&user).unwrap(), "hand written");
     }
 }
