@@ -76,6 +76,9 @@ pub fn guard_schema_deletes(preview: &ProvisionReport, allow_delete: bool) -> Re
     // not and provision past this gate in silence.
     let ProvisionReport {
         created_fields: _,
+        // not destructive: an update only writes properties the schema declares,
+        // and never blanks one it does not.
+        updated_fields: _,
         created_tags: _,
         created_object_types: _,
         created_object_fields: _,

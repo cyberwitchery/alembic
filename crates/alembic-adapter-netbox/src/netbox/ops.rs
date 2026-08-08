@@ -1,7 +1,7 @@
-use super::client::{is_404_anyhow, CustomObjectField, CustomObjectType};
+use super::client::{is_404_anyhow, CustomFieldDef, CustomObjectField, CustomObjectType};
 use super::mapping::{
-    build_tag_inputs, custom_field_type_for_schema, slugify, supports_feature, tags_from_value,
-    validation_regex_for_schema,
+    build_tag_inputs, custom_field_type_for_schema, custom_field_update_payload, slugify,
+    supports_feature, tags_from_value, validation_regex_for_schema,
 };
 use super::registry::ObjectTypeRegistry;
 use super::state::{resolved_from_state, state_mappings};
@@ -279,7 +279,7 @@ impl Emitter for NetBoxAdapter {
 impl Adapter for NetBoxAdapter {
     async fn ensure_schema(&self, schema: &Schema) -> Result<ProvisionReport> {
         let mut registry: ObjectTypeRegistry = self.client.fetch_object_types().await?;
-        let custom_fields_by_type = self.client.fetch_custom_fields().await?;
+        let custom_fields_by_type = self.client.fetch_custom_field_defs().await?;
         let custom_object_types = self.client.fetch_custom_object_types().await?;
         let custom_object_fields = self.client.fetch_custom_object_type_fields().await?;
 
@@ -294,6 +294,7 @@ impl Adapter for NetBoxAdapter {
             .await?;
 
         let mut created_fields = Vec::new();
+        let mut updated_fields = Vec::new();
         let mut created_object_types = Vec::new();
         let mut created_object_fields = Vec::new();
         let mut deleted_object_types = Vec::new();
@@ -313,6 +314,15 @@ impl Adapter for NetBoxAdapter {
             {
                 created_fields.push(format!("{}.{}", field.type_name, field.field_name));
             }
+        }
+
+        // existing custom fields: converge only the properties the schema declares.
+        // untyped: the patch response is not read, so it need not deserialize
+        // into the vendor's custom field model.
+        let custom_fields: Resource<Value> = self.client.resource("extras/custom-fields/");
+        for update in &plan.updated_fields {
+            custom_fields.patch(update.field_id, &update.patch).await?;
+            updated_fields.push(format!("{}.{}", update.type_name, update.field_name));
         }
 
         // resolve or create every custom object type first, registering each so a
@@ -413,6 +423,7 @@ impl Adapter for NetBoxAdapter {
 
         Ok(ProvisionReport {
             created_fields,
+            updated_fields,
             // tags are derived from the plan's ops, so only `write` creates them.
             created_tags: Vec::new(),
             created_object_types,
@@ -428,7 +439,7 @@ impl Adapter for NetBoxAdapter {
     /// `ProvisionPlan` (see its doc) without writing.
     async fn preview_schema(&self, schema: &Schema) -> Result<Option<ProvisionReport>> {
         let registry: ObjectTypeRegistry = self.client.fetch_object_types().await?;
-        let custom_fields_by_type = self.client.fetch_custom_fields().await?;
+        let custom_fields_by_type = self.client.fetch_custom_field_defs().await?;
         let custom_object_types = self.client.fetch_custom_object_types().await?;
         let custom_object_fields = self.client.fetch_custom_object_type_fields().await?;
 
@@ -446,6 +457,11 @@ impl Adapter for NetBoxAdapter {
         for field in &plan.native_fields {
             created_fields.push(format!("{}.{}", field.type_name, field.field_name));
         }
+        let updated_fields = plan
+            .updated_fields
+            .iter()
+            .map(|update| format!("{}.{}", update.type_name, update.field_name))
+            .collect();
 
         let mut created_object_types = Vec::new();
         let mut created_object_fields = Vec::new();
@@ -472,6 +488,7 @@ impl Adapter for NetBoxAdapter {
 
         Ok(Some(ProvisionReport {
             created_fields,
+            updated_fields,
             created_tags: Vec::new(),
             created_object_types,
             created_object_fields,
@@ -793,7 +810,7 @@ impl NetBoxAdapter {
     async fn plan_schema<'a>(
         &self,
         registry: &ObjectTypeRegistry,
-        custom_fields_by_type: &BTreeMap<String, BTreeSet<String>>,
+        custom_fields_by_type: &BTreeMap<String, BTreeMap<String, CustomFieldDef>>,
         custom_object_types: Option<Vec<CustomObjectType>>,
         custom_object_fields: Option<Vec<CustomObjectField>>,
         schema: &'a Schema,
@@ -820,6 +837,7 @@ impl NetBoxAdapter {
         // partition declared types into native (custom fields on an existing type)
         // and custom object types, collecting the native field creates.
         let mut native_fields = Vec::new();
+        let mut updated_fields = Vec::new();
         let mut custom_schema_types: Vec<(TypeName, &TypeSchema)> = Vec::new();
         let mut custom_schema_type_names: BTreeSet<String> = BTreeSet::new();
         for (type_name, type_schema) in &schema.types {
@@ -832,10 +850,8 @@ impl NetBoxAdapter {
                     continue;
                 }
                 let native = native_fields_for_type(self, &info, type_schema).await?;
-                let existing = custom_fields_by_type
-                    .get(&content_type_of(registry, type_name.as_str()))
-                    .cloned()
-                    .unwrap_or_default();
+                let content_type = content_type_of(registry, type_name.as_str());
+                let existing = custom_fields_by_type.get(&content_type);
                 for (field_name, field_schema) in &type_schema.fields {
                     if matches!(
                         field_schema.r#type,
@@ -843,7 +859,22 @@ impl NetBoxAdapter {
                     ) {
                         continue;
                     }
-                    if native.contains(field_name) || existing.contains(field_name) {
+                    // a model column of the same name is netbox's, not ours.
+                    if native.contains(field_name) {
+                        continue;
+                    }
+                    if let Some(def) = existing.and_then(|fields| fields.get(field_name)) {
+                        let payload = custom_field_payload(&content_type, field_name, field_schema);
+                        if let (Some(field_id), Some(patch)) =
+                            (def.id, custom_field_update_payload(&def.current, &payload))
+                        {
+                            updated_fields.push(PlannedFieldUpdate {
+                                type_name: type_name.clone(),
+                                field_name: field_name.clone(),
+                                field_id,
+                                patch,
+                            });
+                        }
                         continue;
                     }
                     native_fields.push(PlannedNativeField {
@@ -962,6 +993,7 @@ impl NetBoxAdapter {
 
         Ok(ProvisionPlan {
             native_fields,
+            updated_fields,
             object_types,
             deleted_object_fields,
             deleted_object_types,
@@ -1483,6 +1515,7 @@ impl<'a> CustomObjectFieldProvisioner<'a> {
 /// a change apply would not make, nor miss one.
 struct ProvisionPlan<'a> {
     native_fields: Vec<PlannedNativeField<'a>>,
+    updated_fields: Vec<PlannedFieldUpdate>,
     object_types: Vec<PlannedObjectType<'a>>,
     deleted_object_fields: Vec<PlannedFieldDelete>,
     deleted_object_types: Vec<PlannedTypeDelete>,
@@ -1493,6 +1526,15 @@ struct PlannedNativeField<'a> {
     type_name: TypeName,
     field_name: &'a str,
     field_schema: &'a FieldSchema,
+}
+
+/// an existing custom field to converge, with the patch that does it: only the
+/// properties the schema declares and the backend disagrees on.
+struct PlannedFieldUpdate {
+    type_name: TypeName,
+    field_name: String,
+    field_id: u64,
+    patch: Value,
 }
 
 /// a custom object type to provision, with the object fields to create once its

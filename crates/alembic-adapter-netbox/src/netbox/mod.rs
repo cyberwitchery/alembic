@@ -32,7 +32,7 @@ mod tests {
     use super::*;
     use alembic_core::{key_string, JsonMap, Key, TypeName, Uid};
     use alembic_engine::Op;
-    use httpmock::Method::{GET, POST};
+    use httpmock::Method::{GET, PATCH, POST};
     use httpmock::{Mock, MockServer};
     use serde_json::json;
     use tempfile::tempdir;
@@ -1560,6 +1560,218 @@ mod tests {
         // dcim.device is in the registry but not the schema, so it is skipped, not an error.
         let observed = adapter.read(&schema, &[], &state).await.unwrap();
         assert!(observed.by_key.is_empty());
+    }
+
+    const EXISTING_FIELD_ID: u64 = 7;
+
+    /// the object-types read every schema provision starts from: one `dcim.site`.
+    fn mock_site_object_type(server: &MockServer) -> Mock<'_> {
+        mock_list(
+            server,
+            "/api/core/object-types/",
+            json!([{
+                "app_label": "dcim",
+                "model": "site",
+                "rest_api_endpoint": "/api/dcim/sites/",
+                "features": ["custom-fields", "tags"]
+            }]),
+        )
+    }
+
+    /// the custom-fields list, holding an `asset_tag` on `dcim.site` whose
+    /// converged properties are `current`.
+    fn mock_existing_custom_field(server: &MockServer, current: serde_json::Value) {
+        let mut field = json!({
+            "id": EXISTING_FIELD_ID,
+            "name": "asset_tag",
+            "object_types": ["dcim.site"],
+            "type": {"value": "text", "label": "Text"},
+        });
+        let (Some(field), Some(current)) = (field.as_object_mut(), current.as_object()) else {
+            unreachable!("both are json objects")
+        };
+        field.extend(current.clone());
+        let body = page(json!([field]));
+        let _m = server.mock(|when, then| {
+            when.method(GET).path("/api/extras/custom-fields/");
+            then.status(200).json_body(body);
+        });
+        let _probe = server.mock(|when, then| {
+            when.method(GET)
+                .path("/api/dcim/sites/")
+                .query_param("limit", "1");
+            then.status(200).json_body(page(json!([])));
+        });
+    }
+
+    /// `dcim.site` declaring a single `asset_tag` custom field.
+    fn declaring_schema(
+        pattern: Option<&str>,
+        description: Option<&str>,
+        required: bool,
+    ) -> alembic_core::Schema {
+        let key_field = alembic_core::FieldSchema {
+            r#type: alembic_core::FieldType::String,
+            required: true,
+            nullable: false,
+            description: None,
+            format: None,
+            pattern: None,
+        };
+        alembic_core::Schema {
+            types: std::collections::BTreeMap::from([(
+                "dcim.site".to_string(),
+                alembic_core::TypeSchema {
+                    key: std::collections::BTreeMap::from([("slug".to_string(), key_field)]),
+                    fields: std::collections::BTreeMap::from([(
+                        "asset_tag".to_string(),
+                        alembic_core::FieldSchema {
+                            r#type: alembic_core::FieldType::String,
+                            required,
+                            nullable: !required,
+                            description: description.map(str::to_string),
+                            format: None,
+                            pattern: pattern.map(str::to_string),
+                        },
+                    )]),
+                },
+            )]),
+        }
+    }
+
+    // provisioning converges an existing field onto the properties the schema
+    // declares. the three below are exactly what a create sends beyond identity
+    // and type, and all three sit on netbox's patch body.
+    #[tokio::test]
+    async fn ensure_schema_converges_an_existing_field() {
+        let server = MockServer::start();
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
+        let _object_types = mock_site_object_type(&server);
+        mock_existing_custom_field(
+            &server,
+            json!({"required": false, "description": "", "validation_regex": ""}),
+        );
+        let cf_create = server.mock(|when, then| {
+            when.method(POST).path("/api/extras/custom-fields/");
+            then.status(201).json_body(json!({}));
+        });
+        let cf_patch = server.mock(|when, then| {
+            when.method(PATCH)
+                .path(format!("/api/extras/custom-fields/{EXISTING_FIELD_ID}/"))
+                .json_body(json!({
+                    "required": true,
+                    "description": "asset tag",
+                    "validation_regex": "^SITE-",
+                }));
+            then.status(200).json_body(json!({}));
+        });
+
+        let report = adapter
+            .ensure_schema(&declaring_schema(Some("^SITE-"), Some("asset tag"), true))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            report.updated_fields,
+            vec!["dcim.site.asset_tag".to_string()]
+        );
+        assert!(report.created_fields.is_empty());
+        cf_patch.assert_calls(1);
+        // the field is there: nothing is created.
+        cf_create.assert_calls(0);
+    }
+
+    // a field that already agrees is not written at all: no patch, nothing reported.
+    #[tokio::test]
+    async fn ensure_schema_leaves_an_agreeing_field_alone() {
+        let server = MockServer::start();
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
+        let _object_types = mock_site_object_type(&server);
+        mock_existing_custom_field(
+            &server,
+            json!({
+                "required": true,
+                "description": "asset tag",
+                "validation_regex": "^SITE-",
+            }),
+        );
+        let cf_patch = server.mock(|when, then| {
+            when.method(PATCH)
+                .path(format!("/api/extras/custom-fields/{EXISTING_FIELD_ID}/"));
+            then.status(200).json_body(json!({}));
+        });
+
+        let report = adapter
+            .ensure_schema(&declaring_schema(Some("^SITE-"), Some("asset tag"), true))
+            .await
+            .unwrap();
+
+        assert!(report.updated_fields.is_empty());
+        cf_patch.assert_calls(0);
+    }
+
+    // additive-only, one level up: a property the schema does not declare keeps
+    // whatever the backend holds. the patch matcher is an exact body, so a
+    // description or required key sneaking in fails to match and the test goes red.
+    #[tokio::test]
+    async fn ensure_schema_does_not_blank_an_undeclared_property() {
+        let server = MockServer::start();
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
+        let _object_types = mock_site_object_type(&server);
+        mock_existing_custom_field(
+            &server,
+            json!({
+                "required": true,
+                "description": "written by an operator",
+                "validation_regex": "",
+            }),
+        );
+        let cf_patch = server.mock(|when, then| {
+            when.method(PATCH)
+                .path(format!("/api/extras/custom-fields/{EXISTING_FIELD_ID}/"))
+                .json_body(json!({"validation_regex": "^SITE-"}));
+            then.status(200).json_body(json!({}));
+        });
+
+        let report = adapter
+            .ensure_schema(&declaring_schema(Some("^SITE-"), None, false))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            report.updated_fields,
+            vec!["dcim.site.asset_tag".to_string()]
+        );
+        cf_patch.assert_calls(1);
+    }
+
+    // preview and ensure make the same decision, and preview writes nothing.
+    #[tokio::test]
+    async fn preview_schema_reports_the_update_without_writing() {
+        let server = MockServer::start();
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
+        let _object_types = mock_site_object_type(&server);
+        mock_existing_custom_field(
+            &server,
+            json!({"required": false, "description": "", "validation_regex": ""}),
+        );
+        let cf_patch = server.mock(|when, then| {
+            when.method(PATCH)
+                .path(format!("/api/extras/custom-fields/{EXISTING_FIELD_ID}/"));
+            then.status(200).json_body(json!({}));
+        });
+
+        let report = adapter
+            .preview_schema(&declaring_schema(Some("^SITE-"), Some("asset tag"), true))
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            report.updated_fields,
+            vec!["dcim.site.asset_tag".to_string()]
+        );
+        cf_patch.assert_calls(0);
     }
 
     #[tokio::test]

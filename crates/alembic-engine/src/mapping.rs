@@ -84,6 +84,58 @@ pub fn validation_regex_for_schema<'a>(
         .map(|format| format_regex(&format))
 }
 
+/// the properties of a custom field a provision converges. these are exactly the
+/// ones both custom field create payloads carry beyond identity and type, and all
+/// three sit on the vendors' patch bodies.
+pub const CONVERGED_CUSTOM_FIELD_PROPERTIES: [&str; 3] =
+    ["required", "description", "validation_regex"];
+
+/// what a backend custom field currently holds for those properties. an unset one
+/// reads as the backends' own empty value, so a property neither side sets
+/// compares equal and produces no patch.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ExistingCustomField {
+    pub required: bool,
+    pub description: String,
+    pub validation_regex: String,
+}
+
+impl ExistingCustomField {
+    fn get(&self, property: &str) -> Value {
+        match property {
+            "required" => Value::Bool(self.required),
+            "description" => Value::String(self.description.clone()),
+            "validation_regex" => Value::String(self.validation_regex.clone()),
+            _ => Value::Null,
+        }
+    }
+}
+
+/// the patch that converges an existing custom field onto `create_payload`, or
+/// `None` when it already agrees.
+///
+/// this is the engine's additive-only diff rule one level up, at the schema layer:
+/// a converged property the create payload omits is one the schema does not
+/// declare, so the backend keeps whatever it has rather than being blanked. the
+/// desired side is the create payload itself so an update can never converge onto
+/// something a create would not have written.
+pub fn custom_field_update_payload(
+    existing: &ExistingCustomField,
+    create_payload: &Value,
+) -> Option<Value> {
+    let desired = create_payload.as_object()?;
+    let mut patch = serde_json::Map::new();
+    for property in CONVERGED_CUSTOM_FIELD_PROPERTIES {
+        let Some(value) = desired.get(property) else {
+            continue;
+        };
+        if existing.get(property) != *value {
+            patch.insert(property.to_string(), value.clone());
+        }
+    }
+    (!patch.is_empty()).then_some(Value::Object(patch))
+}
+
 /// extract tag names from a JSON value returned by a backend.
 ///
 /// accepts arrays of strings or objects with `"name"` / `"slug"` fields,

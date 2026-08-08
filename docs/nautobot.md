@@ -37,11 +37,17 @@ token: nautobot_xxx_replace_me
 - observe flattens `_custom_field_data` and `tags` into `attrs` for diffing and import.
 - on apply, custom fields and tags are only sent when the object type advertises support
   via the `features` set.
-- provisioning creates missing custom fields on apply; the schema preview reports them.
+- provisioning creates missing custom fields on apply and converges existing ones;
+  the schema preview reports both.
 - a declared `pattern:` on a text-typed field is provisioned as the custom field's
   `validation_regex`, and a declared `format:`, or the format a `uuid`, `cidr`, `prefix`,
   `mac` or `slug` type carries, is provisioned the same way when no `pattern:` overrides
-  it, so the backend enforces them too; an existing field is not updated.
+  it, so the backend enforces them too. a field the backend already has is
+  converged onto the properties alembic declares: `required`, `description` and
+  `validation_regex` are patched when they differ from the schema. nothing else is
+  written -- the field's type is left alone, and a property the schema does not
+  declare keeps whatever the backend holds. the schema preview reports the same
+  updates under `provision.updated_fields`.
 - tags the applied objects reference but the backend lacks are created at apply, not
   during schema provisioning. a successful apply lists them in `provision.created_tags`;
   a tag that already existed is not listed. they are created before the ops, so an apply
@@ -67,9 +73,10 @@ number: a text field reads back quoted, which fails validation on `import`.
 
 a `select` is created with one choice per declared value, weighted in declaration order.
 choices are written by the create alone, so a field the backend already has keeps the
-choices it was created with, like every other property of an existing field. a run that
-fails partway through the choices leaves the field created and its remaining choices
-unwritten; the next run finds the field present and does not resume them.
+choices it was created with: unlike `required`, `description` and `validation_regex`,
+they are not converged. a run that fails partway through the choices leaves the field
+created and its remaining choices unwritten; the next run finds the field present and
+does not resume them.
 
 a declared `pattern:` or `format:` is not provisioned on a `select`: nautobot enforces
 `validation_regex` on text fields only, and the choices are the constraint.

@@ -1,6 +1,6 @@
 use super::mapping::{
-    build_tag_inputs, custom_field_type_for_schema, slugify, supports_feature, tags_from_value,
-    validation_regex_for_schema,
+    build_tag_inputs, custom_field_type_for_schema, custom_field_update_payload, slugify,
+    supports_feature, tags_from_value, validation_regex_for_schema,
 };
 use super::registry::ObjectTypeRegistry;
 use super::state::{resolved_from_state, state_mappings};
@@ -281,8 +281,10 @@ impl Emitter for NautobotAdapter {
 #[async_trait]
 impl Adapter for NautobotAdapter {
     async fn ensure_schema(&self, schema: &Schema) -> Result<ProvisionReport> {
+        let plan = self.plan_custom_fields(schema).await?;
+
         let mut created_fields = Vec::new();
-        for (type_name, field_name, field_schema) in self.missing_custom_fields(schema).await? {
+        for (type_name, field_name, field_schema) in plan.missing {
             if self
                 .create_custom_field(&type_name, field_name, field_schema)
                 .await?
@@ -290,38 +292,69 @@ impl Adapter for NautobotAdapter {
                 created_fields.push(format!("{type_name}.{field_name}"));
             }
         }
+
+        // existing custom fields: converge only the properties the schema declares.
+        let mut updated_fields = Vec::new();
+        // untyped: the patch response is not read, so it need not deserialize
+        // into the vendor's custom field model.
+        let custom_fields: Resource<Value> = self.client.resource("extras/custom-fields/".into());
+        for update in &plan.updates {
+            custom_fields.patch(&update.field_id, &update.patch).await?;
+            updated_fields.push(format!("{}.{}", update.type_name, update.field_name));
+        }
+
         Ok(ProvisionReport {
             created_fields,
+            updated_fields,
             ..Default::default()
         })
     }
 
     async fn preview_schema(&self, schema: &Schema) -> Result<Option<ProvisionReport>> {
-        let created_fields = self
-            .missing_custom_fields(schema)
-            .await?
-            .into_iter()
-            .map(|(type_name, field_name, _)| format!("{type_name}.{field_name}"))
-            .collect();
+        let plan = self.plan_custom_fields(schema).await?;
         Ok(Some(ProvisionReport {
-            created_fields,
+            created_fields: plan
+                .missing
+                .iter()
+                .map(|(type_name, field_name, _)| format!("{type_name}.{field_name}"))
+                .collect(),
+            updated_fields: plan
+                .updates
+                .iter()
+                .map(|update| format!("{}.{}", update.type_name, update.field_name))
+                .collect(),
             ..Default::default()
         }))
     }
 }
 
+/// what a provision has to do to the declared custom fields: create the ones the
+/// backend lacks, converge the ones it has.
+struct CustomFieldPlan<'a> {
+    missing: Vec<(TypeName, &'a String, &'a FieldSchema)>,
+    updates: Vec<PlannedFieldUpdate>,
+}
+
+/// an existing custom field to converge, with the patch that does it: only the
+/// properties the schema declares and the backend disagrees on.
+struct PlannedFieldUpdate {
+    type_name: TypeName,
+    field_name: String,
+    field_id: String,
+    patch: Value,
+}
+
 impl NautobotAdapter {
     /// read the live schema and compute which declared custom fields the backend
-    /// lacks. read-only: shared by `ensure_schema` (which then creates them) and
+    /// lacks and which of the ones it has diverge from their declaration.
+    /// read-only: shared by `ensure_schema` (which then writes them) and
     /// `preview_schema` (which only reports them), so the decision never drifts
     /// between preview and apply.
-    async fn missing_custom_fields<'a>(
-        &self,
-        schema: &'a Schema,
-    ) -> Result<Vec<(TypeName, &'a String, &'a FieldSchema)>> {
+    async fn plan_custom_fields<'a>(&self, schema: &'a Schema) -> Result<CustomFieldPlan<'a>> {
         let registry: ObjectTypeRegistry = self.client.fetch_object_types().await?;
-        let custom_fields_by_type = self.client.fetch_custom_fields().await?;
+        let custom_fields_by_type = self.client.fetch_custom_field_defs().await?;
         let mut missing = Vec::new();
+        let mut updates = Vec::new();
 
         for (type_name, type_schema) in &schema.types {
             let type_name = TypeName::new(type_name);
@@ -333,10 +366,7 @@ impl NautobotAdapter {
             }
 
             let native_fields = native_fields_for_type(self, &info, type_schema).await?;
-            let existing = custom_fields_by_type
-                .get(type_name.as_str())
-                .cloned()
-                .unwrap_or_default();
+            let existing = custom_fields_by_type.get(type_name.as_str());
 
             for (field_name, field_schema) in &type_schema.fields {
                 if matches!(
@@ -345,14 +375,31 @@ impl NautobotAdapter {
                 ) {
                     continue;
                 }
-                if native_fields.contains(field_name) || existing.contains(field_name) {
+                // a model column of the same name is nautobot's, not ours.
+                if native_fields.contains(field_name) {
+                    continue;
+                }
+                if let Some(def) = existing.and_then(|fields| fields.get(field_name)) {
+                    let payload =
+                        custom_field_payload(type_name.as_str(), field_name, field_schema);
+                    if let (Some(field_id), Some(patch)) = (
+                        def.id.clone(),
+                        custom_field_update_payload(&def.current, &payload),
+                    ) {
+                        updates.push(PlannedFieldUpdate {
+                            type_name: type_name.clone(),
+                            field_name: field_name.clone(),
+                            field_id,
+                            patch,
+                        });
+                    }
                     continue;
                 }
                 missing.push((type_name.clone(), field_name, field_schema));
             }
         }
 
-        Ok(missing)
+        Ok(CustomFieldPlan { missing, updates })
     }
 
     async fn apply_create(
