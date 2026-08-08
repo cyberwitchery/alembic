@@ -489,6 +489,133 @@ mod tests {
         cf_create.assert_calls(1);
     }
 
+    // a declared enum is provisioned as a `select` carrying its values as
+    // choices, weighted in declaration order.
+    #[tokio::test]
+    async fn ensure_schema_creates_a_select_with_its_choices() {
+        let server = MockServer::start();
+        mock_content_types(&server);
+        mock_empty_custom_fields(&server);
+        let _probe = server.mock(|when, then| {
+            when.method(GET).path("/api/dcim/sites/");
+            then.status(200).json_body(page(json!([])));
+        });
+        let field_id = "44444444-4444-4444-4444-444444444444";
+        let cf_create = server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/extras/custom-fields/")
+                .json_body_includes(r#"{"type": "select"}"#);
+            then.status(201).json_body(json!({
+                "id": field_id,
+                "key": "tier",
+                "label": "tier",
+                "content_types": ["dcim.site"],
+                "type": {},
+            }));
+        });
+        // one mock per declared value: each matches only its own value, so the
+        // weights prove the choices went out in declaration order.
+        let choices: Vec<_> = ["core", "agg", "edge"]
+            .iter()
+            .enumerate()
+            .map(|(index, value)| {
+                let body = json!({
+                    "value": value,
+                    "weight": (index + 1) * 100,
+                    "custom_field": field_id,
+                })
+                .to_string();
+                server.mock(|when, then| {
+                    when.method(POST)
+                        .path("/api/extras/custom-field-choices/")
+                        .json_body_includes(&body);
+                    then.status(201)
+                        .json_body(json!({ "id": field_id, "value": value }));
+                })
+            })
+            .collect();
+
+        let mut schema = site_schema();
+        schema.types.get_mut("dcim.site").unwrap().fields.insert(
+            "tier".to_string(),
+            field(FieldType::Enum {
+                values: vec!["core".to_string(), "agg".to_string(), "edge".to_string()],
+            }),
+        );
+
+        let adapter = NautobotAdapter::new(&server.base_url(), "token").unwrap();
+        let report = adapter.ensure_schema(&schema).await.unwrap();
+
+        assert_eq!(report.created_fields, vec!["dcim.site.tier".to_string()]);
+        cf_create.assert_calls(1);
+        for choice in choices {
+            choice.assert_calls(1);
+        }
+    }
+
+    // a nautobot select reads back as a plain string (multi-select as an array
+    // of them), which is exactly what core's enum check wants.
+    #[tokio::test]
+    async fn observe_round_trips_an_enum_valued_object() {
+        let server = MockServer::start();
+        let dir = tempdir().unwrap();
+        mock_content_types(&server);
+        let _sites = server.mock(|when, then| {
+            when.method(GET).path("/api/dcim/sites/");
+            then.status(200).json_body(page(json!([{
+                "id": "11111111-1111-1111-1111-111111111111",
+                "name": "FRA1",
+                "slug": "fra1",
+                "_custom_field_data": { "tier": "core", "roles": ["core", "edge"] },
+            }])));
+        });
+
+        let values = vec!["core".to_string(), "agg".to_string(), "edge".to_string()];
+        let mut schema = site_schema();
+        let site = schema.types.get_mut("dcim.site").unwrap();
+        // the shared `field()` helper is nullable; a key field may not be.
+        let name_key = site.key.get_mut("name").unwrap();
+        name_key.nullable = false;
+        name_key.required = true;
+        let fields = &mut site.fields;
+        fields.insert(
+            "tier".to_string(),
+            field(FieldType::Enum {
+                values: values.clone(),
+            }),
+        );
+        fields.insert(
+            "roles".to_string(),
+            field(FieldType::List {
+                item: Box::new(FieldType::Enum { values }),
+            }),
+        );
+
+        let adapter = NautobotAdapter::new(&server.base_url(), "token").unwrap();
+        let observed = adapter
+            .read(&schema, &[TypeName::new("dcim.site")], &state(dir.path()))
+            .await
+            .unwrap();
+
+        let object = observed.by_key.values().next().unwrap();
+        assert_eq!(object.attrs.get("tier"), Some(&json!("core")));
+        assert_eq!(object.attrs.get("roles"), Some(&json!(["core", "edge"])));
+
+        // and core accepts what came back against the schema that declared it.
+        let inventory = alembic_core::Inventory {
+            schema,
+            objects: vec![Object::new(
+                uid(1),
+                object.type_name.clone(),
+                object.key.clone(),
+                object.attrs.clone(),
+            )
+            .unwrap()],
+        };
+        let report = alembic_core::validate_inventory(&inventory);
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+    }
+
     #[tokio::test]
     async fn preview_schema_reports_without_creating() {
         let server = MockServer::start();
