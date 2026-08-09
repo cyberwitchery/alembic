@@ -173,7 +173,8 @@ struct FieldSpec {
     nullable: bool,
     choices: Option<Vec<String>>,
     validators: Vec<String>,
-    /// a list's declared element check, rendered alongside `validators`.
+    /// a list's declared element check. the validator ships on every list, so
+    /// `None` is an element carrying no check rather than no validator.
     member_check: Option<MemberCheck>,
     help_text: Option<String>,
 }
@@ -215,6 +216,10 @@ impl DjangoFieldType {
 
     fn is_json(&self) -> bool {
         matches!(self, DjangoFieldType::Json { .. })
+    }
+
+    fn is_list(&self) -> bool {
+        matches!(self, DjangoFieldType::Json { list: true })
     }
 
     fn is_many_to_many(&self) -> bool {
@@ -486,7 +491,7 @@ fn render_files(models: &[ModelSpec], options: &DjangoEmitOptions) -> DjangoFile
             .iter()
             .any(|model| model.fields.iter().any(&predicate))
     };
-    let member_validators = has_field(|field| field.member_check.is_some());
+    let member_validators = has_field(|field| field.field_type.is_list());
 
     let mut model_imports = Vec::new();
     // only a regex member check reaches `re`, so an app whose lists are all
@@ -605,7 +610,12 @@ fn render_field(model: &ModelSpec, field: &FieldSpec) -> String {
         .validators
         .iter()
         .cloned()
-        .chain(field.member_check.as_ref().map(render_member_check))
+        .chain(
+            field
+                .field_type
+                .is_list()
+                .then(|| render_member_check(field.member_check.as_ref())),
+        )
         .collect();
     if !validators.is_empty() {
         args.push(format!("validators=[{}]", validators.join(", ")));
@@ -1155,9 +1165,13 @@ fn member_check_for(item: &FieldType) -> Option<MemberCheck> {
     }
 }
 
-fn render_member_check(check: &MemberCheck) -> String {
+fn render_member_check(check: Option<&MemberCheck>) -> String {
     match check {
-        MemberCheck::Choices(values) => format!(
+        // core takes an array for a declared list and nothing else, whatever
+        // its element type, so the outer shape ships even where no element
+        // check does.
+        None => "_ListMembers()".to_string(),
+        Some(MemberCheck::Choices(values)) => format!(
             "_ListMembers(choices=[{}])",
             values
                 .iter()
@@ -1165,8 +1179,8 @@ fn render_member_check(check: &MemberCheck) -> String {
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
-        MemberCheck::Regex(pattern) => format!("_ListMembers(regex={})", py_str(pattern)),
-        MemberCheck::Kind(kind) => format!("_ListMembers(kind={})", py_str(kind)),
+        Some(MemberCheck::Regex(pattern)) => format!("_ListMembers(regex={})", py_str(pattern)),
+        Some(MemberCheck::Kind(kind)) => format!("_ListMembers(kind={})", py_str(kind)),
     }
 }
 
@@ -1652,13 +1666,24 @@ mod tests {
     }
 
     #[test]
-    fn list_of_dates_carries_no_member_check() {
-        // core reads a date as rfc 3339 and checks the calendar with it; django
-        // parses its own shapes, so any check here would be an approximation.
-        let models = list_field_models(FieldType::Date);
-        assert!(models.contains("members = models.JSONField()"), "{models}");
-        assert!(!models.contains("_ListMembers"), "{models}");
-        assert!(!models.contains("import re"), "{models}");
+    fn list_of_an_uncheckable_element_still_carries_the_outer_shape() {
+        // core reads a date as rfc 3339 and checks the calendar with it, and
+        // takes any json for a `json` element, so neither carries an element
+        // check -- but core still takes an array for the field and nothing
+        // else, which is what the bare validator holds it to.
+        for item in [
+            FieldType::Date,
+            FieldType::Datetime,
+            FieldType::Time,
+            FieldType::Json,
+        ] {
+            let models = list_field_models(item);
+            assert!(
+                models.contains("members = models.JSONField(validators=[_ListMembers()])"),
+                "{models}"
+            );
+            assert!(!models.contains("import re"), "{models}");
+        }
     }
 
     #[test]

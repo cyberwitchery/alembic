@@ -69,6 +69,9 @@ a `date`, `datetime` or `time` element carries no check: `validate` reads those
 as rfc 3339 and checks the calendar with them, while django's own parser takes
 shapes it refuses, so a check here would be an approximation either way. a
 `json` element carries none either, because `validate` takes any json there.
+the column still carries the validator, holding the field itself to a list:
+`validate` takes an array there whatever the element type, so a declared `list`
+that is not one is refused even where its members go unread.
 
 a nested collection carries its outer shape: a `list` or `list_ref` element
 takes only a list, a `map` element only a map. `validate` recurses into the

@@ -89,8 +89,9 @@ check(not ok, "a ref member that is not a uid is rejected")
 ok, errors = accepts(refs=["44444444-4444-4444-4444-444444444444"])
 check(ok, f"a well-formed uid is accepted as a ref member (got {errors})")
 
-# the model itself says which lists carry a check, so the corpus below asks for
-# exact agreement only where one was emitted.
+corpus = json.load(open(sys.argv[2]))
+list_fields = sorted({case["field"] for case in corpus})
+
 checked = {
     field.name
     for field in DcimInterface._meta.get_fields()
@@ -99,7 +100,18 @@ checked = {
         for validator in getattr(field, "validators", [])
     )
 }
-check(bool(checked), "the generated model carries member checks")
+check(
+    sorted(checked) == list_fields,
+    f"every declared list carries the check (got {sorted(checked)})",
+)
+
+# the corpus only ever passes lists, so the field-level shape is its blind spot:
+# core takes an array for a declared list whatever the element type, and a list
+# whose element carries no check has to be held to that much too.
+for field in list_fields:
+    for value in ["notalist", 7, {"a": 1}]:
+        ok, _ = accepts(**{field: value})
+        check(not ok, f"{field} refuses the non-list value {value!r}")
 
 # core's verdict comes from the rust side; this is the only place the check that
 # ships answers for itself, so a divergence between the two regex engines shows
@@ -123,7 +135,7 @@ LENIENT = {
 expected = sorted(field for group in LENIENT.values() for field in group)
 
 lenient = []
-for case in json.load(open(sys.argv[2])):
+for case in corpus:
     field, member, core = case["field"], case["member"], case["core"]
     ok, _ = accepts(**{field: [member]})
     if core and not ok:
