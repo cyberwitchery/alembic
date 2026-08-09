@@ -122,6 +122,170 @@ mod tests {
         });
     }
 
+    // content-types for both dcim.site and dcim.device, plus the sample-object
+    // probe each native type needs.
+    fn mock_two_content_types(server: &MockServer) {
+        for path in ["/api/dcim/sites/", "/api/dcim/devices/"] {
+            let _probe = server.mock(|when, then| {
+                when.method(GET).path(path);
+                then.status(200).json_body(page(json!([])));
+            });
+        }
+        let _m = server.mock(|when, then| {
+            when.method(GET).path("/api/extras/content-types/");
+            then.status(200).json_body(page(json!([
+                { "app_label": "dcim", "model": "site" },
+                { "app_label": "dcim", "model": "device" }
+            ])));
+        });
+    }
+
+    /// one `asset_tag` field carrying *both* content types, which is how both
+    /// vendors model a field attached to more than one type.
+    fn mock_shared_custom_field(server: &MockServer, current: serde_json::Value) {
+        let mut field = json!({
+            "id": EXISTING_FIELD_ID,
+            "key": "asset_tag",
+            "label": "asset_tag",
+            "content_types": ["dcim.site", "dcim.device"],
+            "type": {},
+        });
+        let (Some(field), Some(current)) = (field.as_object_mut(), current.as_object()) else {
+            unreachable!("both are json objects")
+        };
+        field.extend(current.clone());
+        let body = page(json!([field]));
+        let _m = server.mock(|when, then| {
+            when.method(GET).path("/api/extras/custom-fields/");
+            then.status(200).json_body(body);
+        });
+    }
+
+    /// `asset_tag` declared on both types, each with its own pattern.
+    fn schema_declaring_on_both(site_pattern: &str, device_pattern: &str) -> Schema {
+        let asset_tag = |pattern: &str| FieldSchema {
+            r#type: FieldType::String,
+            required: true,
+            nullable: false,
+            description: Some("asset tag".to_string()),
+            format: None,
+            pattern: Some(pattern.to_string()),
+        };
+        let type_schema = |pattern: &str| TypeSchema {
+            key: BTreeMap::from([("name".to_string(), field(FieldType::String))]),
+            fields: BTreeMap::from([("asset_tag".to_string(), asset_tag(pattern))]),
+        };
+        Schema {
+            types: BTreeMap::from([
+                ("dcim.site".to_string(), type_schema(site_pattern)),
+                ("dcim.device".to_string(), type_schema(device_pattern)),
+            ]),
+        }
+    }
+
+    // one backend field serving two content types is patched once, not once per
+    // type, and the run reports both declarations it answered.
+    #[tokio::test]
+    async fn ensure_schema_patches_a_shared_field_once() {
+        let server = MockServer::start();
+        let adapter = NautobotAdapter::new(&server.base_url(), "token").unwrap();
+        mock_two_content_types(&server);
+        mock_shared_custom_field(
+            &server,
+            json!({"required": false, "description": "", "validation_regex": ""}),
+        );
+        let cf_patch = server.mock(|when, then| {
+            when.method(PATCH)
+                .path(format!("/api/extras/custom-fields/{EXISTING_FIELD_ID}/"))
+                .json_body(json!({
+                    "required": true,
+                    "description": "asset tag",
+                    "validation_regex": "^ASSET-",
+                }));
+            then.status(200).json_body(json!({}));
+        });
+
+        let report = adapter
+            .ensure_schema(&schema_declaring_on_both("^ASSET-", "^ASSET-"))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            report.updated_fields,
+            vec![
+                "dcim.device.asset_tag".to_string(),
+                "dcim.site.asset_tag".to_string()
+            ]
+        );
+        cf_patch.assert_calls(1);
+    }
+
+    // the fixed point: a second provision against the backend the first one
+    // produced plans nothing and writes nothing.
+    #[tokio::test]
+    async fn a_shared_field_converges_in_one_run() {
+        let server = MockServer::start();
+        let adapter = NautobotAdapter::new(&server.base_url(), "token").unwrap();
+        mock_two_content_types(&server);
+        // what the first run's patch left behind.
+        mock_shared_custom_field(
+            &server,
+            json!({
+                "required": true,
+                "description": "asset tag",
+                "validation_regex": "^ASSET-",
+            }),
+        );
+        let cf_patch = server.mock(|when, then| {
+            when.method(PATCH)
+                .path(format!("/api/extras/custom-fields/{EXISTING_FIELD_ID}/"));
+            then.status(200).json_body(json!({}));
+        });
+
+        let schema = schema_declaring_on_both("^ASSET-", "^ASSET-");
+        let preview = adapter.preview_schema(&schema).await.unwrap().unwrap();
+        let report = adapter.ensure_schema(&schema).await.unwrap();
+
+        assert!(preview.updated_fields.is_empty());
+        assert!(report.updated_fields.is_empty());
+        cf_patch.assert_calls(0);
+    }
+
+    // two types declaring different values for one shared backend field cannot
+    // both be honoured, so the run says so rather than writing whichever comes
+    // last.
+    #[tokio::test]
+    async fn ensure_schema_refuses_conflicting_declarations_on_a_shared_field() {
+        let server = MockServer::start();
+        let adapter = NautobotAdapter::new(&server.base_url(), "token").unwrap();
+        mock_two_content_types(&server);
+        mock_shared_custom_field(
+            &server,
+            json!({"required": true, "description": "asset tag", "validation_regex": ""}),
+        );
+        let cf_patch = server.mock(|when, then| {
+            when.method(PATCH)
+                .path(format!("/api/extras/custom-fields/{EXISTING_FIELD_ID}/"));
+            then.status(200).json_body(json!({}));
+        });
+
+        let schema = schema_declaring_on_both("^SITE-", "^DEV-");
+        let err = adapter
+            .ensure_schema(&schema)
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("asset_tag"), "{err}");
+        assert!(err.contains("validation_regex"), "{err}");
+        assert!(err.contains("dcim.site.asset_tag"), "{err}");
+        assert!(err.contains("dcim.device.asset_tag"), "{err}");
+        // the preview refuses the same inventory, so a plan cannot pass what an
+        // apply would reject.
+        assert!(adapter.preview_schema(&schema).await.is_err());
+        cf_patch.assert_calls(0);
+    }
+
     /// `dcim.site` declaring a single `asset_tag` custom field.
     fn declaring_schema(
         pattern: Option<&str>,

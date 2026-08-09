@@ -168,6 +168,7 @@ response:
   "ok": true,
   "result": {
     "created_fields": ["field1"],
+    "updated_fields": [],
     "created_tags": [],
     "created_object_types": ["dcim.site"],
     "created_object_fields": ["dcim.site.name"],

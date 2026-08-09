@@ -84,15 +84,9 @@ pub fn validation_regex_for_schema<'a>(
         .map(|format| format_regex(&format))
 }
 
-/// the properties of a custom field a provision converges. these are exactly the
-/// ones both custom field create payloads carry beyond identity and type, and all
-/// three sit on the vendors' patch bodies.
-pub const CONVERGED_CUSTOM_FIELD_PROPERTIES: [&str; 3] =
-    ["required", "description", "validation_regex"];
-
-/// what a backend custom field currently holds for those properties. an unset one
-/// reads as the backends' own empty value, so a property neither side sets
-/// compares equal and produces no patch.
+/// what a backend custom field currently holds for the properties a provision
+/// converges. an unset one reads as the backends' own empty value, so a property
+/// neither side sets compares equal and produces no patch.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ExistingCustomField {
     pub required: bool,
@@ -101,35 +95,76 @@ pub struct ExistingCustomField {
 }
 
 impl ExistingCustomField {
-    fn get(&self, property: &str) -> Value {
-        match property {
-            "required" => Value::Bool(self.required),
-            "description" => Value::String(self.description.clone()),
-            "validation_regex" => Value::String(self.validation_regex.clone()),
-            _ => Value::Null,
-        }
+    /// the converged properties, each paired with what the backend holds for it.
+    /// one list rather than a name list and a lookup, so a property cannot be
+    /// compared against a value nothing supplies. these are exactly the
+    /// properties both create payloads carry beyond identity and type, and all
+    /// three sit on the vendors' patch bodies.
+    fn converged(&self) -> [(&'static str, Value); 3] {
+        [
+            ("required", Value::Bool(self.required)),
+            ("description", Value::String(self.description.clone())),
+            (
+                "validation_regex",
+                Value::String(self.validation_regex.clone()),
+            ),
+        ]
     }
 }
 
-/// the patch that converges an existing custom field onto `create_payload`, or
-/// `None` when it already agrees.
+/// the names `converged` pairs values with.
+fn converged_properties() -> impl Iterator<Item = &'static str> {
+    ExistingCustomField::default()
+        .converged()
+        .into_iter()
+        .map(|(property, _)| property)
+}
+
+/// fold one declaration's create payload into `desired`, the converged properties
+/// every declaration landing on the same backend field has agreed on so far.
+/// returns the property two of them disagree on.
+///
+/// one backend custom field carries a *list* of content types, so several declared
+/// types can share it. a property only one declaration carries is taken as
+/// declared: the other is silent about it, not opposed to it.
+pub fn merge_converged_properties(
+    desired: &mut serde_json::Map<String, Value>,
+    create_payload: &Value,
+) -> Option<&'static str> {
+    let payload = create_payload.as_object()?;
+    for property in converged_properties() {
+        let Some(value) = payload.get(property) else {
+            continue;
+        };
+        match desired.get(property) {
+            Some(agreed) if agreed != value => return Some(property),
+            _ => {
+                desired.insert(property.to_string(), value.clone());
+            }
+        }
+    }
+    None
+}
+
+/// the patch that converges an existing custom field onto `desired`, or `None`
+/// when it already agrees.
 ///
 /// this is the engine's additive-only diff rule one level up, at the schema layer:
-/// a converged property the create payload omits is one the schema does not
-/// declare, so the backend keeps whatever it has rather than being blanked. the
-/// desired side is the create payload itself so an update can never converge onto
-/// something a create would not have written.
+/// a converged property `desired` omits is one the schema does not declare, so the
+/// backend keeps whatever it has rather than being blanked. `desired` is built from
+/// the create payloads themselves so an update can never converge onto something a
+/// create would not have written.
 pub fn custom_field_update_payload(
     existing: &ExistingCustomField,
-    create_payload: &Value,
+    desired: &Value,
 ) -> Option<Value> {
-    let desired = create_payload.as_object()?;
+    let desired = desired.as_object()?;
     let mut patch = serde_json::Map::new();
-    for property in CONVERGED_CUSTOM_FIELD_PROPERTIES {
+    for (property, current) in existing.converged() {
         let Some(value) = desired.get(property) else {
             continue;
         };
-        if existing.get(property) != *value {
+        if current != *value {
             patch.insert(property.to_string(), value.clone());
         }
     }

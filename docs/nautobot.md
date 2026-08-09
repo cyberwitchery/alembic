@@ -43,11 +43,16 @@ token: nautobot_xxx_replace_me
   `validation_regex`, and a declared `format:`, or the format a `uuid`, `cidr`, `prefix`,
   `mac` or `slug` type carries, is provisioned the same way when no `pattern:` overrides
   it, so the backend enforces them too. a field the backend already has is
-  converged onto the properties alembic declares: `required`, `description` and
-  `validation_regex` are patched when they differ from the schema. nothing else is
+  converged onto the properties alembic declares: `description` and
+  `validation_regex` are patched when they differ from the schema, and `required`
+  is set when the schema declares it. a `required: false` reads the same as an
+  omitted one, so `required` is only ever tightened, never relaxed. nothing else is
   written -- the field's type is left alone, and a property the schema does not
-  declare keeps whatever the backend holds. the schema preview reports the same
-  updates under `provision.updated_fields`.
+  declare keeps whatever the backend holds. one backend field can carry several
+  content types: when two declared types share one, they must declare the same
+  values for it, and the run fails naming both rather than writing two patches to
+  one field. the schema preview reports the same updates under
+  `provision.updated_fields`.
 - tags the applied objects reference but the backend lacks are created at apply, not
   during schema provisioning. a successful apply lists them in `provision.created_tags`;
   a tag that already existed is not listed. they are created before the ops, so an apply

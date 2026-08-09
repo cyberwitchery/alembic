@@ -1,6 +1,7 @@
 use super::mapping::{
-    build_tag_inputs, custom_field_type_for_schema, custom_field_update_payload, slugify,
-    supports_feature, tags_from_value, validation_regex_for_schema,
+    build_tag_inputs, custom_field_type_for_schema, custom_field_update_payload,
+    merge_converged_properties, slugify, supports_feature, tags_from_value,
+    validation_regex_for_schema, ExistingCustomField,
 };
 use super::registry::ObjectTypeRegistry;
 use super::state::{resolved_from_state, state_mappings};
@@ -300,7 +301,7 @@ impl Adapter for NautobotAdapter {
         let custom_fields: Resource<Value> = self.client.resource("extras/custom-fields/".into());
         for update in &plan.updates {
             custom_fields.patch(&update.field_id, &update.patch).await?;
-            updated_fields.push(format!("{}.{}", update.type_name, update.field_name));
+            updated_fields.extend(update.declarations.iter().cloned());
         }
 
         Ok(ProvisionReport {
@@ -321,7 +322,7 @@ impl Adapter for NautobotAdapter {
             updated_fields: plan
                 .updates
                 .iter()
-                .map(|update| format!("{}.{}", update.type_name, update.field_name))
+                .flat_map(|update| update.declarations.iter().cloned())
                 .collect(),
             ..Default::default()
         }))
@@ -338,10 +339,19 @@ struct CustomFieldPlan<'a> {
 /// an existing custom field to converge, with the patch that does it: only the
 /// properties the schema declares and the backend disagrees on.
 struct PlannedFieldUpdate {
-    type_name: TypeName,
-    field_name: String,
+    /// every `type.field` declaration this one backend field answers.
+    declarations: Vec<String>,
     field_id: String,
     patch: Value,
+}
+
+/// the declarations landing on one backend custom field, accumulated so they can
+/// be merged into a single patch or refused when they disagree.
+struct SharedCustomField {
+    field_name: String,
+    current: ExistingCustomField,
+    desired: Map<String, Value>,
+    declarations: Vec<String>,
 }
 
 impl NautobotAdapter {
@@ -354,7 +364,10 @@ impl NautobotAdapter {
         let registry: ObjectTypeRegistry = self.client.fetch_object_types().await?;
         let custom_fields_by_type = self.client.fetch_custom_field_defs().await?;
         let mut missing = Vec::new();
-        let mut updates = Vec::new();
+        // keyed by backend field id, not by (content type, field name): one nautobot
+        // field carries a list of content types, so two declared types can land on
+        // the same id and must produce one patch between them.
+        let mut shared_fields: BTreeMap<String, SharedCustomField> = BTreeMap::new();
 
         for (type_name, type_schema) in &schema.types {
             let type_name = TypeName::new(type_name);
@@ -382,21 +395,58 @@ impl NautobotAdapter {
                 if let Some(def) = existing.and_then(|fields| fields.get(field_name)) {
                     let payload =
                         custom_field_payload(type_name.as_str(), field_name, field_schema);
-                    if let (Some(field_id), Some(patch)) = (
-                        def.id.clone(),
-                        custom_field_update_payload(&def.current, &payload),
-                    ) {
-                        updates.push(PlannedFieldUpdate {
-                            type_name: type_name.clone(),
+                    let declared = format!("{type_name}.{field_name}");
+                    let Some(field_id) = def.id.clone() else {
+                        // nautobot listed the field without an id, so it can be
+                        // detected but not patched. saying so beats exiting 0 with
+                        // the divergence unreported.
+                        if custom_field_update_payload(&def.current, &payload).is_some() {
+                            tracing::warn!(
+                                field = %declared,
+                                "existing custom field diverges from the schema, but nautobot reported no id to patch it by"
+                            );
+                        }
+                        continue;
+                    };
+                    let shared = shared_fields.entry(field_id.clone()).or_insert_with(|| {
+                        SharedCustomField {
                             field_name: field_name.clone(),
-                            field_id,
-                            patch,
-                        });
+                            current: def.current.clone(),
+                            desired: Map::new(),
+                            declarations: Vec::new(),
+                        }
+                    });
+                    if let Some(property) =
+                        merge_converged_properties(&mut shared.desired, &payload)
+                    {
+                        return Err(anyhow!(
+                            "custom field {} is one nautobot field (id {field_id}) shared by {} and {declared}, which declare different {property}; make them agree or give each type its own field name",
+                            shared.field_name,
+                            shared.declarations.join(", "),
+                        ));
                     }
+                    shared.declarations.push(declared);
                     continue;
                 }
                 missing.push((type_name.clone(), field_name, field_schema));
             }
+        }
+
+        // one patch per backend field, computed once every declaration on it has
+        // been merged: a property another type already agrees with the backend on
+        // must not be planned away by this one.
+        let mut updates = Vec::new();
+        for (field_id, shared) in shared_fields {
+            let Some(patch) =
+                custom_field_update_payload(&shared.current, &Value::Object(shared.desired))
+            else {
+                continue;
+            };
+            updates.push(PlannedFieldUpdate {
+                declarations: shared.declarations,
+                field_id,
+                patch,
+            });
         }
 
         Ok(CustomFieldPlan { missing, updates })
