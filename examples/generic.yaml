@@ -8,8 +8,10 @@ types:
   services.vpn:
     path: /services/vpns/
     results_path: results
+    next_path: next
     delete_strategy: standard
   dcim.site:
     path: /dcim/sites/
     results_path: results
+    next_path: next
     delete_strategy: standard
