@@ -10,7 +10,7 @@ use alembic_engine::{
     load_inventory_unvalidated, plan_write_only, render_plan, ApplyReport, Backend, DriftReport,
     Plan,
 };
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -270,7 +270,7 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
         } => {
             let inventory = load_inventory(&file)?;
             let mut state = load_state().await?;
-            let plugins = search_for_plugins(&config);
+            let plugins = search_for_plugins(&config)?;
             let backend = create_backend(&plugins, backend.as_deref(), backend_config)?;
             // a drift report asserts what the backend holds; one that observes
             // nothing would report every declared object absent, so refuse it
@@ -361,7 +361,7 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             interactive,
         } => {
             let mut state = load_state().await?;
-            let plugins = search_for_plugins(&config);
+            let plugins = search_for_plugins(&config)?;
             let backend = create_backend(&plugins, backend.as_deref(), backend_config)?;
             // reject a backend that cannot apply before reading the plan or prompting
             backend.emitter()?;
@@ -477,7 +477,7 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             // observe live backend state into ir; the inventory's schema selects
             // which types to observe.
             let inventory = load_inventory(&file)?;
-            let plugins = search_for_plugins(&config);
+            let plugins = search_for_plugins(&config)?;
             let backend = create_backend(&plugins, backend.as_deref(), backend_config)?;
             let types: Vec<TypeName> = inventory.schema.types.keys().map(TypeName::new).collect();
             let report =
@@ -506,14 +506,29 @@ fn print_apply_report(report: &ApplyReport) {
     }
 }
 
-fn search_for_plugins(config: &AppConfig) -> Vec<Plugin> {
-    let Ok(dir_contents) = fs::read_dir(&config.plugins_dir) else {
-        tracing::debug!("plugin dir '{}' not found", config.plugins_dir.display());
-        return vec![];
+fn search_for_plugins(config: &AppConfig) -> Result<Vec<Plugin>> {
+    let dir_contents = match fs::read_dir(&config.plugins_dir) {
+        Ok(contents) => contents,
+        // the default `./plugins` is usually not there, which is not an error;
+        // a directory that is there but unreadable is.
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            tracing::debug!("plugin dir '{}' not found", config.plugins_dir.display());
+            return Ok(Vec::new());
+        }
+        Err(err) => {
+            return Err(err)
+                .with_context(|| format!("read plugin dir {}", config.plugins_dir.display()))
+        }
     };
 
-    dir_contents
-        .flatten()
+    // an entry that fails to yield would drop that plugin as silently as the
+    // whole directory used to.
+    let entries = dir_contents
+        .collect::<std::io::Result<Vec<_>>>()
+        .with_context(|| format!("read plugin dir {}", config.plugins_dir.display()))?;
+
+    Ok(entries
+        .into_iter()
         .filter(|e| {
             e.path()
                 .extension()
@@ -532,7 +547,7 @@ fn search_for_plugins(config: &AppConfig) -> Vec<Plugin> {
                 path: e.path(),
             })
         })
-        .collect()
+        .collect())
 }
 
 #[cfg(test)]

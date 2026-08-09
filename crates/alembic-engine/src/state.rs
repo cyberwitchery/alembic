@@ -186,7 +186,10 @@ fn acquire_state_lock(path: &Path) -> Result<Arc<File>> {
 
 /// read a local state file at `path`, returning defaults when it does not exist.
 fn read_state_file(path: &Path) -> Result<StateData> {
-    if path.exists() {
+    if path
+        .try_exists()
+        .with_context(|| format!("check state: {}", path.display()))?
+    {
         let raw =
             fs::read_to_string(path).with_context(|| format!("read state: {}", path.display()))?;
         serde_json::from_str::<StateData>(&raw)
@@ -476,6 +479,22 @@ mod tests {
         };
         let data = backend.load().await.unwrap();
         assert!(data.mappings.is_empty());
+    }
+
+    /// a symlink loop leaves the parent a real directory, so the lock opens and
+    /// only the state file's stat fails. loading empty replans every object.
+    #[cfg(unix)]
+    #[test]
+    fn state_store_load_reports_a_stat_it_could_not_make() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(".alembic").join("state.json");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink("state.json", &path).unwrap();
+        let err = StateStore::load(&path).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("state.json"),
+            "the error must name the path: {err:#}"
+        );
     }
 
     #[tokio::test]
