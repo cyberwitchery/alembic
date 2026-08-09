@@ -60,11 +60,23 @@ django fields that already check them.
 
 a `list` is a `JSONField`, which has no native element type, so a declared
 element is carried as a member check (`_ListMembers`) instead: a `list` of
-`enum` takes only the declared values, and a `list` of `uuid`, `cidr`,
-`prefix`, `mac` or `slug` only members matching that format. every other
-element type, and a `map`'s value type, stays plain json: there is no django
-check for those that is not an approximation. no check is stricter than
-`validate`, so nothing alembic accepts is rejected here.
+`enum` takes only the declared values, a `list` of `uuid`, `cidr`, `prefix`,
+`mac` or `slug` only members matching that format, and a `list` of `string`,
+`text`, `ip_address`, `int`, `float` or `bool` only members of the json type
+`validate` requires there.
+
+a `date`, `datetime` or `time` element carries no check: `validate` reads those
+as rfc 3339 and checks the calendar with them, while django's own parser takes
+shapes it refuses, so a check here would be an approximation either way. a
+`map`'s value type and a nested collection stay plain json too.
+
+no check is stricter than `validate`, so nothing alembic accepts is rejected
+here; two are looser. a `cidr` or `prefix` member is held to the regex a
+backend would install for that format, which is deliberately wider than the
+parse `validate` runs, and a `json` element takes the null member `validate`
+refuses. a member check matches a format regex in full, while a scalar keeps
+django's `RegexValidator`, which searches, as `validate` does for a `pattern:`
+of your own.
 
 the checks run on `full_clean()` and on the drf serializers, so the generated
 api enforces them; `loaddata` does not run validators, so the fixture loads

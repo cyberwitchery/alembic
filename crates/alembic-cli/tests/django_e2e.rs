@@ -1,5 +1,8 @@
 mod support;
 
+use alembic_core::{FieldType, Inventory};
+use serde_json::json;
+use std::collections::BTreeMap;
 use std::fs;
 use std::process::Command;
 use support::{
@@ -219,14 +222,91 @@ fn django_generated_api_enforces_a_declared_list_element() {
     ]);
     run_command(apply_cmd, "apply django list member fixture");
 
+    let corpus = out.path().join("member_corpus.json");
+    fs::write(&corpus, member_corpus()).expect("write the member corpus into the temp dir");
+
     let script = out.path().join("drive_django_list_members.py");
     fs::write(&script, DRIVE_LIST_MEMBERS).expect("write the list driver into the temp dir");
     let mut drive = Command::new(&python);
-    drive.arg(&script).arg(&app_out);
+    drive.arg(&script).arg(&app_out).arg(&corpus);
     print!(
         "{}",
         run_command_capture(drive, "validate through the django list columns")
     );
+}
+
+/// core's own verdict on every member of the corpus, in every list the fixture
+/// declares, for the drive script to hold the generated python to. the adapter
+/// reads the same crossing as a table in rust; only here does the check that
+/// ships answer, so only here do the two regex engines meet.
+fn member_corpus() -> String {
+    let members = [
+        json!("access"),
+        json!("trunk"),
+        json!("ACCESS"),
+        json!("bogus"),
+        json!(""),
+        json!("aa:bb:cc:dd:ee:ff"),
+        json!("AA-BB-CC-DD-EE-FF"),
+        json!("aabbccddeeff"),
+        json!("10.0.0.0/24"),
+        json!("2001:db8::/32"),
+        json!("::ffff:192.168.0.1"),
+        json!("192.168.0.1"),
+        json!("f47ac10b-58cc-4372-a567-0e02b2c3d479"),
+        json!("f47ac10b58cc4372a5670e02b2c3d479"),
+        json!("{f47ac10b-58cc-4372-a567-0e02b2c3d479}"),
+        json!("urn:uuid:f47ac10b-58cc-4372-a567-0e02b2c3d479"),
+        json!("fra1"),
+        json!("fra-1_a"),
+        json!("Fra1"),
+        json!("with space"),
+        json!("with\nnewline"),
+        // python's `$` also matches before a trailing newline and rust's does
+        // not, so an anchored format regex reads these two differently.
+        json!("aa:bb:cc:dd:ee:ff\n"),
+        json!("fra1\n"),
+        json!("ünïcödé"),
+        json!("2024-01-01"),
+        json!("2024-02-30"),
+        json!("2024-01-01T00:00:00Z"),
+        json!(7),
+        json!(1.5),
+        json!(true),
+        json!(null),
+        json!(["nested"]),
+        json!({"nested": "object"}),
+    ];
+
+    let fixture = fixture_path("django_list_members.yaml");
+    let text = fs::read_to_string(&fixture).expect("read the list member fixture");
+    let mut inventory: Inventory =
+        serde_yaml::from_str(&text).expect("parse the list member fixture");
+    let template = inventory.objects.first().cloned().expect("a seed object");
+    let list_fields: Vec<String> = inventory.schema.types[template.type_name.as_str()]
+        .fields
+        .iter()
+        .filter(|(_, schema)| matches!(schema.r#type, FieldType::List { .. }))
+        .map(|(name, _)| name.clone())
+        .collect();
+
+    let mut corpus = Vec::new();
+    for name in &list_fields {
+        for member in &members {
+            let mut object = template.clone();
+            object.attrs = BTreeMap::from([
+                ("name".to_string(), json!("eth1")),
+                (name.clone(), json!([member])),
+            ])
+            .into();
+            inventory.objects = vec![object];
+            let accepts = alembic_core::validate_inventory(&inventory)
+                .errors
+                .is_empty();
+            corpus.push(json!({"field": name, "member": member, "core": accepts}));
+        }
+    }
+    serde_json::to_string(&corpus).expect("serialize the member corpus")
 }
 
 // with django-filter and drf-spectacular installed the generated app takes its

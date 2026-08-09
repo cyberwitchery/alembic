@@ -95,13 +95,24 @@ const BLOCK_SEPARATOR: &str = "\n\n\n";
 /// a list is a plain `JSONField`, so a declared element type has no native slot:
 /// this carries it as a member check instead. the leading underscore keeps the
 /// name clear of the model classes, which never start with one.
-const MEMBER_VALIDATOR_CLASS: &str = r#"@deconstructible
+const MEMBER_VALIDATOR_CLASS: &str = r#"_MEMBER_KINDS = {
+    "str": lambda member: isinstance(member, str),
+    # a python bool is an int, and alembic's int is not a bool.
+    "int": lambda member: isinstance(member, int) and not isinstance(member, bool),
+    "float": lambda member: isinstance(member, (int, float))
+    and not isinstance(member, bool),
+    "bool": lambda member: isinstance(member, bool),
+}
+
+
+@deconstructible
 class _ListMembers:
     """checks every member of a list against its declared element type."""
 
-    def __init__(self, choices=None, regex=None):
+    def __init__(self, choices=None, regex=None, kind=None):
         self.choices = choices
         self.regex = regex
+        self.kind = kind
 
     def __call__(self, value):
         if not isinstance(value, (list, tuple)):
@@ -114,8 +125,16 @@ class _ListMembers:
                     "%(member)s is not one of %(choices)s",
                     params={"member": member, "choices": ", ".join(self.choices)},
                 )
+            if self.kind is not None and not _MEMBER_KINDS[self.kind](member):
+                raise ValidationError(
+                    "%(member)s is not a %(kind)s",
+                    params={"member": member, "kind": self.kind},
+                )
+            # every pattern here is one of core's anchored format regexes, and
+            # python's `$` also matches before a trailing newline: `fullmatch`
+            # is what core's own `is_match` makes of an anchored pattern.
             if self.regex is not None and not (
-                isinstance(member, str) and re.search(self.regex, member)
+                isinstance(member, str) and re.fullmatch(self.regex, member)
             ):
                 raise ValidationError(
                     "%(member)s does not match %(regex)s",
@@ -153,7 +172,7 @@ struct FieldSpec {
     choices: Option<Vec<String>>,
     validators: Vec<String>,
     /// a list's declared element check, rendered alongside `validators`.
-    member_validator: Option<String>,
+    member_check: Option<MemberCheck>,
     help_text: Option<String>,
 }
 
@@ -465,10 +484,12 @@ fn render_files(models: &[ModelSpec], options: &DjangoEmitOptions) -> DjangoFile
             .iter()
             .any(|model| model.fields.iter().any(&predicate))
     };
-    let member_validators = has_field(|field| field.member_validator.is_some());
+    let member_validators = has_field(|field| field.member_check.is_some());
 
     let mut model_imports = Vec::new();
-    if member_validators {
+    // only a regex member check reaches `re`, so an app whose lists are all
+    // enums does not get an import its own linter would flag.
+    if has_field(|field| matches!(field.member_check, Some(MemberCheck::Regex(_)))) {
         model_imports.push("import re".to_string());
     }
     model_imports.push("import uuid".to_string());
@@ -578,11 +599,11 @@ fn render_field(model: &ModelSpec, field: &FieldSpec) -> String {
             .join(", ");
         args.push(format!("choices=[{choice_items}]"));
     }
-    let validators: Vec<&str> = field
+    let validators: Vec<String> = field
         .validators
         .iter()
-        .chain(field.member_validator.iter())
-        .map(String::as_str)
+        .cloned()
+        .chain(field.member_check.as_ref().map(render_member_check))
         .collect();
     if !validators.is_empty() {
         args.push(format!("validators=[{}]", validators.join(", ")));
@@ -1017,7 +1038,7 @@ fn field_spec_from_schema(
 ) -> FieldSpec {
     let mut validators = Vec::new();
     let mut choices = None;
-    let mut member_validator = None;
+    let mut member_check = None;
 
     if let Some(format) = &schema.format {
         validators.push(format_validator(format));
@@ -1058,7 +1079,7 @@ fn field_spec_from_schema(
             DjangoFieldType::Char
         }
         FieldType::List { item } => {
-            member_validator = member_check(item).as_ref().map(render_member_check);
+            member_check = member_check_for(item);
             DjangoFieldType::Json { list: true }
         }
         FieldType::Map { .. } => DjangoFieldType::Json { list: false },
@@ -1080,25 +1101,49 @@ fn field_spec_from_schema(
         nullable,
         choices,
         validators,
-        member_validator,
+        member_check,
         help_text: schema.description.clone(),
     }
 }
 
-/// the element constraints a list column can carry. an enum's members and a
-/// format-typed item's regex are exactly what core checks each entry against;
-/// every other element type has no django check that is not an approximation,
-/// so it gets none.
+/// the element constraints a list column can carry, each one exactly what core
+/// checks an entry against: an enum's members, a format-typed item's regex, or
+/// the json type `type_check` tests for.
+#[derive(Debug, Clone)]
 enum MemberCheck {
     Choices(Vec<String>),
     Regex(&'static str),
+    Kind(&'static str),
 }
 
-fn member_check(item: &FieldType) -> Option<MemberCheck> {
+fn member_check_for(item: &FieldType) -> Option<MemberCheck> {
     match item {
         FieldType::Enum { values } => Some(MemberCheck::Choices(values.clone())),
-        _ => alembic_core::format_for_field_type(item)
+        FieldType::Uuid
+        | FieldType::Cidr
+        | FieldType::Prefix
+        | FieldType::Mac
+        | FieldType::Slug => alembic_core::format_for_field_type(item)
             .map(|format| MemberCheck::Regex(alembic_core::format_regex(&format))),
+        // core checks `ip_address` as a plain string, so it belongs here rather
+        // than with the formats: a regex would be stricter than the check.
+        FieldType::String | FieldType::Text | FieldType::IpAddress => {
+            Some(MemberCheck::Kind("str"))
+        }
+        FieldType::Int => Some(MemberCheck::Kind("int")),
+        FieldType::Float => Some(MemberCheck::Kind("float")),
+        FieldType::Bool => Some(MemberCheck::Kind("bool")),
+        // core parses these as rfc 3339 and checks the calendar with it, which
+        // no django-side check mirrors: its own parser takes shapes core
+        // refuses (`2026-8-1`, a space separator), so a check built on it would
+        // be an approximation either way.
+        FieldType::Date | FieldType::Datetime | FieldType::Time => None,
+        // core accepts any json for these, so no check is the exact one.
+        FieldType::Json
+        | FieldType::List { .. }
+        | FieldType::Map { .. }
+        | FieldType::Ref { .. }
+        | FieldType::ListRef { .. } => None,
     }
 }
 
@@ -1113,6 +1158,7 @@ fn render_member_check(check: &MemberCheck) -> String {
                 .join(", ")
         ),
         MemberCheck::Regex(pattern) => format!("_ListMembers(regex={})", py_str(pattern)),
+        MemberCheck::Kind(kind) => format!("_ListMembers(kind={})", py_str(kind)),
     }
 }
 
@@ -1438,7 +1484,9 @@ mod tests {
         assert!(models.contains("name = models.CharField(max_length=255, blank=True)"));
         // json columns get a default instead of null.
         assert!(models.contains("meta = models.JSONField(blank=True, default=dict)"));
-        assert!(models.contains("tags = models.JSONField(blank=True, default=list)"));
+        assert!(models.contains(
+            "tags = models.JSONField(validators=[_ListMembers(kind=\"str\")], blank=True, default=list)"
+        ));
     }
 
     #[test]
@@ -1502,13 +1550,14 @@ mod tests {
             "{models}"
         );
         assert!(models.contains("class _ListMembers:"), "{models}");
-        assert!(models.contains("import re"), "{models}");
         assert!(
             models.contains("from django.utils.deconstruct import deconstructible"),
             "{models}"
         );
-        // the member check is not a RegexValidator, so nothing imports one.
+        // the member check is not a RegexValidator, so nothing imports one, and
+        // no check in this app runs a regex, so nothing imports `re` either.
         assert!(!models.contains("import RegexValidator"), "{models}");
+        assert!(!models.contains("import re"), "{models}");
     }
 
     #[test]
@@ -1521,13 +1570,34 @@ mod tests {
             )),
             "{models}"
         );
+        assert!(models.contains("import re"), "{models}");
     }
 
     #[test]
-    fn list_of_plain_strings_carries_no_member_check() {
-        // a string element has no declared constraint to carry, so the column
-        // stays a bare JSONField and the helper is not emitted.
-        let models = list_field_models(FieldType::String);
+    fn list_of_a_primitive_carries_the_type_core_checks_for() {
+        for (item, kind) in [
+            (FieldType::String, "str"),
+            (FieldType::Text, "str"),
+            (FieldType::IpAddress, "str"),
+            (FieldType::Int, "int"),
+            (FieldType::Float, "float"),
+            (FieldType::Bool, "bool"),
+        ] {
+            let models = list_field_models(item);
+            assert!(
+                models.contains(&format!(
+                    "members = models.JSONField(validators=[_ListMembers(kind=\"{kind}\")])"
+                )),
+                "{models}"
+            );
+        }
+    }
+
+    #[test]
+    fn list_of_dates_carries_no_member_check() {
+        // core reads a date as rfc 3339 and checks the calendar with it; django
+        // parses its own shapes, so any check here would be an approximation.
+        let models = list_field_models(FieldType::Date);
         assert!(models.contains("members = models.JSONField()"), "{models}");
         assert!(!models.contains("_ListMembers"), "{models}");
         assert!(!models.contains("import re"), "{models}");
@@ -1589,10 +1659,11 @@ mod tests {
             .is_empty()
     }
 
-    /// what the emitted member check makes of the same value. a regex check runs
-    /// through core's own `pattern` machinery, the engine django's `re.search`
-    /// stands in for, and rejects a non-string as the generated `_ListMembers`
-    /// does.
+    /// what the emitted member check makes of the same value, read here as a
+    /// table over every element type. this is a rust reading of the check, not
+    /// the python that ships: `django_generated_api_enforces_a_declared_list_element`
+    /// puts the same corpus through the generated `_ListMembers` itself, which is
+    /// the only place the two regex engines meet.
     fn check_accepts_member(check: &Option<MemberCheck>, member: &Value) -> bool {
         match check {
             None => true,
@@ -1604,6 +1675,13 @@ mod tests {
                 schema.pattern = Some((*pattern).to_string());
                 core_accepts(schema, member.clone())
             }
+            Some(MemberCheck::Kind(kind)) => match *kind {
+                "str" => member.is_string(),
+                "int" => member.is_i64() || member.is_u64(),
+                "float" => member.is_number(),
+                "bool" => member.is_boolean(),
+                other => panic!("no member kind {other}"),
+            },
         }
     }
 
@@ -1620,7 +1698,9 @@ mod tests {
             FieldType::Slug,
             FieldType::IpAddress,
             FieldType::String,
+            FieldType::Text,
             FieldType::Int,
+            FieldType::Float,
             FieldType::Bool,
             FieldType::Date,
             FieldType::Json,
@@ -1659,7 +1739,7 @@ mod tests {
         ];
 
         for item in &items {
-            let check = member_check(item);
+            let check = member_check_for(item);
             for member in &members {
                 if core_accepts_member(item, member) {
                     assert!(
@@ -1675,18 +1755,28 @@ mod tests {
     fn member_check_rejects_an_undeclared_member() {
         // the other half of the invariant: a check that accepted everything
         // would satisfy `member_check_never_rejects_what_core_accepts` too.
-        let enum_check = member_check(&FieldType::Enum {
+        let enum_check = member_check_for(&FieldType::Enum {
             values: vec!["access".to_string(), "trunk".to_string()],
         });
         assert!(!check_accepts_member(&enum_check, &json!("bogus")));
         assert!(check_accepts_member(&enum_check, &json!("access")));
 
-        let mac_check = member_check(&FieldType::Mac);
+        let mac_check = member_check_for(&FieldType::Mac);
         assert!(!check_accepts_member(&mac_check, &json!("not-a-mac")));
         assert!(check_accepts_member(
             &mac_check,
             &json!("aa:bb:cc:dd:ee:ff")
         ));
+
+        let string_check = member_check_for(&FieldType::String);
+        assert!(!check_accepts_member(&string_check, &json!(7)));
+        assert!(check_accepts_member(&string_check, &json!("anything")));
+
+        // a python bool is an int, so an int list taking `true` is the failure
+        // this pins.
+        let int_check = member_check_for(&FieldType::Int);
+        assert!(!check_accepts_member(&int_check, &json!(true)));
+        assert!(check_accepts_member(&int_check, &json!(7)));
     }
 
     #[test]

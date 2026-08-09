@@ -1,5 +1,6 @@
 # a declared list carries its element type into the generated model, so the api
-# it generates rejects a member `validate` would have rejected.
+# it generates rejects a member `validate` would have rejected. one list per
+# element type: the e2e drives a member corpus through all of them.
 schema:
   types:
     dcim.interface:
@@ -8,7 +9,17 @@ schema:
         name: {type: string}
         modes: {type: list, item: {type: enum, values: [access, trunk]}}
         peers: {type: list, item: {type: mac}}
+        sites: {type: list, item: {type: slug}}
+        ids: {type: list, item: {type: uuid}}
+        nets: {type: list, item: {type: cidr}}
+        pools: {type: list, item: {type: prefix}}
+        addrs: {type: list, item: {type: ip_address}}
         tags: {type: list, item: {type: string}}
+        counts: {type: list, item: {type: int}}
+        ratios: {type: list, item: {type: float}}
+        flags: {type: list, item: {type: bool}}
+        dates: {type: list, item: {type: date}}
+        blobs: {type: list, item: {type: json}}
 objects:
   - uid: "44444444-4444-4444-4444-444444444444"
     type: dcim.interface
@@ -17,4 +28,14 @@ objects:
       name: "eth0"
       modes: ["access", "trunk"]
       peers: ["aa:bb:cc:dd:ee:ff", "AA-BB-CC-DD-EE-FF"]
+      sites: ["fra1"]
+      ids: ["f47ac10b-58cc-4372-a567-0e02b2c3d479"]
+      nets: ["10.0.0.0/24"]
+      pools: ["2001:db8::/32"]
+      addrs: ["192.168.0.1"]
       tags: ["anything", "goes"]
+      counts: [7]
+      ratios: [1.5]
+      flags: [true]
+      dates: ["2024-01-01"]
+      blobs: [{"nested": "object"}]
