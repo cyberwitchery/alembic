@@ -23,12 +23,15 @@ each `types` entry is an endpoint config:
 - `path` (required) - path for listing and creating objects.
 - `results_path` (optional) - json path to the results array in a list response; defaults
   to the response root.
+- `next_path` (optional) - json path to the next-page url in a list response; unset means
+  one request per list (see below).
 - `id_path` (optional, default `id`) - json path to an object's id in a response.
 - `delete_strategy` (optional, default `none`) - `none` or `standard` (see below).
 - `update_method` (optional, default `PATCH`) - `PATCH` or `PUT`; any other value errors
   when the adapter is constructed.
 
-`results_path` and `id_path` are dotted paths (for example `results` or `data.id`).
+`results_path`, `next_path` and `id_path` are dotted paths (for example `results`,
+`links.next` or `data.id`).
 
 a key that is not one of the above is a parse error naming it, at both levels and whether
 the config is inline under `config:` or in its own file. every one of these keys defaults
@@ -37,14 +40,36 @@ typo'd `delete_strategy` would fail the delete ops the plan showed.
 
 ## observe and apply
 
-- observe issues one GET per type to `path`, takes the array at `results_path` (or the
-  response root), and reads each object's id from `id_path`.
+- observe GETs `path` per type, takes the array at `results_path` (or the response root),
+  and reads each object's id from `id_path`. with `next_path` set it then follows the page
+  chain (see below) and observes every page; without it, exactly one request is issued.
 - create POSTs to `path` with the object's attrs as the json body and reads the new id from
-  the response via `id_path`. on a create conflict (409) the adapter re-lists the endpoint
-  and reuses the existing object whose key matches; if none matches, the conflict is returned.
+  the response via `id_path`. on a create conflict (409) the adapter re-lists the endpoint,
+  following pagination the same way observe does, and reuses the existing object whose key
+  matches; if none matches, the conflict is returned.
 - update sends `update_method` (patch or put) to `path`/`id` with the attrs as the json body.
 - delete with `delete_strategy: standard` sends DELETE to `path`/`id` (a 404 is treated as
   already gone); with the default `none`, delete ops fail.
+
+## pagination
+
+`next_path` points at the url of the next page, the shape drf, netbox, nautobot and
+peeringdb all return (`{"next": "...?offset=50", "results": [...]}`, so `next_path: next`).
+each page's results are appended and the walk continues until the page chain ends.
+
+- the chain ends on an absent key, an explicit `null`, or an empty string. any other shape
+  there (a number, an object) is an error rather than a silent stop, since stopping early
+  is what this follows the chain to avoid.
+- a relative next resolves against the page that returned it, so `?page=2` and
+  `/api/devices?page=2` both work.
+- a next url on another scheme or host is refused. `headers` is sent on every request the
+  adapter makes, so following one would hand the api token to that host.
+- a next url already fetched in the same walk is refused, rather than looping forever.
+- an empty page that still advertises a next is followed.
+
+leave `next_path` unset for an api that returns everything in one response; the endpoint is
+then fetched exactly once, and an endpoint that paginates silently loses every object past
+the first page.
 
 ## attrs mapping
 
@@ -68,8 +93,8 @@ typo'd `delete_strategy` would fail the delete ops the plan showed.
 
 ## known limitations
 
-- reads a single list response per type; pagination is not followed, so each type's endpoint
-  must return all of that type's objects in one response.
+- pagination needs `next_path`; an api that paginates by a page *number* or a cursor it
+  does not echo back as a url is not covered.
 - `update_method` must be `PATCH` or `PUT`.
 - deletes require `delete_strategy: standard`; with the default `none`, delete ops fail.
 - no schema provisioning; the backend schema must already exist.
