@@ -330,6 +330,54 @@ mod tests {
         cf_patch.assert_calls(1);
     }
 
+    // `description` and `validation_regex` are omitted from the create payload
+    // the same way when a declaration does not carry them, so the guard needs
+    // both sides to have declared one: a silent declaration takes its sibling's.
+    #[tokio::test]
+    async fn a_silent_declaration_takes_a_shared_field_constraint() {
+        let server = MockServer::start();
+        let adapter = NautobotAdapter::new(&server.base_url(), "token").unwrap();
+        mock_two_content_types(&server);
+        mock_shared_custom_field(
+            &server,
+            json!({"required": true, "description": "asset tag", "validation_regex": ""}),
+        );
+        let mac_regex = alembic_core::format_regex(&alembic_core::FieldFormat::Mac);
+        let cf_patch = server.mock(|when, then| {
+            when.method(PATCH)
+                .path(format!("/api/extras/custom-fields/{EXISTING_FIELD_ID}/"))
+                .json_body(json!({"validation_regex": mac_regex}));
+            then.status(200).json_body(json!({}));
+        });
+
+        // `dcim.site` declares a mac, `dcim.device` a plain string constrained
+        // by nothing at all. both map to nautobot `text`.
+        let mut schema = schema_declaring_on_both("^ASSET-", "^ASSET-");
+        for (type_name, format) in [
+            ("dcim.site", Some(alembic_core::FieldFormat::Mac)),
+            ("dcim.device", None),
+        ] {
+            let field = schema
+                .types
+                .get_mut(type_name)
+                .and_then(|type_schema| type_schema.fields.get_mut("asset_tag"))
+                .unwrap();
+            field.pattern = None;
+            field.format = format;
+        }
+
+        let report = adapter.ensure_schema(&schema).await.unwrap();
+
+        assert_eq!(
+            report.updated_fields,
+            vec![
+                "dcim.device.asset_tag".to_string(),
+                "dcim.site.asset_tag".to_string()
+            ]
+        );
+        cf_patch.assert_calls(1);
+    }
+
     /// `dcim.site` declaring a single `asset_tag` custom field.
     fn declaring_schema(
         pattern: Option<&str>,

@@ -44,10 +44,13 @@ and supported feature set.
   omitted one, so `required` is only ever tightened, never relaxed. nothing else is
   written -- the field's type is left alone, and a property the schema does not
   declare keeps whatever the backend holds. one backend field can carry several
-  content types: when two declared types share one, they must declare the same
-  `description` and `validation_regex`, and the run fails naming both rather than
-  writing two patches to one field. `required` is their union instead, since a
-  declared `false` is silent: a field the two disagree about is required for both.
+  content types: when two declared types share one, a property only one of them
+  declares is taken as declared, since the other is silent about it rather than
+  opposed to it, so the silent type's objects are held to that constraint at the
+  backend too. two that declare the same property differently cannot both be
+  honoured, so the run fails naming both rather than writing two patches to one
+  field. a declared `required: false` is silent in that sense, so `required` is
+  their union: a field the two disagree about is required for both.
   a shared field is only ever one netbox already attaches to both types, because
   alembic's own create carries a single content type, so a field netbox holds
   against only one of the two declared types is not converged for the other and
