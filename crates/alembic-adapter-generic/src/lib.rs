@@ -33,6 +33,9 @@ pub struct EndpointConfig {
     pub path: String,
     /// json path to the results array in the list response (default: root).
     pub results_path: Option<String>,
+    /// json path to the next-page url in the list response (default: unset, one
+    /// request per list).
+    pub next_path: Option<String>,
     /// json path to the object id (default: "id").
     #[serde(default = "default_id_path")]
     pub id_path: String,
@@ -51,6 +54,9 @@ fn default_id_path() -> String {
 fn default_update_method() -> String {
     "PATCH".to_string()
 }
+
+/// reqwest's own default, kept because the custom redirect policy replaces it.
+const REDIRECT_LIMIT: usize = 10;
 
 /// strategy for deleting objects.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -79,6 +85,7 @@ impl GenericAdapter {
 
         let client = reqwest::Client::builder()
             .default_headers(headers)
+            .redirect(same_origin_redirects())
             .build()?;
 
         for (type_name, endpoint) in &config.types {
@@ -88,6 +95,18 @@ impl GenericAdapter {
                     return Err(anyhow!(
                         "invalid update_method {:?} for type {} (expected PATCH or PUT)",
                         other,
+                        type_name
+                    ));
+                }
+            }
+
+            // a path of only separators walks nowhere and would report the
+            // response root as the wrong shape on every read.
+            if let Some(next_path) = &endpoint.next_path {
+                if next_path.split('.').all(str::is_empty) {
+                    return Err(anyhow!(
+                        "invalid next_path {:?} for type {} (no path segments; omit the key for a single-page endpoint)",
+                        next_path,
                         type_name
                     ));
                 }
@@ -503,31 +522,199 @@ impl Adapter for GenericAdapter {
 }
 
 /// list an endpoint and return its results array (from `results_path` when set,
-/// else the response root). shared by `read` and `lookup_backend_id` so the
-/// 409-recovery path fetches and extracts identically to observation.
+/// else the response root), following `next_path` across pages when it is set.
+/// shared by `read` and `lookup_backend_id` so the 409-recovery path fetches and
+/// extracts identically to observation.
 async fn list_endpoint_results(
     client: &reqwest::Client,
     base_url: &str,
     endpoint: &EndpointConfig,
     type_name: &TypeName,
 ) -> Result<Vec<serde_json::Value>> {
-    let url = format!(
+    let mut url = format!(
         "{}/{}",
         base_url.trim_end_matches('/'),
         endpoint.path.trim_start_matches('/')
     );
-    let resp = client.get(&url).send().await?.error_for_status()?;
-    let body: serde_json::Value = resp.json().await?;
+    let mut results = Vec::new();
+    let mut visited = BTreeSet::new();
 
+    loop {
+        if !visited.insert(url.clone()) {
+            return Err(anyhow!(
+                "pagination loop for {}: {} was already fetched",
+                type_name,
+                url
+            ));
+        }
+
+        let resp = client.get(&url).send().await?.error_for_status()?;
+        let body: serde_json::Value = resp.json().await?;
+        results.extend(extract_results(&body, endpoint, type_name, &url)?);
+
+        let Some(next_path) = &endpoint.next_path else {
+            break;
+        };
+        let first_page = visited.len() == 1;
+        let Some(next) = next_page_url(&body, next_path, type_name, &url, first_page)? else {
+            break;
+        };
+        url = resolve_next_url(base_url, &url, &next, type_name)?;
+    }
+
+    Ok(results)
+}
+
+/// extract one page's results array. `url` names the page in errors, since a
+/// shape that broke on page four says nothing without it.
+fn extract_results(
+    body: &serde_json::Value,
+    endpoint: &EndpointConfig,
+    type_name: &TypeName,
+    url: &str,
+) -> Result<Vec<serde_json::Value>> {
     if let Some(path) = &endpoint.results_path {
-        Ok(resolve_path(&body, path)?
+        Ok(resolve_path(body, path)
+            .map_err(|err| anyhow!("{} for {} at {}", err, type_name, url))?
             .as_array()
-            .ok_or_else(|| anyhow!("expected array at path {} for {}", path, type_name))?
+            .ok_or_else(|| {
+                anyhow!(
+                    "expected array at path {} for {} at {}",
+                    path,
+                    type_name,
+                    url
+                )
+            })?
             .clone())
     } else if let Some(arr) = body.as_array() {
         Ok(arr.clone())
     } else {
-        Err(anyhow!("expected array in list response for {}", type_name))
+        Err(anyhow!(
+            "expected array in list response for {} at {}",
+            type_name,
+            url
+        ))
+    }
+}
+
+/// read the next-page url out of a list response. an absent key, an explicit
+/// null and an empty string all mean "last page"; any other shape is an error,
+/// because silently stopping on an unexpected one is the bug this follows.
+///
+/// a segment above the final key missing from the *first* page is a mistyped
+/// `next_path` rather than a last page, and errors as `results_path` does. a
+/// later page is allowed to drop the envelope once it has nothing left to link.
+fn next_page_url(
+    body: &serde_json::Value,
+    path: &str,
+    type_name: &TypeName,
+    url: &str,
+    first_page: bool,
+) -> Result<Option<String>> {
+    let mut current = body;
+    let mut segments = path
+        .split('.')
+        .filter(|segment| !segment.is_empty())
+        .peekable();
+    while let Some(segment) = segments.next() {
+        match current.get(segment) {
+            Some(value) => current = value,
+            None if segments.peek().is_none() || !first_page => return Ok(None),
+            None => {
+                return Err(anyhow!(
+                    "path segment not found: {} at next_path {} for {} at {}",
+                    segment,
+                    path,
+                    type_name,
+                    url
+                ))
+            }
+        }
+    }
+
+    match current {
+        serde_json::Value::Null => Ok(None),
+        serde_json::Value::String(next) if next.is_empty() => Ok(None),
+        serde_json::Value::String(next) => Ok(Some(next.clone())),
+        other => Err(anyhow!(
+            "expected string or null at next_path {} for {} at {}, got {}",
+            path,
+            type_name,
+            url,
+            json_kind(other)
+        )),
+    }
+}
+
+/// resolve a next-page url against the page that returned it and refuse one that
+/// leaves `base_url`'s origin. the client carries the operator's auth headers on
+/// every request it makes, so following an off-host next would hand that token
+/// to a third party.
+fn resolve_next_url(
+    base_url: &str,
+    current_url: &str,
+    next: &str,
+    type_name: &TypeName,
+) -> Result<String> {
+    let base = reqwest::Url::parse(base_url)
+        .map_err(|err| anyhow!("invalid base_url {} for {}: {}", base_url, type_name, err))?;
+    let current = reqwest::Url::parse(current_url).map_err(|err| {
+        anyhow!(
+            "invalid page url {} for {}: {}",
+            current_url,
+            type_name,
+            err
+        )
+    })?;
+    let resolved = current
+        .join(next)
+        .map_err(|err| anyhow!("invalid next url {} for {}: {}", next, type_name, err))?;
+
+    if resolved.origin() != base.origin() {
+        return Err(anyhow!(
+            "next url {} for {} leaves the configured origin {}; refusing to send credentials to another host",
+            resolved,
+            type_name,
+            base.origin().ascii_serialization()
+        ));
+    }
+
+    Ok(resolved.to_string())
+}
+
+/// follow a redirect only while it stays on the origin that issued it, the same
+/// test `resolve_next_url` applies to a next url. reqwest strips `authorization`
+/// and friends across hosts, but `headers` is an arbitrary map, so a token
+/// configured as `X-API-Key` would ride along.
+fn same_origin_redirects() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|attempt| {
+        let Some(origin) = attempt.previous().last().map(reqwest::Url::origin) else {
+            return attempt.follow();
+        };
+        if origin != attempt.url().origin() {
+            let refused = anyhow!(
+                "redirect to {} leaves the origin {}; refusing to send credentials to another host",
+                attempt.url(),
+                origin.ascii_serialization()
+            );
+            return attempt.error(refused);
+        }
+        // a custom policy does not get reqwest's default hop limit.
+        if attempt.previous().len() > REDIRECT_LIMIT {
+            return attempt.error(anyhow!("too many redirects (limit {})", REDIRECT_LIMIT));
+        }
+        attempt.follow()
+    })
+}
+
+fn json_kind(value: &serde_json::Value) -> &'static str {
+    match value {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "boolean",
+        serde_json::Value::Number(_) => "number",
+        serde_json::Value::String(_) => "string",
+        serde_json::Value::Array(_) => "array",
+        serde_json::Value::Object(_) => "object",
     }
 }
 
