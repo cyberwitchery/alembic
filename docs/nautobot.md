@@ -50,9 +50,14 @@ token: nautobot_xxx_replace_me
   written -- the field's type is left alone, and a property the schema does not
   declare keeps whatever the backend holds. one backend field can carry several
   content types: when two declared types share one, they must declare the same
-  values for it, and the run fails naming both rather than writing two patches to
-  one field. the schema preview reports the same updates under
-  `provision.updated_fields`.
+  `description` and `validation_regex`, and the run fails naming both rather than
+  writing two patches to one field. `required` is their union instead, since a
+  declared `false` is silent: a field the two disagree about is required for both.
+  a shared field is only ever one nautobot already attaches to both types, because
+  alembic's own create carries a single content type, so a field nautobot holds
+  against only one of the two declared types is not converged for the other and
+  that declaration's create is rejected as a duplicate key. the schema preview
+  reports the same updates under `provision.updated_fields`.
 - tags the applied objects reference but the backend lacks are created at apply, not
   during schema provisioning. a successful apply lists them in `provision.created_tags`;
   a tag that already existed is not listed. they are created before the ops, so an apply

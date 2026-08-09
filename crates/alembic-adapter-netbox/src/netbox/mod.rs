@@ -1954,6 +1954,50 @@ mod tests {
         cf_patch.assert_calls(0);
     }
 
+    // `required` is outside that guard: the create payload omits a declared
+    // `false`, so two types disagreeing about it is a union rather than a
+    // conflict, and the field is tightened for both.
+    #[tokio::test]
+    async fn a_shared_field_takes_the_union_of_required() {
+        let server = MockServer::start();
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
+        let _object_types = mock_two_object_types(&server);
+        let _fields = mock_shared_custom_field(
+            &server,
+            json!({
+                "required": false,
+                "description": "asset tag",
+                "validation_regex": "^ASSET-",
+            }),
+        );
+        let cf_patch = server.mock(|when, then| {
+            when.method(PATCH)
+                .path(format!("/api/extras/custom-fields/{EXISTING_FIELD_ID}/"))
+                .json_body(json!({"required": true}));
+            then.status(200).json_body(json!({}));
+        });
+
+        let mut schema = schema_declaring_on_both("^ASSET-", "^ASSET-");
+        schema
+            .types
+            .get_mut("dcim.device")
+            .and_then(|type_schema| type_schema.fields.get_mut("asset_tag"))
+            .unwrap()
+            .required = false;
+
+        let report = adapter.ensure_schema(&schema).await.unwrap();
+
+        // `dcim.device` asked for the opposite and is still listed as converged.
+        assert_eq!(
+            report.updated_fields,
+            vec![
+                "dcim.device.asset_tag".to_string(),
+                "dcim.site.asset_tag".to_string()
+            ]
+        );
+        cf_patch.assert_calls(1);
+    }
+
     #[tokio::test]
     async fn ensure_schema_creates_custom_fields() {
         let server = MockServer::start();
