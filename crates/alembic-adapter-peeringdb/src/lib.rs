@@ -10,13 +10,42 @@ use async_trait::async_trait;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 
-/// supported PeeringDB types.
-const SUPPORTED_TYPES: &[&str] = &[
-    "peeringdb.ix",
-    "peeringdb.net",
-    "peeringdb.org",
-    "peeringdb.netixlan",
+/// blocking fetch plus conversion for one supported type.
+type Loader = fn(&TypeName, &alembic_core::TypeSchema) -> Result<Vec<ObservedObject>>;
+
+/// every type this adapter observes, paired with the fetch behind it. the
+/// supported set and the dispatch read these same rows, so neither can drift.
+const LOADERS: &[(&str, Loader)] = &[
+    ("peeringdb.ix", |tn, ts| {
+        fetch(peeringdb_rs::load_peeringdb_ix, tn, ts)
+    }),
+    ("peeringdb.net", |tn, ts| {
+        fetch(peeringdb_rs::load_peeringdb_net, tn, ts)
+    }),
+    ("peeringdb.org", |tn, ts| {
+        fetch(peeringdb_rs::load_peeringdb_org, tn, ts)
+    }),
+    ("peeringdb.netixlan", |tn, ts| {
+        fetch(peeringdb_rs::load_peeringdb_netixlan, tn, ts)
+    }),
 ];
+
+fn loader_for(type_name: &TypeName) -> Option<Loader> {
+    LOADERS
+        .iter()
+        .find(|(name, _)| *name == type_name.as_str())
+        .map(|(_, load)| *load)
+}
+
+fn fetch<T: Serialize + HasId>(
+    load: fn() -> Result<Vec<T>>,
+    type_name: &TypeName,
+    type_schema: &alembic_core::TypeSchema,
+) -> Result<Vec<ObservedObject>> {
+    let short = type_name.as_str().trim_start_matches("peeringdb.");
+    let data = load().map_err(|e| anyhow!("failed to load {} data: {}", short, e))?;
+    to_observed_objects(type_name, type_schema, data)
+}
 
 pub struct PeeringDBAdapter;
 
@@ -45,9 +74,9 @@ impl Observer for PeeringDBAdapter {
     ) -> Result<ObservedState> {
         let requested: BTreeSet<TypeName> = if types.is_empty() {
             // empty means every schema-declared supported type; skip types the schema omits.
-            SUPPORTED_TYPES
+            LOADERS
                 .iter()
-                .map(|s| TypeName::new(*s))
+                .map(|(name, _)| TypeName::new(*name))
                 .filter(|tn| schema.types.contains_key(tn.as_str()))
                 .collect()
         } else {
@@ -57,39 +86,16 @@ impl Observer for PeeringDBAdapter {
         let mut state = ObservedState::default();
 
         for type_name in requested {
+            let load =
+                loader_for(&type_name).ok_or_else(|| anyhow!("unsupported type {}", type_name))?;
             let type_schema = schema
                 .types
                 .get(type_name.as_str())
                 .ok_or_else(|| anyhow!("missing schema for {}", type_name))?
                 .clone();
 
-            let objects = match type_name.as_str() {
-                "peeringdb.ix" => {
-                    let data = tokio::task::spawn_blocking(peeringdb_rs::load_peeringdb_ix)
-                        .await?
-                        .map_err(|e| anyhow!("failed to load ix data: {}", e))?;
-                    to_observed_objects(&type_name, &type_schema, data)?
-                }
-                "peeringdb.net" => {
-                    let data = tokio::task::spawn_blocking(peeringdb_rs::load_peeringdb_net)
-                        .await?
-                        .map_err(|e| anyhow!("failed to load net data: {}", e))?;
-                    to_observed_objects(&type_name, &type_schema, data)?
-                }
-                "peeringdb.org" => {
-                    let data = tokio::task::spawn_blocking(peeringdb_rs::load_peeringdb_org)
-                        .await?
-                        .map_err(|e| anyhow!("failed to load org data: {}", e))?;
-                    to_observed_objects(&type_name, &type_schema, data)?
-                }
-                "peeringdb.netixlan" => {
-                    let data = tokio::task::spawn_blocking(peeringdb_rs::load_peeringdb_netixlan)
-                        .await?
-                        .map_err(|e| anyhow!("failed to load netixlan data: {}", e))?;
-                    to_observed_objects(&type_name, &type_schema, data)?
-                }
-                _ => continue, // skip unsupported types
-            };
+            let tn = type_name.clone();
+            let objects = tokio::task::spawn_blocking(move || load(&tn, &type_schema)).await??;
 
             for object in objects {
                 state.insert(object)?;
@@ -290,22 +296,51 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn observe_skips_unsupported_types() {
+    async fn observe_errors_on_unsupported_type() {
         let adapter = PeeringDBAdapter::new();
         let schema = Schema {
-            types: BTreeMap::from([("peeringdb.unsupported".to_string(), ix_schema())]),
+            types: BTreeMap::from([("peeringdb.fac".to_string(), ix_schema())]),
         };
         let state_store =
             alembic_engine::StateStore::new(None, alembic_engine::StateData::default());
-        let state = adapter
-            .read(
-                &schema,
-                &[TypeName::new("peeringdb.unsupported")],
-                &state_store,
-            )
+        let err = adapter
+            .read(&schema, &[TypeName::new("peeringdb.fac")], &state_store)
             .await
-            .unwrap();
+            .unwrap_err();
 
-        assert_eq!(state.by_key.len(), 0);
+        assert!(err.to_string().contains("unsupported type peeringdb.fac"));
+    }
+
+    #[tokio::test]
+    async fn observe_empty_types_skips_unsupported_types() {
+        // only an explicit request errors: a schema may legitimately declare types
+        // this backend does not own, and empty types still skips those.
+        let adapter = PeeringDBAdapter::new();
+        let schema = Schema {
+            types: BTreeMap::from([("peeringdb.fac".to_string(), ix_schema())]),
+        };
+        let state_store =
+            alembic_engine::StateStore::new(None, alembic_engine::StateData::default());
+        let observed = adapter.read(&schema, &[], &state_store).await.unwrap();
+
+        assert!(observed.by_key.is_empty());
+    }
+
+    #[test]
+    fn loaders_cover_the_documented_types() {
+        let supported: Vec<&str> = LOADERS.iter().map(|(name, _)| *name).collect();
+        assert_eq!(
+            supported,
+            vec![
+                "peeringdb.ix",
+                "peeringdb.net",
+                "peeringdb.org",
+                "peeringdb.netixlan"
+            ]
+        );
+        for name in supported {
+            assert!(loader_for(&TypeName::new(name)).is_some());
+        }
+        assert!(loader_for(&TypeName::new("peeringdb.fac")).is_none());
     }
 }
