@@ -170,7 +170,13 @@ pub fn run_emit(runner: &dyn Runner, inventory: &Inventory, config: &DjangoConfi
 fn ensure_django_project(runner: &dyn Runner, output_dir: &Path, project_name: &str) -> Result<()> {
     let manage_py = output_dir.join("manage.py");
     let project_dir = output_dir.join(project_name);
-    if manage_py.exists() && project_dir.exists() {
+    let scaffolded = manage_py
+        .try_exists()
+        .with_context(|| format!("check {}", manage_py.display()))?
+        && project_dir
+            .try_exists()
+            .with_context(|| format!("check {}", project_dir.display()))?;
+    if scaffolded {
         return Ok(());
     }
     runner.run(
@@ -190,8 +196,11 @@ fn ensure_django_app(
     app_name: &str,
     python: &str,
 ) -> Result<()> {
-    let app_dir = output_dir.join(app_name);
-    if app_dir.join("apps.py").exists() {
+    let apps_py = output_dir.join(app_name).join("apps.py");
+    if apps_py
+        .try_exists()
+        .with_context(|| format!("check {}", apps_py.display()))?
+    {
         return Ok(());
     }
     ensure_app_name_available(runner, output_dir, app_name, python)?;
@@ -639,5 +648,53 @@ mod tests {
         .unwrap();
         assert!(config.no_migrate);
         assert_eq!(config.python, "python3.12");
+    }
+
+    /// a parent that is a regular file makes the stat fail with `NotADirectory`
+    /// rather than answering absent, and scaffolding on that answer would run
+    /// `startproject` over a project that is already there.
+    #[test]
+    fn ensure_django_project_reports_a_stat_it_could_not_make() {
+        let dir = tempdir().unwrap();
+        let blocker = dir.path().join("blocker");
+        fs::write(&blocker, "regular file").unwrap();
+        let runner = FakeRunner::default();
+
+        let err = ensure_django_project(&runner, &blocker, "proj").unwrap_err();
+
+        assert!(!runner.ran("startproject"), "must not scaffold on a guess");
+        assert!(
+            format!("{err:#}").contains("manage.py"),
+            "the error must name the path: {err:#}"
+        );
+    }
+
+    #[test]
+    fn ensure_django_app_reports_a_stat_it_could_not_make() {
+        let dir = tempdir().unwrap();
+        let blocker = dir.path().join("blocker");
+        fs::write(&blocker, "regular file").unwrap();
+        let runner = FakeRunner::default();
+
+        let err = ensure_django_app(&runner, &blocker, "app", "python3").unwrap_err();
+
+        assert!(!runner.ran("startapp"), "must not scaffold on a guess");
+        assert!(
+            format!("{err:#}").contains("apps.py"),
+            "the error must name the path: {err:#}"
+        );
+    }
+
+    /// the absent case still scaffolds: `ENOENT` stays `Ok(false)`.
+    #[test]
+    fn ensure_django_project_and_app_still_scaffold_when_absent() {
+        let dir = tempdir().unwrap();
+        let runner = FakeRunner::default();
+
+        ensure_django_project(&runner, dir.path(), "proj").unwrap();
+        ensure_django_app(&runner, dir.path(), "app", "python3").unwrap();
+
+        assert!(runner.ran("startproject"));
+        assert!(runner.ran("startapp"));
     }
 }

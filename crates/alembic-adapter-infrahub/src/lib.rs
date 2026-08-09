@@ -1357,7 +1357,10 @@ fn ensure_repository_config(repo_root: &Path, schema_path: &Path) -> Result<()> 
         .replace('\\', "/");
 
     let config_path = repo_root.join(".infrahub.yml");
-    let mut root = if config_path.exists() {
+    let mut root = if config_path
+        .try_exists()
+        .with_context(|| format!("check {}", config_path.display()))?
+    {
         let raw = fs::read_to_string(&config_path)
             .with_context(|| format!("read {}", config_path.display()))?;
         serde_yaml::from_str::<YamlValue>(&raw)
@@ -2614,6 +2617,29 @@ schema { query: Query }
         fs::write(&outside, "version: 1.0").unwrap();
         let err = ensure_repository_config(&repo_root, &outside).unwrap_err();
         assert!(err.to_string().contains("must be inside repository root"));
+    }
+
+    /// a repo root that is a regular file makes the stat fail with
+    /// `NotADirectory` rather than answering absent. starting from an empty
+    /// mapping on that answer would write back a config stripped of every key
+    /// the real one carried.
+    #[test]
+    fn ensure_repository_config_reports_a_stat_it_could_not_make() {
+        let blocker = temp_dir("blocked").join("repo");
+        fs::write(&blocker, "regular file").unwrap();
+
+        let err = ensure_repository_config(&blocker, &blocker.join("schemas/site.yaml"))
+            .expect_err("an unreadable config must not read as absent");
+
+        let message = format!("{err:#}");
+        assert!(
+            message.contains("check") && message.contains(".infrahub.yml"),
+            "the failure must be the stat, named: {message}"
+        );
+        assert!(
+            !message.contains("write "),
+            "it must stop before rewriting the config it could not read: {message}"
+        );
     }
 
     #[test]

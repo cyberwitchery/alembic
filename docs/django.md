@@ -51,6 +51,49 @@ the `generated_*.py` files (`generated_models.py`, `generated_admin.py`,
 creates is yours to edit: treat the app as a starting point, not an artifact to
 regenerate over.
 
+## declared constraints
+
+a scalar field carries what it declares: `format:` and `pattern:` become
+`RegexValidator`s, a `cidr`, `prefix` or `mac` type becomes one from its own
+format, an `enum` becomes the field's `choices`, and `uuid` and `slug` get the
+django fields that already check them.
+
+a `list` is a `JSONField`, which has no native element type, so a declared
+element is carried as a member check (`_ListMembers`) instead: a `list` of
+`enum` takes only the declared values, a `list` of `uuid`, `cidr`, `prefix`,
+`mac` or `slug` only members matching that format, and a `list` of `string`,
+`text`, `ip_address`, `int`, `float` or `bool` only members of the json type
+`validate` requires there.
+
+a `date`, `datetime` or `time` element carries no check: `validate` reads those
+as rfc 3339 and checks the calendar with them, while django's own parser takes
+shapes it refuses, so a check here would be an approximation either way. a
+`json` element carries none either, because `validate` takes any json there.
+the column still carries the validator, holding the field itself to a list:
+`validate` takes an array there whatever the element type, so a declared `list`
+that is not one is refused even where its members go unread.
+
+a nested collection carries its outer shape: a `list` or `list_ref` element
+takes only a list, a `map` element only a map. `validate` recurses into the
+entries, which this check does not, so the shape is the part of it that is
+exact. a `ref` element takes the uid spellings `validate` parses; resolving one
+against the inventory is the half the generated app cannot see. a `map` field
+itself, as opposed to a `map` element, stays plain json.
+
+no check is stricter than `validate`, so nothing alembic accepts is rejected
+here. the ones that are looser are looser in a stated way: a `cidr` or `prefix`
+member is held to the regex a backend would install for that format, which is
+deliberately wider than the parse `validate` runs; a nested collection's
+entries go unread; a `ref` member is parsed but not resolved; and an element
+carrying no check takes the null member `validate` refuses everywhere. a member
+check matches a format regex in full, while a scalar keeps django's
+`RegexValidator`, which searches, as `validate` does for a `pattern:` of your
+own.
+
+the checks run on `full_clean()` and on the drf serializers, so the generated
+api enforces them; `loaddata` does not run validators, so the fixture loads
+whatever `validate` passed.
+
 ## optional packages
 
 the generated app only declares what the target interpreter can honour:

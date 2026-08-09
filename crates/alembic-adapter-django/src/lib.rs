@@ -3,7 +3,7 @@
 use crate::emit::{CommandRunner, DjangoConfig};
 use alembic_core::{key_string, FieldFormat, FieldType, Inventory, Object, Schema, TypeSchema};
 use alembic_engine::{pluralize, AppliedOp, ApplyReport, Emitter, Op, StateStore};
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
@@ -92,6 +92,57 @@ const URLS_TEMPLATE: &str = include_str!("../templates/urls.py.tpl");
 /// two blank lines between top-level definitions, as pep8 wants them.
 const BLOCK_SEPARATOR: &str = "\n\n\n";
 
+/// a list is a plain `JSONField`, so a declared element type has no native slot:
+/// this carries it as a member check instead. the leading underscore keeps the
+/// name clear of the model classes, which never start with one.
+const MEMBER_VALIDATOR_CLASS: &str = r#"_MEMBER_KINDS = {
+    "str": lambda member: isinstance(member, str),
+    # a python bool is an int, and alembic's int is not a bool.
+    "int": lambda member: isinstance(member, int) and not isinstance(member, bool),
+    "float": lambda member: isinstance(member, (int, float))
+    and not isinstance(member, bool),
+    "bool": lambda member: isinstance(member, bool),
+    "list": lambda member: isinstance(member, (list, tuple)),
+    "map": lambda member: isinstance(member, dict),
+}
+
+
+@deconstructible
+class _ListMembers:
+    """checks every member of a list against its declared element type."""
+
+    def __init__(self, choices=None, regex=None, kind=None):
+        self.choices = choices
+        self.regex = regex
+        self.kind = kind
+
+    def __call__(self, value):
+        if not isinstance(value, (list, tuple)):
+            raise ValidationError(
+                "expected a list, got %(got)s", params={"got": type(value).__name__}
+            )
+        for member in value:
+            if self.choices is not None and member not in self.choices:
+                raise ValidationError(
+                    "%(member)s is not one of %(choices)s",
+                    params={"member": member, "choices": ", ".join(self.choices)},
+                )
+            if self.kind is not None and not _MEMBER_KINDS[self.kind](member):
+                raise ValidationError(
+                    "%(member)s is not a %(kind)s",
+                    params={"member": member, "kind": self.kind},
+                )
+            # every pattern here is one of core's anchored format regexes, and
+            # python's `$` also matches before a trailing newline: `fullmatch`
+            # is what core's own `is_match` makes of an anchored pattern.
+            if self.regex is not None and not (
+                isinstance(member, str) and re.fullmatch(self.regex, member)
+            ):
+                raise ValidationError(
+                    "%(member)s does not match %(regex)s",
+                    params={"member": member, "regex": self.regex},
+                )"#;
+
 #[derive(Debug)]
 struct ModelSpec {
     type_name: String,
@@ -122,6 +173,9 @@ struct FieldSpec {
     nullable: bool,
     choices: Option<Vec<String>>,
     validators: Vec<String>,
+    /// a list's declared element check. the validator ships on every list, so
+    /// `None` is an element carrying no check rather than no validator.
+    member_check: Option<MemberCheck>,
     help_text: Option<String>,
 }
 
@@ -162,6 +216,10 @@ impl DjangoFieldType {
 
     fn is_json(&self) -> bool {
         matches!(self, DjangoFieldType::Json { .. })
+    }
+
+    fn is_list(&self) -> bool {
+        matches!(self, DjangoFieldType::Json { list: true })
     }
 
     fn is_many_to_many(&self) -> bool {
@@ -428,20 +486,39 @@ fn render_files(models: &[ModelSpec], options: &DjangoEmitOptions) -> DjangoFile
         .collect();
     let view_import = import_line("from .generated_views import ", &view_names);
 
-    let mut model_imports = vec!["import uuid".to_string(), String::new()];
+    let has_field = |predicate: fn(&FieldSpec) -> bool| {
+        models
+            .iter()
+            .any(|model| model.fields.iter().any(&predicate))
+    };
+    let member_validators = has_field(|field| field.field_type.is_list());
+
+    let mut model_imports = Vec::new();
+    // only a regex member check reaches `re`, so an app whose lists are all
+    // enums does not get an import its own linter would flag.
+    if has_field(|field| matches!(field.member_check, Some(MemberCheck::Regex(_)))) {
+        model_imports.push("import re".to_string());
+    }
+    model_imports.push("import uuid".to_string());
+    model_imports.push(String::new());
     model_imports.push("from django.db import models".to_string());
-    if models
-        .iter()
-        .any(|model| model.fields.iter().any(|f| !f.validators.is_empty()))
-    {
+    if has_field(|field| !field.validators.is_empty()) {
         model_imports.push("from django.core.validators import RegexValidator".to_string());
     }
+    if member_validators {
+        model_imports.push("from django.core.exceptions import ValidationError".to_string());
+        model_imports.push("from django.utils.deconstruct import deconstructible".to_string());
+    }
 
+    let mut model_blocks = render_blocks(models, render_model_block);
+    if member_validators {
+        model_blocks = format!("{MEMBER_VALIDATOR_CLASS}{BLOCK_SEPARATOR}{model_blocks}");
+    }
     let models_file = render_template(
         MODELS_TEMPLATE,
         &[
             ("imports", model_imports.join("\n")),
-            ("models", render_blocks(models, render_model_block)),
+            ("models", model_blocks),
         ],
     );
     let admin = if options.emit_admin {
@@ -529,8 +606,19 @@ fn render_field(model: &ModelSpec, field: &FieldSpec) -> String {
             .join(", ");
         args.push(format!("choices=[{choice_items}]"));
     }
-    if !field.validators.is_empty() {
-        args.push(format!("validators=[{}]", field.validators.join(", ")));
+    let validators: Vec<String> = field
+        .validators
+        .iter()
+        .cloned()
+        .chain(
+            field
+                .field_type
+                .is_list()
+                .then(|| render_member_check(field.member_check.as_ref())),
+        )
+        .collect();
+    if !validators.is_empty() {
+        args.push(format!("validators=[{}]", validators.join(", ")));
     }
     if let Some(help_text) = &field.help_text {
         args.push(format!("help_text={}", py_str(help_text)));
@@ -962,6 +1050,7 @@ fn field_spec_from_schema(
 ) -> FieldSpec {
     let mut validators = Vec::new();
     let mut choices = None;
+    let mut member_check = None;
 
     if let Some(format) = &schema.format {
         validators.push(format_validator(format));
@@ -1001,7 +1090,10 @@ fn field_spec_from_schema(
             choices = Some(values.clone());
             DjangoFieldType::Char
         }
-        FieldType::List { .. } => DjangoFieldType::Json { list: true },
+        FieldType::List { item } => {
+            member_check = member_check_for(item);
+            DjangoFieldType::Json { list: true }
+        }
         FieldType::Map { .. } => DjangoFieldType::Json { list: false },
         FieldType::Ref { target } => DjangoFieldType::ForeignKey {
             target: class_name_for_type(target),
@@ -1021,7 +1113,74 @@ fn field_spec_from_schema(
         nullable,
         choices,
         validators,
+        member_check,
         help_text: schema.description.clone(),
+    }
+}
+
+/// the element constraints a list column can carry, each one exactly what core
+/// checks an entry against: an enum's members, a format-typed item's regex, or
+/// the json type `type_check` tests for.
+#[derive(Debug, Clone)]
+enum MemberCheck {
+    Choices(Vec<String>),
+    Regex(&'static str),
+    Kind(&'static str),
+}
+
+fn member_check_for(item: &FieldType) -> Option<MemberCheck> {
+    match item {
+        FieldType::Enum { values } => Some(MemberCheck::Choices(values.clone())),
+        FieldType::Uuid
+        | FieldType::Cidr
+        | FieldType::Prefix
+        | FieldType::Mac
+        | FieldType::Slug => alembic_core::format_for_field_type(item)
+            .map(|format| MemberCheck::Regex(alembic_core::format_regex(&format))),
+        // core checks `ip_address` as a plain string, so it belongs here rather
+        // than with the formats: a regex would be stricter than the check.
+        FieldType::String | FieldType::Text | FieldType::IpAddress => {
+            Some(MemberCheck::Kind("str"))
+        }
+        FieldType::Int => Some(MemberCheck::Kind("int")),
+        FieldType::Float => Some(MemberCheck::Kind("float")),
+        FieldType::Bool => Some(MemberCheck::Kind("bool")),
+        // core recurses into the entries of these (`element_schema`), so the
+        // exact check is recursive and this one is only the outer shape. that
+        // shape is exact: core takes a list and a map and nothing else.
+        FieldType::List { .. } | FieldType::ListRef { .. } => Some(MemberCheck::Kind("list")),
+        FieldType::Map { .. } => Some(MemberCheck::Kind("map")),
+        // core parses a ref's uid exactly as it parses a `uuid` field, then
+        // resolves it against the inventory, which the generated app cannot see.
+        FieldType::Ref { .. } => Some(MemberCheck::Regex(alembic_core::format_regex(
+            &FieldFormat::Uuid,
+        ))),
+        // core parses these as rfc 3339 and checks the calendar with it, which
+        // no django-side check mirrors: its own parser takes shapes core
+        // refuses (`2026-8-1`, a space separator), so a check built on it would
+        // be an approximation either way.
+        FieldType::Date | FieldType::Datetime | FieldType::Time => None,
+        // core takes any json for a `json` element, so no check is the exact one.
+        FieldType::Json => None,
+    }
+}
+
+fn render_member_check(check: Option<&MemberCheck>) -> String {
+    match check {
+        // core takes an array for a declared list and nothing else, whatever
+        // its element type, so the outer shape ships even where no element
+        // check does.
+        None => "_ListMembers()".to_string(),
+        Some(MemberCheck::Choices(values)) => format!(
+            "_ListMembers(choices=[{}])",
+            values
+                .iter()
+                .map(|value| py_str(value))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        Some(MemberCheck::Regex(pattern)) => format!("_ListMembers(regex={})", py_str(pattern)),
+        Some(MemberCheck::Kind(kind)) => format!("_ListMembers(kind={})", py_str(kind)),
     }
 }
 
@@ -1034,10 +1193,13 @@ fn format_validator(format: &FieldFormat) -> String {
 
 fn write_if_missing(path: impl AsRef<Path>, contents: &str) -> Result<()> {
     let path = path.as_ref();
-    if path.exists() {
+    if path
+        .try_exists()
+        .with_context(|| format!("check {}", path.display()))?
+    {
         return Ok(());
     }
-    fs::write(path, contents)?;
+    fs::write(path, contents).with_context(|| format!("write {}", path.display()))?;
     Ok(())
 }
 
@@ -1052,8 +1214,12 @@ fn render_template(template: &str, vars: &[(&str, String)]) -> String {
 
 fn write_user_file(path: impl AsRef<Path>, contents: &str, defaults: &[&str]) -> Result<()> {
     let path = path.as_ref();
-    if path.exists() {
-        let existing = fs::read_to_string(path)?;
+    if path
+        .try_exists()
+        .with_context(|| format!("check {}", path.display()))?
+    {
+        let existing =
+            fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
         let normalized = existing.trim().replace("\r\n", "\n");
         let is_default = defaults
             .iter()
@@ -1062,7 +1228,7 @@ fn write_user_file(path: impl AsRef<Path>, contents: &str, defaults: &[&str]) ->
             return Ok(());
         }
     }
-    fs::write(path, contents)?;
+    fs::write(path, contents).with_context(|| format!("write {}", path.display()))?;
     Ok(())
 }
 
@@ -1347,7 +1513,9 @@ mod tests {
         assert!(models.contains("name = models.CharField(max_length=255, blank=True)"));
         // json columns get a default instead of null.
         assert!(models.contains("meta = models.JSONField(blank=True, default=dict)"));
-        assert!(models.contains("tags = models.JSONField(blank=True, default=list)"));
+        assert!(models.contains(
+            "tags = models.JSONField(validators=[_ListMembers(kind=\"str\")], blank=True, default=list)"
+        ));
     }
 
     #[test]
@@ -1377,6 +1545,377 @@ mod tests {
         let models = generated(&emit_to_temp(&inventory), GENERATED_MODELS);
         assert!(models.contains(
             "tags = models.ManyToManyField(\"DcimTag\", related_name=\"dcimdevice_tags\", blank=True)"
+        ));
+    }
+
+    fn list_field_models(item: FieldType) -> String {
+        let inventory = Inventory {
+            schema: schema_of(vec![(
+                "dcim.interface",
+                type_schema(
+                    vec![("name", field(FieldType::Slug))],
+                    vec![(
+                        "members",
+                        field(FieldType::List {
+                            item: Box::new(item),
+                        }),
+                    )],
+                ),
+            )]),
+            objects: vec![],
+        };
+        generated(&emit_to_temp(&inventory), GENERATED_MODELS)
+    }
+
+    #[test]
+    fn list_of_enum_carries_its_declared_members() {
+        let models = list_field_models(FieldType::Enum {
+            values: vec!["access".to_string(), "trunk".to_string()],
+        });
+        assert!(
+            models.contains(
+                "members = models.JSONField(validators=[_ListMembers(choices=[\"access\", \"trunk\"])])"
+            ),
+            "{models}"
+        );
+        assert!(models.contains("class _ListMembers:"), "{models}");
+        assert!(
+            models.contains("from django.utils.deconstruct import deconstructible"),
+            "{models}"
+        );
+        // the member check is not a RegexValidator, so nothing imports one, and
+        // no check in this app runs a regex, so nothing imports `re` either.
+        assert!(!models.contains("import RegexValidator"), "{models}");
+        assert!(!models.contains("import re"), "{models}");
+    }
+
+    #[test]
+    fn list_of_format_typed_items_carries_the_format_regex() {
+        let models = list_field_models(FieldType::Mac);
+        assert!(
+            models.contains(&format!(
+                "members = models.JSONField(validators=[_ListMembers(regex={})])",
+                py_str(alembic_core::format_regex(&FieldFormat::Mac))
+            )),
+            "{models}"
+        );
+        assert!(models.contains("import re"), "{models}");
+    }
+
+    #[test]
+    fn list_of_a_primitive_carries_the_type_core_checks_for() {
+        for (item, kind) in [
+            (FieldType::String, "str"),
+            (FieldType::Text, "str"),
+            (FieldType::IpAddress, "str"),
+            (FieldType::Int, "int"),
+            (FieldType::Float, "float"),
+            (FieldType::Bool, "bool"),
+        ] {
+            let models = list_field_models(item);
+            assert!(
+                models.contains(&format!(
+                    "members = models.JSONField(validators=[_ListMembers(kind=\"{kind}\")])"
+                )),
+                "{models}"
+            );
+        }
+    }
+
+    #[test]
+    fn list_of_a_nested_collection_carries_its_outer_shape() {
+        // core recurses into the entries, so only the outer shape is checkable
+        // here -- and on that shape core is exact.
+        for (item, kind) in [
+            (
+                FieldType::List {
+                    item: Box::new(FieldType::Int),
+                },
+                "list",
+            ),
+            (
+                FieldType::ListRef {
+                    target: "dcim.interface".to_string(),
+                },
+                "list",
+            ),
+            (
+                FieldType::Map {
+                    value: Box::new(FieldType::Int),
+                },
+                "map",
+            ),
+        ] {
+            let models = list_field_models(item);
+            assert!(
+                models.contains(&format!(
+                    "members = models.JSONField(validators=[_ListMembers(kind=\"{kind}\")])"
+                )),
+                "{models}"
+            );
+        }
+    }
+
+    #[test]
+    fn list_of_refs_carries_the_uuid_regex() {
+        // core parses a ref's uid exactly as it parses a `uuid`; only resolving
+        // it needs the inventory.
+        let models = list_field_models(FieldType::Ref {
+            target: "dcim.interface".to_string(),
+        });
+        assert!(
+            models.contains(&format!(
+                "members = models.JSONField(validators=[_ListMembers(regex={})])",
+                py_str(alembic_core::format_regex(&FieldFormat::Uuid))
+            )),
+            "{models}"
+        );
+    }
+
+    #[test]
+    fn list_of_an_uncheckable_element_still_carries_the_outer_shape() {
+        // core reads a date as rfc 3339 and checks the calendar with it, and
+        // takes any json for a `json` element, so neither carries an element
+        // check -- but core still takes an array for the field and nothing
+        // else, which is what the bare validator holds it to.
+        for item in [
+            FieldType::Date,
+            FieldType::Datetime,
+            FieldType::Time,
+            FieldType::Json,
+        ] {
+            let models = list_field_models(item);
+            assert!(
+                models.contains("members = models.JSONField(validators=[_ListMembers()])"),
+                "{models}"
+            );
+            assert!(!models.contains("import re"), "{models}");
+        }
+    }
+
+    #[test]
+    fn map_values_carry_no_member_check() {
+        // maps stay plain json, as they do on the nautobot backend.
+        let inventory = Inventory {
+            schema: schema_of(vec![(
+                "dcim.interface",
+                type_schema(
+                    vec![("name", field(FieldType::Slug))],
+                    vec![(
+                        "labels",
+                        field(FieldType::Map {
+                            value: Box::new(FieldType::Enum {
+                                values: vec!["access".to_string()],
+                            }),
+                        }),
+                    )],
+                ),
+            )]),
+            objects: vec![],
+        };
+        let models = generated(&emit_to_temp(&inventory), GENERATED_MODELS);
+        assert!(models.contains("labels = models.JSONField()"), "{models}");
+        assert!(!models.contains("_ListMembers"), "{models}");
+    }
+
+    /// what core's own checker makes of `[member]` in a declared `list` field.
+    fn core_accepts_member(item: &FieldType, member: &Value) -> bool {
+        core_accepts(
+            field(FieldType::List {
+                item: Box::new(item.clone()),
+            }),
+            json!([member]),
+        )
+    }
+
+    fn core_accepts(schema: FieldSchema, value: Value) -> bool {
+        let inventory = Inventory {
+            schema: schema_of(vec![(
+                "dcim.interface",
+                type_schema(
+                    vec![("name", field(FieldType::Slug))],
+                    vec![("members", schema)],
+                ),
+            )]),
+            objects: vec![obj(
+                1,
+                "dcim.interface",
+                "name=eth0",
+                attrs_map(vec![("members", value)]),
+            )],
+        };
+        alembic_core::validate_inventory(&inventory)
+            .errors
+            .is_empty()
+    }
+
+    /// what the emitted member check makes of the same value, read here as a
+    /// table over every element type. this is a rust reading of the check, not
+    /// the python that ships: `django_generated_api_enforces_a_declared_list_element`
+    /// puts the same corpus through the generated `_ListMembers` itself, which is
+    /// the only place the two regex engines meet.
+    fn check_accepts_member(check: &Option<MemberCheck>, member: &Value) -> bool {
+        match check {
+            None => true,
+            Some(MemberCheck::Choices(values)) => member
+                .as_str()
+                .is_some_and(|raw| values.iter().any(|value| value == raw)),
+            Some(MemberCheck::Regex(pattern)) => {
+                let mut schema = field(FieldType::String);
+                schema.pattern = Some((*pattern).to_string());
+                core_accepts(schema, member.clone())
+            }
+            Some(MemberCheck::Kind(kind)) => match *kind {
+                "str" => member.is_string(),
+                "int" => member.is_i64() || member.is_u64(),
+                "float" => member.is_number(),
+                "bool" => member.is_boolean(),
+                "list" => member.is_array(),
+                "map" => member.is_object(),
+                other => panic!("no member kind {other}"),
+            },
+        }
+    }
+
+    #[test]
+    fn member_check_never_rejects_what_core_accepts() {
+        let items = vec![
+            FieldType::Enum {
+                values: vec!["access".to_string(), "trunk".to_string()],
+            },
+            FieldType::Mac,
+            FieldType::Cidr,
+            FieldType::Prefix,
+            FieldType::Uuid,
+            FieldType::Slug,
+            FieldType::IpAddress,
+            FieldType::String,
+            FieldType::Text,
+            FieldType::Int,
+            FieldType::Float,
+            FieldType::Bool,
+            FieldType::Date,
+            FieldType::Datetime,
+            FieldType::Time,
+            FieldType::Json,
+            FieldType::List {
+                item: Box::new(FieldType::Int),
+            },
+            FieldType::Map {
+                value: Box::new(FieldType::Int),
+            },
+            FieldType::Ref {
+                target: "dcim.interface".to_string(),
+            },
+            FieldType::ListRef {
+                target: "dcim.interface".to_string(),
+            },
+        ];
+        let members = vec![
+            json!("access"),
+            json!("trunk"),
+            json!("ACCESS"),
+            json!("bogus"),
+            json!(""),
+            json!("aa:bb:cc:dd:ee:ff"),
+            json!("AA-BB-CC-DD-EE-FF"),
+            json!("aabbccddeeff"),
+            json!("10.0.0.0/24"),
+            json!("2001:db8::/32"),
+            json!("::ffff:192.168.0.1"),
+            json!("192.168.0.1"),
+            json!("f47ac10b-58cc-4372-a567-0e02b2c3d479"),
+            json!("f47ac10b58cc4372a5670e02b2c3d479"),
+            json!("{f47ac10b-58cc-4372-a567-0e02b2c3d479}"),
+            json!("urn:uuid:f47ac10b-58cc-4372-a567-0e02b2c3d479"),
+            json!("fra1"),
+            json!("fra-1_a"),
+            json!("Fra1"),
+            json!("with space"),
+            json!("with\nnewline"),
+            json!("ünïcödé"),
+            json!("2024-01-01"),
+            json!("2024-01-01T00:00:00Z"),
+            json!("00:00:00"),
+            // the uid `core_accepts` puts in the inventory, so a ref member has
+            // one value core resolves and the crossing is not vacuous there.
+            json!(Uuid::from_u128(1).to_string()),
+            json!(7),
+            json!(1.5),
+            json!(true),
+            json!(null),
+            json!([]),
+            json!(["nested"]),
+            json!({}),
+            json!({"nested": "object"}),
+        ];
+
+        for item in &items {
+            let check = member_check_for(item);
+            let mut accepted = 0;
+            for member in &members {
+                if core_accepts_member(item, member) {
+                    accepted += 1;
+                    assert!(
+                        check_accepts_member(&check, member),
+                        "core accepts {member} as a {item:?} member, the generated check rejects it"
+                    );
+                }
+            }
+            // an element type no member is valid for would satisfy the
+            // assertion above without ever reaching it.
+            assert!(accepted > 0, "no member in the corpus is a valid {item:?}");
+        }
+    }
+
+    #[test]
+    fn member_check_rejects_an_undeclared_member() {
+        // the other half of the invariant: a check that accepted everything
+        // would satisfy `member_check_never_rejects_what_core_accepts` too.
+        let enum_check = member_check_for(&FieldType::Enum {
+            values: vec!["access".to_string(), "trunk".to_string()],
+        });
+        assert!(!check_accepts_member(&enum_check, &json!("bogus")));
+        assert!(check_accepts_member(&enum_check, &json!("access")));
+
+        let mac_check = member_check_for(&FieldType::Mac);
+        assert!(!check_accepts_member(&mac_check, &json!("not-a-mac")));
+        assert!(check_accepts_member(
+            &mac_check,
+            &json!("aa:bb:cc:dd:ee:ff")
+        ));
+
+        let string_check = member_check_for(&FieldType::String);
+        assert!(!check_accepts_member(&string_check, &json!(7)));
+        assert!(check_accepts_member(&string_check, &json!("anything")));
+
+        // a python bool is an int, so an int list taking `true` is the failure
+        // this pins.
+        let int_check = member_check_for(&FieldType::Int);
+        assert!(!check_accepts_member(&int_check, &json!(true)));
+        assert!(check_accepts_member(&int_check, &json!(7)));
+
+        // a nested collection is checked on its outer shape alone, so the
+        // wrong shape is still refused even though the entries are not read.
+        let list_check = member_check_for(&FieldType::List {
+            item: Box::new(FieldType::Int),
+        });
+        assert!(!check_accepts_member(&list_check, &json!("notalist")));
+        assert!(check_accepts_member(&list_check, &json!(["x"])));
+
+        let map_check = member_check_for(&FieldType::Map {
+            value: Box::new(FieldType::Int),
+        });
+        assert!(!check_accepts_member(&map_check, &json!([])));
+        assert!(check_accepts_member(&map_check, &json!({})));
+
+        let ref_check = member_check_for(&FieldType::Ref {
+            target: "dcim.interface".to_string(),
+        });
+        assert!(!check_accepts_member(&ref_check, &json!("not-a-uuid")));
+        assert!(check_accepts_member(
+            &ref_check,
+            &json!(Uuid::from_u128(1).to_string())
         ));
     }
 
@@ -2016,5 +2555,88 @@ mod tests {
         let routes = render_routes_block(&models);
         assert!(routes.contains("router.register(\"prefixes\", PrefixViewSet)"));
         assert!(routes.contains("router.register(\"gateways\", GatewayViewSet)"));
+    }
+
+    /// a parent that is a regular file makes the stat fail with `NotADirectory`
+    /// rather than answering absent. the write that follows fails too, so what
+    /// this pins is that the failure names the path and the stat, not an
+    /// unlabelled `Not a directory` from somewhere in the emit.
+    #[test]
+    fn write_if_missing_reports_a_stat_it_could_not_make() {
+        let dir = tempdir().unwrap();
+        let blocker = dir.path().join("blocker");
+        fs::write(&blocker, "regular file").unwrap();
+
+        let err = write_if_missing(blocker.join("extensions.py"), "new").unwrap_err();
+
+        assert!(
+            format!("{err:#}").contains("extensions.py"),
+            "the error must name the path: {err:#}"
+        );
+    }
+
+    #[test]
+    fn write_user_file_reports_a_stat_it_could_not_make() {
+        let dir = tempdir().unwrap();
+        let blocker = dir.path().join("blocker");
+        fs::write(&blocker, "regular file").unwrap();
+
+        let err = write_user_file(blocker.join("models.py"), "new", &[]).unwrap_err();
+
+        assert!(
+            format!("{err:#}").contains("models.py"),
+            "the error must name the path: {err:#}"
+        );
+    }
+
+    /// the ordinary failure is a stat that succeeded: a dangling symlink the
+    /// write follows nowhere, or a directory where a file was expected.
+    #[cfg(unix)]
+    #[test]
+    fn write_helpers_name_the_path_when_the_stat_succeeded() {
+        let dir = tempdir().unwrap();
+
+        let dangling = dir.path().join("extensions.py");
+        std::os::unix::fs::symlink("nowhere/target.py", &dangling).unwrap();
+        let err = write_if_missing(&dangling, "new").unwrap_err();
+        assert!(
+            format!("{err:#}").contains("extensions.py"),
+            "the write must name the path: {err:#}"
+        );
+
+        let dangling = dir.path().join("models.py");
+        std::os::unix::fs::symlink("nowhere/target.py", &dangling).unwrap();
+        let err = write_user_file(&dangling, "new", &[]).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("models.py"),
+            "the write must name the path: {err:#}"
+        );
+
+        let as_dir = dir.path().join("settings.py");
+        fs::create_dir(&as_dir).unwrap();
+        let err = write_user_file(&as_dir, "new", &[]).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("settings.py"),
+            "the read must name the path: {err:#}"
+        );
+    }
+
+    /// the absent case still writes, and an existing non-default file is still
+    /// preserved: `ENOENT` stays `Ok(false)`.
+    #[test]
+    fn write_helpers_still_treat_enoent_as_absent() {
+        let dir = tempdir().unwrap();
+
+        let fresh = dir.path().join("fresh.py");
+        write_if_missing(&fresh, "generated").unwrap();
+        assert_eq!(fs::read_to_string(&fresh).unwrap(), "generated");
+        write_if_missing(&fresh, "second").unwrap();
+        assert_eq!(fs::read_to_string(&fresh).unwrap(), "generated");
+
+        let user = dir.path().join("user.py");
+        write_user_file(&user, "stub", &[]).unwrap();
+        fs::write(&user, "hand written").unwrap();
+        write_user_file(&user, "stub", &["stub"]).unwrap();
+        assert_eq!(fs::read_to_string(&user).unwrap(), "hand written");
     }
 }

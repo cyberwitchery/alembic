@@ -2888,3 +2888,34 @@ async fn run_plan_provision_fails_closed_on_preview_error() {
         "expected the propagated preview error, got: {err:#}"
     );
 }
+
+/// a plugin directory that is genuinely absent is the default case (`./plugins`
+/// usually is), so it stays an empty list rather than an error.
+#[test]
+fn search_for_plugins_treats_an_absent_dir_as_no_plugins() {
+    let dir = tempdir().unwrap();
+    let config = AppConfig {
+        plugins_dir: dir.path().join("nope"),
+    };
+    assert!(search_for_plugins(&config).unwrap().is_empty());
+}
+
+/// a parent that is a regular file makes `read_dir` fail with `NotADirectory`
+/// rather than answering absent. reporting no plugins on that answer runs the
+/// command with every declared plugin missing, and says so only at `debug`.
+#[test]
+fn search_for_plugins_reports_a_dir_it_could_not_read() {
+    let dir = tempdir().unwrap();
+    let blocker = dir.path().join("blocker");
+    fs::write(&blocker, "regular file").unwrap();
+    let config = AppConfig {
+        plugins_dir: blocker.join("plugins"),
+    };
+
+    let err = search_for_plugins(&config).expect_err("an unreadable dir is not an empty one");
+
+    assert!(
+        format!("{err:#}").contains("plugins"),
+        "the error must name the path: {err:#}"
+    );
+}
