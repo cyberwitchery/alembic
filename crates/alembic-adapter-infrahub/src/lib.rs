@@ -77,6 +77,9 @@ pub struct InfrahubAdapter {
     api: reqwest::Client,
     base_url: String,
     token: String,
+    // the graphql client resolves the branch itself; the raw `/api/schema`
+    // request has to carry it, so keep a copy.
+    branch: Option<String>,
     schema_push: Option<SchemaPushConfig>,
 }
 
@@ -105,6 +108,7 @@ impl InfrahubAdapter {
             api,
             base_url: url.to_string(),
             token: token.to_string(),
+            branch: branch.map(str::to_string),
             schema_push: None,
         })
     }
@@ -125,7 +129,11 @@ impl InfrahubAdapter {
 
     async fn load_schema_snapshot(&self) -> Result<SchemaSnapshot> {
         let base = self.base_url.trim_end_matches('/');
-        let url = format!("{base}/api/schema");
+        let mut url = reqwest::Url::parse(&format!("{base}/api/schema"))
+            .context("build infrahub schema snapshot url")?;
+        if let Some(branch) = &self.branch {
+            url.query_pairs_mut().append_pair("branch", branch);
+        }
         let response = self
             .api
             .get(url)
@@ -3715,5 +3723,107 @@ schema { query: Query }
         )
         .unwrap();
         assert_eq!(value, None);
+    }
+
+    fn site_only_schema() -> Schema {
+        schema_with(vec![(
+            "dcim.site",
+            type_schema(
+                vec![("name", field_schema(FieldType::String, true))],
+                vec![],
+            ),
+        )])
+    }
+
+    #[tokio::test]
+    async fn schema_snapshot_request_carries_the_configured_branch() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/schema.graphql");
+            then.status(200).body(GRAPHQL_SCHEMA);
+        });
+        let snapshot = server.mock(|when, then| {
+            when.method(GET)
+                .path("/api/schema")
+                .query_param("branch", "feat/site-rollout");
+            then.status(200).json_body(json!({ "nodes": [] }));
+        });
+
+        let adapter =
+            InfrahubAdapter::new(&server.base_url(), "token", Some("feat/site-rollout")).unwrap();
+        assert!(adapter
+            .preview_schema(&site_only_schema())
+            .await
+            .unwrap()
+            .is_some());
+
+        snapshot.assert();
+    }
+
+    #[tokio::test]
+    async fn schema_snapshot_request_omits_the_branch_when_unset() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/schema.graphql");
+            then.status(200).body(GRAPHQL_SCHEMA);
+        });
+        let snapshot = server.mock(|when, then| {
+            when.method(GET)
+                .path("/api/schema")
+                .query_param_missing("branch");
+            then.status(200).json_body(json!({ "nodes": [] }));
+        });
+
+        let adapter = InfrahubAdapter::new(&server.base_url(), "token", None).unwrap();
+        assert!(adapter
+            .preview_schema(&site_only_schema())
+            .await
+            .unwrap()
+            .is_some());
+
+        snapshot.assert();
+    }
+
+    #[tokio::test]
+    async fn provision_plan_sees_a_node_that_exists_only_on_the_configured_branch() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/schema.graphql");
+            then.status(200).body(GRAPHQL_SCHEMA);
+        });
+        // `Dcim.Legacy` was created on the configured branch and has not merged.
+        server.mock(|when, then| {
+            when.method(GET)
+                .path("/api/schema")
+                .query_param("branch", "feat");
+            then.status(200).json_body(json!({
+                "nodes": [
+                    { "name": "Legacy", "namespace": "Dcim", "include_in_menu": true }
+                ]
+            }));
+        });
+        server.mock(|when, then| {
+            when.method(GET)
+                .path("/api/schema")
+                .query_param_missing("branch");
+            then.status(200).json_body(json!({ "nodes": [] }));
+        });
+
+        let schema = site_only_schema();
+        let adapter = InfrahubAdapter::new(&server.base_url(), "token", Some("feat")).unwrap();
+        let report = adapter.preview_schema(&schema).await.unwrap().unwrap();
+        assert_eq!(
+            report.deprecated_object_types,
+            vec!["Dcim.Legacy".to_string()]
+        );
+
+        // the same run without a branch sees infrahub's default, where it is absent.
+        let default_branch = InfrahubAdapter::new(&server.base_url(), "token", None).unwrap();
+        let report = default_branch
+            .preview_schema(&schema)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(report.deprecated_object_types.is_empty());
     }
 }
