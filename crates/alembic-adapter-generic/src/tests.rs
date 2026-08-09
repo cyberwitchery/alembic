@@ -2017,3 +2017,131 @@ async fn test_apply_create_conflict_recovers_across_a_page_boundary() {
     assert_eq!(report.applied.len(), 1);
     assert_eq!(report.applied[0].backend_id, Some(BackendId::Int(9)));
 }
+
+// a mistyped `next_path` value: an absent final key ends the chain, since apis
+// omit it on the last page, but a missing segment above it means the path does
+// not describe this response, which is what `results_path` already reports.
+
+#[tokio::test]
+async fn test_observe_errors_on_a_missing_intermediate_next_path_segment() {
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(GET).path("/api/devices");
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(serde_json::json!({
+                "next": "/api/devices?page=2",
+                "results": [{"id": 1, "name": "leaf01"}]
+            }));
+    });
+
+    let err = read_devices(paged_config(&server.base_url(), "links.next"))
+        .await
+        .unwrap_err()
+        .to_string();
+
+    assert!(
+        err.contains("path segment not found: links at next_path links.next"),
+        "{err}"
+    );
+    assert!(err.contains("for device at"), "{err}");
+}
+
+#[tokio::test]
+async fn test_observe_treats_an_absent_final_next_key_as_the_last_page() {
+    let server = MockServer::start();
+    let mock = server.mock(|when, then| {
+        when.method(GET).path("/api/devices");
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(serde_json::json!({
+                "links": {"previous": null},
+                "results": [{"id": 1, "name": "leaf01"}]
+            }));
+    });
+
+    let state = read_devices(paged_config(&server.base_url(), "links.next"))
+        .await
+        .unwrap();
+
+    assert_eq!(mock.calls(), 1);
+    assert_eq!(observed_names(&state), vec!["leaf01"]);
+}
+
+#[test]
+fn test_a_next_path_without_segments_is_rejected_at_construction() {
+    // every segment is skipped, so the walk would land on the response root and
+    // blame the payload for a config error on every read.
+    for next_path in ["", ".", ".."] {
+        let err = match GenericAdapter::new(paged_config("http://example.com", next_path)) {
+            Ok(_) => panic!("{next_path:?} was accepted"),
+            Err(err) => err.to_string(),
+        };
+
+        assert!(err.contains("invalid next_path"), "{next_path:?}: {err}");
+        assert!(err.contains("for type device"), "{next_path:?}: {err}");
+    }
+}
+
+// redirects: `headers` rides on every request the client makes and reqwest
+// strips only its own sensitive names across hosts, so a token under any other
+// name leaves the origin with no `next` involved.
+
+fn keyed_config(base_url: &str) -> GenericConfig {
+    let mut config = test_config(base_url);
+    config
+        .headers
+        .insert("x-api-key".to_string(), "generic_secret".to_string());
+    config
+}
+
+#[tokio::test]
+async fn test_a_cross_host_redirect_is_refused_before_the_token_leaves() {
+    let other = MockServer::start();
+    let leaked = other.mock(|when, then| {
+        when.method(GET).header("x-api-key", "generic_secret");
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(serde_json::json!({"results": []}));
+    });
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(GET).path("/api/devices");
+        then.status(302)
+            .header("location", format!("{}/api/devices", other.base_url()));
+    });
+
+    let result = read_devices(keyed_config(&server.base_url())).await;
+
+    assert_eq!(leaked.calls(), 0, "the token reached the redirect target");
+    let err = format!("{:#}", result.unwrap_err());
+    assert!(err.contains("leaves the origin"), "{err}");
+    assert!(err.contains(&other.base_url()), "{err}");
+    assert!(err.contains(&server.base_url()), "{err}");
+}
+
+#[tokio::test]
+async fn test_a_same_origin_redirect_is_followed() {
+    // a trailing-slash 301 is what django's APPEND_SLASH answers, so refusing
+    // every redirect would break an ordinary drf endpoint.
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(GET).path("/api/devices");
+        then.status(301).header("location", "/api/devices/");
+    });
+    let target = server.mock(|when, then| {
+        when.method(GET)
+            .path("/api/devices/")
+            .header("x-api-key", "generic_secret");
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(serde_json::json!({"results": [{"id": 1, "name": "leaf01"}]}));
+    });
+
+    let state = read_devices(keyed_config(&server.base_url()))
+        .await
+        .unwrap();
+
+    assert_eq!(target.calls(), 1);
+    assert_eq!(observed_names(&state), vec!["leaf01"]);
+}

@@ -14,7 +14,8 @@ the config file (see examples/generic.yaml) has three top-level keys:
 - `base_url` (required) - api base; each type's `path` is appended to it.
 - `headers` (optional, default empty) - default headers sent on every request; put auth
   here (for example `Authorization: Token ...`). an invalid header name or value errors
-  when the adapter is constructed.
+  when the adapter is constructed. they ride on redirects too, so a redirect off
+  `base_url`'s origin is refused; one that stays on it (a trailing-slash 301) is followed.
 - `types` (required) - map of ir type name to endpoint config. a type with no entry has no
   endpoint, and observing or applying it errors.
 
@@ -53,18 +54,24 @@ typo'd `delete_strategy` would fail the delete ops the plan showed.
 
 ## pagination
 
-`next_path` points at the url of the next page, the shape drf, netbox, nautobot and
-peeringdb all return (`{"next": "...?offset=50", "results": [...]}`, so `next_path: next`).
-each page's results are appended and the walk continues until the page chain ends.
+`next_path` points at the url of the next page, the shape drf, netbox and nautobot all
+return (`{"next": "...?offset=50", "results": [...]}`, so `next_path: next`). each page's
+results are appended and the walk continues until the page chain ends.
 
 - the chain ends on an absent key, an explicit `null`, or an empty string. any other shape
   there (a number, an object) is an error rather than a silent stop, since stopping early
   is what this follows the chain to avoid.
+- a dotted path whose *first* page is missing a segment above the final key is an error
+  naming the segment: the path does not describe this api, which is a typo rather than a
+  last page. a later page may drop the whole envelope, and that ends the chain.
+- a path with no segments (`""`, `"."`) errors when the adapter is constructed; omit the
+  key for a single-page endpoint.
 - a relative next resolves against the page that returned it, so `?page=2` and
   `/api/devices?page=2` both work.
 - a next url on another scheme or host is refused. `headers` is sent on every request the
   adapter makes, so following one would hand the api token to that host.
-- a next url already fetched in the same walk is refused, rather than looping forever.
+- a next url already fetched in the same walk is refused, rather than looping forever. a
+  chain of distinct urls is not otherwise bounded.
 - an empty page that still advertises a next is followed.
 
 leave `next_path` unset for an api that returns everything in one response; the endpoint is
@@ -94,7 +101,10 @@ the first page.
 ## known limitations
 
 - pagination needs `next_path`; an api that paginates by a page *number* or a cursor it
-  does not echo back as a url is not covered.
+  does not echo back as a url is not covered. peeringdb answers `{"data": [...]}` with no
+  next-page url, so it is one of these.
+- a mistyped *final* `next_path` key (`nextt` for `next`) reads as a one-page api, because
+  an api omitting the key is the ordinary way to end the chain.
 - `update_method` must be `PATCH` or `PUT`.
 - deletes require `delete_strategy: standard`; with the default `none`, delete ops fail.
 - no schema provisioning; the backend schema must already exist.

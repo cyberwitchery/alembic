@@ -55,6 +55,9 @@ fn default_update_method() -> String {
     "PATCH".to_string()
 }
 
+/// reqwest's own default, kept because the custom redirect policy replaces it.
+const REDIRECT_LIMIT: usize = 10;
+
 /// strategy for deleting objects.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -82,6 +85,7 @@ impl GenericAdapter {
 
         let client = reqwest::Client::builder()
             .default_headers(headers)
+            .redirect(same_origin_redirects())
             .build()?;
 
         for (type_name, endpoint) in &config.types {
@@ -91,6 +95,18 @@ impl GenericAdapter {
                     return Err(anyhow!(
                         "invalid update_method {:?} for type {} (expected PATCH or PUT)",
                         other,
+                        type_name
+                    ));
+                }
+            }
+
+            // a path of only separators walks nowhere and would report the
+            // response root as the wrong shape on every read.
+            if let Some(next_path) = &endpoint.next_path {
+                if next_path.split('.').all(str::is_empty) {
+                    return Err(anyhow!(
+                        "invalid next_path {:?} for type {} (no path segments; omit the key for a single-page endpoint)",
+                        next_path,
                         type_name
                     ));
                 }
@@ -539,7 +555,8 @@ async fn list_endpoint_results(
         let Some(next_path) = &endpoint.next_path else {
             break;
         };
-        let Some(next) = next_page_url(&body, next_path, type_name, &url)? else {
+        let first_page = visited.len() == 1;
+        let Some(next) = next_page_url(&body, next_path, type_name, &url, first_page)? else {
             break;
         };
         url = resolve_next_url(base_url, &url, &next, type_name)?;
@@ -583,20 +600,35 @@ fn extract_results(
 /// read the next-page url out of a list response. an absent key, an explicit
 /// null and an empty string all mean "last page"; any other shape is an error,
 /// because silently stopping on an unexpected one is the bug this follows.
+///
+/// a segment above the final key missing from the *first* page is a mistyped
+/// `next_path` rather than a last page, and errors as `results_path` does. a
+/// later page is allowed to drop the envelope once it has nothing left to link.
 fn next_page_url(
     body: &serde_json::Value,
     path: &str,
     type_name: &TypeName,
     url: &str,
+    first_page: bool,
 ) -> Result<Option<String>> {
     let mut current = body;
-    for segment in path.split('.') {
-        if segment.is_empty() {
-            continue;
-        }
+    let mut segments = path
+        .split('.')
+        .filter(|segment| !segment.is_empty())
+        .peekable();
+    while let Some(segment) = segments.next() {
         match current.get(segment) {
             Some(value) => current = value,
-            None => return Ok(None),
+            None if segments.peek().is_none() || !first_page => return Ok(None),
+            None => {
+                return Err(anyhow!(
+                    "path segment not found: {} at next_path {} for {} at {}",
+                    segment,
+                    path,
+                    type_name,
+                    url
+                ))
+            }
         }
     }
 
@@ -648,6 +680,31 @@ fn resolve_next_url(
     }
 
     Ok(resolved.to_string())
+}
+
+/// follow a redirect only while it stays on the origin that issued it, the same
+/// test `resolve_next_url` applies to a next url. reqwest strips `authorization`
+/// and friends across hosts, but `headers` is an arbitrary map, so a token
+/// configured as `X-API-Key` would ride along.
+fn same_origin_redirects() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|attempt| {
+        let Some(origin) = attempt.previous().last().map(reqwest::Url::origin) else {
+            return attempt.follow();
+        };
+        if origin != attempt.url().origin() {
+            let refused = anyhow!(
+                "redirect to {} leaves the origin {}; refusing to send credentials to another host",
+                attempt.url(),
+                origin.ascii_serialization()
+            );
+            return attempt.error(refused);
+        }
+        // a custom policy does not get reqwest's default hop limit.
+        if attempt.previous().len() > REDIRECT_LIMIT {
+            return attempt.error(anyhow!("too many redirects (limit {})", REDIRECT_LIMIT));
+        }
+        attempt.follow()
+    })
 }
 
 fn json_kind(value: &serde_json::Value) -> &'static str {
