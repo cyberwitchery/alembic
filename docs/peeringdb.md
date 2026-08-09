@@ -26,7 +26,10 @@ would otherwise leave the run unauthenticated.
 
 an empty `types` observes every supported type *the schema declares*, so a schema that
 declares none of them observes nothing rather than erroring. an explicitly requested
-type has to be in the schema either way, and one outside the four is then skipped.
+type outside the four is `unsupported type <name>`, the same error netbox and nautobot
+give: `plan` and `import` name every schema-declared type explicitly, so a schema
+declaring one of peeringdb's other object types fails there rather than observing it as
+absent.
 
 ## attrs and keys
 

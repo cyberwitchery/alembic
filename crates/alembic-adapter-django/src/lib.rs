@@ -969,6 +969,10 @@ fn field_spec_from_schema(
     if let Some(pattern) = &schema.pattern {
         validators.push(format!("RegexValidator({})", py_str(pattern)));
     }
+    // an author-written constraint beats a type-derived one, as in the engine's
+    // `validation_regex_for_schema`. a declared format and pattern both apply
+    // though: `validators` is a list, where a custom field carries one regex.
+    let declared = schema.format.is_some() || schema.pattern.is_some();
 
     let field_type = match &schema.r#type {
         FieldType::String => DjangoFieldType::Char,
@@ -983,7 +987,13 @@ fn field_spec_from_schema(
         FieldType::Json => DjangoFieldType::Json { list: false },
         FieldType::IpAddress => DjangoFieldType::IpAddress,
         FieldType::Cidr | FieldType::Prefix | FieldType::Mac => {
-            validators.push(format_validator(&format_for_field_type(&schema.r#type)));
+            if !declared {
+                validators.extend(
+                    alembic_core::format_for_field_type(&schema.r#type)
+                        .as_ref()
+                        .map(format_validator),
+                );
+            }
             DjangoFieldType::Char
         }
         FieldType::Slug => DjangoFieldType::Slug,
@@ -1012,31 +1022,6 @@ fn field_spec_from_schema(
         choices,
         validators,
         help_text: schema.description.clone(),
-    }
-}
-
-fn format_for_field_type(field_type: &FieldType) -> FieldFormat {
-    match field_type {
-        FieldType::IpAddress => FieldFormat::IpAddress,
-        FieldType::Cidr => FieldFormat::Cidr,
-        FieldType::Prefix => FieldFormat::Prefix,
-        FieldType::Mac => FieldFormat::Mac,
-        FieldType::Uuid => FieldFormat::Uuid,
-        FieldType::String
-        | FieldType::Text
-        | FieldType::Int
-        | FieldType::Float
-        | FieldType::Bool
-        | FieldType::Date
-        | FieldType::Datetime
-        | FieldType::Time
-        | FieldType::Json
-        | FieldType::Slug
-        | FieldType::Enum { .. }
-        | FieldType::List { .. }
-        | FieldType::Map { .. }
-        | FieldType::Ref { .. }
-        | FieldType::ListRef { .. } => FieldFormat::Slug,
     }
 }
 
@@ -1430,6 +1415,68 @@ mod tests {
         assert!(models.contains(r#"RegexValidator("^\\d+\"$")"#), "{models}");
         assert!(
             models.contains(r#"help_text="a \"quoted\" description""#),
+            "{models}"
+        );
+    }
+
+    fn models_for_field(schema: FieldSchema) -> String {
+        let inventory = Inventory {
+            schema: schema_of(vec![(
+                "ipam.address",
+                type_schema(
+                    vec![("slug", field(FieldType::Slug))],
+                    vec![("value", schema)],
+                ),
+            )]),
+            objects: vec![],
+        };
+        generated(&emit_to_temp(&inventory), GENERATED_MODELS)
+    }
+
+    const CIDR_REGEX: &str = r#"RegexValidator("^[0-9a-fA-F:\\./]+$")"#;
+
+    #[test]
+    fn a_format_typed_field_gets_the_derived_validator() {
+        let models = models_for_field(field(FieldType::Cidr));
+
+        assert!(
+            models.contains(&format!("validators=[{CIDR_REGEX}]")),
+            "{models}"
+        );
+    }
+
+    #[test]
+    fn a_declared_format_replaces_the_derived_one() {
+        let mut value = field(FieldType::Cidr);
+        value.format = Some(FieldFormat::Cidr);
+        let models = models_for_field(value);
+
+        assert_eq!(models.matches(CIDR_REGEX).count(), 1, "{models}");
+    }
+
+    #[test]
+    fn a_declared_pattern_replaces_the_derived_one() {
+        let mut value = field(FieldType::Mac);
+        value.pattern = Some("^00:".to_string());
+        let models = models_for_field(value);
+
+        assert!(
+            models.contains(r#"validators=[RegexValidator("^00:")]"#),
+            "{models}"
+        );
+    }
+
+    #[test]
+    fn a_declared_format_and_pattern_both_apply() {
+        let mut value = field(FieldType::Mac);
+        value.format = Some(FieldFormat::Mac);
+        value.pattern = Some("^00:".to_string());
+        let models = models_for_field(value);
+
+        assert!(
+            models.contains(
+                r#"validators=[RegexValidator("^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$"), RegexValidator("^00:")]"#
+            ),
             "{models}"
         );
     }
