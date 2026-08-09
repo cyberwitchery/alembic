@@ -102,6 +102,8 @@ const MEMBER_VALIDATOR_CLASS: &str = r#"_MEMBER_KINDS = {
     "float": lambda member: isinstance(member, (int, float))
     and not isinstance(member, bool),
     "bool": lambda member: isinstance(member, bool),
+    "list": lambda member: isinstance(member, (list, tuple)),
+    "map": lambda member: isinstance(member, dict),
 }
 
 
@@ -1133,17 +1135,23 @@ fn member_check_for(item: &FieldType) -> Option<MemberCheck> {
         FieldType::Int => Some(MemberCheck::Kind("int")),
         FieldType::Float => Some(MemberCheck::Kind("float")),
         FieldType::Bool => Some(MemberCheck::Kind("bool")),
+        // core recurses into the entries of these (`element_schema`), so the
+        // exact check is recursive and this one is only the outer shape. that
+        // shape is exact: core takes a list and a map and nothing else.
+        FieldType::List { .. } | FieldType::ListRef { .. } => Some(MemberCheck::Kind("list")),
+        FieldType::Map { .. } => Some(MemberCheck::Kind("map")),
+        // core parses a ref's uid exactly as it parses a `uuid` field, then
+        // resolves it against the inventory, which the generated app cannot see.
+        FieldType::Ref { .. } => Some(MemberCheck::Regex(alembic_core::format_regex(
+            &FieldFormat::Uuid,
+        ))),
         // core parses these as rfc 3339 and checks the calendar with it, which
         // no django-side check mirrors: its own parser takes shapes core
         // refuses (`2026-8-1`, a space separator), so a check built on it would
         // be an approximation either way.
         FieldType::Date | FieldType::Datetime | FieldType::Time => None,
-        // core accepts any json for these, so no check is the exact one.
-        FieldType::Json
-        | FieldType::List { .. }
-        | FieldType::Map { .. }
-        | FieldType::Ref { .. }
-        | FieldType::ListRef { .. } => None,
+        // core takes any json for a `json` element, so no check is the exact one.
+        FieldType::Json => None,
     }
 }
 
@@ -1594,6 +1602,56 @@ mod tests {
     }
 
     #[test]
+    fn list_of_a_nested_collection_carries_its_outer_shape() {
+        // core recurses into the entries, so only the outer shape is checkable
+        // here -- and on that shape core is exact.
+        for (item, kind) in [
+            (
+                FieldType::List {
+                    item: Box::new(FieldType::Int),
+                },
+                "list",
+            ),
+            (
+                FieldType::ListRef {
+                    target: "dcim.interface".to_string(),
+                },
+                "list",
+            ),
+            (
+                FieldType::Map {
+                    value: Box::new(FieldType::Int),
+                },
+                "map",
+            ),
+        ] {
+            let models = list_field_models(item);
+            assert!(
+                models.contains(&format!(
+                    "members = models.JSONField(validators=[_ListMembers(kind=\"{kind}\")])"
+                )),
+                "{models}"
+            );
+        }
+    }
+
+    #[test]
+    fn list_of_refs_carries_the_uuid_regex() {
+        // core parses a ref's uid exactly as it parses a `uuid`; only resolving
+        // it needs the inventory.
+        let models = list_field_models(FieldType::Ref {
+            target: "dcim.interface".to_string(),
+        });
+        assert!(
+            models.contains(&format!(
+                "members = models.JSONField(validators=[_ListMembers(regex={})])",
+                py_str(alembic_core::format_regex(&FieldFormat::Uuid))
+            )),
+            "{models}"
+        );
+    }
+
+    #[test]
     fn list_of_dates_carries_no_member_check() {
         // core reads a date as rfc 3339 and checks the calendar with it; django
         // parses its own shapes, so any check here would be an approximation.
@@ -1680,6 +1738,8 @@ mod tests {
                 "int" => member.is_i64() || member.is_u64(),
                 "float" => member.is_number(),
                 "bool" => member.is_boolean(),
+                "list" => member.is_array(),
+                "map" => member.is_object(),
                 other => panic!("no member kind {other}"),
             },
         }
@@ -1703,7 +1763,21 @@ mod tests {
             FieldType::Float,
             FieldType::Bool,
             FieldType::Date,
+            FieldType::Datetime,
+            FieldType::Time,
             FieldType::Json,
+            FieldType::List {
+                item: Box::new(FieldType::Int),
+            },
+            FieldType::Map {
+                value: Box::new(FieldType::Int),
+            },
+            FieldType::Ref {
+                target: "dcim.interface".to_string(),
+            },
+            FieldType::ListRef {
+                target: "dcim.interface".to_string(),
+            },
         ];
         let members = vec![
             json!("access"),
@@ -1730,24 +1804,35 @@ mod tests {
             json!("ünïcödé"),
             json!("2024-01-01"),
             json!("2024-01-01T00:00:00Z"),
+            json!("00:00:00"),
+            // the uid `core_accepts` puts in the inventory, so a ref member has
+            // one value core resolves and the crossing is not vacuous there.
+            json!(Uuid::from_u128(1).to_string()),
             json!(7),
             json!(1.5),
             json!(true),
             json!(null),
+            json!([]),
             json!(["nested"]),
+            json!({}),
             json!({"nested": "object"}),
         ];
 
         for item in &items {
             let check = member_check_for(item);
+            let mut accepted = 0;
             for member in &members {
                 if core_accepts_member(item, member) {
+                    accepted += 1;
                     assert!(
                         check_accepts_member(&check, member),
                         "core accepts {member} as a {item:?} member, the generated check rejects it"
                     );
                 }
             }
+            // an element type no member is valid for would satisfy the
+            // assertion above without ever reaching it.
+            assert!(accepted > 0, "no member in the corpus is a valid {item:?}");
         }
     }
 
@@ -1777,6 +1862,29 @@ mod tests {
         let int_check = member_check_for(&FieldType::Int);
         assert!(!check_accepts_member(&int_check, &json!(true)));
         assert!(check_accepts_member(&int_check, &json!(7)));
+
+        // a nested collection is checked on its outer shape alone, so the
+        // wrong shape is still refused even though the entries are not read.
+        let list_check = member_check_for(&FieldType::List {
+            item: Box::new(FieldType::Int),
+        });
+        assert!(!check_accepts_member(&list_check, &json!("notalist")));
+        assert!(check_accepts_member(&list_check, &json!(["x"])));
+
+        let map_check = member_check_for(&FieldType::Map {
+            value: Box::new(FieldType::Int),
+        });
+        assert!(!check_accepts_member(&map_check, &json!([])));
+        assert!(check_accepts_member(&map_check, &json!({})));
+
+        let ref_check = member_check_for(&FieldType::Ref {
+            target: "dcim.interface".to_string(),
+        });
+        assert!(!check_accepts_member(&ref_check, &json!("not-a-uuid")));
+        assert!(check_accepts_member(
+            &ref_check,
+            &json!(Uuid::from_u128(1).to_string())
+        ));
     }
 
     #[test]

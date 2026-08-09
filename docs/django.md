@@ -68,15 +68,24 @@ element is carried as a member check (`_ListMembers`) instead: a `list` of
 a `date`, `datetime` or `time` element carries no check: `validate` reads those
 as rfc 3339 and checks the calendar with them, while django's own parser takes
 shapes it refuses, so a check here would be an approximation either way. a
-`map`'s value type and a nested collection stay plain json too.
+`json` element carries none either, because `validate` takes any json there.
+
+a nested collection carries its outer shape: a `list` or `list_ref` element
+takes only a list, a `map` element only a map. `validate` recurses into the
+entries, which this check does not, so the shape is the part of it that is
+exact. a `ref` element takes the uid spellings `validate` parses; resolving one
+against the inventory is the half the generated app cannot see. a `map` field
+itself, as opposed to a `map` element, stays plain json.
 
 no check is stricter than `validate`, so nothing alembic accepts is rejected
-here; two are looser. a `cidr` or `prefix` member is held to the regex a
-backend would install for that format, which is deliberately wider than the
-parse `validate` runs, and a `json` element takes the null member `validate`
-refuses. a member check matches a format regex in full, while a scalar keeps
-django's `RegexValidator`, which searches, as `validate` does for a `pattern:`
-of your own.
+here. the ones that are looser are looser in a stated way: a `cidr` or `prefix`
+member is held to the regex a backend would install for that format, which is
+deliberately wider than the parse `validate` runs; a nested collection's
+entries go unread; a `ref` member is parsed but not resolved; and an element
+carrying no check takes the null member `validate` refuses everywhere. a member
+check matches a format regex in full, while a scalar keeps django's
+`RegexValidator`, which searches, as `validate` does for a `pattern:` of your
+own.
 
 the checks run on `full_clean()` and on the drf serializers, so the generated
 api enforces them; `loaddata` does not run validators, so the fixture loads

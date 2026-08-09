@@ -67,6 +67,28 @@ check(ok, f"any string is a member of a string list (got {errors})")
 ok, errors = accepts(modes=[])
 check(ok, f"an empty list is accepted (got {errors})")
 
+# core recurses into a nested collection's entries, so only the outer shape
+# ships -- but on that shape core is exact, so the wrong one is still a 400.
+ok, _ = accepts(nested=["notalist"])
+check(not ok, "a member of a list-of-lists that is not a list is rejected")
+
+ok, errors = accepts(nested=[[7], []])
+check(ok, f"a list member of a list-of-lists is accepted (got {errors})")
+
+ok, _ = accepts(labels=[[]])
+check(not ok, "a member of a list-of-maps that is not a map is rejected")
+
+ok, errors = accepts(labels=[{"a": 1}])
+check(ok, f"a map member of a list-of-maps is accepted (got {errors})")
+
+# a ref member is parsed as a uid; resolving it needs an inventory this app
+# does not have, so that half is the leniency pinned below.
+ok, _ = accepts(refs=["not-a-uuid"])
+check(not ok, "a ref member that is not a uid is rejected")
+
+ok, errors = accepts(refs=["44444444-4444-4444-4444-444444444444"])
+check(ok, f"a well-formed uid is accepted as a ref member (got {errors})")
+
 # the model itself says which lists carry a check, so the corpus below asks for
 # exact agreement only where one was emitted.
 checked = {
@@ -83,11 +105,22 @@ check(bool(checked), "the generated model carries member checks")
 # ships answers for itself, so a divergence between the two regex engines shows
 # up here and nowhere else.
 #
-# `dates` and `blobs` carry no check. `nets` and `pools` carry one that core
-# calls a superset by contract: `format_regex` is the widest regex accepting
-# everything `matches_format` does, and a cidr is parsed, not matched. so those
-# four take members core refuses, and no other field may.
-LENIENT = ["blobs", "dates", "nets", "pools"]
+# every field that takes a member core refuses, grouped by why. the fixture
+# declares one list per element type, so this characterises the mapping: a new
+# leniency, or one of these becoming exact, fails the comparison below.
+LENIENT = {
+    # `blobs` is json, which core takes any value for bar null. core reads the
+    # other three as rfc 3339 and checks the calendar with them, which django's
+    # own parser does not mirror.
+    "no check": ["blobs", "clocks", "dates", "stamps"],
+    # `format_regex` is by contract the widest regex accepting everything the
+    # parse behind it accepts, and a ref's uid still has to resolve against an
+    # inventory the generated app cannot see.
+    "a check core calls a superset": ["nets", "pools", "refs"],
+    # core recurses into the entries of these; only the outer shape ships.
+    "the outer shape only": ["groups", "labels", "nested"],
+}
+expected = sorted(field for group in LENIENT.values() for field in group)
 
 lenient = []
 for case in json.load(open(sys.argv[2])):
@@ -99,7 +132,7 @@ for case in json.load(open(sys.argv[2])):
         lenient.append((field, member))
 
 loose = sorted({field for field, _ in lenient})
-check(loose == LENIENT, f"only {LENIENT} take a member core refuses (got {loose})")
+check(loose == expected, f"only {expected} take a member core refuses (got {loose})")
 print(f"     {len(lenient)} lenient pairs: {lenient}")
 
 if failures:

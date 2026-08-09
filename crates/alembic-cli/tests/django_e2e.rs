@@ -270,11 +270,16 @@ fn member_corpus() -> String {
         json!("2024-01-01"),
         json!("2024-02-30"),
         json!("2024-01-01T00:00:00Z"),
+        json!("00:00:00"),
+        // the fixture's own uid, so a ref member has one value core resolves.
+        json!("44444444-4444-4444-4444-444444444444"),
         json!(7),
         json!(1.5),
         json!(true),
         json!(null),
+        json!([]),
         json!(["nested"]),
+        json!({}),
         json!({"nested": "object"}),
     ];
 

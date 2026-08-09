@@ -19,7 +19,13 @@ schema:
         ratios: {type: list, item: {type: float}}
         flags: {type: list, item: {type: bool}}
         dates: {type: list, item: {type: date}}
+        stamps: {type: list, item: {type: datetime}}
+        clocks: {type: list, item: {type: time}}
         blobs: {type: list, item: {type: json}}
+        nested: {type: list, item: {type: list, item: {type: int}}}
+        labels: {type: list, item: {type: map, value: {type: int}}}
+        refs: {type: list, item: {type: ref, target: dcim.interface}}
+        groups: {type: list, item: {type: list_ref, target: dcim.interface}}
 objects:
   - uid: "44444444-4444-4444-4444-444444444444"
     type: dcim.interface
@@ -38,4 +44,12 @@ objects:
       ratios: [1.5]
       flags: [true]
       dates: ["2024-01-01"]
+      stamps: ["2024-01-01T00:00:00Z"]
+      clocks: ["00:00:00"]
       blobs: [{"nested": "object"}]
+      nested: [[7]]
+      labels: [{"a": 1}]
+      # the object's own uid: a ref member has to resolve, and this fixture is
+      # one object.
+      refs: ["44444444-4444-4444-4444-444444444444"]
+      groups: [["44444444-4444-4444-4444-444444444444"]]
