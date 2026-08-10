@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- infrahub: two declared types that render one graphql kind fail the run; rename one. the kind pascal-cases each half of the type name and eats `.`, `_`, `-` and spaces, so `dcim.site_group` and `dcim.site.group` are one kind. every command refuses before it queries or writes (#372)
 - peeringdb observes `netixlan` records rather than organizations, and `PEERINGDB_API_KEY` is optional: an unset key reads anonymously instead of failing. a record carrying none of its declared type's own fields is refused rather than observed (#267)
 - `alembic-adapter-test`: `protocol/ensure-schema-empty` is opt-out. it sends a real `ensure_schema`, which a converging adapter reads as a request to delete everything it owns, and the runner has no `--allow-delete` gate of its own, so `--no-provisioning-check` turns it off for a runner pointed at a backend that is not disposable. it stays on by default, since the adapter the check exists for is the one whose author would not enable it. a turned-off check is reported as `skipped` and counted apart from the passes rather than dropped from the suite
 - netbox: two declared types whose names collapse to one custom object type name fail the run; rename one. the name is lowercased with every run of non-alphanumerics replaced by `_`, so `custom.asset_tag` and `custom.asset.tag` are one backend type. every command refuses: a create reported two types where the backend held one, a converge patched one field twice with conflicting values, and `plan` and `import` counted one backend row once under each declared name

@@ -12,6 +12,9 @@ are mapped to infrahub graphql object names (for example `infra.device` ->
 - types should be namespaced (for example `infra.device`), which maps to the
   infrahub graphql type `InfraDevice`. non-namespaced type names are still
   supported for read/write, but provisioning requires a namespace.
+- the mapping pascal-cases each half of the name and eats `.`, `_`, `-` and spaces,
+  so two declared types can render one kind (`dcim.site_group` and `dcim.site.group`
+  both give `DcimSiteGroup`). that fails the run; rename one.
 
 schema provisioning is configured in the backend config file, for example:
 
