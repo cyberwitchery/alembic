@@ -19,12 +19,38 @@ use std::time::{Duration, Instant};
 pub struct Outcome {
     pub name: String,
     pub failure: Option<Failure>,
+    /// why the check did not run, when it was turned off. a skipped check
+    /// certifies nothing, so it is neither a pass nor a failure and the report
+    /// counts it apart from both.
+    pub skipped: Option<String>,
 }
 
 impl Outcome {
-    /// whether the check passed.
+    /// whether the check ran and passed.
     pub fn passed(&self) -> bool {
-        self.failure.is_none()
+        self.failure.is_none() && self.skipped.is_none()
+    }
+
+    /// whether the check was turned off rather than run.
+    pub fn skipped(&self) -> bool {
+        self.skipped.is_some()
+    }
+}
+
+/// which built-in checks to run. every check is on by default: one that does not
+/// run certifies nothing, and the population these exist for is the adapter that
+/// would otherwise be certified into a failing apply.
+#[derive(Debug, Clone, Copy)]
+pub struct Builtins {
+    /// `protocol/ensure-schema-empty`. this one sends a real `ensure_schema`, so
+    /// an adapter that converges reads it as "delete everything you own"; turn it
+    /// off for a runner pointed at a backend that is not disposable.
+    pub provisioning: bool,
+}
+
+impl Default for Builtins {
+    fn default() -> Self {
+        Self { provisioning: true }
     }
 }
 
@@ -58,6 +84,11 @@ pub struct Expect {
 
 /// run the backend-independent protocol checks against the adapter command.
 pub fn run_builtin(adapter: &[String], timeout: Duration) -> Vec<Outcome> {
+    run_builtin_with(adapter, timeout, Builtins::default())
+}
+
+/// the built-ins, with the writing ones selectable. see [`Builtins`].
+pub fn run_builtin_with(adapter: &[String], timeout: Duration, builtins: Builtins) -> Vec<Outcome> {
     // requests use the version the engine sends, so the suite tracks the protocol it tests.
     let version = EXTERNAL_PROTOCOL_VERSION;
     // the declared role decides which liveness check runs below, so probe it first.
@@ -153,19 +184,29 @@ pub fn run_builtin(adapter: &[String], timeout: Duration) -> Vec<Outcome> {
     // apply reaches ensure_schema only through an emitter, so the check follows
     // the declared role, as the liveness probe does.
     if matches!(role, ExternalRole::Emitter | ExternalRole::Adapter) {
-        outcomes.push(check(
-            adapter,
-            timeout,
-            "protocol/ensure-schema-empty",
-            &request_bytes(&json!({
-                "version": version,
-                "setup": {},
-                "method": "ensure_schema",
-                "schema": { "types": {} }
-            })),
-            "ensure_schema",
-            Expectation::MustSucceed,
-        ));
+        outcomes.push(if builtins.provisioning {
+            check(
+                adapter,
+                timeout,
+                "protocol/ensure-schema-empty",
+                &request_bytes(&json!({
+                    "version": version,
+                    "setup": {},
+                    "method": "ensure_schema",
+                    "schema": { "types": {} }
+                })),
+                "ensure_schema",
+                Expectation::MustSucceed,
+            )
+        } else {
+            // reported rather than omitted: a reader counting passes must not
+            // read a suite that never sent ensure_schema as one that certified it.
+            Outcome {
+                name: "protocol/ensure-schema-empty".to_string(),
+                failure: None,
+                skipped: Some("turned off with --no-provisioning-check".to_string()),
+            }
+        });
     }
     outcomes
 }
@@ -218,6 +259,7 @@ fn probe_capabilities(adapter: &[String], timeout: Duration) -> (ExternalRole, O
         Outcome {
             name: "protocol/capabilities".to_string(),
             failure,
+            skipped: None,
         },
     )
 }
@@ -305,6 +347,7 @@ fn check(
     Outcome {
         name: name.to_string(),
         failure,
+        skipped: None,
     }
 }
 
