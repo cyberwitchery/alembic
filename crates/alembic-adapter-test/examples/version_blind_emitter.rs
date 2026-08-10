@@ -2,7 +2,7 @@
 //! bug the suite exists to catch. it refuses `read` for role reasons, which is
 //! what used to answer the version probe on its behalf.
 
-use alembic_engine::ApplyReport;
+use alembic_engine::{ApplyReport, ProvisionReport};
 use serde_json::{json, Value};
 use std::io::Read;
 
@@ -20,6 +20,7 @@ fn main() {
     let response = match request.get("method").and_then(Value::as_str) {
         Some("capabilities") => json!({ "ok": true, "result": { "role": "emitter" } }),
         Some("write") => json!({ "ok": true, "result": ApplyReport::default() }),
+        Some("ensure_schema") => json!({ "ok": true, "result": ProvisionReport::default() }),
         Some("preview_schema") => json!({ "ok": true, "result": null }),
         Some("read") => {
             json!({ "ok": false, "error": "this adapter is write-only; it cannot observe state" })
