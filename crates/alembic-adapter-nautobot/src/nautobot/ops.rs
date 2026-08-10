@@ -350,7 +350,25 @@ struct SharedCustomField {
     field_name: String,
     current: ExistingCustomField,
     desired: Map<String, Value>,
+    choices: Vec<String>,
     declarations: Vec<String>,
+}
+
+/// fold one declaration's choices into what the others on the same field agreed
+/// on, naming the property when they disagree: the create payload the engine
+/// merges does not carry them. order is weight, and only a `select` has any.
+fn merge_shared_field_choices(
+    agreed: &mut Vec<String>,
+    declared: &[String],
+) -> Option<&'static str> {
+    if declared.is_empty() {
+        return None;
+    }
+    if agreed.is_empty() {
+        *agreed = declared.to_vec();
+        return None;
+    }
+    (agreed != declared).then_some("choices")
 }
 
 impl NautobotAdapter {
@@ -412,12 +430,18 @@ impl NautobotAdapter {
                             field_name: field_name.clone(),
                             current: def.current.clone(),
                             desired: Map::new(),
+                            choices: Vec::new(),
                             declarations: Vec::new(),
                         }
                     });
-                    if let Some(property) =
-                        merge_shared_field_properties(&mut shared.desired, &payload)
-                    {
+                    let disagreement = merge_shared_field_properties(&mut shared.desired, &payload)
+                        .or_else(|| {
+                            merge_shared_field_choices(
+                                &mut shared.choices,
+                                declared_choices(field_schema),
+                            )
+                        });
+                    if let Some(property) = disagreement {
                         return Err(anyhow!(
                             "custom field {} is one nautobot field (id {field_id}) shared by {} and {declared}, which declare different {property}; make them agree or give each type its own field name",
                             shared.field_name,

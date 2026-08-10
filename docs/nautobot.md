@@ -90,9 +90,10 @@ number: a text field reads back quoted, which fails validation on `import`.
 a `select` is created with one choice per declared value, weighted in declaration order.
 choices are written by the create alone, so a field the backend already has keeps the
 choices it was created with: unlike `required`, `description` and `validation_regex`,
-they are not converged. a run that fails partway through the choices leaves the field
-created and its remaining choices unwritten; the next run finds the field present and
-does not resume them.
+they are not converged. not converged is not unchecked, though: two types sharing one
+field must declare the same values in the same order, or the run fails naming both. a
+run that fails partway through the choices leaves the field created and its remaining
+choices unwritten; the next run finds the field present and does not resume them.
 
 a declared `pattern:` or `format:` is not provisioned on a `select`: nautobot enforces
 `validation_regex` on text fields only, and the choices are the constraint.
