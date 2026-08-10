@@ -1,4 +1,4 @@
-"""put a declared list's element check through the generated drf serializer.
+"""put a declared list's element check through the generated serializer and model.
 
 `apply` already ran makemigrations, migrate and loaddata, so the member check
 is serializable into a migration by the time this runs. this checks the half
@@ -21,6 +21,8 @@ import django
 
 django.setup()
 
+from django.core.exceptions import ValidationError
+
 from alembic_app.generated_models import DcimInterface
 from alembic_app.generated_serializers import DcimInterfaceSerializer
 
@@ -38,6 +40,15 @@ def accepts(**attrs):
         data={"key": "name=eth1", "name": "eth1", **attrs}
     )
     return serializer.is_valid(), serializer.errors
+
+
+def cleans(**attrs):
+    """the other surface the checks run on: the model, as the admin drives it."""
+    try:
+        DcimInterface(key="name=eth1", name="eth1", **attrs).full_clean()
+        return True
+    except ValidationError:
+        return False
 
 
 ok, errors = accepts(modes=["access", "trunk"])
@@ -112,6 +123,16 @@ for field in list_fields:
     for value in ["notalist", 7, {"a": 1}]:
         ok, _ = accepts(**{field: value})
         check(not ok, f"{field} refuses the non-list value {value!r}")
+        check(not cleans(**{field: value}), f"{field} refuses {value!r} on full_clean()")
+
+# `""` and `{}` are django's own empty values, so `full_clean()` never reaches
+# the check with them: this is the leniency docs/django.md states, pinned here
+# so tightening it, or widening it past these two, fails rather than drifts.
+for field in list_fields:
+    for value in ["", {}]:
+        check(cleans(**{field: value}), f"{field} takes the empty value {value!r} on full_clean()")
+        ok, _ = accepts(**{field: value})
+        check(not ok, f"{field} refuses the empty value {value!r} through the serializer")
 
 # core's verdict comes from the rust side; this is the only place the check that
 # ships answers for itself, so a divergence between the two regex engines shows
