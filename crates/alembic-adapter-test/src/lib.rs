@@ -107,7 +107,7 @@ pub fn run_builtin(adapter: &[String], timeout: Duration) -> Vec<Outcome> {
         method,
         Expectation::MustSucceed,
     );
-    vec![
+    let mut outcomes = vec![
         check(
             adapter,
             timeout,
@@ -149,7 +149,25 @@ pub fn run_builtin(adapter: &[String], timeout: Duration) -> Vec<Outcome> {
             // a null result ("cannot preview"); both count as success.
             Expectation::MustSucceed,
         ),
-    ]
+    ];
+    // apply reaches ensure_schema only through an emitter, so the check follows
+    // the declared role, as the liveness probe does.
+    if matches!(role, ExternalRole::Emitter | ExternalRole::Adapter) {
+        outcomes.push(check(
+            adapter,
+            timeout,
+            "protocol/ensure-schema-empty",
+            &request_bytes(&json!({
+                "version": version,
+                "setup": {},
+                "method": "ensure_schema",
+                "schema": { "types": {} }
+            })),
+            "ensure_schema",
+            Expectation::MustSucceed,
+        ));
+    }
+    outcomes
 }
 
 /// probe the adapter's declared role with a capabilities request. answering with
