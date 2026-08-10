@@ -38,7 +38,8 @@ a silently ignored key. that matters most for the two booleans: a discarded
   the backend holds, so over this backend it would report every declared object
   missing on every run, having read nothing. plain `plan` is unaffected.
 - the adapter provisions no backend schema of its own; the generated migrations
-  are the schema.
+  are the schema. `preview` reports nothing to provision, rather than a
+  capability gap.
 - the ir uid is the model's primary key, so re-running `apply` converges the
   existing rows instead of duplicating them. objects removed from the inventory
   stay in the app's database.

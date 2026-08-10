@@ -862,6 +862,7 @@ impl NetBoxAdapter {
         let mut shared_fields: BTreeMap<u64, SharedCustomField> = BTreeMap::new();
         let mut custom_schema_types: Vec<(TypeName, &TypeSchema)> = Vec::new();
         let mut custom_schema_type_names: BTreeSet<String> = BTreeSet::new();
+        let mut custom_object_names: BTreeMap<String, TypeName> = BTreeMap::new();
         for (type_name, type_schema) in &schema.types {
             let type_name = TypeName::new(type_name);
             if registry.contains_type(&type_name) {
@@ -929,6 +930,7 @@ impl NetBoxAdapter {
                 }
                 continue;
             }
+            claim_custom_object_name(&mut custom_object_names, &type_name)?;
             custom_schema_type_names.insert(type_name.as_str().to_string());
             custom_schema_types.push((type_name, type_schema));
         }
@@ -1507,8 +1509,9 @@ async fn build_registry_for_schema(
         custom_by_name.insert(custom_type.name.clone(), custom_type);
     }
 
+    let mut custom_object_names: BTreeMap<String, TypeName> = BTreeMap::new();
     for type_name in missing {
-        let custom_name = custom_object_type_name(&type_name);
+        let custom_name = claim_custom_object_name(&mut custom_object_names, &type_name)?;
         let endpoint = custom_object_endpoint(&custom_name);
         if let Some(custom_type) = custom_by_name.get(&custom_name) {
             if let Some((app_label, model)) = custom_object_type_parts(custom_type) {
@@ -1634,8 +1637,8 @@ struct PlannedNativeField<'a> {
 /// an existing custom field to converge, with the patch that does it: only the
 /// properties the schema declares and the backend disagrees on.
 struct PlannedFieldUpdate {
-    /// every `type.field` declaration this one backend field answers; a custom
-    /// object field has a single `custom_object_type` fk, so always exactly one.
+    /// every `type.field` declaration this one backend field answers; on a custom
+    /// object field exactly one, since colliding type names are refused.
     declarations: Vec<String>,
     field_id: u64,
     patch: Value,
@@ -1741,6 +1744,21 @@ fn custom_object_type_name(type_name: &TypeName) -> String {
         out.pop();
     }
     out
+}
+
+/// two declared names can normalize onto one backend type name, and every
+/// lookup keyed on it would then answer both.
+fn claim_custom_object_name(
+    claimed: &mut BTreeMap<String, TypeName>,
+    type_name: &TypeName,
+) -> Result<String> {
+    let custom_name = custom_object_type_name(type_name);
+    if let Some(other) = claimed.insert(custom_name.clone(), type_name.clone()) {
+        return Err(anyhow!(
+            "custom object type {custom_name} is one netbox type claimed by {other} and {type_name}, whose names collapse together once lowercased with every run of non-alphanumerics replaced by `_`; rename one so their custom object type names differ"
+        ));
+    }
+    Ok(custom_name)
 }
 
 fn custom_object_features() -> BTreeSet<String> {

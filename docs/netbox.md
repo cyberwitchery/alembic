@@ -90,9 +90,12 @@ will provision them as custom objects on `apply` using the netbox custom objects
 - converges a field the type already has onto those three, additively as above: the
   field's type is left alone, and a property the schema does not declare keeps
   whatever the backend holds. a key field is required whatever the schema says. a
-  custom object field belongs to a single type, so there is no shared-field case to
+  custom object field answers one declaration, so there is no shared-field case to
   reconcile here. the preview and the apply report the updates under
   `provision.updated_object_fields`
+- the custom object type name is the schema type name lowercased with every run of
+  non-alphanumerics replaced by `_`, so two declared types that collapse to one name
+  (`custom.asset_tag` and `custom.asset.tag`) fail the run rather than sharing a type
 - applies objects via `/api/plugins/custom-objects/<custom-object-type>/`
 
 this requires the `netbox-custom-objects` plugin and its REST API endpoints to be available.
