@@ -251,10 +251,10 @@ alembic apply -p plan.json -o apply-report.json \
   the run returns an error naming that operation, rather than declining the rest
   on your behalf. drop `--interactive` to apply the whole plan
 - the `peeringdb` backend is read-only; apply will return an error
-- apply runs adapter provisioning (`ensure_schema`) before writes on read+write
-  backends; for netbox this can create custom fields, custom object types, and
-  custom object type fields when supported. write-only emitter backends (django)
-  skip provisioning
+- apply runs adapter provisioning (`ensure_schema`) before writes on any backend
+  that can write, read+write or write-only; for netbox this can create custom
+  fields, custom object types, and custom object type fields when supported. a
+  backend that provisions nothing (django) reports nothing
 - infrahub provisioning can generate and load a schema file when
   configured in the backend config
 - `-o`/`--output` writes the apply report as json (optional; without it apply writes no artifact, as before)

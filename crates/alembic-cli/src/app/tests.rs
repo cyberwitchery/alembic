@@ -2889,6 +2889,109 @@ async fn run_plan_provision_fails_closed_on_preview_error() {
     );
 }
 
+// drives the real run() for `plan --provision` against an external adapter that
+// declares the emitter role and provisions schema. the declared role governs read
+// vs write, so provisioning -- itself a write -- must reach the subprocess rather
+// than be refused up front.
+#[tokio::test(flavor = "multi_thread")]
+async fn run_plan_provision_over_a_write_only_backend() {
+    let _guard = cwd_lock().lock().await;
+    let dir = tempdir().unwrap();
+    let state_path = dir.path().join(".alembic").join("state.json");
+    let _env = EnvVarGuard::acquire_async(&[
+        ("ALEMBIC_STATE_BACKEND", Some("local")),
+        ("ALEMBIC_STATE_PATH", Some(state_path.to_str().unwrap())),
+    ])
+    .await;
+
+    let adapter = example_binary("provisioning_emitter_adapter");
+    let inventory = write_site_inventory(dir.path());
+    let out_path = dir.path().join("plan.json");
+    let config_path = dir.path().join("backend.yaml");
+    std::fs::write(
+        &config_path,
+        format!(
+            "backend: external\ncommand: \"{}\"\ntimeout_seconds: 5\n",
+            adapter.to_str().unwrap()
+        ),
+    )
+    .unwrap();
+
+    let cwd = std::env::current_dir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
+    let cli = Cli {
+        command: Command::Plan {
+            file: inventory,
+            output: Some(out_path),
+            backend: Some("external".to_string()),
+            backend_config: Some(config_path),
+            provision: true,
+            dry_run: false,
+            report: false,
+            allow_delete: false,
+        },
+    };
+    let result = run(cli, AppConfig::load().unwrap()).await;
+    std::env::set_current_dir(cwd).unwrap();
+
+    result.expect("a declared emitter provisions rather than being refused");
+}
+
+// the same backend without --provision: the read-only preview is what a plain
+// plan carries, so a write-only backend that can preview must fill it in.
+#[tokio::test(flavor = "multi_thread")]
+async fn run_plan_previews_schema_over_a_write_only_backend() {
+    let _guard = cwd_lock().lock().await;
+    let dir = tempdir().unwrap();
+    let state_path = dir.path().join(".alembic").join("state.json");
+    let _env = EnvVarGuard::acquire_async(&[
+        ("ALEMBIC_STATE_BACKEND", Some("local")),
+        ("ALEMBIC_STATE_PATH", Some(state_path.to_str().unwrap())),
+    ])
+    .await;
+
+    let adapter = example_binary("provisioning_emitter_adapter");
+    let inventory = write_site_inventory(dir.path());
+    let out_path = dir.path().join("plan.json");
+    let config_path = dir.path().join("backend.yaml");
+    std::fs::write(
+        &config_path,
+        format!(
+            "backend: external\ncommand: \"{}\"\ntimeout_seconds: 5\n",
+            adapter.to_str().unwrap()
+        ),
+    )
+    .unwrap();
+
+    let cwd = std::env::current_dir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
+    let cli = Cli {
+        command: Command::Plan {
+            file: inventory,
+            output: Some(out_path.clone()),
+            backend: Some("external".to_string()),
+            backend_config: Some(config_path),
+            provision: false,
+            dry_run: false,
+            report: false,
+            allow_delete: false,
+        },
+    };
+    let result = run(cli, AppConfig::load().unwrap()).await;
+    std::env::set_current_dir(cwd).unwrap();
+    result.expect("plan over a write-only backend still plans");
+
+    let plan: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&out_path).unwrap()).unwrap();
+    assert!(
+        !plan["schema_preview"]["created_object_types"]
+            .as_array()
+            .expect("the write-only backend's preview rides in the plan")
+            .is_empty(),
+        "{plan}"
+    );
+}
+
 /// a plugin directory that is genuinely absent is the default case (`./plugins`
 /// usually is), so it stays an empty list rather than an error.
 #[test]

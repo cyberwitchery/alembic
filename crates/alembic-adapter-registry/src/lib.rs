@@ -485,10 +485,7 @@ impl Emitter for ProcessAdapter {
         self.call(ExternalRequestRef::Write { schema, ops, state })
             .await
     }
-}
 
-#[async_trait::async_trait]
-impl Adapter for ProcessAdapter {
     async fn ensure_schema(&self, schema: &alembic_core::Schema) -> Result<ProvisionReport> {
         self.call(ExternalRequestRef::EnsureSchema { schema }).await
     }
@@ -501,6 +498,8 @@ impl Adapter for ProcessAdapter {
             .await
     }
 }
+
+impl Adapter for ProcessAdapter {}
 
 #[cfg(feature = "infrahub")]
 impl InfrahubSchemaConfig {
@@ -896,7 +895,7 @@ fi
         );
 
         let provision = backend
-            .adapter()
+            .emitter()
             .unwrap()
             .ensure_schema(&schema)
             .await

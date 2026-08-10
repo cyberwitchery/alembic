@@ -37,7 +37,7 @@ a silently ignored key. that matters most for the two booleans: a discarded
 - `plan --report` is rejected for the same reason. a drift report asserts what
   the backend holds, so over this backend it would report every declared object
   missing on every run, having read nothing. plain `plan` is unaffected.
-- `apply` skips adapter provisioning (`ensure_schema`); the generated migrations
+- the adapter provisions no backend schema of its own; the generated migrations
   are the schema.
 - the ir uid is the model's primary key, so re-running `apply` converges the
   existing rows instead of duplicating them. objects removed from the inventory
@@ -81,18 +81,21 @@ against the inventory is the half the generated app cannot see. a `map` field
 itself, as opposed to a `map` element, stays plain json.
 
 no check is stricter than `validate`, so nothing alembic accepts is rejected
-here. the ones that are looser are looser in a stated way: a `cidr` or `prefix`
-member is held to the regex a backend would install for that format, which is
-deliberately wider than the parse `validate` runs; a nested collection's
-entries go unread; a `ref` member is parsed but not resolved; and an element
-carrying no check takes the null member `validate` refuses everywhere. a member
-check matches a format regex in full, while a scalar keeps django's
-`RegexValidator`, which searches, as `validate` does for a `pattern:` of your
-own.
+here. the member checks that are looser are looser in a stated way: a `cidr` or
+`prefix` member is held to the regex a backend would install for that format,
+which is deliberately wider than the parse `validate` runs; a nested
+collection's entries go unread; a `ref` member is parsed but not resolved; and
+an element carrying no check takes the null member `validate` refuses
+everywhere. a member check matches a format regex in full, while a scalar keeps
+django's `RegexValidator`, which searches, as `validate` does for a `pattern:`
+of your own.
 
 the checks run on `full_clean()` and on the drf serializers, so the generated
-api enforces them; `loaddata` does not run validators, so the fixture loads
-whatever `validate` passed.
+api enforces them. django does not run a field's validators on its
+`empty_values`, so an optional field takes `""` or `{}` on `full_clean()`
+whatever it declares. the serializers refuse both on a list, but an optional
+scalar takes `""` there too. `loaddata` does not run validators, so the fixture
+loads whatever `validate` passed.
 
 ## optional packages
 

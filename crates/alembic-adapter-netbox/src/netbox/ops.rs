@@ -1,8 +1,8 @@
 use super::client::{is_404_anyhow, CustomFieldDef, CustomObjectField, CustomObjectType};
 use super::mapping::{
     build_tag_inputs, custom_field_type_for_schema, custom_field_update_payload,
-    merge_shared_field_properties, slugify, supports_feature, tags_from_value,
-    validation_regex_for_schema, ExistingCustomField,
+    describe_custom_field_update, merge_shared_field_properties, slugify, supports_feature,
+    tags_from_value, validation_regex_for_schema, ExistingCustomField,
 };
 use super::registry::ObjectTypeRegistry;
 use super::state::{resolved_from_state, state_mappings};
@@ -274,10 +274,7 @@ impl Emitter for NetBoxAdapter {
             },
         })
     }
-}
 
-#[async_trait]
-impl Adapter for NetBoxAdapter {
     async fn ensure_schema(&self, schema: &Schema) -> Result<ProvisionReport> {
         let mut registry: ObjectTypeRegistry = self.client.fetch_object_types().await?;
         let custom_fields_by_type = self.client.fetch_custom_field_defs().await?;
@@ -500,6 +497,8 @@ impl Adapter for NetBoxAdapter {
         }))
     }
 }
+
+impl Adapter for NetBoxAdapter {}
 
 /// decodes every generic foreign key on `type_name` from its NetBox read shape
 /// into the alembic uid(s) it references. both wire forms expose a content type
@@ -925,8 +924,15 @@ impl NetBoxAdapter {
             else {
                 continue;
             };
+            // each declaration carries what the patch would write, so the
+            // preview names the change rather than only the field.
+            let changes = describe_custom_field_update(&shared.current, &patch).join(", ");
             updated_fields.push(PlannedFieldUpdate {
-                declarations: shared.declarations,
+                declarations: shared
+                    .declarations
+                    .iter()
+                    .map(|declared| format!("{declared}: {changes}"))
+                    .collect(),
                 field_id,
                 patch,
             });

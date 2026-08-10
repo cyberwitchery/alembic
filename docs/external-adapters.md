@@ -242,7 +242,8 @@ the adapter contract the adapter implements. the result carries a `role`:
 - `emitter`: write-only. the host calls `write` but never `read`; plain `plan`
   plans every declared object as a create against an empty observation, while
   `import` and `plan --report` reject the backend up front instead of
-  observing nothing.
+  observing nothing. the role governs read vs write only: provisioning is a
+  write, so `ensure_schema` and `preview_schema` are still called.
 - `adapter`: read+write; the host may call every method.
 
 an adapter that does not answer capabilities (the unknown-method error, or any

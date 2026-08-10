@@ -61,7 +61,9 @@ token: nautobot_xxx_replace_me
   alembic's own create carries a single content type, so a field nautobot holds
   against only one of the two declared types is not converged for the other and
   that declaration's create is rejected as a duplicate key. the schema preview
-  reports the same updates under `provision.updated_fields`.
+  reports the same updates under `provision.updated_fields`, each naming the
+  property and both sides (`dcim.site.tier: validation_regex "" -> "^[a-z]+$"`),
+  so an update to a field this run did not create is read before it is written.
 - tags the applied objects reference but the backend lacks are created at apply, not
   during schema provisioning. a successful apply lists them in `provision.created_tags`;
   a tag that already existed is not listed. they are created before the ops, so an apply

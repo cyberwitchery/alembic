@@ -280,29 +280,37 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             }
             // read-only schema preview: what apply's ensure_schema would provision,
             // writing nothing. skipped when --provision actually provisions now, and
-            // for observer/emitter backends that cannot provision schema at all. all
+            // for a read-only backend, which cannot provision schema at all. all
             // preview output goes to stderr so it never pollutes a --dry-run/--report
             // stdout; the machine-readable copy rides in the plan's schema_preview.
             let mut schema_preview = None;
             if provision {
-                let adapter = backend.adapter()?;
+                let emitter = backend.emitter()?;
                 // provisioning can delete custom object types/fields the inventory
                 // no longer declares; gate it behind --allow-delete like apply,
                 // checking the read-only preview before writing schema.
                 if !allow_delete {
-                    if let Some(preview) = adapter.preview_schema(&inventory.schema).await? {
+                    if let Some(preview) = emitter.preview_schema(&inventory.schema).await? {
                         guard_schema_deletes(&preview, allow_delete)?;
                     }
                 }
-                let provision_report = adapter.ensure_schema(&inventory.schema).await?;
+                let provision_report = emitter.ensure_schema(&inventory.schema).await?;
                 if !provision_report.is_empty() {
                     println!("provision: {provision_report}");
+                    // the summary counts; an update writes to a field this run
+                    // did not create, so name what it wrote.
+                    for updated in &provision_report.updated_fields {
+                        println!("  updated {updated}");
+                    }
                 }
-            } else if let Ok(adapter) = backend.adapter() {
-                match adapter.preview_schema(&inventory.schema).await {
+            } else if let Ok(emitter) = backend.emitter() {
+                match emitter.preview_schema(&inventory.schema).await {
                     Ok(Some(report)) => {
                         if !report.is_empty() {
                             eprintln!("schema preview: {report}");
+                            for updated in &report.updated_fields {
+                                eprintln!("  would update {updated}");
+                            }
                         }
                         schema_preview = Some(report);
                     }
@@ -494,6 +502,10 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
 fn print_apply_report(report: &ApplyReport) {
     if !report.provision.is_empty() {
         println!("provision: {}", report.provision);
+        // an update writes to a field this run did not create; name what it wrote.
+        for updated in &report.provision.updated_fields {
+            println!("  updated {updated}");
+        }
     }
     if let Some(previously_applied_count) = report.previously_applied_count {
         println!(

@@ -30,7 +30,7 @@ mod tests {
     use alembic_core::{
         FieldSchema, FieldType, JsonMap, Key, Object, Schema, TypeName, TypeSchema, Uid,
     };
-    use alembic_engine::{Adapter, BackendId, Emitter, FieldChange, Observer, Op, StateStore};
+    use alembic_engine::{BackendId, Emitter, FieldChange, Observer, Op, StateStore};
     use httpmock::Method::{DELETE, GET, PATCH, POST};
     use httpmock::MockServer;
     use serde_json::json;
@@ -213,9 +213,9 @@ mod tests {
         assert_eq!(
             report.updated_fields,
             vec![
-                "dcim.device.asset_tag".to_string(),
-                "dcim.site.asset_tag".to_string()
-            ]
+                "dcim.device.asset_tag: required false -> true, description \"\" -> \"asset tag\", validation_regex \"\" -> \"^ASSET-\"".to_string(),
+                "dcim.site.asset_tag: required false -> true, description \"\" -> \"asset tag\", validation_regex \"\" -> \"^ASSET-\"".to_string(),
+            ],
         );
         cf_patch.assert_calls(1);
     }
@@ -368,9 +368,9 @@ mod tests {
         assert_eq!(
             report.updated_fields,
             vec![
-                "dcim.device.asset_tag".to_string(),
-                "dcim.site.asset_tag".to_string()
-            ]
+                "dcim.device.asset_tag: required false -> true".to_string(),
+                "dcim.site.asset_tag: required false -> true".to_string(),
+            ],
         );
         cf_patch.assert_calls(1);
     }
@@ -416,9 +416,9 @@ mod tests {
         assert_eq!(
             report.updated_fields,
             vec![
-                "dcim.device.asset_tag".to_string(),
-                "dcim.site.asset_tag".to_string()
-            ]
+                "dcim.device.asset_tag: validation_regex \"\" -> \"^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$\"".to_string(),
+                "dcim.site.asset_tag: validation_regex \"\" -> \"^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$\"".to_string(),
+            ],
         );
         cf_patch.assert_calls(1);
     }
@@ -1048,7 +1048,9 @@ mod tests {
 
         assert_eq!(
             report.updated_fields,
-            vec!["dcim.site.asset_tag".to_string()]
+            vec![
+                "dcim.site.asset_tag: required false -> true, description \"\" -> \"asset tag\", validation_regex \"\" -> \"^SITE-\"".to_string(),
+            ],
         );
         assert!(report.created_fields.is_empty());
         cf_patch.assert_calls(1);
@@ -1123,7 +1125,7 @@ mod tests {
 
         assert_eq!(
             report.updated_fields,
-            vec!["dcim.site.asset_tag".to_string()]
+            vec!["dcim.site.asset_tag: validation_regex \"\" -> \"^SITE-\"".to_string(),],
         );
         cf_patch.assert_calls(1);
     }
@@ -1156,7 +1158,9 @@ mod tests {
 
         assert_eq!(
             report.updated_fields,
-            vec!["dcim.site.asset_tag".to_string()]
+            vec![
+                "dcim.site.asset_tag: required false -> true, description \"\" -> \"asset tag\", validation_regex \"\" -> \"^SITE-\"".to_string(),
+            ],
         );
         cf_patch.assert_calls(0);
     }

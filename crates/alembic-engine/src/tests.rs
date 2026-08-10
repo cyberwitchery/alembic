@@ -982,7 +982,6 @@ impl Emitter for TestAdapter {
     }
 }
 
-#[async_trait::async_trait]
 impl Adapter for TestAdapter {}
 
 #[test]
@@ -1356,10 +1355,7 @@ impl Emitter for PreviewAdapter {
     ) -> anyhow::Result<ApplyReport> {
         Ok(ApplyReport::default())
     }
-}
 
-#[async_trait::async_trait]
-impl Adapter for PreviewAdapter {
     async fn preview_schema(
         &self,
         _schema: &alembic_core::Schema,
@@ -1367,6 +1363,8 @@ impl Adapter for PreviewAdapter {
         Ok(Some(self.preview.clone()))
     }
 }
+
+impl Adapter for PreviewAdapter {}
 
 #[test]
 fn apply_plan_self_previews_and_blocks_schema_deletes() {
@@ -1413,6 +1411,102 @@ fn apply_plan_self_preview_allows_schema_deletes_with_flag() {
     };
     let backend = Backend::Adapter(Box::new(adapter));
     futures::executor::block_on(apply_plan(&backend, &plan, &mut state, true)).unwrap();
+}
+
+/// write-only backend that provisions schema, counting the calls: provisioning
+/// is a write, so an emitter reaches the same gate a read+write adapter does.
+struct ProvisioningEmitter {
+    provisioned: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    report: ProvisionReport,
+    preview: Option<ProvisionReport>,
+}
+
+#[async_trait::async_trait]
+impl Emitter for ProvisioningEmitter {
+    async fn write(
+        &self,
+        _schema: &alembic_core::Schema,
+        _ops: &[Op],
+        _state: &StateStore,
+    ) -> anyhow::Result<ApplyReport> {
+        Ok(ApplyReport::default())
+    }
+
+    async fn ensure_schema(
+        &self,
+        _schema: &alembic_core::Schema,
+    ) -> anyhow::Result<ProvisionReport> {
+        self.provisioned
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(self.report.clone())
+    }
+
+    async fn preview_schema(
+        &self,
+        _schema: &alembic_core::Schema,
+    ) -> anyhow::Result<Option<ProvisionReport>> {
+        Ok(self.preview.clone())
+    }
+}
+
+fn provisioning_emitter(
+    report: ProvisionReport,
+    preview: Option<ProvisionReport>,
+) -> (Backend, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    let provisioned = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let backend = Backend::Emitter(Box::new(ProvisioningEmitter {
+        provisioned: provisioned.clone(),
+        report,
+        preview,
+    }));
+    (backend, provisioned)
+}
+
+#[test]
+fn apply_plan_provisions_over_a_write_only_backend() {
+    let (backend, provisioned) = provisioning_emitter(
+        ProvisionReport {
+            created_fields: vec!["dcim.site.tier".to_string()],
+            ..Default::default()
+        },
+        None,
+    );
+    let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
+    let report =
+        futures::executor::block_on(apply_plan(&backend, &empty_plan(), &mut state, false))
+            .unwrap();
+    assert_eq!(provisioned.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(report.provision.created_fields, vec!["dcim.site.tier"]);
+}
+
+#[test]
+fn apply_plan_self_previews_a_write_only_backend_before_provisioning() {
+    let (backend, provisioned) = provisioning_emitter(
+        ProvisionReport::default(),
+        Some(ProvisionReport {
+            deleted_object_types: vec!["dcim.widget".to_string()],
+            ..Default::default()
+        }),
+    );
+    let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
+    let result =
+        futures::executor::block_on(apply_plan(&backend, &empty_plan(), &mut state, false));
+    assert!(result.unwrap_err().to_string().contains("--allow-delete"));
+    // refused before the schema write, not after it.
+    assert_eq!(provisioned.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
+#[test]
+fn apply_plan_over_a_write_only_backend_that_provisions_nothing() {
+    // django's shape: it declares neither method, so apply runs the defaults and
+    // comes out with nothing to report.
+    let (backend, provisioned) = provisioning_emitter(ProvisionReport::default(), None);
+    let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
+    let report =
+        futures::executor::block_on(apply_plan(&backend, &empty_plan(), &mut state, false))
+            .unwrap();
+    assert_eq!(provisioned.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert!(report.provision.is_empty());
 }
 
 #[test]
@@ -1609,10 +1703,7 @@ impl Emitter for TwoPassAdapter {
             ..Default::default()
         })
     }
-}
 
-#[async_trait::async_trait]
-impl Adapter for TwoPassAdapter {
     async fn ensure_schema(
         &self,
         _schema: &alembic_core::Schema,
@@ -1623,6 +1714,8 @@ impl Adapter for TwoPassAdapter {
         })
     }
 }
+
+impl Adapter for TwoPassAdapter {}
 
 fn empty_plan() -> Plan {
     Plan {
@@ -1651,15 +1744,18 @@ fn apply_plan_merges_both_provision_passes() {
 }
 
 #[test]
-fn apply_plan_keeps_an_emitters_write_provision() {
+fn apply_plan_merges_both_provision_passes_over_a_write_only_backend() {
     let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
-    // the emitter arm has no ensure_schema report of its own; merging an empty one
-    // must not blank what write reported.
+    // the same adapter in the write-only box: which box holds it must not decide
+    // whether the schema pass runs at all.
     let backend = Backend::Emitter(Box::new(TwoPassAdapter));
     let report =
         futures::executor::block_on(apply_plan(&backend, &empty_plan(), &mut state, true)).unwrap();
     assert_eq!(report.provision.created_tags, vec!["fabric".to_string()]);
-    assert!(report.provision.created_fields.is_empty());
+    assert_eq!(
+        report.provision.created_fields,
+        vec!["dcim.site.role".to_string()]
+    );
 }
 
 #[test]

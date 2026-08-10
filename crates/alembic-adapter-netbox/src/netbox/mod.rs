@@ -11,7 +11,7 @@ use anyhow::Result;
 #[cfg(test)]
 use alembic_engine::StateStore;
 #[cfg(test)]
-use alembic_engine::{Adapter, Emitter, Observer};
+use alembic_engine::{Emitter, Observer};
 use client::NetBoxClient;
 
 /// netbox adapter that maps ir objects to netbox api calls.
@@ -1673,7 +1673,9 @@ mod tests {
 
         assert_eq!(
             report.updated_fields,
-            vec!["dcim.site.asset_tag".to_string()]
+            vec![
+                "dcim.site.asset_tag: required false -> true, description \"\" -> \"asset tag\", validation_regex \"\" -> \"^SITE-\"".to_string(),
+            ],
         );
         assert!(report.created_fields.is_empty());
         cf_patch.assert_calls(1);
@@ -1740,7 +1742,7 @@ mod tests {
 
         assert_eq!(
             report.updated_fields,
-            vec!["dcim.site.asset_tag".to_string()]
+            vec!["dcim.site.asset_tag: validation_regex \"\" -> \"^SITE-\"".to_string(),],
         );
         cf_patch.assert_calls(1);
     }
@@ -1769,7 +1771,9 @@ mod tests {
 
         assert_eq!(
             report.updated_fields,
-            vec!["dcim.site.asset_tag".to_string()]
+            vec![
+                "dcim.site.asset_tag: required false -> true, description \"\" -> \"asset tag\", validation_regex \"\" -> \"^SITE-\"".to_string(),
+            ],
         );
         cf_patch.assert_calls(0);
     }
@@ -1881,9 +1885,9 @@ mod tests {
         assert_eq!(
             report.updated_fields,
             vec![
-                "dcim.device.asset_tag".to_string(),
-                "dcim.site.asset_tag".to_string()
-            ]
+                "dcim.device.asset_tag: required false -> true, description \"\" -> \"asset tag\", validation_regex \"\" -> \"^ASSET-\"".to_string(),
+                "dcim.site.asset_tag: required false -> true, description \"\" -> \"asset tag\", validation_regex \"\" -> \"^ASSET-\"".to_string(),
+            ],
         );
         cf_patch.assert_calls(1);
     }
@@ -2036,9 +2040,9 @@ mod tests {
         assert_eq!(
             report.updated_fields,
             vec![
-                "dcim.device.asset_tag".to_string(),
-                "dcim.site.asset_tag".to_string()
-            ]
+                "dcim.device.asset_tag: required false -> true".to_string(),
+                "dcim.site.asset_tag: required false -> true".to_string(),
+            ],
         );
         cf_patch.assert_calls(1);
     }
@@ -2084,9 +2088,9 @@ mod tests {
         assert_eq!(
             report.updated_fields,
             vec![
-                "dcim.device.asset_tag".to_string(),
-                "dcim.site.asset_tag".to_string()
-            ]
+                "dcim.device.asset_tag: validation_regex \"\" -> \"^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$\"".to_string(),
+                "dcim.site.asset_tag: validation_regex \"\" -> \"^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$\"".to_string(),
+            ],
         );
         cf_patch.assert_calls(1);
     }

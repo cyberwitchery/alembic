@@ -1,6 +1,6 @@
 use crate::pretty_printing::{bullet_list, comma_separated};
 use crate::types::{
-    ApplyReport, Backend, Emitter, ObservedState, Observer, Plan, ProvisionReport, CANNOT_OBSERVE,
+    ApplyReport, Backend, ObservedState, Observer, Plan, ProvisionReport, CANNOT_OBSERVE,
 };
 use crate::StateStore;
 use crate::{sort_ops_for_apply, BackendId};
@@ -134,29 +134,24 @@ pub(crate) async fn apply(
     // the same flag as object deletes. the plan's schema_preview is only a cheap
     // early gate when a caller populated it: planner::plan hard-codes None and the
     // interactive/library apply paths rebuild with None, so it cannot be the
-    // authoritative gate. the Backend::Adapter arm below self-previews instead.
+    // authoritative gate. the self-preview below is.
     if let Some(preview) = &plan.schema_preview {
         guard_schema_deletes(preview, allow_delete)?;
     }
 
-    let (emitter, provision): (&dyn Emitter, ProvisionReport) = match backend {
-        Backend::Adapter(adapter) => {
-            // authoritative gate: self-preview at the chokepoint before
-            // ensure_schema, so no caller can forget (mirrors `plan --provision`).
-            // preview_schema defaults to Ok(None), leaving adapters that cannot
-            // preview unaffected; an Err fails closed rather than provision blind.
-            if !allow_delete {
-                if let Some(preview) = adapter.preview_schema(&plan.schema).await? {
-                    guard_schema_deletes(&preview, allow_delete)?;
-                }
-            }
-            (adapter.as_ref(), adapter.ensure_schema(&plan.schema).await?)
+    // errors for an observer; every backend that can write can also provision,
+    // so read+write and write-only take the same path from here.
+    let emitter = backend.emitter()?;
+    // authoritative gate: self-preview at the chokepoint before ensure_schema, so
+    // no caller can forget (mirrors `plan --provision`). preview_schema defaults
+    // to Ok(None), leaving backends that cannot preview unaffected; an Err fails
+    // closed rather than provision blind.
+    if !allow_delete {
+        if let Some(preview) = emitter.preview_schema(&plan.schema).await? {
+            guard_schema_deletes(&preview, allow_delete)?;
         }
-        Backend::Emitter(emitter) => (emitter.as_ref(), ProvisionReport::default()),
-        Backend::Observer(_) => {
-            return Err(anyhow!("backend is read-only; it cannot apply changes"))
-        }
-    };
+    }
+    let provision = emitter.ensure_schema(&plan.schema).await?;
 
     let ordered = sort_ops_for_apply(&plan.ops, &plan.schema);
     let mut report = emitter.write(&plan.schema, &ordered, state).await?;

@@ -1,7 +1,7 @@
 use super::mapping::{
     build_tag_inputs, custom_field_type_for_schema, custom_field_update_payload,
-    merge_shared_field_properties, slugify, supports_feature, tags_from_value,
-    validation_regex_for_schema, ExistingCustomField,
+    describe_custom_field_update, merge_shared_field_properties, slugify, supports_feature,
+    tags_from_value, validation_regex_for_schema, ExistingCustomField,
 };
 use super::registry::ObjectTypeRegistry;
 use super::state::{resolved_from_state, state_mappings};
@@ -277,10 +277,7 @@ impl Emitter for NautobotAdapter {
             },
         })
     }
-}
 
-#[async_trait]
-impl Adapter for NautobotAdapter {
     async fn ensure_schema(&self, schema: &Schema) -> Result<ProvisionReport> {
         let plan = self.plan_custom_fields(schema).await?;
 
@@ -328,6 +325,8 @@ impl Adapter for NautobotAdapter {
         }))
     }
 }
+
+impl Adapter for NautobotAdapter {}
 
 /// what a provision has to do to the declared custom fields: create the ones the
 /// backend lacks, converge the ones it has.
@@ -442,8 +441,15 @@ impl NautobotAdapter {
             else {
                 continue;
             };
+            // each declaration carries what the patch would write, so the
+            // preview names the change rather than only the field.
+            let changes = describe_custom_field_update(&shared.current, &patch).join(", ");
             updates.push(PlannedFieldUpdate {
-                declarations: shared.declarations,
+                declarations: shared
+                    .declarations
+                    .iter()
+                    .map(|declared| format!("{declared}: {changes}"))
+                    .collect(),
                 field_id,
                 patch,
             });

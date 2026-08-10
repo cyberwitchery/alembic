@@ -179,6 +179,25 @@ pub fn custom_field_update_payload(
     (!patch.is_empty()).then_some(Value::Object(patch))
 }
 
+/// what a patch would write, one entry per property, naming both sides.
+///
+/// a provision writes to a field the run did not create, so the preview has to
+/// say which property moves and to what, not only that something would move.
+/// values render as json, so a blank one reads as `""` rather than as nothing.
+pub fn describe_custom_field_update(existing: &ExistingCustomField, patch: &Value) -> Vec<String> {
+    let Some(patch) = patch.as_object() else {
+        return Vec::new();
+    };
+    existing
+        .converged()
+        .into_iter()
+        .filter_map(|(property, current)| {
+            let value = patch.get(property)?;
+            Some(format!("{property} {current} -> {value}"))
+        })
+        .collect()
+}
+
 /// extract tag names from a JSON value returned by a backend.
 ///
 /// accepts arrays of strings or objects with `"name"` / `"slug"` fields,
@@ -464,5 +483,45 @@ mod tests {
     #[test]
     fn test_tags_from_value_object_without_name_or_slug() {
         assert!(tags_from_value(&json!([{"id": 5}])).is_err());
+    }
+
+    /// a provision writes to a field the run did not create, so the preview has
+    /// to name the property and both sides, not only that something moves.
+    #[test]
+    fn test_describe_names_each_property_and_both_sides() {
+        let existing = ExistingCustomField {
+            required: false,
+            description: "owned by netops".to_string(),
+            validation_regex: String::new(),
+        };
+        let patch = json!({
+            "required": true,
+            "validation_regex": "^[a-z]+$",
+        });
+        assert_eq!(
+            describe_custom_field_update(&existing, &patch),
+            vec![
+                "required false -> true".to_string(),
+                "validation_regex \"\" -> \"^[a-z]+$\"".to_string(),
+            ],
+            "the preview must name the property and both sides"
+        );
+    }
+
+    /// a property the patch leaves out is one the schema does not declare; it is
+    /// not written, so it must not be described as if it were.
+    #[test]
+    fn test_describe_covers_only_what_the_patch_writes() {
+        let existing = ExistingCustomField {
+            required: true,
+            description: "owned by netops".to_string(),
+            validation_regex: "^old$".to_string(),
+        };
+        let described = describe_custom_field_update(&existing, &json!({"required": false}));
+        assert_eq!(described, vec!["required true -> false".to_string()]);
+        assert!(
+            describe_custom_field_update(&existing, &json!({})).is_empty(),
+            "an empty patch describes nothing"
+        );
     }
 }
