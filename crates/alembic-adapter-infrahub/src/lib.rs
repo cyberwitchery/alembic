@@ -2634,8 +2634,6 @@ schema { query: Query }
     /// the real one carried.
     #[test]
     fn ensure_repository_config_reports_a_stat_it_could_not_make() {
-        // bound, not chained: a chained `temp_dir(..).path().join(..)` drops the
-        // handle at the end of the statement and takes the directory with it.
         let blocked = temp_dir("blocked");
         let blocker = blocked.path().join("repo");
         fs::write(&blocker, "regular file").unwrap();
