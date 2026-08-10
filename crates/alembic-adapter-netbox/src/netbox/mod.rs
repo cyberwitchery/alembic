@@ -2720,6 +2720,127 @@ mod tests {
         field_patch.assert_calls(0);
     }
 
+    /// two custom types, each with a `name` key and an `owner` field carrying a `pattern:`.
+    fn two_custom_types(a: &str, b: &str) -> alembic_core::Schema {
+        let type_schema = |pattern: &str| alembic_core::TypeSchema {
+            key: std::collections::BTreeMap::from([(
+                "name".to_string(),
+                alembic_core::FieldSchema {
+                    r#type: alembic_core::FieldType::String,
+                    required: true,
+                    nullable: false,
+                    description: None,
+                    format: None,
+                    pattern: None,
+                },
+            )]),
+            fields: std::collections::BTreeMap::from([(
+                "owner".to_string(),
+                alembic_core::FieldSchema {
+                    r#type: alembic_core::FieldType::String,
+                    required: false,
+                    nullable: true,
+                    description: None,
+                    format: None,
+                    pattern: Some(pattern.to_string()),
+                },
+            )]),
+        };
+        alembic_core::Schema {
+            types: std::collections::BTreeMap::from([
+                (a.to_string(), type_schema("^ops-")),
+                (b.to_string(), type_schema("^dev-")),
+            ]),
+        }
+    }
+
+    // `custom_object_type_name` lowercases and collapses non-alphanumeric runs, so
+    // two declared names can reach one backend type and both then write its fields.
+    #[tokio::test]
+    async fn ensure_schema_refuses_two_type_names_that_collapse_together() {
+        let server = MockServer::start();
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
+        mock_existing_custom_object_field(
+            &server,
+            json!({"required": false, "description": "", "validation_regex": ""}),
+        );
+        let type_create = server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/plugins/custom-objects/custom-object-types/");
+            then.status(201)
+                .json_body(json!({ "id": EXISTING_OBJECT_TYPE_ID, "name": "custom_asset" }));
+        });
+        let field_patch = server.mock(|when, then| {
+            when.method(PATCH).path(format!(
+                "/api/plugins/custom-objects/custom-object-type-fields/{EXISTING_OBJECT_FIELD_ID}/"
+            ));
+            then.status(200).json_body(json!({}));
+        });
+
+        let schema = two_custom_types("custom.asset", "custom-asset");
+        let err = adapter
+            .ensure_schema(&schema)
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("custom_asset"), "{err}");
+        assert!(err.contains("custom.asset"), "{err}");
+        assert!(err.contains("custom-asset"), "{err}");
+        // the preview refuses the same inventory, so a plan cannot pass what an
+        // apply would reject.
+        assert!(adapter.preview_schema(&schema).await.is_err());
+        type_create.assert_calls(0);
+        field_patch.assert_calls(0);
+    }
+
+    // the guard is about two declared names colliding, not about declaring two
+    // custom types.
+    #[tokio::test]
+    async fn two_custom_types_with_distinct_names_provision() {
+        let server = MockServer::start();
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
+        let _object_types = mock_site_object_type(&server);
+        let _custom_fields = server.mock(|when, then| {
+            when.method(GET).path("/api/extras/custom-fields/");
+            then.status(200).json_body(page(json!([])));
+        });
+        let _types = mock_list(
+            &server,
+            "/api/plugins/custom-objects/custom-object-types/",
+            json!([]),
+        );
+        let _fields = mock_list(
+            &server,
+            "/api/plugins/custom-objects/custom-object-type-fields/",
+            json!([]),
+        );
+        let type_create = server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/plugins/custom-objects/custom-object-types/");
+            then.status(201)
+                .json_body(json!({ "id": EXISTING_OBJECT_TYPE_ID, "name": "custom_asset" }));
+        });
+        let field_create = server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/plugins/custom-objects/custom-object-type-fields/");
+            then.status(201)
+                .json_body(json!({ "id": EXISTING_OBJECT_FIELD_ID }));
+        });
+
+        let report = adapter
+            .ensure_schema(&two_custom_types("custom.asset", "custom.rack"))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            report.created_object_types,
+            vec!["custom.asset".to_string(), "custom.rack".to_string()]
+        );
+        type_create.assert_calls(2);
+        field_create.assert_calls(4);
+    }
+
     #[tokio::test]
     async fn ensure_schema_leaves_an_agreeing_custom_object_field_alone() {
         let server = MockServer::start();

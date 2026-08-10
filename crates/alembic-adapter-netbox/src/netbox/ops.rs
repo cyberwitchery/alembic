@@ -862,6 +862,9 @@ impl NetBoxAdapter {
         let mut shared_fields: BTreeMap<u64, SharedCustomField> = BTreeMap::new();
         let mut custom_schema_types: Vec<(TypeName, &TypeSchema)> = Vec::new();
         let mut custom_schema_type_names: BTreeSet<String> = BTreeSet::new();
+        // two declared names can normalize onto one backend type name, and every
+        // lookup keyed on it would then answer both.
+        let mut custom_object_names: BTreeMap<String, TypeName> = BTreeMap::new();
         for (type_name, type_schema) in &schema.types {
             let type_name = TypeName::new(type_name);
             if registry.contains_type(&type_name) {
@@ -928,6 +931,14 @@ impl NetBoxAdapter {
                     });
                 }
                 continue;
+            }
+            let custom_name = custom_object_type_name(&type_name);
+            if let Some(claimed) =
+                custom_object_names.insert(custom_name.clone(), type_name.clone())
+            {
+                return Err(anyhow!(
+                    "custom object type {custom_name} is one netbox type claimed by {claimed} and {type_name}, whose names collapse together once lowercased with every run of non-alphanumerics replaced by `_`; rename one so their custom object type names differ"
+                ));
             }
             custom_schema_type_names.insert(type_name.as_str().to_string());
             custom_schema_types.push((type_name, type_schema));
@@ -1634,8 +1645,8 @@ struct PlannedNativeField<'a> {
 /// an existing custom field to converge, with the patch that does it: only the
 /// properties the schema declares and the backend disagrees on.
 struct PlannedFieldUpdate {
-    /// every `type.field` declaration this one backend field answers; a custom
-    /// object field has a single `custom_object_type` fk, so always exactly one.
+    /// every `type.field` declaration this one backend field answers; on a custom
+    /// object field exactly one, since colliding type names are refused.
     declarations: Vec<String>,
     field_id: u64,
     patch: Value,
