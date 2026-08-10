@@ -41,16 +41,9 @@ absent.
 
 ## known limitations
 
-these come from the pinned upstream crate (`peeringdb-rs` 0.1.3), not from the adapter;
-see issue #267 for the detail and the shapes it could be fixed in.
-
-- `peeringdb.netixlan` fetches `/api/org`. the adapter refuses a record carrying none
-  of `net_id`, `ix_id`, `ixlan_id`, `asn`, `ipaddr4`, `ipaddr6`, `speed` or
-  `is_rs_peer`, so a read of that type errors naming the endpoint rather than
-  observing organizations as netixlan records. the type is unusable until the pin
-  moves; it is no longer silently wrong.
-- the authorization header is sent even when `PEERINGDB_API_KEY` is unset, and
-  peeringdb answers 400 to it, so anonymous reads are not reachable although the api
-  itself allows them.
-- the loaders take no query parameters, so every read fetches a whole table. netixlan
-  is around 90k rows and peeringdb throttles it hard.
+- every read fetches a whole table. `peeringdb-rs` 0.2.0 added filtered variants
+  (`load_peeringdb_*_filtered`) that take peeringdb's own query parameters, and the
+  adapter does not use them yet, so a netixlan read still pulls around 90k rows and
+  peeringdb throttles it hard.
+- anonymous reads work but are rate-limited; set `PEERINGDB_API_KEY` for anything
+  beyond a small read.

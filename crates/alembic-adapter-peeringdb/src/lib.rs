@@ -181,8 +181,7 @@ fn to_observed_objects<T: Serialize + HasId>(
         {
             return Err(anyhow!(
                 "peeringdb answered {type_name} with a record (id {id}) carrying none of {}, \
-                 so the payload is not {type_name} data; peeringdb-rs 0.1.3 requests \
-                 https://www.peeringdb.com/api/org for netixlan (bgpkit/peeringdb-rs#1)",
+                 so the payload is not {type_name} data",
                 witnesses.join(", ")
             ));
         }
@@ -363,9 +362,10 @@ mod tests {
         assert!(observed.by_key.is_empty());
     }
 
-    /// a `/api/org` record deserialized as a netixlan: `id`, `name`, `notes`,
-    /// `created`, `updated` and `status` are shared, every netixlan-only field
-    /// is null. this is what peeringdb-rs 0.1.3 actually returns for netixlan.
+    /// a record of another type deserialized as a netixlan: the fields the two
+    /// share carry values, every netixlan-only field is null. an org record has
+    /// exactly this shape, since `id`, `name`, `notes`, `created`, `updated` and
+    /// `status` are common to both.
     fn org_record_as_netixlan(id: u32, name: &str) -> peeringdb_rs::PeeringdbNetixlan {
         peeringdb_rs::PeeringdbNetixlan {
             id,
@@ -398,7 +398,7 @@ mod tests {
 
         let message = format!("{err:#}");
         assert!(message.contains("net_id"), "{message}");
-        assert!(message.contains("api/org"), "{message}");
+        assert!(message.contains("peeringdb.netixlan"), "{message}");
     }
 
     #[test]
