@@ -299,7 +299,11 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                     println!("provision: {provision_report}");
                     // the summary counts; an update writes to a field this run
                     // did not create, so name what it wrote.
-                    for updated in &provision_report.updated_fields {
+                    for updated in provision_report
+                        .updated_fields
+                        .iter()
+                        .chain(&provision_report.updated_object_fields)
+                    {
                         println!("  updated {updated}");
                     }
                 }
@@ -308,7 +312,11 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                     Ok(Some(report)) => {
                         if !report.is_empty() {
                             eprintln!("schema preview: {report}");
-                            for updated in &report.updated_fields {
+                            for updated in report
+                                .updated_fields
+                                .iter()
+                                .chain(&report.updated_object_fields)
+                            {
                                 eprintln!("  would update {updated}");
                             }
                         }
@@ -503,7 +511,12 @@ fn print_apply_report(report: &ApplyReport) {
     if !report.provision.is_empty() {
         println!("provision: {}", report.provision);
         // an update writes to a field this run did not create; name what it wrote.
-        for updated in &report.provision.updated_fields {
+        for updated in report
+            .provision
+            .updated_fields
+            .iter()
+            .chain(&report.provision.updated_object_fields)
+        {
             println!("  updated {updated}");
         }
     }

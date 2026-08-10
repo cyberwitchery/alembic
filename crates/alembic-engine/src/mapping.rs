@@ -98,7 +98,7 @@ impl ExistingCustomField {
     /// the converged properties, each paired with what the backend holds for it.
     /// one list rather than a name list and a lookup, so a property cannot be
     /// compared against a value nothing supplies. these are exactly the
-    /// properties both create payloads carry beyond identity and type, and all
+    /// properties every create payload carries beyond identity and type, and all
     /// three sit on the vendors' patch bodies.
     fn converged(&self) -> [(&'static str, Value); 3] {
         [

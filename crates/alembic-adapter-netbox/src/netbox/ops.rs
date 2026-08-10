@@ -295,6 +295,7 @@ impl Emitter for NetBoxAdapter {
         let mut updated_fields = Vec::new();
         let mut created_object_types = Vec::new();
         let mut created_object_fields = Vec::new();
+        let mut updated_object_fields = Vec::new();
         let mut deleted_object_types = Vec::new();
         let mut deleted_object_fields = Vec::new();
 
@@ -380,6 +381,16 @@ impl Emitter for NetBoxAdapter {
             }
         }
 
+        // existing custom object fields: the same convergence as the native ones,
+        // patched by field id.
+        let object_fields: Resource<Value> = self
+            .client
+            .resource("plugins/custom-objects/custom-object-type-fields/");
+        for update in &plan.updated_object_fields {
+            object_fields.patch(update.field_id, &update.patch).await?;
+            updated_object_fields.extend(update.declarations.iter().cloned());
+        }
+
         // deletes: alembic-owned custom object fields, then types, the schema no
         // longer declares. the plan carries their backend ids; a 404 on delete
         // is tolerated.
@@ -426,6 +437,7 @@ impl Emitter for NetBoxAdapter {
             created_tags: Vec::new(),
             created_object_types,
             created_object_fields,
+            updated_object_fields,
             deprecated_object_types: Vec::new(),
             deprecated_object_fields: Vec::new(),
             deleted_object_types,
@@ -473,6 +485,11 @@ impl Emitter for NetBoxAdapter {
             }
         }
 
+        let updated_object_fields = plan
+            .updated_object_fields
+            .iter()
+            .flat_map(|update| update.declarations.iter().cloned())
+            .collect();
         let deleted_object_fields = plan
             .deleted_object_fields
             .iter()
@@ -490,6 +507,7 @@ impl Emitter for NetBoxAdapter {
             created_tags: Vec::new(),
             created_object_types,
             created_object_fields,
+            updated_object_fields,
             deprecated_object_types: Vec::new(),
             deprecated_object_fields: Vec::new(),
             deleted_object_types,
@@ -824,13 +842,14 @@ impl NetBoxAdapter {
             }
         }
 
-        let mut custom_fields_by_type_id: BTreeMap<u64, BTreeMap<String, u64>> = BTreeMap::new();
+        let mut custom_fields_by_type_id: BTreeMap<u64, BTreeMap<String, CustomObjectField>> =
+            BTreeMap::new();
         if let Some(fields) = custom_object_fields {
             for field in fields {
                 custom_fields_by_type_id
                     .entry(field.custom_object_type)
                     .or_default()
-                    .insert(field.name, field.id);
+                    .insert(field.name.clone(), field);
             }
         }
 
@@ -952,13 +971,20 @@ impl NetBoxAdapter {
         // custom object types: which to create and their would-be fields (id
         // resolution and the create-then-conflict-refetch stay in `ensure_schema`).
         let mut object_types = Vec::new();
+        let mut updated_object_fields = Vec::new();
         for (type_name, type_schema) in custom_schema_types {
             let custom_name = custom_object_type_name(&type_name);
             let existing = custom_types_by_name.get(&custom_name).cloned();
-            let existing_field_ids = existing
+            let existing_fields = existing
                 .as_ref()
-                .and_then(|existing| custom_fields_by_type_id.get(&existing.id))
-                .cloned()
+                .and_then(|existing| custom_fields_by_type_id.get(&existing.id));
+            let existing_field_ids: BTreeMap<String, u64> = existing_fields
+                .map(|fields| {
+                    fields
+                        .iter()
+                        .map(|(name, field)| (name.clone(), field.id))
+                        .collect()
+                })
                 .unwrap_or_default();
 
             let mut fields = Vec::new();
@@ -967,17 +993,43 @@ impl NetBoxAdapter {
                 if !seen.insert(field_name.as_str()) {
                     continue;
                 }
-                if !custom_object_field_needs_create(
+                let is_key = type_schema.key.contains_key(field_name);
+                match custom_object_field_action(
                     field_name,
                     existing_field_ids.contains_key(field_name),
                 )? {
-                    continue;
+                    CustomObjectFieldAction::Skip => continue,
+                    CustomObjectFieldAction::Create => fields.push(PlannedObjectField {
+                        field_name: field_name.as_str(),
+                        field_schema,
+                        is_key,
+                    }),
+                    CustomObjectFieldAction::Converge => {
+                        let Some(field) = existing_fields.and_then(|fields| fields.get(field_name))
+                        else {
+                            continue;
+                        };
+                        // desired is the create payload itself, as on the native path.
+                        let desired = custom_object_field_payload(
+                            registry,
+                            field.custom_object_type,
+                            field_name,
+                            field_schema,
+                            is_key,
+                        )?;
+                        let Some(patch) = custom_field_update_payload(&field.current, &desired)
+                        else {
+                            continue;
+                        };
+                        let changes =
+                            describe_custom_field_update(&field.current, &patch).join(", ");
+                        updated_object_fields.push(PlannedFieldUpdate {
+                            declarations: vec![format!("{type_name}.{field_name}: {changes}")],
+                            field_id: field.id,
+                            patch,
+                        });
+                    }
                 }
-                fields.push(PlannedObjectField {
-                    field_name: field_name.as_str(),
-                    field_schema,
-                    is_key: type_schema.key.contains_key(field_name),
-                });
             }
 
             object_types.push(PlannedObjectType {
@@ -1006,7 +1058,7 @@ impl NetBoxAdapter {
                         .map(|ts| ts.key.keys().chain(ts.fields.keys()).cloned().collect())
                         .unwrap_or_default();
                     if let Some(existing_fields) = existing_fields {
-                        for (field_name, field_id) in existing_fields {
+                        for (field_name, field) in existing_fields {
                             if is_reserved_custom_object_field(field_name)
                                 || desired.contains(field_name)
                             {
@@ -1015,20 +1067,20 @@ impl NetBoxAdapter {
                             deleted_object_fields.push(PlannedFieldDelete {
                                 type_name: type_name.clone(),
                                 field_name: field_name.clone(),
-                                field_id: *field_id,
+                                field_id: field.id,
                             });
                         }
                     }
                 } else {
                     if let Some(existing_fields) = existing_fields {
-                        for (field_name, field_id) in existing_fields {
+                        for (field_name, field) in existing_fields {
                             if is_reserved_custom_object_field(field_name) {
                                 continue;
                             }
                             deleted_object_fields.push(PlannedFieldDelete {
                                 type_name: type_name.clone(),
                                 field_name: field_name.clone(),
-                                field_id: *field_id,
+                                field_id: field.id,
                             });
                         }
                     }
@@ -1044,6 +1096,7 @@ impl NetBoxAdapter {
             native_fields,
             updated_fields,
             object_types,
+            updated_object_fields,
             deleted_object_fields,
             deleted_object_types,
         })
@@ -1497,10 +1550,10 @@ impl<'a> CustomObjectFieldProvisioner<'a> {
         field_schema: &FieldSchema,
         is_key: bool,
     ) -> Result<()> {
-        if !custom_object_field_needs_create(
-            field_name,
-            self.existing_fields.contains_key(field_name),
-        )? {
+        if !matches!(
+            custom_object_field_action(field_name, self.existing_fields.contains_key(field_name))?,
+            CustomObjectFieldAction::Create
+        ) {
             return Ok(());
         }
         let payload = custom_object_field_payload(
@@ -1566,6 +1619,7 @@ struct ProvisionPlan<'a> {
     native_fields: Vec<PlannedNativeField<'a>>,
     updated_fields: Vec<PlannedFieldUpdate>,
     object_types: Vec<PlannedObjectType<'a>>,
+    updated_object_fields: Vec<PlannedFieldUpdate>,
     deleted_object_fields: Vec<PlannedFieldDelete>,
     deleted_object_types: Vec<PlannedTypeDelete>,
 }
@@ -1580,7 +1634,8 @@ struct PlannedNativeField<'a> {
 /// an existing custom field to converge, with the patch that does it: only the
 /// properties the schema declares and the backend disagrees on.
 struct PlannedFieldUpdate {
-    /// every `type.field` declaration this one backend field answers.
+    /// every `type.field` declaration this one backend field answers; a custom
+    /// object field has a single `custom_object_type` fk, so always exactly one.
     declarations: Vec<String>,
     field_id: u64,
     patch: Value,
@@ -1776,15 +1831,29 @@ fn validate_custom_object_field_name(name: &str) -> Result<()> {
     Ok(())
 }
 
-/// whether a declared custom-object field needs creating (`false` if reserved or
-/// already present), erroring on a name netbox rejects so `preview_schema` and
-/// `ensure_schema` make the identical create/skip/reject decision.
-fn custom_object_field_needs_create(field_name: &str, field_exists: bool) -> Result<bool> {
-    if is_reserved_custom_object_field(field_name) || field_exists {
-        return Ok(false);
+/// what a declared custom-object field needs.
+enum CustomObjectFieldAction {
+    /// netbox's own column: not ours to write.
+    Skip,
+    Create,
+    Converge,
+}
+
+/// the decision `preview_schema` and `ensure_schema` share, erroring on a name
+/// netbox rejects so both make it identically. a field that exists is not
+/// name-checked: netbox took it already.
+fn custom_object_field_action(
+    field_name: &str,
+    field_exists: bool,
+) -> Result<CustomObjectFieldAction> {
+    if is_reserved_custom_object_field(field_name) {
+        return Ok(CustomObjectFieldAction::Skip);
+    }
+    if field_exists {
+        return Ok(CustomObjectFieldAction::Converge);
     }
     validate_custom_object_field_name(field_name)?;
-    Ok(true)
+    Ok(CustomObjectFieldAction::Create)
 }
 
 /// netbox's `extras/custom-fields/` accepts more types than the netbox+nautobot
@@ -1850,6 +1919,12 @@ fn custom_object_field_payload(
     payload.insert("type".to_string(), Value::String(field_type.to_string()));
     if is_key || field_schema.required {
         payload.insert("required".to_string(), Value::Bool(true));
+    }
+    if let Some(description) = &field_schema.description {
+        payload.insert(
+            "description".to_string(),
+            Value::String(description.clone()),
+        );
     }
     if let Some(pattern) = validation_regex_for_schema(field_schema, field_type) {
         payload.insert(

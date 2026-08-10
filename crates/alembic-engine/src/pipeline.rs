@@ -82,6 +82,7 @@ pub fn guard_schema_deletes(preview: &ProvisionReport, allow_delete: bool) -> Re
         created_tags: _,
         created_object_types: _,
         created_object_fields: _,
+        updated_object_fields: _,
         deprecated_object_types: _,
         deprecated_object_fields: _,
         deleted_object_types,

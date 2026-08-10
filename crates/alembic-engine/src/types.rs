@@ -254,6 +254,11 @@ pub struct ProvisionReport {
     /// custom object fields created on the backend.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub created_object_fields: Vec<String>,
+    /// custom object fields the backend already had, converged onto their declared
+    /// properties. its own category because creates and deletes are split
+    /// native/object here too.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub updated_object_fields: Vec<String>,
     /// object types deprecated on the backend.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub deprecated_object_types: Vec<String>,
@@ -281,6 +286,7 @@ impl ProvisionReport {
             created_tags,
             created_object_types,
             created_object_fields,
+            updated_object_fields,
             deprecated_object_types,
             deprecated_object_fields,
             deleted_object_types,
@@ -291,6 +297,7 @@ impl ProvisionReport {
         self.created_tags.extend(created_tags);
         self.created_object_types.extend(created_object_types);
         self.created_object_fields.extend(created_object_fields);
+        self.updated_object_fields.extend(updated_object_fields);
         self.deprecated_object_types.extend(deprecated_object_types);
         self.deprecated_object_fields
             .extend(deprecated_object_fields);
@@ -305,6 +312,7 @@ impl ProvisionReport {
             created_tags,
             created_object_types,
             created_object_fields,
+            updated_object_fields,
             deprecated_object_types,
             deprecated_object_fields,
             deleted_object_types,
@@ -315,6 +323,7 @@ impl ProvisionReport {
             && created_tags.is_empty()
             && created_object_types.is_empty()
             && created_object_fields.is_empty()
+            && updated_object_fields.is_empty()
             && deprecated_object_types.is_empty()
             && deprecated_object_fields.is_empty()
             && deleted_object_types.is_empty()
@@ -334,6 +343,7 @@ impl fmt::Display for ProvisionReport {
             created_tags,
             created_object_types,
             created_object_fields,
+            updated_object_fields,
             deprecated_object_types,
             deprecated_object_fields,
             deleted_object_types,
@@ -347,6 +357,7 @@ impl fmt::Display for ProvisionReport {
             ("tags created", created_tags),
             ("object types created", created_object_types),
             ("object fields created", created_object_fields),
+            ("object fields updated", updated_object_fields),
             ("object types deprecated", deprecated_object_types),
             ("object fields deprecated", deprecated_object_fields),
             ("object types deleted", deleted_object_types),

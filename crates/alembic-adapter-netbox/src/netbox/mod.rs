@@ -2558,6 +2558,283 @@ mod tests {
         assert_eq!(field_create.calls(), 0, "preview must not create fields");
     }
 
+    const EXISTING_OBJECT_TYPE_ID: u64 = 42;
+    const EXISTING_OBJECT_FIELD_ID: u64 = 100;
+
+    /// the four provision reads holding an existing `custom.asset` custom object
+    /// type with its key `name` and an `owner` field whose converged properties
+    /// are `current`.
+    fn mock_existing_custom_object_field(server: &MockServer, current: serde_json::Value) {
+        let _object_types = mock_site_object_type(server);
+        let _custom_fields = server.mock(|when, then| {
+            when.method(GET).path("/api/extras/custom-fields/");
+            then.status(200).json_body(page(json!([])));
+        });
+        let _types = mock_list(
+            server,
+            "/api/plugins/custom-objects/custom-object-types/",
+            json!([{
+                "id": EXISTING_OBJECT_TYPE_ID,
+                "name": "custom_asset",
+                "description": "alembic custom object for custom.asset",
+                "object_type_name": "custom_objects.custom_asset",
+            }]),
+        );
+        let mut owner = json!({
+            "id": EXISTING_OBJECT_FIELD_ID,
+            "custom_object_type": EXISTING_OBJECT_TYPE_ID,
+            "name": "owner",
+        });
+        let (Some(owner), Some(current)) = (owner.as_object_mut(), current.as_object()) else {
+            unreachable!("both are json objects")
+        };
+        owner.extend(current.clone());
+        let _fields = mock_list(
+            server,
+            "/api/plugins/custom-objects/custom-object-type-fields/",
+            json!([
+                {
+                    "id": 99,
+                    "custom_object_type": EXISTING_OBJECT_TYPE_ID,
+                    "name": "name",
+                    "required": true,
+                    "description": "",
+                    "validation_regex": "",
+                },
+                owner,
+            ]),
+        );
+    }
+
+    /// `custom.asset`: a `name` key and an `owner` field carrying the declaration.
+    fn custom_asset_schema(
+        pattern: Option<&str>,
+        description: Option<&str>,
+        required: bool,
+    ) -> alembic_core::Schema {
+        alembic_core::Schema {
+            types: std::collections::BTreeMap::from([(
+                "custom.asset".to_string(),
+                alembic_core::TypeSchema {
+                    key: std::collections::BTreeMap::from([(
+                        "name".to_string(),
+                        alembic_core::FieldSchema {
+                            r#type: alembic_core::FieldType::String,
+                            required: true,
+                            nullable: false,
+                            description: None,
+                            format: None,
+                            pattern: None,
+                        },
+                    )]),
+                    fields: std::collections::BTreeMap::from([(
+                        "owner".to_string(),
+                        alembic_core::FieldSchema {
+                            r#type: alembic_core::FieldType::String,
+                            required,
+                            nullable: !required,
+                            description: description.map(str::to_string),
+                            format: None,
+                            pattern: pattern.map(str::to_string),
+                        },
+                    )]),
+                },
+            )]),
+        }
+    }
+
+    // the fields of a custom object type alembic itself provisioned converge like
+    // the native ones: only the declared properties, patched by field id.
+    #[tokio::test]
+    async fn ensure_schema_converges_an_existing_custom_object_field() {
+        let server = MockServer::start();
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
+        mock_existing_custom_object_field(
+            &server,
+            json!({"required": false, "description": "", "validation_regex": ""}),
+        );
+        let field_create = server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/plugins/custom-objects/custom-object-type-fields/");
+            then.status(201).json_body(json!({ "id": 101 }));
+        });
+        let field_patch = server.mock(|when, then| {
+            when.method(PATCH)
+                .path(format!(
+                    "/api/plugins/custom-objects/custom-object-type-fields/{EXISTING_OBJECT_FIELD_ID}/"
+                ))
+                .json_body(json!({
+                    "required": true,
+                    "description": "who owns it",
+                    "validation_regex": "^ops-",
+                }));
+            then.status(200).json_body(json!({}));
+        });
+
+        let report = adapter
+            .ensure_schema(&custom_asset_schema(
+                Some("^ops-"),
+                Some("who owns it"),
+                true,
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            report.updated_object_fields,
+            vec![
+                "custom.asset.owner: required false -> true, description \"\" -> \"who owns it\", validation_regex \"\" -> \"^ops-\"".to_string(),
+            ],
+        );
+        assert!(report.created_object_fields.is_empty());
+        field_patch.assert_calls(1);
+        field_create.assert_calls(0);
+    }
+
+    // both consumers of the plan report the update; only one writes it.
+    #[tokio::test]
+    async fn preview_schema_reports_a_custom_object_field_update_without_writing() {
+        let server = MockServer::start();
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
+        mock_existing_custom_object_field(
+            &server,
+            json!({"required": false, "description": "", "validation_regex": ""}),
+        );
+        let field_patch = server.mock(|when, then| {
+            when.method(PATCH).path(format!(
+                "/api/plugins/custom-objects/custom-object-type-fields/{EXISTING_OBJECT_FIELD_ID}/"
+            ));
+            then.status(200).json_body(json!({}));
+        });
+
+        let preview = adapter
+            .preview_schema(&custom_asset_schema(Some("^ops-"), None, false))
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            preview.updated_object_fields,
+            vec!["custom.asset.owner: validation_regex \"\" -> \"^ops-\"".to_string()],
+        );
+        field_patch.assert_calls(0);
+    }
+
+    #[tokio::test]
+    async fn ensure_schema_leaves_an_agreeing_custom_object_field_alone() {
+        let server = MockServer::start();
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
+        mock_existing_custom_object_field(
+            &server,
+            json!({
+                "required": true,
+                "description": "who owns it",
+                "validation_regex": "^ops-",
+            }),
+        );
+        let field_patch = server.mock(|when, then| {
+            when.method(PATCH).path(format!(
+                "/api/plugins/custom-objects/custom-object-type-fields/{EXISTING_OBJECT_FIELD_ID}/"
+            ));
+            then.status(200).json_body(json!({}));
+        });
+
+        let report = adapter
+            .ensure_schema(&custom_asset_schema(
+                Some("^ops-"),
+                Some("who owns it"),
+                true,
+            ))
+            .await
+            .unwrap();
+
+        assert!(report.updated_object_fields.is_empty());
+        field_patch.assert_calls(0);
+    }
+
+    // additive-only: a property the schema does not declare keeps what the
+    // backend holds. the matcher is an exact body, so an extra key goes red.
+    #[tokio::test]
+    async fn ensure_schema_does_not_blank_an_undeclared_object_property() {
+        let server = MockServer::start();
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
+        mock_existing_custom_object_field(
+            &server,
+            json!({
+                "required": true,
+                "description": "written by an operator",
+                "validation_regex": "",
+            }),
+        );
+        let field_patch = server.mock(|when, then| {
+            when.method(PATCH)
+                .path(format!(
+                    "/api/plugins/custom-objects/custom-object-type-fields/{EXISTING_OBJECT_FIELD_ID}/"
+                ))
+                .json_body(json!({"validation_regex": "^ops-"}));
+            then.status(200).json_body(json!({}));
+        });
+
+        let report = adapter
+            .ensure_schema(&custom_asset_schema(Some("^ops-"), None, false))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            report.updated_object_fields,
+            vec!["custom.asset.owner: validation_regex \"\" -> \"^ops-\"".to_string()],
+        );
+        field_patch.assert_calls(1);
+    }
+
+    // a declared description has to reach the create too, or convergence could
+    // never patch it onto a field alembic wrote itself.
+    #[tokio::test]
+    async fn ensure_schema_creates_a_custom_object_field_with_its_description() {
+        let server = MockServer::start();
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
+        let _object_types = mock_site_object_type(&server);
+        let _custom_fields = server.mock(|when, then| {
+            when.method(GET).path("/api/extras/custom-fields/");
+            then.status(200).json_body(page(json!([])));
+        });
+        let _types = mock_list(
+            &server,
+            "/api/plugins/custom-objects/custom-object-types/",
+            json!([]),
+        );
+        let _fields = mock_list(
+            &server,
+            "/api/plugins/custom-objects/custom-object-type-fields/",
+            json!([]),
+        );
+        let _type_create = server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/plugins/custom-objects/custom-object-types/");
+            then.status(201)
+                .json_body(json!({ "id": EXISTING_OBJECT_TYPE_ID, "name": "custom_asset" }));
+        });
+        let field_create = server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/plugins/custom-objects/custom-object-type-fields/")
+                .json_body_includes(r#"{"name": "owner", "description": "who owns it"}"#);
+            then.status(201).json_body(json!({ "id": 101 }));
+        });
+        // the key field's create, which carries no description.
+        let _key_create = server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/plugins/custom-objects/custom-object-type-fields/");
+            then.status(201).json_body(json!({ "id": 102 }));
+        });
+
+        adapter
+            .ensure_schema(&custom_asset_schema(None, Some("who owns it"), false))
+            .await
+            .unwrap();
+
+        field_create.assert_calls(1);
+    }
+
     #[tokio::test]
     async fn preview_schema_rejects_an_invalid_custom_object_field_name() {
         // netbox rejects a custom-object field name outside [A-Za-z0-9_] at

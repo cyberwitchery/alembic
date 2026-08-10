@@ -1324,6 +1324,7 @@ fn build_provision_plan(
         created_tags: Vec::new(),
         created_object_types,
         created_object_fields,
+        updated_object_fields: Vec::new(),
         deprecated_object_types,
         deprecated_object_fields: Vec::new(),
         deleted_object_types: Vec::new(),
