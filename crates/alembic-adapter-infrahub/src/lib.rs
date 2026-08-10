@@ -1118,10 +1118,18 @@ impl SchemaMissing {
     }
 }
 
-fn schema_missing(schema: &Schema, schema_info: &SchemaInfo) -> SchemaMissing {
+fn schema_missing(schema: &Schema, schema_info: &SchemaInfo) -> Result<SchemaMissing> {
     let mut missing = SchemaMissing::default();
+    let mut claimed: BTreeMap<String, &String> = BTreeMap::new();
     for (type_name, type_schema) in &schema.types {
         let gql_type = gql_type_name_str(type_name);
+        // every query, mutation and presence check is keyed on the kind, so a
+        // second claim on one would serve both declarations.
+        if let Some(other) = claimed.insert(gql_type.clone(), type_name) {
+            return Err(anyhow!(
+                "graphql kind {gql_type} is one infrahub kind claimed by {other} and {type_name}, whose names collapse together once each half is pascal-cased with `.`, `_`, `-` and spaces eaten; rename one so their kinds differ"
+            ));
+        }
         if !schema_info.type_fields.contains_key(&gql_type) {
             missing.types.push(type_name.clone());
             continue;
@@ -1138,11 +1146,11 @@ fn schema_missing(schema: &Schema, schema_info: &SchemaInfo) -> SchemaMissing {
             }
         }
     }
-    missing
+    Ok(missing)
 }
 
 fn validate_schema(schema: &Schema, schema_info: &SchemaInfo) -> Result<()> {
-    let missing = schema_missing(schema, schema_info);
+    let missing = schema_missing(schema, schema_info)?;
     if missing.is_empty() {
         return Ok(());
     }
@@ -1164,7 +1172,7 @@ fn build_provision_plan(
     schema_info: &SchemaInfo,
     schema_snapshot: &SchemaSnapshot,
 ) -> Result<Option<ProvisionPlan>> {
-    let missing = schema_missing(schema, schema_info);
+    let missing = schema_missing(schema, schema_info)?;
     let menu_anchors = menu_anchor_map(schema)?;
     let mut nodes = Vec::new();
     let mut extensions = Vec::new();
@@ -2148,6 +2156,7 @@ mod tests {
     };
     use alembic_engine::{AdapterApplyError, BackendId, Op, StateData, StateStore};
     use httpmock::prelude::*;
+    use httpmock::Mock;
     use serde_json::json;
     use std::collections::{BTreeMap, BTreeSet};
     use std::fs;
@@ -2174,7 +2183,17 @@ type DcimSite {
 }
 type DcimSiteEdge { node: DcimSite }
 type DcimSiteConnection { count: Int edges: [DcimSiteEdge] }
-type Query { DcimSite(offset: Int, limit: Int): DcimSiteConnection }
+type DcimSiteGroup {
+  id: ID
+  hfid: String
+  name: TextAttribute
+}
+type DcimSiteGroupEdge { node: DcimSiteGroup }
+type DcimSiteGroupConnection { count: Int edges: [DcimSiteGroupEdge] }
+type Query {
+  DcimSite(offset: Int, limit: Int): DcimSiteConnection
+  DcimSiteGroup(offset: Int, limit: Int): DcimSiteGroupConnection
+}
 schema { query: Query }
 "#;
 
@@ -2436,7 +2455,7 @@ schema { query: Query }
             type_fields,
         };
 
-        let missing = schema_missing(&schema, &schema_info);
+        let missing = schema_missing(&schema, &schema_info).unwrap();
         assert!(missing
             .fields
             .iter()
@@ -3864,5 +3883,196 @@ schema { query: Query }
             .unwrap()
             .unwrap();
         assert!(report.deprecated_object_types.is_empty());
+    }
+
+    /// two types, each keyed on `name`.
+    fn two_types(a: &str, b: &str) -> Schema {
+        let named = || {
+            type_schema(
+                vec![("name", field_schema(FieldType::String, true))],
+                vec![],
+            )
+        };
+        schema_with(vec![(a, named()), (b, named())])
+    }
+
+    fn mock_schema_reads(server: &MockServer) {
+        server.mock(|when, then| {
+            when.method(GET).path("/schema.graphql");
+            then.status(200).body(GRAPHQL_SCHEMA);
+        });
+        server.mock(|when, then| {
+            when.method(GET).path("/api/schema");
+            then.status(200).json_body(json!({ "nodes": [] }));
+        });
+    }
+
+    /// one backend row, answered to the query naming `kind`.
+    fn mock_rows<'a>(server: &'a MockServer, kind: &'static str) -> Mock<'a> {
+        let mut data = Map::new();
+        data.insert(
+            kind.to_string(),
+            json!({ "count": 1, "edges": [
+                { "node": { "id": "row-1", "hfid": "row-1", "name": { "value": "Only Row" } } }
+            ] }),
+        );
+        server.mock(move |when, then| {
+            when.method(POST).path("/graphql").body_includes(kind);
+            then.status(200)
+                .json_body(json!({ "data": data, "errors": [] }));
+        })
+    }
+
+    // `dcim.site_group` and `dcim.site.group` both render `DcimSiteGroup`, so one
+    // row was observed once under each declared name.
+    #[tokio::test]
+    async fn read_refuses_two_type_names_that_render_one_kind() {
+        let server = MockServer::start();
+        mock_schema_reads(&server);
+        let rows = mock_rows(&server, "DcimSiteGroup");
+
+        let adapter = InfrahubAdapter::new(&server.base_url(), "token", None).unwrap();
+        let state = StateStore::new(None, StateData::default());
+        let err = adapter
+            .read(
+                &two_types("dcim.site_group", "dcim.site.group"),
+                &[],
+                &state,
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("DcimSiteGroup"), "{err}");
+        assert!(err.contains("dcim.site_group"), "{err}");
+        assert!(err.contains("dcim.site.group"), "{err}");
+        rows.assert_calls(0);
+    }
+
+    // the guard runs before the first mutation, so it covers the update and the
+    // delete the same way.
+    #[tokio::test]
+    async fn write_refuses_two_type_names_that_render_one_kind() {
+        let server = MockServer::start();
+        mock_schema_reads(&server);
+        let create = server.mock(|when, then| {
+            when.method(POST).path("/graphql").body_includes("Create");
+            then.status(200).json_body(json!({
+                "data": { "DcimSiteGroupCreate": { "ok": true, "object": { "id": "row-1" } } },
+                "errors": []
+            }));
+        });
+
+        let adapter = InfrahubAdapter::new(&server.base_url(), "token", None).unwrap();
+        let state = StateStore::new(None, StateData::default());
+        let uid = Uid::parse_str("00000000-0000-0000-0000-000000000300").unwrap();
+        let key = Key::from(BTreeMap::from([("name".to_string(), json!("Only Row"))]));
+        let ops = vec![Op::Create {
+            uid,
+            type_name: TypeName::new("dcim.site_group"),
+            desired: Object {
+                uid,
+                type_name: TypeName::new("dcim.site_group"),
+                key,
+                attrs: JsonMap::from(BTreeMap::from([("name".to_string(), json!("Only Row"))])),
+                source: None,
+            },
+        }];
+
+        let err = adapter
+            .write(
+                &two_types("dcim.site_group", "dcim.site.group"),
+                &ops,
+                &state,
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("DcimSiteGroup"), "{err}");
+        create.assert_calls(0);
+    }
+
+    // the second declared type was reported present because its twin exists, and
+    // the node set held one entry for the two.
+    #[tokio::test]
+    async fn provisioning_refuses_two_type_names_that_render_one_kind() {
+        let server = MockServer::start();
+        mock_schema_reads(&server);
+
+        let adapter = InfrahubAdapter::new(&server.base_url(), "token", None).unwrap();
+        let schema = two_types("dcim.site_group", "dcim.site.group");
+        let err = adapter
+            .preview_schema(&schema)
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("DcimSiteGroup"), "{err}");
+        assert!(err.contains("dcim.site_group"), "{err}");
+        assert!(err.contains("dcim.site.group"), "{err}");
+        // the apply refuses the same inventory, so a plan cannot pass what a run rejects.
+        assert!(adapter.ensure_schema(&schema).await.is_err());
+    }
+
+    // the control: two names that render distinct kinds still read.
+    #[tokio::test]
+    async fn two_type_names_that_render_distinct_kinds_read() {
+        let server = MockServer::start();
+        mock_schema_reads(&server);
+        // the narrower body match first: a `DcimSiteGroup` query contains `DcimSite`.
+        let groups = mock_rows(&server, "DcimSiteGroup");
+        let sites = mock_rows(&server, "DcimSite");
+
+        let adapter = InfrahubAdapter::new(&server.base_url(), "token", None).unwrap();
+        let state = StateStore::new(None, StateData::default());
+        let observed = adapter
+            .read(&two_types("dcim.site", "dcim.site_group"), &[], &state)
+            .await
+            .unwrap();
+
+        assert_eq!(observed.by_key.len(), 2);
+        sites.assert_calls(1);
+        groups.assert_calls(1);
+    }
+
+    // the control for provisioning: distinct kinds each claim their own node.
+    #[test]
+    fn two_type_names_that_render_distinct_kinds_provision() {
+        let plan = build_provision_plan(
+            &two_types("ipam.prefix", "ipam.prefix_group"),
+            &SchemaInfo::default(),
+            &SchemaSnapshot::default(),
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(
+            plan.report.created_object_types,
+            vec!["ipam.prefix".to_string(), "ipam.prefix_group".to_string()]
+        );
+        assert_eq!(plan.document.nodes.len(), 2);
+    }
+
+    // the guard is about two names colliding, not about the separators one name eats.
+    #[tokio::test]
+    async fn one_type_name_with_an_eaten_separator_reads() {
+        let server = MockServer::start();
+        mock_schema_reads(&server);
+        let rows = mock_rows(&server, "DcimSiteGroup");
+
+        let adapter = InfrahubAdapter::new(&server.base_url(), "token", None).unwrap();
+        let state = StateStore::new(None, StateData::default());
+        let schema = schema_with(vec![(
+            "dcim.site_group",
+            type_schema(
+                vec![("name", field_schema(FieldType::String, true))],
+                vec![],
+            ),
+        )]);
+        let observed = adapter.read(&schema, &[], &state).await.unwrap();
+
+        assert_eq!(observed.by_key.len(), 1);
+        rows.assert_calls(1);
     }
 }
