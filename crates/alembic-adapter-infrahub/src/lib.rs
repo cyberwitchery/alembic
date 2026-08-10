@@ -1318,6 +1318,9 @@ fn build_provision_plan(
 
     let report = ProvisionReport {
         created_fields: Vec::new(),
+        // infrahub provisions by pushing a whole schema document rather than
+        // per-field writes, so it has nothing to report here.
+        updated_fields: Vec::new(),
         created_tags: Vec::new(),
         created_object_types,
         created_object_fields,

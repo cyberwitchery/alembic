@@ -241,6 +241,10 @@ pub struct ProvisionReport {
     /// custom fields created on the backend.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub created_fields: Vec<String>,
+    /// custom fields the backend already had, converged onto their declared
+    /// properties.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub updated_fields: Vec<String>,
     /// tags created on the backend.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub created_tags: Vec<String>,
@@ -273,6 +277,7 @@ impl ProvisionReport {
         // added later has to answer in each rather than be dropped in silence.
         let ProvisionReport {
             created_fields,
+            updated_fields,
             created_tags,
             created_object_types,
             created_object_fields,
@@ -282,6 +287,7 @@ impl ProvisionReport {
             deleted_object_fields,
         } = other;
         self.created_fields.extend(created_fields);
+        self.updated_fields.extend(updated_fields);
         self.created_tags.extend(created_tags);
         self.created_object_types.extend(created_object_types);
         self.created_object_fields.extend(created_object_fields);
@@ -295,6 +301,7 @@ impl ProvisionReport {
     pub fn is_empty(&self) -> bool {
         let ProvisionReport {
             created_fields,
+            updated_fields,
             created_tags,
             created_object_types,
             created_object_fields,
@@ -304,6 +311,7 @@ impl ProvisionReport {
             deleted_object_fields,
         } = self;
         created_fields.is_empty()
+            && updated_fields.is_empty()
             && created_tags.is_empty()
             && created_object_types.is_empty()
             && created_object_fields.is_empty()
@@ -322,6 +330,7 @@ impl fmt::Display for ProvisionReport {
 
         let ProvisionReport {
             created_fields,
+            updated_fields,
             created_tags,
             created_object_types,
             created_object_fields,
@@ -334,6 +343,7 @@ impl fmt::Display for ProvisionReport {
         let mut first = true;
         let sections: &[(&str, &[String])] = &[
             ("fields created", created_fields),
+            ("fields updated", updated_fields),
             ("tags created", created_tags),
             ("object types created", created_object_types),
             ("object fields created", created_object_fields),

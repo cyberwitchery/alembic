@@ -1,6 +1,7 @@
 use super::mapping::{
-    build_tag_inputs, custom_field_type_for_schema, slugify, supports_feature, tags_from_value,
-    validation_regex_for_schema,
+    build_tag_inputs, custom_field_type_for_schema, custom_field_update_payload,
+    describe_custom_field_update, merge_shared_field_properties, slugify, supports_feature,
+    tags_from_value, validation_regex_for_schema, ExistingCustomField,
 };
 use super::registry::ObjectTypeRegistry;
 use super::state::{resolved_from_state, state_mappings};
@@ -278,8 +279,10 @@ impl Emitter for NautobotAdapter {
     }
 
     async fn ensure_schema(&self, schema: &Schema) -> Result<ProvisionReport> {
+        let plan = self.plan_custom_fields(schema).await?;
+
         let mut created_fields = Vec::new();
-        for (type_name, field_name, field_schema) in self.missing_custom_fields(schema).await? {
+        for (type_name, field_name, field_schema) in plan.missing {
             if self
                 .create_custom_field(&type_name, field_name, field_schema)
                 .await?
@@ -287,21 +290,37 @@ impl Emitter for NautobotAdapter {
                 created_fields.push(format!("{type_name}.{field_name}"));
             }
         }
+
+        // existing custom fields: converge only the properties the schema declares.
+        let mut updated_fields = Vec::new();
+        // untyped: the patch response is not read, so it need not deserialize
+        // into the vendor's custom field model.
+        let custom_fields: Resource<Value> = self.client.resource("extras/custom-fields/".into());
+        for update in &plan.updates {
+            custom_fields.patch(&update.field_id, &update.patch).await?;
+            updated_fields.extend(update.declarations.iter().cloned());
+        }
+
         Ok(ProvisionReport {
             created_fields,
+            updated_fields,
             ..Default::default()
         })
     }
 
     async fn preview_schema(&self, schema: &Schema) -> Result<Option<ProvisionReport>> {
-        let created_fields = self
-            .missing_custom_fields(schema)
-            .await?
-            .into_iter()
-            .map(|(type_name, field_name, _)| format!("{type_name}.{field_name}"))
-            .collect();
+        let plan = self.plan_custom_fields(schema).await?;
         Ok(Some(ProvisionReport {
-            created_fields,
+            created_fields: plan
+                .missing
+                .iter()
+                .map(|(type_name, field_name, _)| format!("{type_name}.{field_name}"))
+                .collect(),
+            updated_fields: plan
+                .updates
+                .iter()
+                .flat_map(|update| update.declarations.iter().cloned())
+                .collect(),
             ..Default::default()
         }))
     }
@@ -309,18 +328,45 @@ impl Emitter for NautobotAdapter {
 
 impl Adapter for NautobotAdapter {}
 
+/// what a provision has to do to the declared custom fields: create the ones the
+/// backend lacks, converge the ones it has.
+struct CustomFieldPlan<'a> {
+    missing: Vec<(TypeName, &'a String, &'a FieldSchema)>,
+    updates: Vec<PlannedFieldUpdate>,
+}
+
+/// an existing custom field to converge, with the patch that does it: only the
+/// properties the schema declares and the backend disagrees on.
+struct PlannedFieldUpdate {
+    /// every `type.field` declaration this one backend field answers.
+    declarations: Vec<String>,
+    field_id: String,
+    patch: Value,
+}
+
+/// the declarations landing on one backend custom field, accumulated so they can
+/// be merged into a single patch or refused when they disagree.
+struct SharedCustomField {
+    field_name: String,
+    current: ExistingCustomField,
+    desired: Map<String, Value>,
+    declarations: Vec<String>,
+}
+
 impl NautobotAdapter {
     /// read the live schema and compute which declared custom fields the backend
-    /// lacks. read-only: shared by `ensure_schema` (which then creates them) and
+    /// lacks and which of the ones it has diverge from their declaration.
+    /// read-only: shared by `ensure_schema` (which then writes them) and
     /// `preview_schema` (which only reports them), so the decision never drifts
     /// between preview and apply.
-    async fn missing_custom_fields<'a>(
-        &self,
-        schema: &'a Schema,
-    ) -> Result<Vec<(TypeName, &'a String, &'a FieldSchema)>> {
+    async fn plan_custom_fields<'a>(&self, schema: &'a Schema) -> Result<CustomFieldPlan<'a>> {
         let registry: ObjectTypeRegistry = self.client.fetch_object_types().await?;
-        let custom_fields_by_type = self.client.fetch_custom_fields().await?;
+        let custom_fields_by_type = self.client.fetch_custom_field_defs().await?;
         let mut missing = Vec::new();
+        // keyed by backend field id, not by (content type, field name): one nautobot
+        // field carries a list of content types, so two declared types can land on
+        // the same id and must produce one patch between them.
+        let mut shared_fields: BTreeMap<String, SharedCustomField> = BTreeMap::new();
 
         for (type_name, type_schema) in &schema.types {
             let type_name = TypeName::new(type_name);
@@ -332,10 +378,7 @@ impl NautobotAdapter {
             }
 
             let native_fields = native_fields_for_type(self, &info, type_schema).await?;
-            let existing = custom_fields_by_type
-                .get(type_name.as_str())
-                .cloned()
-                .unwrap_or_default();
+            let existing = custom_fields_by_type.get(type_name.as_str());
 
             for (field_name, field_schema) in &type_schema.fields {
                 if matches!(
@@ -344,14 +387,75 @@ impl NautobotAdapter {
                 ) {
                     continue;
                 }
-                if native_fields.contains(field_name) || existing.contains(field_name) {
+                // a model column of the same name is nautobot's, not ours.
+                if native_fields.contains(field_name) {
+                    continue;
+                }
+                if let Some(def) = existing.and_then(|fields| fields.get(field_name)) {
+                    let payload =
+                        custom_field_payload(type_name.as_str(), field_name, field_schema);
+                    let declared = format!("{type_name}.{field_name}");
+                    let Some(field_id) = def.id.clone() else {
+                        // nautobot listed the field without an id, so it can be
+                        // detected but not patched. saying so beats exiting 0 with
+                        // the divergence unreported.
+                        if custom_field_update_payload(&def.current, &payload).is_some() {
+                            tracing::warn!(
+                                field = %declared,
+                                "existing custom field diverges from the schema, but nautobot reported no id to patch it by"
+                            );
+                        }
+                        continue;
+                    };
+                    let shared = shared_fields.entry(field_id.clone()).or_insert_with(|| {
+                        SharedCustomField {
+                            field_name: field_name.clone(),
+                            current: def.current.clone(),
+                            desired: Map::new(),
+                            declarations: Vec::new(),
+                        }
+                    });
+                    if let Some(property) =
+                        merge_shared_field_properties(&mut shared.desired, &payload)
+                    {
+                        return Err(anyhow!(
+                            "custom field {} is one nautobot field (id {field_id}) shared by {} and {declared}, which declare different {property}; make them agree or give each type its own field name",
+                            shared.field_name,
+                            shared.declarations.join(", "),
+                        ));
+                    }
+                    shared.declarations.push(declared);
                     continue;
                 }
                 missing.push((type_name.clone(), field_name, field_schema));
             }
         }
 
-        Ok(missing)
+        // one patch per backend field, computed once every declaration on it has
+        // been merged: a property another type already agrees with the backend on
+        // must not be planned away by this one.
+        let mut updates = Vec::new();
+        for (field_id, shared) in shared_fields {
+            let Some(patch) =
+                custom_field_update_payload(&shared.current, &Value::Object(shared.desired))
+            else {
+                continue;
+            };
+            // each declaration carries what the patch would write, so the
+            // preview names the change rather than only the field.
+            let changes = describe_custom_field_update(&shared.current, &patch).join(", ");
+            updates.push(PlannedFieldUpdate {
+                declarations: shared
+                    .declarations
+                    .iter()
+                    .map(|declared| format!("{declared}: {changes}"))
+                    .collect(),
+                field_id,
+                patch,
+            });
+        }
+
+        Ok(CustomFieldPlan { missing, updates })
     }
 
     async fn apply_create(

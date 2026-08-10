@@ -4,8 +4,17 @@ use serde::de::DeserializeOwned;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Mutex;
 
-use super::mapping::slugify;
+use super::mapping::{slugify, ExistingCustomField};
 use super::registry::ObjectTypeRegistry;
+
+/// an existing custom field, reduced to what a provision needs: its backend id
+/// and the properties convergence compares.
+#[derive(Debug, Clone)]
+pub(super) struct CustomFieldDef {
+    /// `None` for a field nautobot listed without one: it can be detected, not patched.
+    pub(super) id: Option<String>,
+    pub(super) current: ExistingCustomField,
+}
 
 pub(super) struct NautobotClient {
     client: Client,
@@ -71,14 +80,38 @@ impl NautobotClient {
     }
 
     pub(super) async fn fetch_custom_fields(&self) -> Result<BTreeMap<String, BTreeSet<String>>> {
+        Ok(self
+            .fetch_custom_field_defs()
+            .await?
+            .into_iter()
+            .map(|(content_type, fields)| (content_type, fields.into_keys().collect()))
+            .collect())
+    }
+
+    /// the same read as `fetch_custom_fields`, keeping each field's definition so
+    /// provisioning can converge one that already exists.
+    pub(super) async fn fetch_custom_field_defs(
+        &self,
+    ) -> Result<BTreeMap<String, BTreeMap<String, CustomFieldDef>>> {
         let fields = self
             .list_all(&self.client.extras().custom_fields(), None)
             .await?;
-        let mut by_type: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let mut by_type: BTreeMap<String, BTreeMap<String, CustomFieldDef>> = BTreeMap::new();
         for field in fields {
             let key = field.key.clone().unwrap_or_else(|| slugify(&field.label));
+            let def = CustomFieldDef {
+                id: field.id.map(|id| id.to_string()),
+                current: ExistingCustomField {
+                    required: field.required.unwrap_or(false),
+                    description: field.description.clone().unwrap_or_default(),
+                    validation_regex: field.validation_regex.clone().unwrap_or_default(),
+                },
+            };
             for content_type in field.content_types {
-                by_type.entry(content_type).or_default().insert(key.clone());
+                by_type
+                    .entry(content_type)
+                    .or_default()
+                    .insert(key.clone(), def.clone());
             }
         }
         Ok(by_type)

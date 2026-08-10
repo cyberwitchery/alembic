@@ -32,11 +32,33 @@ and supported feature set.
 - observe flattens `custom_fields` and `tags` into `attrs` for diffing and import.
 - on apply, custom fields and tags are only sent when the object type advertises support
   via the `features` set.
-- provisioning creates missing custom fields on apply; the schema preview reports them.
+- provisioning creates missing custom fields on apply and converges existing ones;
+  the schema preview reports both.
 - a declared `pattern:` on a text-typed field is provisioned as the custom field's
   `validation_regex`, and a declared `format:`, or the format a `uuid`, `cidr`, `prefix`,
   `mac` or `slug` type carries, is provisioned the same way when no `pattern:` overrides
-  it, so the backend enforces them too; an existing field is not updated.
+  it, so the backend enforces them too. a field the backend already has is
+  converged onto the properties alembic declares: `description` and
+  `validation_regex` are patched when they differ from the schema, and `required`
+  is set when the schema declares it. a `required: false` reads the same as an
+  omitted one, so `required` is only ever tightened, never relaxed. nothing else is
+  written -- the field's type is left alone, and a property the schema does not
+  declare keeps whatever the backend holds. one backend field can carry several
+  content types: when two declared types share one, a property only one of them
+  declares is taken as declared, since the other is silent about it rather than
+  opposed to it, so the silent type's objects are held to that constraint at the
+  backend too. two that declare the same property differently cannot both be
+  honoured, so the run fails naming both rather than writing two patches to one
+  field. the type is checked the same way though it is never written, since the
+  field has only one. a declared `required: false` is silent in that sense, so
+  `required` is their union: a field the two disagree about is required for both.
+  a shared field is only ever one netbox already attaches to both types, because
+  alembic's own create carries a single content type, so a field netbox holds
+  against only one of the two declared types is not converged for the other and
+  that declaration's create is rejected as a duplicate name. the schema preview
+  reports the same updates under `provision.updated_fields`, each naming the
+  property and both sides (`dcim.site.tier: validation_regex "" -> "^[a-z]+$"`),
+  so an update to a field this run did not create is read before it is written.
 - tags the applied objects reference but the backend lacks are created at apply, not
   during schema provisioning. a successful apply lists them in `provision.created_tags`;
   a tag that already existed is not listed. they are created before the ops, so an apply

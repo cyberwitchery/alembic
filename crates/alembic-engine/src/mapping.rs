@@ -84,6 +84,120 @@ pub fn validation_regex_for_schema<'a>(
         .map(|format| format_regex(&format))
 }
 
+/// what a backend custom field currently holds for the properties a provision
+/// converges. an unset one reads as the backends' own empty value, so a property
+/// neither side sets compares equal and produces no patch.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ExistingCustomField {
+    pub required: bool,
+    pub description: String,
+    pub validation_regex: String,
+}
+
+impl ExistingCustomField {
+    /// the converged properties, each paired with what the backend holds for it.
+    /// one list rather than a name list and a lookup, so a property cannot be
+    /// compared against a value nothing supplies. these are exactly the
+    /// properties both create payloads carry beyond identity and type, and all
+    /// three sit on the vendors' patch bodies.
+    fn converged(&self) -> [(&'static str, Value); 3] {
+        [
+            ("required", Value::Bool(self.required)),
+            ("description", Value::String(self.description.clone())),
+            (
+                "validation_regex",
+                Value::String(self.validation_regex.clone()),
+            ),
+        ]
+    }
+}
+
+/// the names `converged` pairs values with.
+fn converged_properties() -> impl Iterator<Item = &'static str> {
+    ExistingCustomField::default()
+        .converged()
+        .into_iter()
+        .map(|(property, _)| property)
+}
+
+/// properties two declarations must agree on that a provision never patches. a
+/// create fixes the field's type and a live one cannot be retyped without
+/// destroying its values, so a disagreement is refused rather than resolved.
+fn agreement_only_properties() -> impl Iterator<Item = &'static str> {
+    ["type"].into_iter()
+}
+
+/// fold one declaration's create payload into `desired`, what every declaration
+/// landing on the same backend field has agreed on so far. returns the property
+/// two of them disagree on.
+///
+/// one backend custom field carries a *list* of content types, so several declared
+/// types can share it. a property only one declaration carries is taken as
+/// declared: the other is silent about it, not opposed to it. the agreement-only
+/// properties land in `desired` too, where the patch does not read them.
+pub fn merge_shared_field_properties(
+    desired: &mut serde_json::Map<String, Value>,
+    create_payload: &Value,
+) -> Option<&'static str> {
+    let payload = create_payload.as_object()?;
+    for property in converged_properties().chain(agreement_only_properties()) {
+        let Some(value) = payload.get(property) else {
+            continue;
+        };
+        match desired.get(property) {
+            Some(agreed) if agreed != value => return Some(property),
+            _ => {
+                desired.insert(property.to_string(), value.clone());
+            }
+        }
+    }
+    None
+}
+
+/// the patch that converges an existing custom field onto `desired`, or `None`
+/// when it already agrees.
+///
+/// this is the engine's additive-only diff rule one level up, at the schema layer:
+/// a converged property `desired` omits is one the schema does not declare, so the
+/// backend keeps whatever it has rather than being blanked. `desired` is built from
+/// the create payloads themselves so an update can never converge onto something a
+/// create would not have written.
+pub fn custom_field_update_payload(
+    existing: &ExistingCustomField,
+    desired: &Value,
+) -> Option<Value> {
+    let desired = desired.as_object()?;
+    let mut patch = serde_json::Map::new();
+    for (property, current) in existing.converged() {
+        let Some(value) = desired.get(property) else {
+            continue;
+        };
+        if current != *value {
+            patch.insert(property.to_string(), value.clone());
+        }
+    }
+    (!patch.is_empty()).then_some(Value::Object(patch))
+}
+
+/// what a patch would write, one entry per property, naming both sides.
+///
+/// a provision writes to a field the run did not create, so the preview has to
+/// say which property moves and to what, not only that something would move.
+/// values render as json, so a blank one reads as `""` rather than as nothing.
+pub fn describe_custom_field_update(existing: &ExistingCustomField, patch: &Value) -> Vec<String> {
+    let Some(patch) = patch.as_object() else {
+        return Vec::new();
+    };
+    existing
+        .converged()
+        .into_iter()
+        .filter_map(|(property, current)| {
+            let value = patch.get(property)?;
+            Some(format!("{property} {current} -> {value}"))
+        })
+        .collect()
+}
+
 /// extract tag names from a JSON value returned by a backend.
 ///
 /// accepts arrays of strings or objects with `"name"` / `"slug"` fields,
@@ -369,5 +483,45 @@ mod tests {
     #[test]
     fn test_tags_from_value_object_without_name_or_slug() {
         assert!(tags_from_value(&json!([{"id": 5}])).is_err());
+    }
+
+    /// a provision writes to a field the run did not create, so the preview has
+    /// to name the property and both sides, not only that something moves.
+    #[test]
+    fn test_describe_names_each_property_and_both_sides() {
+        let existing = ExistingCustomField {
+            required: false,
+            description: "owned by netops".to_string(),
+            validation_regex: String::new(),
+        };
+        let patch = json!({
+            "required": true,
+            "validation_regex": "^[a-z]+$",
+        });
+        assert_eq!(
+            describe_custom_field_update(&existing, &patch),
+            vec![
+                "required false -> true".to_string(),
+                "validation_regex \"\" -> \"^[a-z]+$\"".to_string(),
+            ],
+            "the preview must name the property and both sides"
+        );
+    }
+
+    /// a property the patch leaves out is one the schema does not declare; it is
+    /// not written, so it must not be described as if it were.
+    #[test]
+    fn test_describe_covers_only_what_the_patch_writes() {
+        let existing = ExistingCustomField {
+            required: true,
+            description: "owned by netops".to_string(),
+            validation_regex: "^old$".to_string(),
+        };
+        let described = describe_custom_field_update(&existing, &json!({"required": false}));
+        assert_eq!(described, vec!["required true -> false".to_string()]);
+        assert!(
+            describe_custom_field_update(&existing, &json!({})).is_empty(),
+            "an empty patch describes nothing"
+        );
     }
 }

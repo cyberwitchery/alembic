@@ -1,7 +1,8 @@
-use super::client::{is_404_anyhow, CustomObjectField, CustomObjectType};
+use super::client::{is_404_anyhow, CustomFieldDef, CustomObjectField, CustomObjectType};
 use super::mapping::{
-    build_tag_inputs, custom_field_type_for_schema, slugify, supports_feature, tags_from_value,
-    validation_regex_for_schema,
+    build_tag_inputs, custom_field_type_for_schema, custom_field_update_payload,
+    describe_custom_field_update, merge_shared_field_properties, slugify, supports_feature,
+    tags_from_value, validation_regex_for_schema, ExistingCustomField,
 };
 use super::registry::ObjectTypeRegistry;
 use super::state::{resolved_from_state, state_mappings};
@@ -276,7 +277,7 @@ impl Emitter for NetBoxAdapter {
 
     async fn ensure_schema(&self, schema: &Schema) -> Result<ProvisionReport> {
         let mut registry: ObjectTypeRegistry = self.client.fetch_object_types().await?;
-        let custom_fields_by_type = self.client.fetch_custom_fields().await?;
+        let custom_fields_by_type = self.client.fetch_custom_field_defs().await?;
         let custom_object_types = self.client.fetch_custom_object_types().await?;
         let custom_object_fields = self.client.fetch_custom_object_type_fields().await?;
 
@@ -291,6 +292,7 @@ impl Emitter for NetBoxAdapter {
             .await?;
 
         let mut created_fields = Vec::new();
+        let mut updated_fields = Vec::new();
         let mut created_object_types = Vec::new();
         let mut created_object_fields = Vec::new();
         let mut deleted_object_types = Vec::new();
@@ -310,6 +312,15 @@ impl Emitter for NetBoxAdapter {
             {
                 created_fields.push(format!("{}.{}", field.type_name, field.field_name));
             }
+        }
+
+        // existing custom fields: converge only the properties the schema declares.
+        // untyped: the patch response is not read, so it need not deserialize
+        // into the vendor's custom field model.
+        let custom_fields: Resource<Value> = self.client.resource("extras/custom-fields/");
+        for update in &plan.updated_fields {
+            custom_fields.patch(update.field_id, &update.patch).await?;
+            updated_fields.extend(update.declarations.iter().cloned());
         }
 
         // resolve or create every custom object type first, registering each so a
@@ -410,6 +421,7 @@ impl Emitter for NetBoxAdapter {
 
         Ok(ProvisionReport {
             created_fields,
+            updated_fields,
             // tags are derived from the plan's ops, so only `write` creates them.
             created_tags: Vec::new(),
             created_object_types,
@@ -425,7 +437,7 @@ impl Emitter for NetBoxAdapter {
     /// `ProvisionPlan` (see its doc) without writing.
     async fn preview_schema(&self, schema: &Schema) -> Result<Option<ProvisionReport>> {
         let registry: ObjectTypeRegistry = self.client.fetch_object_types().await?;
-        let custom_fields_by_type = self.client.fetch_custom_fields().await?;
+        let custom_fields_by_type = self.client.fetch_custom_field_defs().await?;
         let custom_object_types = self.client.fetch_custom_object_types().await?;
         let custom_object_fields = self.client.fetch_custom_object_type_fields().await?;
 
@@ -443,6 +455,11 @@ impl Emitter for NetBoxAdapter {
         for field in &plan.native_fields {
             created_fields.push(format!("{}.{}", field.type_name, field.field_name));
         }
+        let updated_fields = plan
+            .updated_fields
+            .iter()
+            .flat_map(|update| update.declarations.iter().cloned())
+            .collect();
 
         let mut created_object_types = Vec::new();
         let mut created_object_fields = Vec::new();
@@ -469,6 +486,7 @@ impl Emitter for NetBoxAdapter {
 
         Ok(Some(ProvisionReport {
             created_fields,
+            updated_fields,
             created_tags: Vec::new(),
             created_object_types,
             created_object_fields,
@@ -792,7 +810,7 @@ impl NetBoxAdapter {
     async fn plan_schema<'a>(
         &self,
         registry: &ObjectTypeRegistry,
-        custom_fields_by_type: &BTreeMap<String, BTreeSet<String>>,
+        custom_fields_by_type: &BTreeMap<String, BTreeMap<String, CustomFieldDef>>,
         custom_object_types: Option<Vec<CustomObjectType>>,
         custom_object_fields: Option<Vec<CustomObjectField>>,
         schema: &'a Schema,
@@ -819,6 +837,10 @@ impl NetBoxAdapter {
         // partition declared types into native (custom fields on an existing type)
         // and custom object types, collecting the native field creates.
         let mut native_fields = Vec::new();
+        // keyed by backend field id, not by (content type, field name): one netbox
+        // field carries a list of object types, so two declared types can land on
+        // the same id and must produce one patch between them.
+        let mut shared_fields: BTreeMap<u64, SharedCustomField> = BTreeMap::new();
         let mut custom_schema_types: Vec<(TypeName, &TypeSchema)> = Vec::new();
         let mut custom_schema_type_names: BTreeSet<String> = BTreeSet::new();
         for (type_name, type_schema) in &schema.types {
@@ -831,10 +853,8 @@ impl NetBoxAdapter {
                     continue;
                 }
                 let native = native_fields_for_type(self, &info, type_schema).await?;
-                let existing = custom_fields_by_type
-                    .get(&content_type_of(registry, type_name.as_str()))
-                    .cloned()
-                    .unwrap_or_default();
+                let content_type = content_type_of(registry, type_name.as_str());
+                let existing = custom_fields_by_type.get(&content_type);
                 for (field_name, field_schema) in &type_schema.fields {
                     if matches!(
                         field_schema.r#type,
@@ -842,7 +862,44 @@ impl NetBoxAdapter {
                     ) {
                         continue;
                     }
-                    if native.contains(field_name) || existing.contains(field_name) {
+                    // a model column of the same name is netbox's, not ours.
+                    if native.contains(field_name) {
+                        continue;
+                    }
+                    if let Some(def) = existing.and_then(|fields| fields.get(field_name)) {
+                        let payload = custom_field_payload(&content_type, field_name, field_schema);
+                        let declared = format!("{type_name}.{field_name}");
+                        let Some(field_id) = def.id else {
+                            // netbox listed the field without an id, so it can be
+                            // detected but not patched. saying so beats exiting 0
+                            // with the divergence unreported.
+                            if custom_field_update_payload(&def.current, &payload).is_some() {
+                                tracing::warn!(
+                                    field = %declared,
+                                    "existing custom field diverges from the schema, but netbox reported no id to patch it by"
+                                );
+                            }
+                            continue;
+                        };
+                        let shared =
+                            shared_fields
+                                .entry(field_id)
+                                .or_insert_with(|| SharedCustomField {
+                                    field_name: field_name.clone(),
+                                    current: def.current.clone(),
+                                    desired: Map::new(),
+                                    declarations: Vec::new(),
+                                });
+                        if let Some(property) =
+                            merge_shared_field_properties(&mut shared.desired, &payload)
+                        {
+                            return Err(anyhow!(
+                                "custom field {} is one netbox field (id {field_id}) shared by {} and {declared}, which declare different {property}; make them agree or give each type its own field name",
+                                shared.field_name,
+                                shared.declarations.join(", "),
+                            ));
+                        }
+                        shared.declarations.push(declared);
                         continue;
                     }
                     native_fields.push(PlannedNativeField {
@@ -855,6 +912,30 @@ impl NetBoxAdapter {
             }
             custom_schema_type_names.insert(type_name.as_str().to_string());
             custom_schema_types.push((type_name, type_schema));
+        }
+
+        // one patch per backend field, computed once every declaration on it has
+        // been merged: a property another type already agrees with the backend on
+        // must not be planned away by this one.
+        let mut updated_fields = Vec::new();
+        for (field_id, shared) in shared_fields {
+            let Some(patch) =
+                custom_field_update_payload(&shared.current, &Value::Object(shared.desired))
+            else {
+                continue;
+            };
+            // each declaration carries what the patch would write, so the
+            // preview names the change rather than only the field.
+            let changes = describe_custom_field_update(&shared.current, &patch).join(", ");
+            updated_fields.push(PlannedFieldUpdate {
+                declarations: shared
+                    .declarations
+                    .iter()
+                    .map(|declared| format!("{declared}: {changes}"))
+                    .collect(),
+                field_id,
+                patch,
+            });
         }
 
         if !custom_schema_types.is_empty() && !custom_objects_available {
@@ -961,6 +1042,7 @@ impl NetBoxAdapter {
 
         Ok(ProvisionPlan {
             native_fields,
+            updated_fields,
             object_types,
             deleted_object_fields,
             deleted_object_types,
@@ -1482,6 +1564,7 @@ impl<'a> CustomObjectFieldProvisioner<'a> {
 /// a change apply would not make, nor miss one.
 struct ProvisionPlan<'a> {
     native_fields: Vec<PlannedNativeField<'a>>,
+    updated_fields: Vec<PlannedFieldUpdate>,
     object_types: Vec<PlannedObjectType<'a>>,
     deleted_object_fields: Vec<PlannedFieldDelete>,
     deleted_object_types: Vec<PlannedTypeDelete>,
@@ -1492,6 +1575,24 @@ struct PlannedNativeField<'a> {
     type_name: TypeName,
     field_name: &'a str,
     field_schema: &'a FieldSchema,
+}
+
+/// an existing custom field to converge, with the patch that does it: only the
+/// properties the schema declares and the backend disagrees on.
+struct PlannedFieldUpdate {
+    /// every `type.field` declaration this one backend field answers.
+    declarations: Vec<String>,
+    field_id: u64,
+    patch: Value,
+}
+
+/// the declarations landing on one backend custom field, accumulated so they can
+/// be merged into a single patch or refused when they disagree.
+struct SharedCustomField {
+    field_name: String,
+    current: ExistingCustomField,
+    desired: Map<String, Value>,
+    declarations: Vec<String>,
 }
 
 /// a custom object type to provision, with the object fields to create once its

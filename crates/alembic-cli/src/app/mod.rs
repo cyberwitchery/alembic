@@ -297,12 +297,20 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                 let provision_report = emitter.ensure_schema(&inventory.schema).await?;
                 if !provision_report.is_empty() {
                     println!("provision: {provision_report}");
+                    // the summary counts; an update writes to a field this run
+                    // did not create, so name what it wrote.
+                    for updated in &provision_report.updated_fields {
+                        println!("  updated {updated}");
+                    }
                 }
             } else if let Ok(emitter) = backend.emitter() {
                 match emitter.preview_schema(&inventory.schema).await {
                     Ok(Some(report)) => {
                         if !report.is_empty() {
                             eprintln!("schema preview: {report}");
+                            for updated in &report.updated_fields {
+                                eprintln!("  would update {updated}");
+                            }
                         }
                         schema_preview = Some(report);
                     }
@@ -494,6 +502,10 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
 fn print_apply_report(report: &ApplyReport) {
     if !report.provision.is_empty() {
         println!("provision: {}", report.provision);
+        // an update writes to a field this run did not create; name what it wrote.
+        for updated in &report.provision.updated_fields {
+            println!("  updated {updated}");
+        }
     }
     if let Some(previously_applied_count) = report.previously_applied_count {
         println!(
