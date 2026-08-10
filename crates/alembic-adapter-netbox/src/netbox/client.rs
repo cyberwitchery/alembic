@@ -30,6 +30,7 @@ pub(super) struct CustomObjectField {
     pub(super) id: u64,
     pub(super) custom_object_type: u64,
     pub(super) name: String,
+    pub(super) current: ExistingCustomField,
 }
 
 /// an existing custom field, reduced to what a provision needs: its backend id
@@ -235,7 +236,22 @@ fn parse_custom_object_field(value: Value) -> Result<CustomObjectField> {
         id,
         custom_object_type,
         name,
+        current: ExistingCustomField {
+            required: map
+                .get("required")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            description: string_or_default(map.get("description")),
+            validation_regex: string_or_default(map.get("validation_regex")),
+        },
     })
+}
+
+fn string_or_default(value: Option<&Value>) -> String {
+    value
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
 }
 
 fn parse_custom_object_type_id(value: &Value) -> Option<u64> {

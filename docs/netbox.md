@@ -64,8 +64,9 @@ and supported feature set.
   a tag that already existed is not listed. they are created before the ops, so an apply
   that fails afterwards leaves a tag no report names, in that run or the resumed one.
 
-a declared type is provisioned as the netbox custom field type below. `ref` and `list_ref`
-are never provisioned as custom fields; see custom objects.
+a declared type is provisioned as the netbox custom field type below, on both paths.
+`ref` and `list_ref` are never provisioned as native custom fields; on a custom object
+type they become `object` and `multiobject`.
 
 | declared | netbox |
 | --- | --- |
@@ -84,7 +85,14 @@ if the schema includes types that are not present in netbox core object types, t
 will provision them as custom objects on `apply` using the netbox custom objects plugin:
 
 - creates custom object types for missing schema types
-- creates custom object type fields for schema keys + fields
+- creates custom object type fields for schema keys + fields, carrying the same
+  `description`, `required` and `validation_regex` a native custom field carries
+- converges a field the type already has onto those three, additively as above: the
+  field's type is left alone, and a property the schema does not declare keeps
+  whatever the backend holds. a key field is required whatever the schema says. a
+  custom object field belongs to a single type, so there is no shared-field case to
+  reconcile here. the preview and the apply report the updates under
+  `provision.updated_object_fields`
 - applies objects via `/api/plugins/custom-objects/<custom-object-type>/`
 
 this requires the `netbox-custom-objects` plugin and its REST API endpoints to be available.
