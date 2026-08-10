@@ -54,8 +54,9 @@ token: nautobot_xxx_replace_me
   opposed to it, so the silent type's objects are held to that constraint at the
   backend too. two that declare the same property differently cannot both be
   honoured, so the run fails naming both rather than writing two patches to one
-  field. a declared `required: false` is silent in that sense, so `required` is
-  their union: a field the two disagree about is required for both.
+  field. the type is checked the same way though it is never written, since the
+  field has only one. a declared `required: false` is silent in that sense, so
+  `required` is their union: a field the two disagree about is required for both.
   a shared field is only ever one nautobot already attaches to both types, because
   alembic's own create carries a single content type, so a field nautobot holds
   against only one of the two declared types is not converged for the other and

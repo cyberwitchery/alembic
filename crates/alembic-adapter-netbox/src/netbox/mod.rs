@@ -1954,6 +1954,51 @@ mod tests {
         cf_patch.assert_calls(0);
     }
 
+    // a provision never writes the type, but one field has one type, so two
+    // declarations disagreeing about it is the disagreement that cannot be
+    // honoured for both. it is refused rather than accepted in silence and
+    // reported as converged.
+    #[tokio::test]
+    async fn ensure_schema_refuses_a_type_disagreement_on_a_shared_field() {
+        let server = MockServer::start();
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
+        let _object_types = mock_two_object_types(&server);
+        let _fields = mock_shared_custom_field(
+            &server,
+            json!({"required": true, "description": "asset tag", "validation_regex": ""}),
+        );
+        let cf_patch = server.mock(|when, then| {
+            when.method(PATCH)
+                .path(format!("/api/extras/custom-fields/{EXISTING_FIELD_ID}/"));
+            then.status(200).json_body(json!({}));
+        });
+
+        // `dcim.site` a string held to a pattern, `dcim.device` an integer:
+        // netbox `text` against `integer`, and the pattern is the string side's
+        // alone, so nothing but the type disagrees.
+        let mut schema = schema_declaring_on_both("^SITE-", "^SITE-");
+        let device = schema
+            .types
+            .get_mut("dcim.device")
+            .and_then(|type_schema| type_schema.fields.get_mut("asset_tag"))
+            .unwrap();
+        device.r#type = alembic_core::FieldType::Int;
+        device.pattern = None;
+
+        let err = adapter
+            .ensure_schema(&schema)
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("asset_tag"), "{err}");
+        assert!(err.contains("different type"), "{err}");
+        assert!(err.contains("dcim.site.asset_tag"), "{err}");
+        assert!(err.contains("dcim.device.asset_tag"), "{err}");
+        assert!(adapter.preview_schema(&schema).await.is_err());
+        cf_patch.assert_calls(0);
+    }
+
     // `required` is outside that guard: the create payload omits a declared
     // `false`, so two types disagreeing about it is a union rather than a
     // conflict, and the field is tightened for both.

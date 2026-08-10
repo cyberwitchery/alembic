@@ -1,7 +1,7 @@
 use super::client::{is_404_anyhow, CustomFieldDef, CustomObjectField, CustomObjectType};
 use super::mapping::{
     build_tag_inputs, custom_field_type_for_schema, custom_field_update_payload,
-    merge_converged_properties, slugify, supports_feature, tags_from_value,
+    merge_shared_field_properties, slugify, supports_feature, tags_from_value,
     validation_regex_for_schema, ExistingCustomField,
 };
 use super::registry::ObjectTypeRegistry;
@@ -892,7 +892,7 @@ impl NetBoxAdapter {
                                     declarations: Vec::new(),
                                 });
                         if let Some(property) =
-                            merge_converged_properties(&mut shared.desired, &payload)
+                            merge_shared_field_properties(&mut shared.desired, &payload)
                         {
                             return Err(anyhow!(
                                 "custom field {} is one netbox field (id {field_id}) shared by {} and {declared}, which declare different {property}; make them agree or give each type its own field name",

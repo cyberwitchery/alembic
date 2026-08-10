@@ -120,19 +120,27 @@ fn converged_properties() -> impl Iterator<Item = &'static str> {
         .map(|(property, _)| property)
 }
 
-/// fold one declaration's create payload into `desired`, the converged properties
-/// every declaration landing on the same backend field has agreed on so far.
-/// returns the property two of them disagree on.
+/// properties two declarations must agree on that a provision never patches. a
+/// create fixes the field's type and a live one cannot be retyped without
+/// destroying its values, so a disagreement is refused rather than resolved.
+fn agreement_only_properties() -> impl Iterator<Item = &'static str> {
+    ["type"].into_iter()
+}
+
+/// fold one declaration's create payload into `desired`, what every declaration
+/// landing on the same backend field has agreed on so far. returns the property
+/// two of them disagree on.
 ///
 /// one backend custom field carries a *list* of content types, so several declared
 /// types can share it. a property only one declaration carries is taken as
-/// declared: the other is silent about it, not opposed to it.
-pub fn merge_converged_properties(
+/// declared: the other is silent about it, not opposed to it. the agreement-only
+/// properties land in `desired` too, where the patch does not read them.
+pub fn merge_shared_field_properties(
     desired: &mut serde_json::Map<String, Value>,
     create_payload: &Value,
 ) -> Option<&'static str> {
     let payload = create_payload.as_object()?;
-    for property in converged_properties() {
+    for property in converged_properties().chain(agreement_only_properties()) {
         let Some(value) = payload.get(property) else {
             continue;
         };
