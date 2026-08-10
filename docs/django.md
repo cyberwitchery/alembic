@@ -81,18 +81,21 @@ against the inventory is the half the generated app cannot see. a `map` field
 itself, as opposed to a `map` element, stays plain json.
 
 no check is stricter than `validate`, so nothing alembic accepts is rejected
-here. the ones that are looser are looser in a stated way: a `cidr` or `prefix`
-member is held to the regex a backend would install for that format, which is
-deliberately wider than the parse `validate` runs; a nested collection's
-entries go unread; a `ref` member is parsed but not resolved; and an element
-carrying no check takes the null member `validate` refuses everywhere. a member
-check matches a format regex in full, while a scalar keeps django's
-`RegexValidator`, which searches, as `validate` does for a `pattern:` of your
-own.
+here. the member checks that are looser are looser in a stated way: a `cidr` or
+`prefix` member is held to the regex a backend would install for that format,
+which is deliberately wider than the parse `validate` runs; a nested
+collection's entries go unread; a `ref` member is parsed but not resolved; and
+an element carrying no check takes the null member `validate` refuses
+everywhere. a member check matches a format regex in full, while a scalar keeps
+django's `RegexValidator`, which searches, as `validate` does for a `pattern:`
+of your own.
 
 the checks run on `full_clean()` and on the drf serializers, so the generated
-api enforces them; `loaddata` does not run validators, so the fixture loads
-whatever `validate` passed.
+api enforces them. django does not run a field's validators on its
+`empty_values`, so an optional field takes `""` or `{}` on `full_clean()`
+whatever it declares. the serializers refuse both on a list, but an optional
+scalar takes `""` there too. `loaddata` does not run validators, so the fixture
+loads whatever `validate` passed.
 
 ## optional packages
 
