@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- nautobot: two declared types sharing one custom field must declare the same `enum` values in the same order, or the run fails naming both. a `select` or `multi-select` offers one list of choices, and the agreement check reads the create payload, which does not carry them, so two disagreeing enums were planned in silence against whichever choices the field already had. netbox maps `enum` to `text` and is unaffected
 - netbox and nautobot converge an existing custom field instead of skipping it, so a `pattern:` or `format:` on one reaches the backend. `description` and `validation_regex` are patched, `required` is only tightened, and the type is left alone. `plan` previews the updates, a run reports them under `provision.updated_fields`, and two declared types sharing one backend field must agree or the run fails naming both
 - a write-only backend provisions schema: `ensure_schema` and `preview_schema` move from `Adapter` to `Emitter`. an external adapter declaring the `emitter` role had its subprocess provisioning dropped on apply, and `plan --provision` refused it with `backend is write-only; it cannot provision schema`; both now run, under the same `--allow-delete` gate on schema deletes that read+write backends get. django provisions nothing and is unchanged. `Backend::adapter()` is gone
 - infrahub: an empty `branch:` counts as unset, as the graphql client already had it, so a run with `branch: ""` reads the whole schema from infrahub's default branch instead of half of it

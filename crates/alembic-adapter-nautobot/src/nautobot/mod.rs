@@ -183,6 +183,27 @@ mod tests {
         }
     }
 
+    /// `asset_tag` declared on both types with its own field type and no pattern.
+    fn schema_declaring_types_on_both(site: FieldType, device: FieldType) -> Schema {
+        let mut schema = schema_declaring_on_both("", "");
+        for (type_name, field_type) in [("dcim.site", site), ("dcim.device", device)] {
+            let asset_tag = schema
+                .types
+                .get_mut(type_name)
+                .and_then(|type_schema| type_schema.fields.get_mut("asset_tag"))
+                .unwrap();
+            asset_tag.r#type = field_type;
+            asset_tag.pattern = None;
+        }
+        schema
+    }
+
+    fn enum_of(values: [&str; 2]) -> FieldType {
+        FieldType::Enum {
+            values: values.iter().map(|value| value.to_string()).collect(),
+        }
+    }
+
     // one backend field serving two content types is patched once, not once per
     // type, and the run reports both declarations it answered.
     #[tokio::test]
@@ -329,6 +350,104 @@ mod tests {
         assert!(err.contains("dcim.device.asset_tag"), "{err}");
         assert!(adapter.preview_schema(&schema).await.is_err());
         cf_patch.assert_calls(0);
+    }
+
+    // the choices are not in the create payload, so the guard above does not see
+    // them: both declarations are `select`. one field offers one list, so two
+    // declaring different values is the same disagreement.
+    #[tokio::test]
+    async fn ensure_schema_refuses_a_choices_disagreement_on_a_shared_field() {
+        let server = MockServer::start();
+        let adapter = NautobotAdapter::new(&server.base_url(), "token").unwrap();
+        mock_two_content_types(&server);
+        mock_shared_custom_field(
+            &server,
+            json!({"required": true, "description": "asset tag", "validation_regex": ""}),
+        );
+        let cf_patch = server.mock(|when, then| {
+            when.method(PATCH)
+                .path(format!("/api/extras/custom-fields/{EXISTING_FIELD_ID}/"));
+            then.status(200).json_body(json!({}));
+        });
+
+        let schema =
+            schema_declaring_types_on_both(enum_of(["gold", "silver"]), enum_of(["rack", "tor"]));
+
+        let err = adapter
+            .ensure_schema(&schema)
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("asset_tag"), "{err}");
+        assert!(err.contains("different choices"), "{err}");
+        assert!(err.contains("dcim.site.asset_tag"), "{err}");
+        assert!(err.contains("dcim.device.asset_tag"), "{err}");
+        assert!(adapter.preview_schema(&schema).await.is_err());
+        cf_patch.assert_calls(0);
+    }
+
+    // a `list` of `enum` is a `multi-select`, whose choices are the same one list.
+    #[tokio::test]
+    async fn ensure_schema_refuses_a_choices_disagreement_on_a_shared_multi_select() {
+        let server = MockServer::start();
+        let adapter = NautobotAdapter::new(&server.base_url(), "token").unwrap();
+        mock_two_content_types(&server);
+        mock_shared_custom_field(
+            &server,
+            json!({"required": true, "description": "asset tag", "validation_regex": ""}),
+        );
+        let list_of = |values| FieldType::List {
+            item: Box::new(enum_of(values)),
+        };
+
+        let schema = schema_declaring_types_on_both(
+            list_of(["gold", "silver"]),
+            list_of(["gold", "bronze"]),
+        );
+
+        let err = adapter
+            .ensure_schema(&schema)
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("different choices"), "{err}");
+        assert!(adapter.preview_schema(&schema).await.is_err());
+    }
+
+    // the control: agreeing on the choices is accepted, and an existing field's
+    // are neither patched nor re-posted.
+    #[tokio::test]
+    async fn a_shared_field_declaring_the_same_choices_is_accepted() {
+        let server = MockServer::start();
+        let adapter = NautobotAdapter::new(&server.base_url(), "token").unwrap();
+        mock_two_content_types(&server);
+        mock_shared_custom_field(
+            &server,
+            json!({"required": true, "description": "asset tag", "validation_regex": ""}),
+        );
+        let cf_patch = server.mock(|when, then| {
+            when.method(PATCH)
+                .path(format!("/api/extras/custom-fields/{EXISTING_FIELD_ID}/"));
+            then.status(200).json_body(json!({}));
+        });
+        let choices = server.mock(|when, then| {
+            when.method(POST).path("/api/extras/custom-field-choices/");
+            then.status(201).json_body(json!({}));
+        });
+
+        let schema = schema_declaring_types_on_both(
+            enum_of(["gold", "silver"]),
+            enum_of(["gold", "silver"]),
+        );
+        let preview = adapter.preview_schema(&schema).await.unwrap().unwrap();
+        let report = adapter.ensure_schema(&schema).await.unwrap();
+
+        assert!(preview.updated_fields.is_empty());
+        assert!(report.updated_fields.is_empty());
+        cf_patch.assert_calls(0);
+        choices.assert_calls(0);
     }
 
     // `required` is outside that guard: the create payload omits a declared
