@@ -44,8 +44,11 @@ absent.
 these come from the pinned upstream crate (`peeringdb-rs` 0.1.3), not from the adapter;
 see issue #267 for the detail and the shapes it could be fixed in.
 
-- `peeringdb.netixlan` fetches `/api/org`, so it observes organizations that
-  deserialize cleanly as netixlan records with every netixlan field null.
+- `peeringdb.netixlan` fetches `/api/org`. the adapter refuses a record carrying none
+  of `net_id`, `ix_id`, `ixlan_id`, `asn`, `ipaddr4`, `ipaddr6`, `speed` or
+  `is_rs_peer`, so a read of that type errors naming the endpoint rather than
+  observing organizations as netixlan records. the type is unusable until the pin
+  moves; it is no longer silently wrong.
 - the authorization header is sent even when `PEERINGDB_API_KEY` is unset, and
   peeringdb answers 400 to it, so anonymous reads are not reachable although the api
   itself allows them.

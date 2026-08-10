@@ -37,6 +37,29 @@ fn loader_for(type_name: &TypeName) -> Option<Loader> {
         .map(|(_, load)| *load)
 }
 
+/// fields only a record of this type carries. every field of every peeringdb
+/// struct but `id` is optional and none of them reject an unknown key, so a
+/// payload from the wrong endpoint deserializes cleanly and reaches the ir with
+/// every type-specific field null. a record holding none of these is not the
+/// type it claims, whatever it deserialized into.
+fn witness_fields(type_name: &TypeName) -> &'static [&'static str] {
+    match type_name.as_str() {
+        // an org record carries `id`, `name`, `notes`, `created`, `updated` and
+        // `status` too, so only the netixlan-only fields tell the two apart.
+        "peeringdb.netixlan" => &[
+            "net_id",
+            "ix_id",
+            "ixlan_id",
+            "asn",
+            "ipaddr4",
+            "ipaddr6",
+            "speed",
+            "is_rs_peer",
+        ],
+        _ => &[],
+    }
+}
+
 fn fetch<T: Serialize + HasId>(
     load: fn() -> Result<Vec<T>>,
     type_name: &TypeName,
@@ -141,6 +164,7 @@ fn to_observed_objects<T: Serialize + HasId>(
     items: Vec<T>,
 ) -> Result<Vec<ObservedObject>> {
     let mut objects = Vec::new();
+    let witnesses = witness_fields(type_name);
 
     for item in items {
         let id = item.id();
@@ -149,6 +173,19 @@ fn to_observed_objects<T: Serialize + HasId>(
             serde_json::Value::Object(map) => map.into_iter().collect::<BTreeMap<_, _>>().into(),
             _ => return Err(anyhow!("expected object from serialization")),
         };
+
+        if !witnesses.is_empty()
+            && !witnesses
+                .iter()
+                .any(|field| attrs.get(*field).is_some_and(|value| !value.is_null()))
+        {
+            return Err(anyhow!(
+                "peeringdb answered {type_name} with a record (id {id}) carrying none of {}, \
+                 so the payload is not {type_name} data; peeringdb-rs 0.1.3 requests \
+                 https://www.peeringdb.com/api/org for netixlan (bgpkit/peeringdb-rs#1)",
+                witnesses.join(", ")
+            ));
+        }
 
         let key = build_key_from_schema(type_schema, &attrs)?;
 
@@ -324,6 +361,75 @@ mod tests {
         let observed = adapter.read(&schema, &[], &state_store).await.unwrap();
 
         assert!(observed.by_key.is_empty());
+    }
+
+    /// a `/api/org` record deserialized as a netixlan: `id`, `name`, `notes`,
+    /// `created`, `updated` and `status` are shared, every netixlan-only field
+    /// is null. this is what peeringdb-rs 0.1.3 actually returns for netixlan.
+    fn org_record_as_netixlan(id: u32, name: &str) -> peeringdb_rs::PeeringdbNetixlan {
+        peeringdb_rs::PeeringdbNetixlan {
+            id,
+            net_id: None,
+            ix_id: None,
+            name: Some(name.to_string()),
+            ixlan_id: None,
+            notes: None,
+            speed: None,
+            asn: None,
+            ipaddr4: None,
+            ipaddr6: None,
+            is_rs_peer: None,
+            bfd_support: None,
+            operational: None,
+            created: None,
+            updated: None,
+            status: Some("ok".to_string()),
+        }
+    }
+
+    #[test]
+    fn a_record_carrying_no_netixlan_field_is_refused() {
+        let err = to_observed_objects(
+            &TypeName::new("peeringdb.netixlan"),
+            &ix_schema(),
+            vec![org_record_as_netixlan(2, "Equinix, Inc.")],
+        )
+        .expect_err("an org record must not be observed as a netixlan");
+
+        let message = format!("{err:#}");
+        assert!(message.contains("net_id"), "{message}");
+        assert!(message.contains("api/org"), "{message}");
+    }
+
+    #[test]
+    fn one_netixlan_field_is_enough_to_accept_a_record() {
+        // the guard asks whether the record is the type it claims, not whether
+        // it is fully populated: a netixlan may legitimately omit most fields.
+        let mut sparse = org_record_as_netixlan(7, "leaf");
+        sparse.asn = Some(64512);
+
+        let objects = to_observed_objects(
+            &TypeName::new("peeringdb.netixlan"),
+            &ix_schema(),
+            vec![sparse],
+        )
+        .expect("a record carrying a netixlan field is a netixlan");
+        assert_eq!(objects.len(), 1);
+        assert_eq!(objects[0].backend_id, Some(BackendId::Int(7)));
+    }
+
+    #[test]
+    fn a_type_with_no_witness_fields_is_unguarded() {
+        // ix, net and org read their own endpoints, so nothing distinguishes a
+        // sparse record from a wrong one and the guard must not invent a rule.
+        assert!(witness_fields(&TypeName::new("peeringdb.ix")).is_empty());
+        let objects = to_observed_objects(
+            &TypeName::new("peeringdb.ix"),
+            &ix_schema(),
+            vec![sample_ix(1, "x")],
+        )
+        .expect("an ix record is not witness-checked");
+        assert_eq!(objects.len(), 1);
     }
 
     #[test]
