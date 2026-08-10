@@ -52,7 +52,7 @@ fn forked_adapter_does_not_outlast_the_timeout() {
     // waits on it. killing the shell at the timeout orphans the sleep, which keeps
     // the pipe open. the runner must not block reading it until the orphan exits
     // (which would take ~30s a check); the bounded drain caps that. each check
-    // (plus the capabilities probe) is ~timeout + a grace, so seven runs stay
+    // (plus the capabilities probe) is ~timeout + a grace, so eight runs stay
     // under this bound.
     let start = Instant::now();
     let outcomes = run_builtin(&sh("sleep 30 & wait"), Duration::from_millis(300));
@@ -237,6 +237,7 @@ fn declared_emitter_with_erroring_read_passes() {
     case "$req" in
       *'"method":"capabilities"'*) printf '{"ok":true,"result":{"role":"emitter"}}' ;;
       *'"method":"write"'*) printf '{"ok":true,"result":{"applied":[]}}' ;;
+      *'"method":"ensure_schema"'*) printf '{"ok":true,"result":{}}' ;;
       *'"method":"preview_schema"'*) printf '{"ok":true,"result":null}' ;;
       *) printf '{"ok":false,"error":"read is not supported"}' ;;
     esac"#;
@@ -252,6 +253,58 @@ fn declared_emitter_with_erroring_read_passes() {
     // the liveness check ran against a method the adapter claims to implement.
     assert!(outcomes.iter().any(|o| o.name == "protocol/write-empty"));
     assert!(!outcomes.iter().any(|o| o.name == "protocol/read-empty"));
+}
+
+#[test]
+fn an_emitter_that_leaves_ensure_schema_to_unknown_method_fails() {
+    // apply propagates ensure_schema for every emitter, so an adapter answering
+    // every other method and dropping this one is certified into a failing run.
+    let script = r#"req=$(cat)
+    case "$req" in
+      *'"version":1'*) ;;
+      *) printf '{"ok":false,"error":"unsupported protocol version"}'; exit 0 ;;
+    esac
+    case "$req" in
+      *'"method":"capabilities"'*) printf '{"ok":true,"result":{"role":"emitter"}}' ;;
+      *'"method":"write"'*) printf '{"ok":true,"result":{"applied":[]}}' ;;
+      *'"method":"preview_schema"'*) printf '{"ok":true,"result":null}' ;;
+      *) printf '{"ok":false,"error":"unknown method"}' ;;
+    esac"#;
+    let outcomes = run_builtin(&sh(script), TIMEOUT);
+    let ensure = find(&outcomes, "protocol/ensure-schema-empty");
+    assert!(
+        message(ensure).contains("unknown method"),
+        "{}",
+        message(ensure)
+    );
+    // and only that check: the rest of the suite still certifies it.
+    let failed: Vec<&str> = outcomes
+        .iter()
+        .filter(|o| !o.passed())
+        .map(|o| o.name.as_str())
+        .collect();
+    assert_eq!(failed, ["protocol/ensure-schema-empty"]);
+}
+
+#[test]
+fn ensure_schema_check_follows_the_declared_role() {
+    // an observer is never asked to provision, so refusing the method must not
+    // cost it the certification; the emitter arm keeps that absence meaningful.
+    let script = r#"req=$(cat); case "$req" in
+      *'"method":"capabilities"'*) printf '{"ok":true,"result":{"role":"observer"}}' ;;
+      *'"method":"read"'*) printf '{"ok":true,"result":[]}' ;;
+      *) printf '{"ok":false,"error":"write is not supported"}' ;;
+    esac"#;
+    let outcomes = run_builtin(&sh(script), TIMEOUT);
+    assert!(!outcomes
+        .iter()
+        .any(|o| o.name == "protocol/ensure-schema-empty"));
+
+    let script = script.replace("observer", "emitter");
+    let outcomes = run_builtin(&sh(&script), TIMEOUT);
+    assert!(outcomes
+        .iter()
+        .any(|o| o.name == "protocol/ensure-schema-empty"));
 }
 
 #[test]

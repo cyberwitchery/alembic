@@ -187,6 +187,10 @@ created, 1 object fields deleted`). the `deleted_*` lists are also read by the
 host: see the gate under `preview_schema`. `created_tags` may also be answered from
 `write` instead, when the tags come from the ops rather than the schema.
 
+answer the method even when you provision nothing, with an empty report: apply
+propagates the error otherwise, and leaving it to the unknown-method branch fails
+the built-in `protocol/ensure-schema-empty` check.
+
 ### preview_schema
 
 the host calls this at plan time to show what `ensure_schema` would provision,
@@ -304,16 +308,18 @@ behaviour: malformed json, an unsupported version, and an unknown method each
 produce a structured error; the process exits 0 within the timeout after writing
 exactly one json document (surrounding whitespace and multi-line json are fine,
 logs on stdout are not); the envelope is consistent; and a valid read of an empty
-inventory and a schema preview each succeed with a right-shaped payload, so an
-adapter that errors on every request does not pass. the runner probes
-`capabilities` first: a declared emitter is never sent a read by the host, so its
-liveness check is an empty write instead of the empty read, and it may answer
-`read` with an error. the version probe rides that same role-appropriate method,
-so an emitter is sent an unsupported-version write: probed with a read it would
-refuse for role reasons, answering the check without ever reading `version`. the
-malformed-json and unknown-method probes need no such care, since both are
-expected to error whatever the role. answering `capabilities` itself with the
-unknown-method error stays conformant and means the default read+write role.
+inventory, a schema preview and an empty schema provisioning each succeed with a
+right-shaped payload, so an adapter that errors on every request does not pass.
+provisioning follows the declared role, since only an emitting adapter is ever
+asked for it. the runner probes `capabilities` first: a declared emitter is never
+sent a read by the host, so its liveness check is an empty write instead of the
+empty read, and it may answer `read` with an error. the version probe rides that
+same role-appropriate method, so an emitter is sent an unsupported-version write:
+probed with a read it would refuse for role reasons, answering the check without
+ever reading `version`. the malformed-json and unknown-method probes need no such
+care, since both are expected to error whatever the role. answering
+`capabilities` itself with the unknown-method error stays conformant and means
+the default read+write role.
 
 to exercise `read`, `write`, and `ensure_schema` against your own fake or
 disposable backend, pass `--cases` a file or directory of cases. a case is a

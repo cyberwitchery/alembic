@@ -2151,8 +2151,8 @@ mod tests {
     use serde_json::json;
     use std::collections::{BTreeMap, BTreeSet};
     use std::fs;
-    use std::path::{Path, PathBuf};
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::path::Path;
+    use tempfile::TempDir;
 
     const GRAPHQL_SCHEMA: &str = r#"
 interface AttributeInterface { value: String }
@@ -2215,15 +2215,16 @@ schema { query: Query }
         Schema { types: map }
     }
 
-    fn temp_dir(prefix: &str) -> PathBuf {
-        let mut dir = std::env::temp_dir();
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
+    /// a directory of this test's own, removed when the returned handle drops.
+    /// the name comes from `tempfile` rather than a timestamp: `SystemTime::now`
+    /// ticks at microsecond granularity, so two tests in the same process can
+    /// stamp the same nanos value and share a directory, which the pid does not
+    /// separate. holding the handle is what keeps the directory alive.
+    fn temp_dir(prefix: &str) -> TempDir {
+        tempfile::Builder::new()
+            .prefix(&format!("alembic-{prefix}-"))
+            .tempdir()
             .unwrap()
-            .as_nanos();
-        dir.push(format!("alembic-{prefix}-{now}-{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
-        dir
     }
 
     #[cfg(unix)]
@@ -2601,26 +2602,30 @@ schema { query: Query }
         };
 
         let dir = temp_dir("schema-doc");
-        let schema_path = dir.join("schema/schema.yaml");
+        let schema_path = dir.path().join("schema/schema.yaml");
         write_schema_document(&schema_path, &doc).unwrap();
         let raw = fs::read_to_string(&schema_path).unwrap();
         assert!(raw.contains("version"));
 
-        let repo_root = temp_dir("repo");
+        let repo_dir = temp_dir("repo");
+        let repo_root = repo_dir.path();
         let nested = repo_root.join("schemas/site.yaml");
         fs::create_dir_all(nested.parent().unwrap()).unwrap();
         fs::write(&nested, "version: 1.0").unwrap();
-        ensure_repository_config(&repo_root, &nested).unwrap();
-        ensure_repository_config(&repo_root, &nested).unwrap();
+        ensure_repository_config(repo_root, &nested).unwrap();
+        ensure_repository_config(repo_root, &nested).unwrap();
         let config_path = repo_root.join(".infrahub.yml");
         let config = fs::read_to_string(&config_path).unwrap();
         assert!(config.contains("schemas"));
         assert!(config.contains("schemas/site.yaml"));
         assert_eq!(config.matches("schemas/site.yaml").count(), 1);
 
-        let outside = temp_dir("outside").join("schema.yaml");
+        // bound, not chained: a chained `temp_dir(..).path().join(..)` drops the
+        // handle at the end of the statement and takes the directory with it.
+        let outside_dir = temp_dir("outside");
+        let outside = outside_dir.path().join("schema.yaml");
         fs::write(&outside, "version: 1.0").unwrap();
-        let err = ensure_repository_config(&repo_root, &outside).unwrap_err();
+        let err = ensure_repository_config(repo_root, &outside).unwrap_err();
         assert!(err.to_string().contains("must be inside repository root"));
     }
 
@@ -2630,7 +2635,8 @@ schema { query: Query }
     /// the real one carried.
     #[test]
     fn ensure_repository_config_reports_a_stat_it_could_not_make() {
-        let blocker = temp_dir("blocked").join("repo");
+        let blocked = temp_dir("blocked");
+        let blocker = blocked.path().join("repo");
         fs::write(&blocker, "regular file").unwrap();
 
         let err = ensure_repository_config(&blocker, &blocker.join("schemas/site.yaml"))
@@ -3002,10 +3008,10 @@ schema { query: Query }
     #[tokio::test]
     async fn apply_schema_infrahubctl_executes() {
         let dir = temp_dir("infrahubctl");
-        let args_path = dir.join("args.txt");
-        let addr_path = dir.join("addr.txt");
-        let token_path = dir.join("token.txt");
-        let script_path = dir.join("infrahubctl");
+        let args_path = dir.path().join("args.txt");
+        let addr_path = dir.path().join("addr.txt");
+        let token_path = dir.path().join("token.txt");
+        let script_path = dir.path().join("infrahubctl");
         let script = format!(
             "#!/usr/bin/env bash\nset -euo pipefail\nprintf '%s' \"$*\" > \"{}\"\nprintf '%s' \"$INFRAHUB_ADDRESS\" > \"{}\"\nprintf '%s' \"$INFRAHUB_API_TOKEN\" > \"{}\"\n",
             args_path.display(),
@@ -3014,7 +3020,7 @@ schema { query: Query }
         );
         write_executable(&script_path, &script);
 
-        let schema_path = dir.join("schema.yaml");
+        let schema_path = dir.path().join("schema.yaml");
         fs::write(&schema_path, "version: 1.0").unwrap();
 
         let adapter = InfrahubAdapter::new("http://example.test", "token-123", None).unwrap();
@@ -3061,7 +3067,8 @@ schema { query: Query }
             }));
         });
 
-        let repo_root = temp_dir("repo");
+        let repo_dir = temp_dir("repo");
+        let repo_root = repo_dir.path();
         let schema_path = repo_root.join("schemas/site.yaml");
         fs::create_dir_all(schema_path.parent().unwrap()).unwrap();
         fs::write(&schema_path, "version: 1.0").unwrap();
@@ -3072,7 +3079,7 @@ schema { query: Query }
             mode: SchemaApplyMode::Repository,
             repository_id: None,
             repository_name: Some("repo-name".to_string()),
-            repository_root: Some(repo_root.clone()),
+            repository_root: Some(repo_root.to_path_buf()),
             branch: None,
             infrahubctl_path: None,
         };

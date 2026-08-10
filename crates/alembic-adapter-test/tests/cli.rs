@@ -95,7 +95,7 @@ fn an_emitter_that_ignores_the_version_fails_the_version_probe() {
         "a version-blind emitter must fail the version probe; {stdout}"
     );
     // and only that check: the rest of the suite still certifies it.
-    assert!(stdout.contains("5 passed, 1 failed"), "{stdout}");
+    assert!(stdout.contains("6 passed, 1 failed"), "{stdout}");
 }
 
 #[test]
