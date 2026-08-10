@@ -26,8 +26,8 @@ schema:
   infrahubctl_path: ./scripts/infrahubctl
 ```
 
-- `branch` (optional) - branch used for all reads and writes; unset lets infrahub pick
-  its default.
+- `branch` (optional) - branch used for all reads and writes; unset, or empty, lets
+  infrahub pick its default.
 - `schema.mode` (optional, default `none`) - `none`, `infrahubctl`, or `repository`; the
   other two modes require `schema_path`.
 - `schema.branch` (optional) - distinct from the top-level `branch`; only passed to
