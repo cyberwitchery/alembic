@@ -30,7 +30,13 @@ fn example_binary(name: &str) -> PathBuf {
 
 /// run the built-in checks against an example adapter, returning (exit code, stdout).
 fn run_builtin_against(example: &str) -> (Option<i32>, String) {
+    run_builtin_against_with(example, &[])
+}
+
+/// the same, with extra flags before the `--`.
+fn run_builtin_against_with(example: &str, flags: &[&str]) -> (Option<i32>, String) {
     let out = Command::new(BIN)
+        .args(flags)
         .arg("--")
         .arg(example_binary(example))
         .output()
@@ -156,4 +162,40 @@ fn a_case_whose_expectation_key_is_misspelled_exits_2() {
     assert_eq!(out.status.code(), Some(2));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("errror"), "{stderr}");
+}
+
+/// the provisioning built-in is opt-out: it runs unless it is turned off, since a
+/// check that does not run certifies nothing.
+#[test]
+fn the_provisioning_check_runs_by_default() {
+    let (code, stdout) = run_builtin_against("sdk_emitter");
+    assert_eq!(code, Some(0), "{stdout}");
+    let line = stdout
+        .lines()
+        .find(|line| line.contains("protocol/ensure-schema-empty"))
+        .expect("the provisioning check must run without a flag");
+    assert!(line.contains("ok"), "{stdout}");
+    assert!(!stdout.contains("skipped"), "{stdout}");
+}
+
+/// turning it off reports the check as skipped rather than dropping it, so a
+/// reader cannot mistake a suite that never sent `ensure_schema` for one that
+/// certified it.
+#[test]
+fn turning_the_provisioning_check_off_reports_it_as_skipped() {
+    let (code, stdout) = run_builtin_against_with("sdk_emitter", &["--no-provisioning-check"]);
+    assert_eq!(code, Some(0), "a skipped check is not a failure; {stdout}");
+    let line = stdout
+        .lines()
+        .find(|line| line.contains("protocol/ensure-schema-empty"))
+        .expect("the skipped check must still be listed");
+    assert!(line.contains("skipped"), "{stdout}");
+    assert!(
+        !line.contains("ok"),
+        "a skipped check must not read as a pass; {stdout}"
+    );
+    assert!(
+        stdout.contains("1 skipped"),
+        "the summary must count it apart from passes; {stdout}"
+    );
 }

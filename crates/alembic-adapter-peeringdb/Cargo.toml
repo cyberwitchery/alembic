@@ -18,4 +18,4 @@ async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
-peeringdb-rs = "0.1"
+peeringdb-rs = "0.2"
