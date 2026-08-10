@@ -172,6 +172,7 @@ response:
     "created_tags": [],
     "created_object_types": ["dcim.site"],
     "created_object_fields": ["dcim.site.name"],
+    "updated_object_fields": [],
     "deprecated_object_types": [],
     "deprecated_object_fields": [],
     "deleted_object_types": [],
@@ -321,9 +322,13 @@ care, since both are expected to error whatever the role. answering
 `capabilities` itself with the unknown-method error stays conformant and means
 the default read+write role.
 
-to exercise `read`, `write`, and `ensure_schema` against your own fake or
-disposable backend, pass `--cases` a file or directory of cases. a case is a
-complete request and an expectation:
+the empty schema provisioning is a real `ensure_schema`, and a converging
+adapter reads it as "delete everything you own". the runner is not the host
+and has no `--allow-delete` gate, so point it at a disposable backend.
+
+to exercise `read`, `write`, and `ensure_schema` with requests of your own,
+pass `--cases` a file or directory of cases. a case is a complete request and
+an expectation:
 
 ```json
 {
