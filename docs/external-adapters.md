@@ -326,6 +326,14 @@ the empty schema provisioning is a real `ensure_schema`, and a converging
 adapter reads it as "delete everything you own". the runner is not the host
 and has no `--allow-delete` gate, so point it at a disposable backend.
 
+it runs by default, and `--no-provisioning-check` turns it off. opt-out rather
+than opt-in: a check nobody remembers to enable certifies nothing, and the
+adapter this one exists for -- the hand-rolled emitter that would otherwise be
+certified into an apply that fails on `unknown method` -- is exactly the one
+whose author would not enable it. a turned-off check is reported as `skipped`
+and counted apart from the passes, so a suite that never sent `ensure_schema`
+does not read as one that certified it.
+
 to exercise `read`, `write`, and `ensure_schema` with requests of your own,
 pass `--cases` a file or directory of cases. a case is a complete request and
 an expectation:

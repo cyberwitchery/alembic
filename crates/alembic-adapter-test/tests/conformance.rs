@@ -1,4 +1,6 @@
-use alembic_adapter_test::{load_cases, run_builtin, run_cases, Case, Expect, Outcome};
+use alembic_adapter_test::{
+    load_cases, run_builtin, run_builtin_with, run_cases, Builtins, Case, Expect, Outcome,
+};
 use serde_json::json;
 use std::path::PathBuf;
 use std::process::Command;
@@ -551,4 +553,35 @@ fn fixtures_match_the_protocol_types() {
         checked += 1;
     }
     assert_eq!(checked, 8, "expected 8 fixtures, checked {checked}");
+}
+
+/// the library entry point runs the provisioning check: it is opt-out, so the
+/// default has to be the one that certifies. `run_builtin` is what every caller
+/// that does not pass `Builtins` gets.
+#[test]
+fn run_builtin_certifies_provisioning_by_default() {
+    assert!(Builtins::default().provisioning);
+
+    let script = r#"cat >/dev/null; printf '{"ok":true,"result":{}}\n'"#;
+    let outcomes = run_builtin(&sh(script), TIMEOUT);
+    let ensure = find(&outcomes, "protocol/ensure-schema-empty");
+    assert!(ensure.passed(), "{:?}", ensure.failure);
+    assert!(!ensure.skipped(), "the default must not skip it");
+}
+
+/// turning it off marks the check skipped, and a skipped check is not a pass.
+#[test]
+fn a_turned_off_builtin_is_skipped_rather_than_passed() {
+    let script = r#"cat >/dev/null; printf '{"ok":true,"result":{}}\n'"#;
+    let outcomes = run_builtin_with(
+        &sh(script),
+        TIMEOUT,
+        Builtins {
+            provisioning: false,
+        },
+    );
+    let ensure = find(&outcomes, "protocol/ensure-schema-empty");
+    assert!(ensure.skipped(), "it must be reported, not dropped");
+    assert!(!ensure.passed(), "a skipped check certifies nothing");
+    assert!(ensure.failure.is_none(), "and it is not a failure either");
 }
