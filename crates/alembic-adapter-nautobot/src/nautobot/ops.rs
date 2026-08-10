@@ -276,10 +276,7 @@ impl Emitter for NautobotAdapter {
             },
         })
     }
-}
 
-#[async_trait]
-impl Adapter for NautobotAdapter {
     async fn ensure_schema(&self, schema: &Schema) -> Result<ProvisionReport> {
         let mut created_fields = Vec::new();
         for (type_name, field_name, field_schema) in self.missing_custom_fields(schema).await? {
@@ -309,6 +306,8 @@ impl Adapter for NautobotAdapter {
         }))
     }
 }
+
+impl Adapter for NautobotAdapter {}
 
 impl NautobotAdapter {
     /// read the live schema and compute which declared custom fields the backend

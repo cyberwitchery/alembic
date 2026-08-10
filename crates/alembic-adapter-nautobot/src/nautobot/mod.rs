@@ -30,7 +30,7 @@ mod tests {
     use alembic_core::{
         FieldSchema, FieldType, JsonMap, Key, Object, Schema, TypeName, TypeSchema, Uid,
     };
-    use alembic_engine::{Adapter, BackendId, Emitter, FieldChange, Observer, Op, StateStore};
+    use alembic_engine::{BackendId, Emitter, FieldChange, Observer, Op, StateStore};
     use httpmock::Method::{DELETE, GET, PATCH, POST};
     use httpmock::MockServer;
     use serde_json::json;

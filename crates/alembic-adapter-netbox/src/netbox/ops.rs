@@ -273,10 +273,7 @@ impl Emitter for NetBoxAdapter {
             },
         })
     }
-}
 
-#[async_trait]
-impl Adapter for NetBoxAdapter {
     async fn ensure_schema(&self, schema: &Schema) -> Result<ProvisionReport> {
         let mut registry: ObjectTypeRegistry = self.client.fetch_object_types().await?;
         let custom_fields_by_type = self.client.fetch_custom_fields().await?;
@@ -482,6 +479,8 @@ impl Adapter for NetBoxAdapter {
         }))
     }
 }
+
+impl Adapter for NetBoxAdapter {}
 
 /// decodes every generic foreign key on `type_name` from its NetBox read shape
 /// into the alembic uid(s) it references. both wire forms expose a content type

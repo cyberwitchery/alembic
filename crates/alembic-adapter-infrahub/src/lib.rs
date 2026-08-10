@@ -767,10 +767,7 @@ impl Emitter for InfrahubAdapter {
             ..Default::default()
         })
     }
-}
 
-#[async_trait]
-impl Adapter for InfrahubAdapter {
     async fn ensure_schema(&self, schema: &Schema) -> Result<ProvisionReport> {
         let schema_info = self.load_schema_info().await?;
         let schema_snapshot = self.load_schema_snapshot().await?;
@@ -821,6 +818,8 @@ impl Adapter for InfrahubAdapter {
         Ok(Some(report))
     }
 }
+
+impl Adapter for InfrahubAdapter {}
 
 #[derive(Debug, Clone)]
 struct GraphField {
