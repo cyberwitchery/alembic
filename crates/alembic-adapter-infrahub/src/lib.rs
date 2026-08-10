@@ -85,6 +85,8 @@ pub struct InfrahubAdapter {
 
 impl InfrahubAdapter {
     pub fn new(url: &str, token: &str, branch: Option<&str>) -> Result<Self> {
+        // empty is unset, as the client's own `resolve_branch` has it.
+        let branch = branch.filter(|b| !b.is_empty());
         let mut config = ClientConfig::new(url, token);
         config = config.with_http_client_builder(|builder| builder.no_proxy());
         if let Some(branch) = branch {
@@ -3781,6 +3783,33 @@ schema { query: Query }
             .unwrap()
             .is_some());
 
+        snapshot.assert();
+    }
+
+    #[tokio::test]
+    async fn both_schema_requests_omit_an_empty_branch() {
+        let server = MockServer::start();
+        let graphql = server.mock(|when, then| {
+            when.method(GET)
+                .path("/schema.graphql")
+                .query_param_missing("branch");
+            then.status(200).body(GRAPHQL_SCHEMA);
+        });
+        let snapshot = server.mock(|when, then| {
+            when.method(GET)
+                .path("/api/schema")
+                .query_param_missing("branch");
+            then.status(200).json_body(json!({ "nodes": [] }));
+        });
+
+        let adapter = InfrahubAdapter::new(&server.base_url(), "token", Some("")).unwrap();
+        assert!(adapter
+            .preview_schema(&site_only_schema())
+            .await
+            .unwrap()
+            .is_some());
+
+        graphql.assert();
         snapshot.assert();
     }
 
