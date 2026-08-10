@@ -2634,7 +2634,8 @@ schema { query: Query }
     /// the real one carried.
     #[test]
     fn ensure_repository_config_reports_a_stat_it_could_not_make() {
-        let blocker = temp_dir("blocked").join("repo");
+        let blocked = temp_dir("blocked");
+        let blocker = blocked.path().join("repo");
         fs::write(&blocker, "regular file").unwrap();
 
         let err = ensure_repository_config(&blocker, &blocker.join("schemas/site.yaml"))
