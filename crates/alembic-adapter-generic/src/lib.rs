@@ -507,10 +507,7 @@ impl Emitter for GenericAdapter {
             ..Default::default()
         })
     }
-}
 
-#[async_trait]
-impl Adapter for GenericAdapter {
     // the generic rest adapter never provisions schema: it assumes the backend
     // schema already exists, so ensure_schema is the no-op default (an empty
     // report). preview must mirror that honestly as "nothing to provision"
@@ -520,6 +517,8 @@ impl Adapter for GenericAdapter {
         Ok(Some(ProvisionReport::default()))
     }
 }
+
+impl Adapter for GenericAdapter {}
 
 /// list an endpoint and return its results array (from `results_path` when set,
 /// else the response root), following `next_path` across pages when it is set.

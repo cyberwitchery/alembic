@@ -369,7 +369,9 @@ pub trait Observer: Send + Sync {
     ) -> anyhow::Result<ObservedState>;
 }
 
-/// write capability: apply a plan's operations.
+/// write capability: apply a plan's operations, and provision the schema they
+/// need. provisioning is itself a write, so a write-only backend gets it too;
+/// one that provisions nothing keeps the defaults below.
 #[async_trait]
 pub trait Emitter: Send + Sync {
     async fn write(
@@ -378,16 +380,12 @@ pub trait Emitter: Send + Sync {
         ops: &[Op],
         state: &crate::state::StateStore,
     ) -> anyhow::Result<ApplyReport>;
-}
 
-/// full adapter contract for read+write backends; may also provision schema.
-#[async_trait]
-pub trait Adapter: Observer + Emitter {
     async fn ensure_schema(&self, _schema: &Schema) -> anyhow::Result<ProvisionReport> {
         Ok(ProvisionReport::default())
     }
 
-    /// read-only counterpart to [`Adapter::ensure_schema`]: report what provisioning
+    /// read-only counterpart to [`Emitter::ensure_schema`]: report what provisioning
     /// apply would perform, writing nothing. `None` means this adapter cannot preview
     /// schema (reported honestly, never as "no schema changes"); `Some(report)` is the
     /// provisioning it would carry out, `Some(empty)` that there is nothing to provision.
@@ -395,6 +393,10 @@ pub trait Adapter: Observer + Emitter {
         Ok(None)
     }
 }
+
+/// read+write capability tag, carrying no methods of its own: it marks a backend
+/// that both observes and emits, so [`Backend::Adapter`] can box one value as both.
+pub trait Adapter: Observer + Emitter {}
 
 /// a constructed backend, tagged with its capability.
 pub enum Backend {
@@ -425,18 +427,6 @@ impl Backend {
             Backend::Adapter(adapter) => Ok(adapter.as_ref()),
             Backend::Observer(_) => Err(anyhow::anyhow!(
                 "backend is read-only; it cannot apply changes"
-            )),
-        }
-    }
-
-    pub fn adapter(&self) -> anyhow::Result<&dyn Adapter> {
-        match self {
-            Backend::Adapter(adapter) => Ok(adapter.as_ref()),
-            Backend::Observer(_) => Err(anyhow::anyhow!(
-                "backend is read-only; it cannot provision schema"
-            )),
-            Backend::Emitter(_) => Err(anyhow::anyhow!(
-                "backend is write-only; it cannot provision schema"
             )),
         }
     }

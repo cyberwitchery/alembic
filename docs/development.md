@@ -29,9 +29,9 @@ alembic/
 - **django**: write-only (emitter)
 
 backends implement one of three capability traits in `alembic-engine`:
-`Observer` (read-only), `Emitter` (write-only), or `Adapter: Observer + Emitter`
-(read+write, optional schema provisioning). commands that need a missing
-capability fail with a clear error (e.g. `apply` against peeringdb).
+`Observer` (read-only), `Emitter` (write-only, with optional schema
+provisioning), or `Adapter: Observer + Emitter` (read+write). commands that need
+a missing capability fail with a clear error (e.g. `apply` against peeringdb).
 
 ## core features
 
