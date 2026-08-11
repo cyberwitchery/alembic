@@ -375,6 +375,12 @@ fn parse_response(run: &RunResult) -> Result<ExternalResponse<Value>, String> {
     de.end()
         .map_err(|_| "stdout has trailing output after the json document".to_string())?;
 
+    // [`check_payload`]'s rule at the outer level: `result` misspelled deserializes
+    // to `None`, which for preview_schema reads as "cannot preview" and skips the
+    // --allow-delete gate the payload check exists to defend.
+    reject_unknown_keys(&as_template(response_envelope())?, &value, "")
+        .map_err(|e| format!("bad response envelope: {e}"))?;
+
     serde_json::from_value(value).map_err(|e| format!("not a response envelope: {e}"))
 }
 
@@ -504,6 +510,16 @@ fn as_template<T: Serialize>(populated: T) -> Result<Value, String> {
 /// the templates. every literal is exhaustive and every field carries a value, so
 /// a field added to one of these types stops the build here rather than defaulting
 /// past `skip_serializing_if` into a key the runner would then reject.
+///
+/// `result` is null, so [`check_payload`] stays the one owner of what is inside it.
+fn response_envelope() -> ExternalResponse<Value> {
+    ExternalResponse {
+        ok: true,
+        result: Some(Value::Null),
+        error: Some(String::new()),
+    }
+}
+
 fn provision_report() -> ProvisionReport {
     let one = || vec![String::new()];
     ProvisionReport {

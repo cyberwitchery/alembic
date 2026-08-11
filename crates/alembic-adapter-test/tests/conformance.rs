@@ -641,8 +641,9 @@ fn a_turned_off_builtin_is_skipped_rather_than_passed() {
     assert!(ensure.failure.is_none(), "and it is not a failure either");
 }
 
-/// an emitter answering both provisioning methods with `key` as its delete list.
-fn emitter_reporting_deletes(key: &str) -> String {
+/// an emitter answering both provisioning methods with `key` as its delete list,
+/// carried under `envelope` rather than `result`.
+fn emitter_reporting_deletes(envelope: &str, key: &str) -> String {
     format!(
         r#"req=$(cat)
     case "$req" in
@@ -653,7 +654,7 @@ fn emitter_reporting_deletes(key: &str) -> String {
       *'"method":"capabilities"'*) printf '{{"ok":true,"result":{{"role":"emitter"}}}}' ;;
       *'"method":"write"'*) printf '{{"ok":true,"result":{{"applied":[]}}}}' ;;
       *'"method":"preview_schema"'*|*'"method":"ensure_schema"'*)
-        printf '{{"ok":true,"result":{{"{key}":["dcim.site"]}}}}' ;;
+        printf '{{"ok":true,"{envelope}":{{"{key}":["dcim.site"]}}}}' ;;
       *) printf '{{"ok":false,"error":"unknown method"}}' ;;
     esac"#
     )
@@ -664,7 +665,7 @@ fn a_misspelled_schema_delete_fails() {
     // this report is the --allow-delete gate, so a typo here reports nothing to
     // delete and provisions past it in silence.
     let outcomes = run_builtin(
-        &sh(&emitter_reporting_deletes("deletd_object_types")),
+        &sh(&emitter_reporting_deletes("result", "deletd_object_types")),
         TIMEOUT,
     );
     for name in [
@@ -682,11 +683,25 @@ fn a_misspelled_schema_delete_fails() {
 }
 
 #[test]
-fn a_correctly_spelled_schema_delete_still_passes() {
-    // the control: the same adapter, one word apart. without it the suite cannot
-    // tell the check above from one that rejects both spellings.
+fn a_misspelled_result_key_fails() {
+    // one level up, same gate: preview_schema is allowed to answer `(true, None,
+    // None)`, so a typo'd `result` reads as "cannot preview" and the run skips the
+    // --allow-delete refusal rather than hitting it.
     let outcomes = run_builtin(
-        &sh(&emitter_reporting_deletes("deleted_object_types")),
+        &sh(&emitter_reporting_deletes("resutl", "deleted_object_types")),
+        TIMEOUT,
+    );
+    let outcome = find(&outcomes, "protocol/preview-schema-empty");
+    assert!(!outcome.passed(), "a misspelled result key was certified");
+    assert!(message(outcome).contains("resutl"), "{}", message(outcome));
+}
+
+#[test]
+fn a_correctly_spelled_schema_delete_still_passes() {
+    // the control for both checks above: the same adapter, one word apart. without
+    // it the suite cannot tell them from checks that reject both spellings.
+    let outcomes = run_builtin(
+        &sh(&emitter_reporting_deletes("result", "deleted_object_types")),
         TIMEOUT,
     );
     for outcome in &outcomes {
@@ -722,6 +737,32 @@ fn an_unknown_key_one_level_down_fails() {
     assert!(!outcomes[0].passed(), "a nested unknown key was certified");
     assert!(
         message(&outcomes[0]).contains("applied[0].backend_ids"),
+        "{}",
+        message(&outcomes[0])
+    );
+}
+
+#[test]
+fn an_unknown_key_beside_the_result_fails() {
+    // the report nested one level too high: `result` is spelled right, so the
+    // payload check walks a payload the key is not in and every method certified it.
+    let case = Case {
+        name: "envelope-extra".into(),
+        request: json!({
+            "version": 1, "setup": {}, "method": "write",
+            "schema": { "types": {} }, "ops": [], "state": {}
+        }),
+        expect: Expect {
+            ok: true,
+            result: None,
+            error: None,
+        },
+    };
+    let script = r#"cat >/dev/null; printf '{"ok":true,"result":{"applied":[]},"deleted_object_types":["dcim.site"]}\n'"#;
+    let outcomes = run_cases(&sh(script), TIMEOUT, std::slice::from_ref(&case));
+    assert!(!outcomes[0].passed(), "an envelope extra was certified");
+    assert!(
+        message(&outcomes[0]).contains("deleted_object_types"),
         "{}",
         message(&outcomes[0])
     );
