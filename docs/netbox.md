@@ -95,7 +95,9 @@ will provision them as custom objects on `apply` using the netbox custom objects
   `provision.updated_object_fields`
 - the custom object type name is the schema type name lowercased with every run of
   non-alphanumerics replaced by `_`, so two declared types that collapse to one name
-  (`custom.asset_tag` and `custom.asset.tag`) fail the run rather than sharing a type
+  (`custom.asset_tag` and `custom.asset.tag`) fail the run rather than sharing a type.
+  a backend type belongs to whichever declared type produces its name, so renaming a
+  declaration into the same custom object type name keeps the type it owns
 - applies objects via `/api/plugins/custom-objects/<custom-object-type>/`
 
 this requires the `netbox-custom-objects` plugin and its REST API endpoints to be available.
