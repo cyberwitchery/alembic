@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **breaking** a `format:` disagreeing with the check its field type already applies fails validation. alembic held `{type: mac, format: uuid}` and `{type: time, format: uuid}` to both while netbox, nautobot and django provisioned the declared one alone. drop one; `{type: cidr, format: cidr}` and `{type: cidr, format: prefix}` are one check and still pass, and a `pattern:` still narrows
 - a provisioning run names what it deprecated and deleted, not only what it updated, under both `provision:` and `schema preview:`. a run that dropped two backend object types reported the number two, and only `plan -o` json carried the names. the `--allow-delete` refusal lists them too, rather than counting them behind the flag that performs the delete. creates stay counted
 - `alembic-adapter-test` no longer asks a declared read-only adapter for a schema preview, so an observer that refuses the method is certified instead of failed on it. previewing is provisioning, and provisioning goes through the emitter, so an observer is never sent one. `protocol/preview-schema-empty` now follows the declared role, as `protocol/ensure-schema-empty` already did; `--no-provisioning-check` is unchanged, since a preview writes nothing
 - netbox: renaming a declared type into the same custom object type name keeps the backend type it owns. `custom.asset_tag` renamed to `custom.asset.tag` produced one plan that patched a field and then deleted it and its type (#369)
