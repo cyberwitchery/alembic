@@ -326,6 +326,12 @@ care, since both are expected to error whatever the role. answering
 `capabilities` itself with the unknown-method error stays conformant and means
 the default read+write role.
 
+"right-shaped" also means only the keys the protocol defines: a response
+carrying an unknown one fails, naming where it sat, from the envelope beside
+`result` down to inside `applied` and `provision`. your own `key` and `attrs`
+maps are not checked. the host is laxer on purpose, so run the runner that
+ships with your alembic.
+
 the empty schema provisioning is a real `ensure_schema`, and a converging
 adapter reads it as "delete everything you own". the runner is not the host
 and has no `--allow-delete` gate, so point it at a disposable backend.

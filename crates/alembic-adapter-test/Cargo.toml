@@ -11,6 +11,7 @@ description = "Conformance runner for external alembic adapter executables."
 readme = "../../README.md"
 
 [dependencies]
+alembic-core.workspace = true
 alembic-engine.workspace = true
 anyhow.workspace = true
 clap.workspace = true
@@ -19,6 +20,5 @@ serde_json.workspace = true
 
 # the example adapters the conformance tests run against
 [dev-dependencies]
-alembic-core.workspace = true
 serde_yaml.workspace = true
 tempfile.workspace = true
