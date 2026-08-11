@@ -65,6 +65,14 @@ fields:
 
 `format` supports: `slug`, `ip_address`, `cidr`, `prefix`, `mac`, `uuid`.
 
+a `uuid`, `cidr`, `prefix`, `mac` or `slug` type already checks its own format, so
+a `format:` on one has to agree with it. `{type: cidr, format: cidr}` restates the
+type and `{type: cidr, format: prefix}` names the same check, but `{type: mac,
+format: uuid}` is refused at load rather than failing per object. a `pattern:`
+narrows instead, and both apply. a backend that provisions a `validation_regex`
+installs one regex, not two (see `docs/netbox.md`), so a narrowed field stays
+stricter in alembic than in the backend.
+
 a `date`, `datetime` or `time` value is rfc 3339: `2026-08-01`, `22:00:00` (fractional seconds optional), and the two joined by `T` with an optional `Z` or `+HH:MM` offset (`2026-08-01T22:00:00Z`). the separator is accepted in either case, the offset is optional, so a naive `2026-08-01T22:00:00` is valid, and digits are ascii. the calendar is checked too, not only the shape, so `2026-02-30` and `2026-13-01` are errors, and `0001-01-01` and `9999-12-31` are valid.
 
 this is one canonical shape rather than the union of what the backends parse, so it is tighter than some of them: a backend that also takes `2026-8-1`, `22:00`, a space separator or `+0200` will not see those from alembic. three values rfc 3339 itself permits are refused, because no backend column holds them: a leap second (`23:59:60`), year `0000`, and a lowercase zone (`2026-08-01T22:00:00z`, where only the separator may be lowercase).
