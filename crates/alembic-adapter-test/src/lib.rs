@@ -165,7 +165,11 @@ pub fn run_builtin_with(adapter: &[String], timeout: Duration, builtins: Builtin
         ),
         capabilities,
         liveness,
-        check(
+    ];
+    // previewing is provisioning, so the host reaches both methods through an
+    // emitter and both checks follow the declared role, as the liveness probe does.
+    if matches!(role, ExternalRole::Emitter | ExternalRole::Adapter) {
+        outcomes.push(check(
             adapter,
             timeout,
             "protocol/preview-schema-empty",
@@ -179,11 +183,7 @@ pub fn run_builtin_with(adapter: &[String], timeout: Duration, builtins: Builtin
             // a conformant adapter answers preview_schema, either with a report or
             // a null result ("cannot preview"); both count as success.
             Expectation::MustSucceed,
-        ),
-    ];
-    // apply reaches ensure_schema only through an emitter, so the check follows
-    // the declared role, as the liveness probe does.
-    if matches!(role, ExternalRole::Emitter | ExternalRole::Adapter) {
+        ));
         outcomes.push(if builtins.provisioning {
             check(
                 adapter,
