@@ -273,6 +273,14 @@ pub struct ProvisionReport {
     pub deleted_object_fields: Vec<String>,
 }
 
+/// how `named_changes` words a change: what a run did, or what a preview says
+/// it would do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tense {
+    Past,
+    Would,
+}
+
 impl ProvisionReport {
     /// fold another report in. one apply provisions in two passes -- `ensure_schema`
     /// fills the schema categories, `write` fills the tags it creates from the ops --
@@ -303,6 +311,41 @@ impl ProvisionReport {
             .extend(deprecated_object_fields);
         self.deleted_object_types.extend(deleted_object_types);
         self.deleted_object_fields.extend(deleted_object_fields);
+    }
+
+    /// the changes a run made to schema it did not create, labelled for the
+    /// operator. a create is new, so its count is the whole story; everything
+    /// else reaches into state that was already there, so name what it wrote.
+    pub fn named_changes(&self, tense: Tense) -> Vec<(&'static str, &str)> {
+        // destructured without `..`, like the folds above: a category added later
+        // has to answer whether it names what it touched.
+        let ProvisionReport {
+            created_fields: _,
+            updated_fields,
+            created_tags: _,
+            created_object_types: _,
+            created_object_fields: _,
+            updated_object_fields,
+            deprecated_object_types,
+            deprecated_object_fields,
+            deleted_object_types,
+            deleted_object_fields,
+        } = self;
+        let (updated, deprecated, deleted) = match tense {
+            Tense::Past => ("updated", "deprecated", "deleted"),
+            Tense::Would => ("would update", "would deprecate", "would delete"),
+        };
+        [
+            (updated, updated_fields),
+            (updated, updated_object_fields),
+            (deprecated, deprecated_object_types),
+            (deprecated, deprecated_object_fields),
+            (deleted, deleted_object_types),
+            (deleted, deleted_object_fields),
+        ]
+        .into_iter()
+        .flat_map(|(label, names)| names.iter().map(move |name| (label, name.as_str())))
+        .collect()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -488,6 +531,54 @@ mod tests {
         assert!(serde_json::from_str::<ProvisionReport>("{}")
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn named_changes_names_every_write_to_pre_existing_schema() {
+        // one entry per category, so a category dropped from the classification
+        // shows up as a missing pair rather than passing on a count.
+        let report = ProvisionReport {
+            created_fields: vec!["site.tier".to_string()],
+            updated_fields: vec!["site.owner".to_string()],
+            created_tags: vec!["managed".to_string()],
+            created_object_types: vec!["dcim.widget".to_string()],
+            created_object_fields: vec!["dcim.widget.size".to_string()],
+            updated_object_fields: vec!["dcim.widget.color".to_string()],
+            deprecated_object_types: vec!["dcim.gadget".to_string()],
+            deprecated_object_fields: vec!["dcim.gadget.color".to_string()],
+            deleted_object_types: vec!["dcim.relic".to_string()],
+            deleted_object_fields: vec!["dcim.relic.age".to_string()],
+        };
+
+        // the four create categories are counted by Display and named nowhere.
+        assert_eq!(
+            report.named_changes(Tense::Past),
+            [
+                ("updated", "site.owner"),
+                ("updated", "dcim.widget.color"),
+                ("deprecated", "dcim.gadget"),
+                ("deprecated", "dcim.gadget.color"),
+                ("deleted", "dcim.relic"),
+                ("deleted", "dcim.relic.age"),
+            ]
+        );
+        assert_eq!(
+            report.named_changes(Tense::Would),
+            [
+                ("would update", "site.owner"),
+                ("would update", "dcim.widget.color"),
+                ("would deprecate", "dcim.gadget"),
+                ("would deprecate", "dcim.gadget.color"),
+                ("would delete", "dcim.relic"),
+                ("would delete", "dcim.relic.age"),
+            ]
+        );
+
+        let creates_only = ProvisionReport {
+            created_object_types: vec!["dcim.widget".to_string()],
+            ..Default::default()
+        };
+        assert!(creates_only.named_changes(Tense::Past).is_empty());
     }
 
     #[test]

@@ -58,7 +58,7 @@ pub use state::{PostgresTlsMode, StateData, StateStore};
 pub use transform::{compile_map, eval_map_transform, load_map_spec, MapSpec, TransformsSpec};
 pub use types::{
     Adapter, AppliedOp, ApplyReport, Backend, BackendId, Emitter, FieldChange, ObservedObject,
-    ObservedState, Observer, Op, Plan, PlanSummary, ProvisionReport,
+    ObservedState, Observer, Op, Plan, PlanSummary, ProvisionReport, Tense,
 };
 
 /// validate an inventory and return the report.

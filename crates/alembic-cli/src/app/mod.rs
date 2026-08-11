@@ -8,7 +8,7 @@ use alembic_adapter_registry::{create_backend, Plugin};
 use alembic_engine::{
     apply_plan, build_plan, guard_drift_report, guard_schema_deletes, load_inventory,
     load_inventory_unvalidated, plan_write_only, render_plan, ApplyReport, Backend, DriftReport,
-    Plan,
+    Plan, Tense,
 };
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
@@ -297,14 +297,8 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                 let provision_report = emitter.ensure_schema(&inventory.schema).await?;
                 if !provision_report.is_empty() {
                     println!("provision: {provision_report}");
-                    // the summary counts; an update writes to a field this run
-                    // did not create, so name what it wrote.
-                    for updated in provision_report
-                        .updated_fields
-                        .iter()
-                        .chain(&provision_report.updated_object_fields)
-                    {
-                        println!("  updated {updated}");
+                    for (label, name) in provision_report.named_changes(Tense::Past) {
+                        println!("  {label} {name}");
                     }
                 }
             } else if let Ok(emitter) = backend.emitter() {
@@ -312,12 +306,8 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                     Ok(Some(report)) => {
                         if !report.is_empty() {
                             eprintln!("schema preview: {report}");
-                            for updated in report
-                                .updated_fields
-                                .iter()
-                                .chain(&report.updated_object_fields)
-                            {
-                                eprintln!("  would update {updated}");
+                            for (label, name) in report.named_changes(Tense::Would) {
+                                eprintln!("  {label} {name}");
                             }
                         }
                         schema_preview = Some(report);
@@ -510,14 +500,8 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
 fn print_apply_report(report: &ApplyReport) {
     if !report.provision.is_empty() {
         println!("provision: {}", report.provision);
-        // an update writes to a field this run did not create; name what it wrote.
-        for updated in report
-            .provision
-            .updated_fields
-            .iter()
-            .chain(&report.provision.updated_object_fields)
-        {
-            println!("  updated {updated}");
+        for (label, name) in report.provision.named_changes(Tense::Past) {
+            println!("  {label} {name}");
         }
     }
     if let Some(previously_applied_count) = report.previously_applied_count {

@@ -1254,9 +1254,15 @@ fn guard_schema_deletes_gate() {
         deleted_object_fields: vec!["dcim.gadget.color".to_string()],
         ..Default::default()
     };
-    // deletes without the flag: refused, and the message points at the flag.
+    // deletes without the flag: refused, naming both, and the message points at
+    // the flag. the names are the operator's only record of what would go.
     let err = guard_schema_deletes(&with_deletes, false).unwrap_err();
     assert!(err.to_string().contains("--allow-delete"), "{err}");
+    assert!(err.to_string().contains("- type dcim.widget"), "{err}");
+    assert!(
+        err.to_string().contains("- field dcim.gadget.color"),
+        "{err}"
+    );
     // deletes with the flag: allowed.
     guard_schema_deletes(&with_deletes, true).unwrap();
 }
