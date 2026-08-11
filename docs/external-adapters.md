@@ -199,8 +199,9 @@ the built-in `protocol/ensure-schema-empty` check.
 the host calls this at plan time to show what `ensure_schema` would provision,
 without writing anything. return the same `ProvisionReport` shape `ensure_schema`
 would, or a `null` result if the adapter cannot preview (which the host reports as
-`schema preview: unavailable for this backend`). answer it either way: leaving it to
-the unknown-method branch fails the built-in `protocol/preview-schema-empty` check.
+`schema preview: unavailable for this backend`). answer it either way, unless you
+declare the `observer` role: leaving it to the unknown-method branch fails the
+built-in `protocol/preview-schema-empty` check.
 
 this report is also the destructive-provisioning gate. before `plan --provision` or
 `apply` calls `ensure_schema`, the host previews and refuses the run with
@@ -245,8 +246,8 @@ operator passed `--allow-delete`, and it omits the keys that are empty:
 the host calls this once when it constructs the backend, to learn which side of
 the adapter contract the adapter implements. the result carries a `role`:
 
-- `observer`: read-only. the host calls `read` but never `write`; `apply`
-  rejects the backend up front.
+- `observer`: read-only. the host calls `read` but never `write` or either
+  provisioning method; `apply` and `plan --provision` reject the backend up front.
 - `emitter`: write-only. the host calls `write` but never `read`; plain `plan`
   plans every declared object as a create against an empty observation, while
   `import` and `plan --report` reject the backend up front instead of
@@ -312,8 +313,8 @@ behaviour: malformed json, an unsupported version, and an unknown method each
 produce a structured error; the process exits 0 within the timeout after writing
 exactly one json document (surrounding whitespace and multi-line json are fine,
 logs on stdout are not); the envelope is consistent; and a valid read of an empty
-inventory, a schema preview and an empty schema provisioning each succeed with a
-right-shaped payload, so an adapter that errors on every request does not pass.
+inventory succeeds with a right-shaped payload, as do a schema preview and an
+empty provisioning, so an adapter that errors on every request does not pass.
 provisioning follows the declared role, since only an emitting adapter is ever
 asked for it. the runner probes `capabilities` first: a declared emitter is never
 sent a read by the host, so its liveness check is an empty write instead of the
