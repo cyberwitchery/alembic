@@ -2643,6 +2643,139 @@ mod tests {
         }
     }
 
+    /// a backend custom object type whose recorded name is `recorded`, under the
+    /// netbox type name `custom_name`, carrying a `name` and an `owner` field.
+    fn mock_custom_object_type_recorded_as(server: &MockServer, custom_name: &str, recorded: &str) {
+        let _object_types = mock_site_object_type(server);
+        let _custom_fields = server.mock(|when, then| {
+            when.method(GET).path("/api/extras/custom-fields/");
+            then.status(200).json_body(page(json!([])));
+        });
+        let _types = mock_list(
+            server,
+            "/api/plugins/custom-objects/custom-object-types/",
+            json!([{
+                "id": EXISTING_OBJECT_TYPE_ID,
+                "name": custom_name,
+                "description": format!("alembic custom object for {recorded}"),
+                "object_type_name": format!("custom_objects.{custom_name}"),
+            }]),
+        );
+        let _fields = mock_list(
+            server,
+            "/api/plugins/custom-objects/custom-object-type-fields/",
+            json!([
+                {
+                    "id": 99,
+                    "custom_object_type": EXISTING_OBJECT_TYPE_ID,
+                    "name": "name",
+                    "required": true,
+                    "description": "",
+                    "validation_regex": "",
+                },
+                {
+                    "id": EXISTING_OBJECT_FIELD_ID,
+                    "custom_object_type": EXISTING_OBJECT_TYPE_ID,
+                    "name": "owner",
+                    "required": false,
+                    "description": "",
+                    "validation_regex": "",
+                },
+            ]),
+        );
+    }
+
+    /// the same schema as `custom_asset_schema`, under an arbitrary type name.
+    fn custom_object_schema(type_name: &str, pattern: Option<&str>) -> alembic_core::Schema {
+        alembic_core::Schema {
+            types: std::collections::BTreeMap::from([(
+                type_name.to_string(),
+                alembic_core::TypeSchema {
+                    key: std::collections::BTreeMap::from([(
+                        "name".to_string(),
+                        alembic_core::FieldSchema {
+                            r#type: alembic_core::FieldType::String,
+                            required: true,
+                            nullable: false,
+                            description: None,
+                            format: None,
+                            pattern: None,
+                        },
+                    )]),
+                    fields: std::collections::BTreeMap::from([(
+                        "owner".to_string(),
+                        alembic_core::FieldSchema {
+                            r#type: alembic_core::FieldType::String,
+                            required: false,
+                            nullable: true,
+                            description: None,
+                            format: None,
+                            pattern: pattern.map(str::to_string),
+                        },
+                    )]),
+                },
+            )]),
+        }
+    }
+
+    // a declaration renamed into the same custom object type name still owns the
+    // backend type: converge and delete answer ownership from one index, so a
+    // plan cannot patch a field and delete it in the same run.
+    #[tokio::test]
+    async fn a_renamed_declaration_keeps_the_custom_object_type_it_owns() {
+        let server = MockServer::start();
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
+        // recorded under the old spelling; both normalise to `custom_asset_tag`.
+        mock_custom_object_type_recorded_as(&server, "custom_asset_tag", "custom.asset_tag");
+
+        let preview = adapter
+            .preview_schema(&custom_object_schema("custom.asset.tag", Some("^ops-")))
+            .await
+            .unwrap()
+            .expect("netbox previews");
+
+        assert!(
+            preview.deleted_object_types.is_empty(),
+            "the type its own declaration still claims was planned for deletion: {:?}",
+            preview.deleted_object_types
+        );
+        assert!(
+            preview.deleted_object_fields.is_empty(),
+            "a field the same plan patches was planned for deletion: {:?}",
+            preview.deleted_object_fields
+        );
+        assert_eq!(
+            preview.updated_object_fields,
+            vec!["custom.asset.tag.owner: validation_regex \"\" -> \"^ops-\"".to_string()],
+            "the update must be reported under the declared name"
+        );
+    }
+
+    // an alembic-owned type no declaration claims is still deleted, under the
+    // name it was created with.
+    #[tokio::test]
+    async fn an_undeclared_custom_object_type_is_still_deleted() {
+        let server = MockServer::start();
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
+        mock_custom_object_type_recorded_as(&server, "custom_gone", "custom.gone");
+
+        let preview = adapter
+            .preview_schema(&custom_object_schema("custom.asset", None))
+            .await
+            .unwrap()
+            .expect("netbox previews");
+
+        assert_eq!(
+            preview
+                .deleted_object_types
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec!["custom.gone"],
+            "an unclaimed type is deleted under its recorded name"
+        );
+    }
+
     // the fields of a custom object type alembic itself provisioned converge like
     // the native ones: only the declared properties, patched by field id.
     #[tokio::test]
