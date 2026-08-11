@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `alembic-adapter-test` fails an adapter whose response carries a key the protocol does not define, instead of certifying it. a misspelled `deleted_object_types` reported nothing to delete and passed every check, and that report is what `--allow-delete` gates on; a misspelled `backend_id` inside `applied` dropped that object's state mapping. the failure names the key and where it sat. an adapter's own `key` and `attrs` maps stay unchecked
 - a provisioning run names what it deprecated and deleted, not only what it updated, under both `provision:` and `schema preview:`. a run that dropped two backend object types reported the number two, and only `plan -o` json carried the names. the `--allow-delete` refusal lists them too, rather than counting them behind the flag that performs the delete. creates stay counted
 - `alembic-adapter-test` no longer asks a declared read-only adapter for a schema preview, so an observer that refuses the method is certified instead of failed on it. previewing is provisioning, and provisioning goes through the emitter, so an observer is never sent one. `protocol/preview-schema-empty` now follows the declared role, as `protocol/ensure-schema-empty` already did; `--no-provisioning-check` is unchanged, since a preview writes nothing
 - netbox: renaming a declared type into the same custom object type name keeps the backend type it owns. `custom.asset_tag` renamed to `custom.asset.tag` produced one plan that patched a field and then deleted it and its type (#369)
