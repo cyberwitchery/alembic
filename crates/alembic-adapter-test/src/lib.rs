@@ -1,11 +1,12 @@
 //! conformance checks for external adapter executables.
 
+use alembic_core::TypeName;
 use alembic_engine::{
-    ApplyReport, ExternalCapabilities, ExternalObject, ExternalResponse, ExternalRole,
-    ProvisionReport, EXTERNAL_PROTOCOL_VERSION,
+    AppliedOp, ApplyReport, BackendId, ExternalCapabilities, ExternalObject, ExternalResponse,
+    ExternalRole, ProvisionReport, EXTERNAL_PROTOCOL_VERSION,
 };
 use anyhow::Context;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::path::Path;
@@ -224,9 +225,13 @@ fn probe_capabilities(adapter: &[String], timeout: Duration) -> (ExternalRole, O
     let run = run_once(adapter, timeout, &request);
     let judged = parse_response(&run).and_then(|response| {
         match (response.ok, response.result, response.error) {
-            (true, Some(result), None) => serde_json::from_value::<ExternalCapabilities>(result)
-                .map(|capabilities| capabilities.role)
-                .map_err(|e| format!("bad capabilities result: {e}")),
+            // key-checked like the rest: a misspelled `role` would default the
+            // adapter to read+write and report the fault as the `read` it then fails.
+            (true, Some(result), None) => check_payload("capabilities", &result).and_then(|()| {
+                serde_json::from_value::<ExternalCapabilities>(result)
+                    .map(|capabilities| capabilities.role)
+                    .map_err(|e| format!("bad capabilities result: {e}"))
+            }),
             (false, None, Some(error)) => {
                 if error.is_empty() {
                     Err("inconsistent envelope: error message is empty".to_string())
@@ -370,6 +375,12 @@ fn parse_response(run: &RunResult) -> Result<ExternalResponse<Value>, String> {
     de.end()
         .map_err(|_| "stdout has trailing output after the json document".to_string())?;
 
+    // [`check_payload`]'s rule at the outer level: `result` misspelled deserializes
+    // to `None`, which for preview_schema reads as "cannot preview" and skips the
+    // --allow-delete gate the payload check exists to defend.
+    reject_unknown_keys(&as_template(response_envelope())?, &value, "")
+        .map_err(|e| format!("bad response envelope: {e}"))?;
+
     serde_json::from_value(value).map_err(|e| format!("not a response envelope: {e}"))
 }
 
@@ -453,25 +464,137 @@ fn validate(run: &RunResult, method: &str, expectation: &Expectation) -> Result<
     Ok(())
 }
 
-/// deserialize a success payload into the type its method requires.
+/// deserialize a success payload into the type its method requires, then reject a
+/// key that type does not own: nearly every field defaults, so a misspelled one
+/// deserializes to the default and reads as conformant. [`Expect`]'s rule, other channel.
 fn check_payload(method: &str, result: &Value) -> Result<(), String> {
-    match method {
-        "read" => serde_json::from_value::<Vec<ExternalObject>>(result.clone())
-            .map(drop)
-            .map_err(|e| format!("bad read result: {e}")),
-        "write" => serde_json::from_value::<ApplyReport>(result.clone())
-            .map(drop)
-            .map_err(|e| format!("bad write result: {e}")),
-        "ensure_schema" => serde_json::from_value::<ProvisionReport>(result.clone())
-            .map(drop)
-            .map_err(|e| format!("bad ensure_schema result: {e}")),
-        "preview_schema" => serde_json::from_value::<Option<ProvisionReport>>(result.clone())
-            .map(drop)
-            .map_err(|e| format!("bad preview_schema result: {e}")),
-        "capabilities" => serde_json::from_value::<ExternalCapabilities>(result.clone())
-            .map(drop)
-            .map_err(|e| format!("bad capabilities result: {e}")),
-        other => Err(format!("unknown method {other}")),
+    let template = match method {
+        "read" => {
+            serde_json::from_value::<Vec<ExternalObject>>(result.clone())
+                .map_err(|e| format!("bad read result: {e}"))?;
+            as_template(vec![observed_object()])
+        }
+        "write" => {
+            serde_json::from_value::<ApplyReport>(result.clone())
+                .map_err(|e| format!("bad write result: {e}"))?;
+            as_template(apply_report())
+        }
+        "ensure_schema" => {
+            serde_json::from_value::<ProvisionReport>(result.clone())
+                .map_err(|e| format!("bad ensure_schema result: {e}"))?;
+            as_template(provision_report())
+        }
+        "preview_schema" => {
+            serde_json::from_value::<Option<ProvisionReport>>(result.clone())
+                .map_err(|e| format!("bad preview_schema result: {e}"))?;
+            as_template(provision_report())
+        }
+        "capabilities" => {
+            serde_json::from_value::<ExternalCapabilities>(result.clone())
+                .map_err(|e| format!("bad capabilities result: {e}"))?;
+            as_template(ExternalCapabilities {
+                role: ExternalRole::default(),
+            })
+        }
+        other => return Err(format!("unknown method {other}")),
+    }?;
+    reject_unknown_keys(&template, result, "").map_err(|e| format!("bad {method} result: {e}"))
+}
+
+/// serialize a payload into the template [`reject_unknown_keys`] walks. strict
+/// here only: the host takes an extra key as forward compatibility.
+fn as_template<T: Serialize>(populated: T) -> Result<Value, String> {
+    serde_json::to_value(populated).map_err(|e| format!("building the template: {e}"))
+}
+
+/// the templates. every literal is exhaustive and every field carries a value, so
+/// a field added to one of these types stops the build here rather than defaulting
+/// past `skip_serializing_if` into a key the runner would then reject.
+///
+/// `result` is null, so [`check_payload`] stays the one owner of what is inside it.
+fn response_envelope() -> ExternalResponse<Value> {
+    ExternalResponse {
+        ok: true,
+        result: Some(Value::Null),
+        error: Some(String::new()),
+    }
+}
+
+fn provision_report() -> ProvisionReport {
+    let one = || vec![String::new()];
+    ProvisionReport {
+        created_fields: one(),
+        updated_fields: one(),
+        created_tags: one(),
+        created_object_types: one(),
+        created_object_fields: one(),
+        updated_object_fields: one(),
+        deprecated_object_types: one(),
+        deprecated_object_fields: one(),
+        deleted_object_types: one(),
+        deleted_object_fields: one(),
+    }
+}
+
+fn apply_report() -> ApplyReport {
+    ApplyReport {
+        applied: vec![applied_op()],
+        resumed: vec![applied_op()],
+        previously_applied_count: Some(0),
+        provision: provision_report(),
+    }
+}
+
+fn applied_op() -> AppliedOp {
+    AppliedOp {
+        uid: Default::default(),
+        type_name: TypeName::new(""),
+        backend_id: Some(BackendId::Int(0)),
+    }
+}
+
+/// `key` and `attrs` stay empty on purpose: they are the adapter's own maps, and
+/// an empty template object is open.
+fn observed_object() -> ExternalObject {
+    ExternalObject {
+        type_name: TypeName::new(""),
+        key: Default::default(),
+        attrs: Default::default(),
+        backend_id: Some(BackendId::Int(0)),
+    }
+}
+
+/// reject a key the payload's type does not own, walking template and payload
+/// together. an empty template object is open: it stands for a free-form map.
+fn reject_unknown_keys(template: &Value, payload: &Value, path: &str) -> Result<(), String> {
+    match (template, payload) {
+        (Value::Object(known), Value::Object(got)) if !known.is_empty() => {
+            for (key, value) in got {
+                let path = at(path, key);
+                let nested = known
+                    .get(key)
+                    .ok_or_else(|| format!("unknown key {path}"))?;
+                reject_unknown_keys(nested, value, &path)?;
+            }
+            Ok(())
+        }
+        // one template element stands for every payload element.
+        (Value::Array(known), Value::Array(got)) => match known.first() {
+            Some(element) => got.iter().enumerate().try_for_each(|(index, value)| {
+                reject_unknown_keys(element, value, &format!("{path}[{index}]"))
+            }),
+            None => Ok(()),
+        },
+        _ => Ok(()),
+    }
+}
+
+/// where a key sits in the payload, for the failure message.
+fn at(path: &str, key: &str) -> String {
+    if path.is_empty() {
+        key.to_string()
+    } else {
+        format!("{path}.{key}")
     }
 }
 

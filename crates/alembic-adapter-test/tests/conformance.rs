@@ -640,3 +640,195 @@ fn a_turned_off_builtin_is_skipped_rather_than_passed() {
     assert!(!ensure.passed(), "a skipped check certifies nothing");
     assert!(ensure.failure.is_none(), "and it is not a failure either");
 }
+
+/// an emitter answering both provisioning methods with `key` as its delete list,
+/// carried under `envelope` rather than `result`.
+fn emitter_reporting_deletes(envelope: &str, key: &str) -> String {
+    format!(
+        r#"req=$(cat)
+    case "$req" in
+      *'"version":1'*) ;;
+      *) printf '{{"ok":false,"error":"unsupported protocol version"}}'; exit 0 ;;
+    esac
+    case "$req" in
+      *'"method":"capabilities"'*) printf '{{"ok":true,"result":{{"role":"emitter"}}}}' ;;
+      *'"method":"write"'*) printf '{{"ok":true,"result":{{"applied":[]}}}}' ;;
+      *'"method":"preview_schema"'*|*'"method":"ensure_schema"'*)
+        printf '{{"ok":true,"{envelope}":{{"{key}":["dcim.site"]}}}}' ;;
+      *) printf '{{"ok":false,"error":"unknown method"}}' ;;
+    esac"#
+    )
+}
+
+#[test]
+fn a_misspelled_schema_delete_fails() {
+    // this report is the --allow-delete gate, so a typo here reports nothing to
+    // delete and provisions past it in silence.
+    let outcomes = run_builtin(
+        &sh(&emitter_reporting_deletes("result", "deletd_object_types")),
+        TIMEOUT,
+    );
+    for name in [
+        "protocol/preview-schema-empty",
+        "protocol/ensure-schema-empty",
+    ] {
+        let outcome = find(&outcomes, name);
+        assert!(!outcome.passed(), "{name} certified a misspelled key");
+        assert!(
+            message(outcome).contains("deletd_object_types"),
+            "{}",
+            message(outcome)
+        );
+    }
+}
+
+#[test]
+fn a_misspelled_result_key_fails() {
+    // one level up, same gate: preview_schema is allowed to answer `(true, None,
+    // None)`, so a typo'd `result` reads as "cannot preview" and the run skips the
+    // --allow-delete refusal rather than hitting it.
+    let outcomes = run_builtin(
+        &sh(&emitter_reporting_deletes("resutl", "deleted_object_types")),
+        TIMEOUT,
+    );
+    let outcome = find(&outcomes, "protocol/preview-schema-empty");
+    assert!(!outcome.passed(), "a misspelled result key was certified");
+    assert!(message(outcome).contains("resutl"), "{}", message(outcome));
+}
+
+#[test]
+fn a_correctly_spelled_schema_delete_still_passes() {
+    // the control for both checks above: the same adapter, one word apart. without
+    // it the suite cannot tell them from checks that reject both spellings.
+    let outcomes = run_builtin(
+        &sh(&emitter_reporting_deletes("result", "deleted_object_types")),
+        TIMEOUT,
+    );
+    for outcome in &outcomes {
+        assert!(
+            outcome.passed(),
+            "{} failed: {:?}",
+            outcome.name,
+            outcome.failure
+        );
+    }
+}
+
+#[test]
+fn an_unknown_key_one_level_down_fails() {
+    // examples/cases/write-create.json asserts only `ok`, so a case's response is
+    // never compared and only shape-checked; the check has to reach inside
+    // `applied`. a typo'd backend_id deserializes to None, which apply reads as
+    // remove rather than unchanged, dropping a mapping alembic already held.
+    let case = Case {
+        name: "nested".into(),
+        request: json!({
+            "version": 1, "setup": {}, "method": "write",
+            "schema": { "types": {} }, "ops": [], "state": {}
+        }),
+        expect: Expect {
+            ok: true,
+            result: None,
+            error: None,
+        },
+    };
+    let script = r#"cat >/dev/null; printf '{"ok":true,"result":{"applied":[{"uid":"11111111-1111-1111-1111-111111111111","type_name":"dcim.site","backend_ids":1}]}}\n'"#;
+    let outcomes = run_cases(&sh(script), TIMEOUT, std::slice::from_ref(&case));
+    assert!(!outcomes[0].passed(), "a nested unknown key was certified");
+    assert!(
+        message(&outcomes[0]).contains("applied[0].backend_ids"),
+        "{}",
+        message(&outcomes[0])
+    );
+}
+
+#[test]
+fn an_unknown_key_beside_the_result_fails() {
+    // the report nested one level too high: `result` is spelled right, so the
+    // payload check walks a payload the key is not in and every method certified it.
+    let case = Case {
+        name: "envelope-extra".into(),
+        request: json!({
+            "version": 1, "setup": {}, "method": "write",
+            "schema": { "types": {} }, "ops": [], "state": {}
+        }),
+        expect: Expect {
+            ok: true,
+            result: None,
+            error: None,
+        },
+    };
+    let script = r#"cat >/dev/null; printf '{"ok":true,"result":{"applied":[]},"deleted_object_types":["dcim.site"]}\n'"#;
+    let outcomes = run_cases(&sh(script), TIMEOUT, std::slice::from_ref(&case));
+    assert!(!outcomes[0].passed(), "an envelope extra was certified");
+    assert!(
+        message(&outcomes[0]).contains("deleted_object_types"),
+        "{}",
+        message(&outcomes[0])
+    );
+}
+
+#[test]
+fn an_explicitly_empty_provision_list_passes() {
+    // `skip_serializing_if` means the type would not serialize these back, but
+    // examples/adapter.py sends them: the check is on the key, not a round-trip.
+    let case = Case {
+        name: "empty-lists".into(),
+        request: json!({
+            "version": 1, "setup": {}, "method": "ensure_schema",
+            "schema": { "types": {} }
+        }),
+        expect: Expect {
+            ok: true,
+            result: None,
+            error: None,
+        },
+    };
+    let script = r#"cat >/dev/null; printf '{"ok":true,"result":{"created_fields":[],"created_tags":[]}}\n'"#;
+    let outcomes = run_cases(&sh(script), TIMEOUT, std::slice::from_ref(&case));
+    assert!(
+        outcomes[0].passed(),
+        "an explicitly empty list was rejected: {:?}",
+        outcomes[0].failure
+    );
+}
+
+#[test]
+fn a_read_keeps_its_own_key_and_attr_names() {
+    // `key` and `attrs` are the adapter's maps, not protocol fields, so the check
+    // must not reach into them.
+    let case = Case {
+        name: "free-form".into(),
+        request: json!({
+            "version": 1, "setup": {}, "method": "read",
+            "schema": { "types": {} }, "types": [], "state": {}
+        }),
+        expect: Expect {
+            ok: true,
+            result: None,
+            error: None,
+        },
+    };
+    let script = r#"cat >/dev/null; printf '{"ok":true,"result":[{"type_name":"dcim.site","key":{"site":"fra1"},"attrs":{"name":"FRA1","slug":"fra1"}}]}\n'"#;
+    let outcomes = run_cases(&sh(script), TIMEOUT, std::slice::from_ref(&case));
+    assert!(
+        outcomes[0].passed(),
+        "a free-form map was walked: {:?}",
+        outcomes[0].failure
+    );
+}
+
+#[test]
+fn a_misspelled_role_names_the_key() {
+    // the role picks the liveness check, so a typo defaults the adapter to
+    // read+write and the run fails on a read it never claimed to implement.
+    let script = r#"cat >/dev/null; printf '{"ok":true,"result":{"rol":"emitter"}}\n'"#;
+    let outcomes = run_builtin(&sh(script), TIMEOUT);
+    let capabilities = find(&outcomes, "protocol/capabilities");
+    assert!(!capabilities.passed(), "a misspelled role was certified");
+    assert!(
+        message(capabilities).contains("rol"),
+        "{}",
+        message(capabilities)
+    );
+}
