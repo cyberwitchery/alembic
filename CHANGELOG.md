@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `alembic-adapter-test` no longer asks a declared read-only adapter for a schema preview, so an observer that refuses the method is certified instead of failed on it. previewing is provisioning, and provisioning goes through the emitter, so an observer is never sent one. `protocol/preview-schema-empty` now follows the declared role, as `protocol/ensure-schema-empty` already did; `--no-provisioning-check` is unchanged, since a preview writes nothing
 - netbox: renaming a declared type into the same custom object type name keeps the backend type it owns. `custom.asset_tag` renamed to `custom.asset.tag` produced one plan that patched a field and then deleted it and its type (#369)
 - infrahub: two declared types that render one graphql kind fail the run; rename one. the kind pascal-cases each half of the type name and eats `.`, `_`, `-` and spaces, so `dcim.site_group` and `dcim.site.group` are one kind. every command refuses before it queries or writes (#372)
 - peeringdb observes `netixlan` records rather than organizations, and `PEERINGDB_API_KEY` is optional: an unset key reads anonymously instead of failing. a record carrying none of its declared type's own fields is refused rather than observed (#267)

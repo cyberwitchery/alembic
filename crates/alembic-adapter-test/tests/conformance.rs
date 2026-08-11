@@ -292,7 +292,12 @@ fn an_emitter_that_leaves_ensure_schema_to_unknown_method_fails() {
 fn ensure_schema_check_follows_the_declared_role() {
     // an observer is never asked to provision, so refusing the method must not
     // cost it the certification; the emitter arm keeps that absence meaningful.
-    let script = r#"req=$(cat); case "$req" in
+    let script = r#"req=$(cat)
+    case "$req" in
+      *'"version":1'*) ;;
+      *) printf '{"ok":false,"error":"unsupported protocol version"}'; exit 0 ;;
+    esac
+    case "$req" in
       *'"method":"capabilities"'*) printf '{"ok":true,"result":{"role":"observer"}}' ;;
       *'"method":"read"'*) printf '{"ok":true,"result":[]}' ;;
       *) printf '{"ok":false,"error":"write is not supported"}' ;;
@@ -301,12 +306,63 @@ fn ensure_schema_check_follows_the_declared_role() {
     assert!(!outcomes
         .iter()
         .any(|o| o.name == "protocol/ensure-schema-empty"));
+    // and it passes what it is sent: asserting only the absence let two other
+    // checks fail here unnoticed.
+    for outcome in &outcomes {
+        assert!(
+            outcome.passed(),
+            "{} failed: {:?}",
+            outcome.name,
+            outcome.failure
+        );
+    }
 
     let script = script.replace("observer", "emitter");
     let outcomes = run_builtin(&sh(&script), TIMEOUT);
     assert!(outcomes
         .iter()
         .any(|o| o.name == "protocol/ensure-schema-empty"));
+}
+
+#[test]
+fn preview_schema_check_follows_the_declared_role() {
+    // previewing is provisioning, so a read-only adapter refusing the method is
+    // conformant: the host reaches preview_schema through the emitter only.
+    let script = r#"req=$(cat)
+    case "$req" in
+      *'"version":1'*) ;;
+      *) printf '{"ok":false,"error":"unsupported protocol version"}'; exit 0 ;;
+    esac
+    case "$req" in
+      *'"method":"capabilities"'*) printf '{"ok":true,"result":{"role":"observer"}}' ;;
+      *'"method":"read"'*) printf '{"ok":true,"result":[]}' ;;
+      *) printf '{"ok":false,"error":"this adapter is read-only"}' ;;
+    esac"#;
+    let outcomes = run_builtin(&sh(script), TIMEOUT);
+    assert!(!outcomes
+        .iter()
+        .any(|o| o.name == "protocol/preview-schema-empty"));
+    for outcome in &outcomes {
+        assert!(
+            outcome.passed(),
+            "{} failed: {:?}",
+            outcome.name,
+            outcome.failure
+        );
+    }
+
+    // the roles the host does preview are still sent it, and still fail on a
+    // refusal: without this the gate is indistinguishable from a dropped check.
+    for role in ["emitter", "adapter"] {
+        let outcomes = run_builtin(&sh(&script.replace("observer", role)), TIMEOUT);
+        let preview = find(&outcomes, "protocol/preview-schema-empty");
+        assert!(!preview.passed(), "{role} was not sent the preview");
+        assert!(
+            message(preview).contains("this adapter is read-only"),
+            "{}",
+            message(preview)
+        );
+    }
 }
 
 #[test]
@@ -368,7 +424,6 @@ fn version_mismatch_follows_the_declared_role() {
     let script = r#"req=$(cat); case "$req" in
       *'"method":"capabilities"'*) printf '{"ok":true,"result":{"role":"observer"}}' ;;
       *'"method":"read"'*) printf '{"ok":true,"result":[]}' ;;
-      *'"method":"preview_schema"'*) printf '{"ok":true,"result":null}' ;;
       *) printf '{"ok":false,"error":"write is not supported"}' ;;
     esac"#;
     let outcomes = run_builtin(&sh(script), TIMEOUT);
