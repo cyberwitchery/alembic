@@ -861,7 +861,6 @@ impl NetBoxAdapter {
         // the same id and must produce one patch between them.
         let mut shared_fields: BTreeMap<u64, SharedCustomField> = BTreeMap::new();
         let mut custom_schema_types: Vec<(TypeName, &TypeSchema)> = Vec::new();
-        let mut custom_schema_type_names: BTreeSet<String> = BTreeSet::new();
         let mut custom_object_names: BTreeMap<String, TypeName> = BTreeMap::new();
         for (type_name, type_schema) in &schema.types {
             let type_name = TypeName::new(type_name);
@@ -931,7 +930,6 @@ impl NetBoxAdapter {
                 continue;
             }
             claim_custom_object_name(&mut custom_object_names, &type_name)?;
-            custom_schema_type_names.insert(type_name.as_str().to_string());
             custom_schema_types.push((type_name, type_schema));
         }
 
@@ -1048,12 +1046,19 @@ impl NetBoxAdapter {
         let mut deleted_object_fields = Vec::new();
         let mut deleted_object_types = Vec::new();
         if custom_objects_available {
-            for custom_type in custom_types_by_name.values() {
-                let Some(type_name) = alembic_custom_object_name(custom_type) else {
+            for (custom_name, custom_type) in &custom_types_by_name {
+                let Some(recorded) = alembic_custom_object_name(custom_type) else {
                     continue;
                 };
                 let existing_fields = custom_fields_by_type_id.get(&custom_type.id);
-                if custom_schema_type_names.contains(type_name.as_str()) {
+                // which declared type claims this backend type is the question the
+                // create and converge paths answer by its own name, so this reads
+                // the same index rather than matching the recorded name as a
+                // string: a declaration whose spelling changed into the same
+                // custom object type name still owns it, and deleting it here
+                // would race the patch planned for its fields above.
+                if let Some(declared) = custom_object_names.get(custom_name) {
+                    let type_name = declared.as_str().to_string();
                     let desired: BTreeSet<String> = schema
                         .types
                         .get(type_name.as_str())
@@ -1074,6 +1079,7 @@ impl NetBoxAdapter {
                         }
                     }
                 } else {
+                    let type_name = recorded;
                     if let Some(existing_fields) = existing_fields {
                         for (field_name, field) in existing_fields {
                             if is_reserved_custom_object_field(field_name) {
