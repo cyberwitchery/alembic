@@ -65,10 +65,12 @@ fields:
 
 `format` supports: `slug`, `ip_address`, `cidr`, `prefix`, `mac`, `uuid`.
 
-a `uuid`, `cidr`, `prefix`, `mac` or `slug` type already checks its own format, so
-a `format:` on one has to agree with it. `{type: cidr, format: cidr}` restates the
-type and `{type: cidr, format: prefix}` names the same check, but `{type: mac,
-format: uuid}` is refused at load rather than failing per object. a `pattern:`
+a `uuid`, `cidr`, `prefix`, `mac` or `slug` type already checks its own format, and
+a `date`, `datetime` or `time` type checks rfc 3339 (below), so a `format:` on one
+has to agree with it. `{type: cidr, format: cidr}` restates the type and `{type:
+cidr, format: prefix}` names the same check, but `{type: mac, format: uuid}` is
+refused at load rather than failing per object. no format is the rfc 3339 check, so
+any `format:` on a `date`, `datetime` or `time` field is refused. a `pattern:`
 narrows instead, and both apply. a backend that provisions a `validation_regex`
 installs one regex, not two (see `docs/netbox.md`), so a narrowed field stays
 stricter in alembic than in the backend.
