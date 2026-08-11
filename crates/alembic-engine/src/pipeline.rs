@@ -88,12 +88,21 @@ pub fn guard_schema_deletes(preview: &ProvisionReport, allow_delete: bool) -> Re
         deleted_object_types,
         deleted_object_fields,
     } = preview;
-    let deleted_types = deleted_object_types.len();
-    let deleted_fields = deleted_object_fields.len();
-    if deleted_types > 0 || deleted_fields > 0 {
+    // named, not counted: a delete cascades, and the count alone leaves no way
+    // to find out what it took short of running it.
+    let doomed: Vec<String> = deleted_object_types
+        .iter()
+        .map(|name| format!("type {name}"))
+        .chain(
+            deleted_object_fields
+                .iter()
+                .map(|name| format!("field {name}")),
+        )
+        .collect();
+    if !doomed.is_empty() {
         return Err(anyhow!(
-            "provisioning would delete schema ({deleted_types} type(s), \
-             {deleted_fields} field(s)); re-run with --allow-delete"
+            "provisioning would delete schema; re-run with --allow-delete:\n{}",
+            bullet_list(&doomed)
         ));
     }
     Ok(())

@@ -184,7 +184,9 @@ response:
 every key of the report is optional and defaults to an empty list, so an adapter
 that only ever creates can send the `created_*` keys alone. each of them is
 counted back to the operator on a provisioning run (`provision: 1 object types
-created, 1 object fields deleted`). the `deleted_*` lists are also read by the
+created, 1 object fields deleted`), and the `updated_*`, `deprecated_*` and
+`deleted_*` entries are named under that line, one per entry, since they write to
+backend state the run did not create. the `deleted_*` lists are also read by the
 host: see the gate under `preview_schema`. `created_tags` may also be answered from
 `write` instead, when the tags come from the ops rather than the schema.
 
@@ -203,11 +205,12 @@ built-in `protocol/preview-schema-empty` check.
 
 this report is also the destructive-provisioning gate. before `plan --provision` or
 `apply` calls `ensure_schema`, the host previews and refuses the run with
-`provisioning would delete schema (N type(s), M field(s)); re-run with --allow-delete`
-when `deleted_object_types` or `deleted_object_fields` is non-empty. schema deletes
-cascade to their objects on the backend, so an adapter that drops a type without
-listing it here takes the objects with it and never prompts. list what you would
-delete, even if the same call also creates.
+`provisioning would delete schema; re-run with --allow-delete:` followed by a bullet
+per entry, when `deleted_object_types` or `deleted_object_fields` is non-empty. schema
+deletes cascade to their objects on the backend, so an adapter that drops a type
+without listing it here takes the objects with it and never prompts. list what you
+would delete, even if the same call also creates: what you list is what the
+operator is shown.
 
 a `null` result skips the gate rather than failing it, so an adapter that cannot
 preview provisions unchecked. that is deliberate, and it is the trade for not
