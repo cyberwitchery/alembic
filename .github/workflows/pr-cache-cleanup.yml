@@ -1,0 +1,43 @@
+name: pr cache cleanup
+
+# a closed pull request's caches are dead: nothing restores from a branch scope
+# again, and they would otherwise sit until the 7-day unaccessed eviction. the
+# caches this deletes are the branch-scoped ones only; main's are untouched, and
+# they are what a pull request restores from in the first place.
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  cleanup:
+    name: cleanup
+    runs-on: ubuntu-latest
+    # a fork's token cannot delete anything in this repository.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - name: delete the caches this pull request created
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -uo pipefail
+          freed=0
+          # a run on the branch and a run on the merge ref cache under different
+          # scopes, so both are asked for.
+          for ref in "refs/pull/${PR_NUMBER}/merge" "refs/heads/${HEAD_REF}"; do
+            while read -r id size; do
+              [ -n "$id" ] || continue
+              if gh api -X DELETE "repos/${REPO}/actions/caches/${id}" >/dev/null 2>&1; then
+                freed=$((freed + size))
+                echo "deleted $id ($ref)"
+              fi
+            done < <(gh api "repos/${REPO}/actions/caches?ref=${ref}&per_page=100" \
+                       --jq '.actions_caches[]? | "\(.id) \(.size_in_bytes)"' 2>/dev/null)
+          done
+          echo "freed $((freed / 1048576)) MB" >> "$GITHUB_STEP_SUMMARY"
