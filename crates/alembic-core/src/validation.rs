@@ -73,6 +73,16 @@ pub enum ValidationError {
         constraint: String,
         field_type: String,
     },
+    #[error(
+        "conflicting format on {type_name}.{field}: declared {format}, but a {field_type} type already checks {type_check} (docs/ir.md)"
+    )]
+    ConflictingFormat {
+        type_name: String,
+        field: String,
+        field_type: String,
+        format: String,
+        type_check: String,
+    },
     #[error("empty enum for {type_name}.{field}: an enum with no values is unsatisfiable")]
     EmptyEnum { type_name: String, field: String },
     #[error(
@@ -110,6 +120,7 @@ impl ValidationError {
             | ValidationError::UnknownRefTarget { .. }
             | ValidationError::InvalidSchemaPattern { .. }
             | ValidationError::ConstraintOnNonStringField { .. }
+            | ValidationError::ConflictingFormat { .. }
             | ValidationError::EmptyEnum { .. }
             | ValidationError::NonScalarKeyField { .. }
             | ValidationError::NullableKeyField { .. } => None,
@@ -141,6 +152,7 @@ impl ValidationError {
             | ValidationError::UnknownRefTarget { .. }
             | ValidationError::InvalidSchemaPattern { .. }
             | ValidationError::ConstraintOnNonStringField { .. }
+            | ValidationError::ConflictingFormat { .. }
             | ValidationError::EmptyEnum { .. }
             | ValidationError::NonScalarKeyField { .. }
             | ValidationError::NullableKeyField { .. } => None,
@@ -158,6 +170,7 @@ impl ValidationError {
             | ValidationError::UnknownRefTarget { type_name, .. }
             | ValidationError::InvalidSchemaPattern { type_name, .. }
             | ValidationError::ConstraintOnNonStringField { type_name, .. }
+            | ValidationError::ConflictingFormat { type_name, .. }
             | ValidationError::EmptyEnum { type_name, .. }
             | ValidationError::NonScalarKeyField { type_name, .. }
             | ValidationError::NullableKeyField { type_name, .. } => Some(type_name.clone()),
@@ -195,6 +208,7 @@ impl ValidationError {
             | ValidationError::UnknownRefTarget { .. }
             | ValidationError::InvalidSchemaPattern { .. }
             | ValidationError::ConstraintOnNonStringField { .. }
+            | ValidationError::ConflictingFormat { .. }
             | ValidationError::EmptyEnum { .. }
             | ValidationError::NonScalarKeyField { .. }
             | ValidationError::NullableKeyField { .. } => None,
@@ -359,6 +373,7 @@ pub fn validate_inventory(inventory: &Inventory) -> ValidationReport {
     validate_schema_ref_targets(&inventory.schema, &mut report);
     let pattern_cache = compile_schema_patterns(&inventory.schema, &mut report);
     validate_schema_constraint_types(&inventory.schema, &mut report);
+    validate_schema_format_agreement(&inventory.schema, &mut report);
     validate_schema_enums(&inventory.schema, &mut report);
     validate_schema_key_scalar(&inventory.schema, &mut report);
     validate_schema_key_nullable(&inventory.schema, &mut report);
@@ -547,6 +562,34 @@ fn is_never_string_type(field_type: &FieldType) -> bool {
         | FieldType::Ref { .. }
         | FieldType::Json => false,
     }
+}
+
+/// reject a declared `format:` that disagrees with the check the field's own type
+/// already applies. core holds the value to both while a backend provisions the
+/// declared one alone (`validation_regex_for_schema`), so alembic and the backend
+/// it provisioned mean different things by the field; otherwise it is accepted at
+/// load and only fails per-object, naming the shape the type asked for.
+fn validate_schema_format_agreement(schema: &Schema, report: &mut ValidationReport) {
+    for_each_schema_field(schema, |type_name, field, field_schema| {
+        let Some(format) = field_schema.format.as_ref() else {
+            return;
+        };
+        // off `type_check` rather than a table beside it, so a type whose check
+        // changes cannot fall out of the rule. json-checked types carry no shape.
+        let ValueCheck::Text(check) = type_check(&field_schema.r#type) else {
+            return;
+        };
+        if check.is(format) {
+            return;
+        }
+        report.errors.push(ValidationError::ConflictingFormat {
+            type_name: type_name.to_string(),
+            field: field.to_string(),
+            field_type: field_type_label(&field_schema.r#type),
+            format: format_label(format),
+            type_check: check.label(),
+        });
+    });
 }
 
 /// reject an `enum` field declared with an empty `values` list. an empty enum is
@@ -1112,12 +1155,35 @@ fn days_in_month(year: u32, month: u32) -> u32 {
 }
 
 fn matches_format(format: &FieldFormat, raw: &str) -> bool {
+    match format_check(format) {
+        FormatCheck::Slug => slug_regex().is_match(raw),
+        FormatCheck::IpAddress => raw.parse::<IpAddr>().is_ok(),
+        FormatCheck::IpNet => raw.parse::<IpNet>().is_ok(),
+        FormatCheck::Mac => mac_regex().is_match(raw),
+        FormatCheck::Uuid => Uid::parse_str(raw).is_ok(),
+    }
+}
+
+/// the check a format resolves to. `matches_format` dispatches on this rather
+/// than on the format, so two formats sharing a variant are one predicate under
+/// two names, and `TextCheck::is` compares checks without a second table to keep
+/// in step.
+#[derive(PartialEq, Eq)]
+enum FormatCheck {
+    Slug,
+    IpAddress,
+    IpNet,
+    Mac,
+    Uuid,
+}
+
+fn format_check(format: &FieldFormat) -> FormatCheck {
     match format {
-        FieldFormat::Slug => slug_regex().is_match(raw),
-        FieldFormat::IpAddress => raw.parse::<IpAddr>().is_ok(),
-        FieldFormat::Cidr | FieldFormat::Prefix => raw.parse::<IpNet>().is_ok(),
-        FieldFormat::Mac => mac_regex().is_match(raw),
-        FieldFormat::Uuid => Uid::parse_str(raw).is_ok(),
+        FieldFormat::Slug => FormatCheck::Slug,
+        FieldFormat::IpAddress => FormatCheck::IpAddress,
+        FieldFormat::Cidr | FieldFormat::Prefix => FormatCheck::IpNet,
+        FieldFormat::Mac => FormatCheck::Mac,
+        FieldFormat::Uuid => FormatCheck::Uuid,
     }
 }
 
@@ -1185,10 +1251,49 @@ fn format_label(format: &FieldFormat) -> String {
     }
 }
 
+/// the textual shape a field type holds its value to. `ValueCheck::Text` carries
+/// this rather than a bare predicate so `validate_schema_format_agreement` can read
+/// what a type checks off that one table instead of keeping its own.
+enum TextCheck {
+    Format(FieldFormat),
+    Rfc3339Date,
+    Rfc3339Datetime,
+    Rfc3339Time,
+}
+
+impl TextCheck {
+    fn matches(&self, raw: &str) -> bool {
+        match self {
+            TextCheck::Format(format) => matches_format(format, raw),
+            TextCheck::Rfc3339Date => is_rfc3339_date(raw),
+            TextCheck::Rfc3339Datetime => is_rfc3339_datetime(raw),
+            TextCheck::Rfc3339Time => is_rfc3339_time(raw),
+        }
+    }
+
+    /// whether a declared format is this same check. no `FieldFormat` is the rfc
+    /// 3339 check, so every format disagrees with one of those types.
+    fn is(&self, format: &FieldFormat) -> bool {
+        match self {
+            TextCheck::Format(own) => format_check(own) == format_check(format),
+            TextCheck::Rfc3339Date | TextCheck::Rfc3339Datetime | TextCheck::Rfc3339Time => false,
+        }
+    }
+
+    fn label(&self) -> String {
+        match self {
+            TextCheck::Format(format) => format_label(format),
+            TextCheck::Rfc3339Date | TextCheck::Rfc3339Datetime | TextCheck::Rfc3339Time => {
+                "rfc 3339".to_string()
+            }
+        }
+    }
+}
+
 /// how a field type checks its value: as a textual check on a string, or as a
 /// json-type test. the one list `value_matches_type` and `mismatch_actual` read.
 enum ValueCheck {
-    Text(fn(&str) -> bool),
+    Text(TextCheck),
     Json(fn(&Value) -> bool),
 }
 
@@ -1196,16 +1301,16 @@ fn type_check(field_type: &FieldType) -> ValueCheck {
     match field_type {
         // format-typed fields with an unambiguous textual format must hold a
         // string that matches it, mirroring how the `format:` constraint validates.
-        FieldType::Uuid => ValueCheck::Text(|raw| matches_format(&FieldFormat::Uuid, raw)),
-        FieldType::Cidr => ValueCheck::Text(|raw| matches_format(&FieldFormat::Cidr, raw)),
-        FieldType::Prefix => ValueCheck::Text(|raw| matches_format(&FieldFormat::Prefix, raw)),
-        FieldType::Mac => ValueCheck::Text(|raw| matches_format(&FieldFormat::Mac, raw)),
-        FieldType::Slug => ValueCheck::Text(|raw| matches_format(&FieldFormat::Slug, raw)),
+        FieldType::Uuid => ValueCheck::Text(TextCheck::Format(FieldFormat::Uuid)),
+        FieldType::Cidr => ValueCheck::Text(TextCheck::Format(FieldFormat::Cidr)),
+        FieldType::Prefix => ValueCheck::Text(TextCheck::Format(FieldFormat::Prefix)),
+        FieldType::Mac => ValueCheck::Text(TextCheck::Format(FieldFormat::Mac)),
+        FieldType::Slug => ValueCheck::Text(TextCheck::Format(FieldFormat::Slug)),
         // rfc 3339. the offset on `datetime` is optional: the ir is vendor-neutral and
         // django and netbox both take a naive one, so requiring it would reject what they accept.
-        FieldType::Date => ValueCheck::Text(is_rfc3339_date),
-        FieldType::Datetime => ValueCheck::Text(is_rfc3339_datetime),
-        FieldType::Time => ValueCheck::Text(is_rfc3339_time),
+        FieldType::Date => ValueCheck::Text(TextCheck::Rfc3339Date),
+        FieldType::Datetime => ValueCheck::Text(TextCheck::Rfc3339Datetime),
+        FieldType::Time => ValueCheck::Text(TextCheck::Rfc3339Time),
         FieldType::String
         | FieldType::Text
         // `ip_address` stays a plain string check: the canonical IPAM examples
@@ -1229,7 +1334,7 @@ fn type_check(field_type: &FieldType) -> ValueCheck {
 
 fn value_matches_type(value: &Value, field_type: &FieldType) -> bool {
     match type_check(field_type) {
-        ValueCheck::Text(check) => value.as_str().is_some_and(check),
+        ValueCheck::Text(check) => value.as_str().is_some_and(|raw| check.matches(raw)),
         ValueCheck::Json(check) => check(value),
     }
 }
@@ -2180,6 +2285,222 @@ mod tests {
             .any(|e| matches!(e, ValidationError::ConstraintOnNonStringField { .. })));
     }
 
+    /// build a one-type schema whose single attr field carries `format`.
+    fn formatted_field_schema(
+        field_type: FieldType,
+        format: FieldFormat,
+    ) -> BTreeMap<String, TypeSchema> {
+        let mut value = schema_field(field_type);
+        value.format = Some(format);
+        BTreeMap::from([(
+            "device".to_string(),
+            TypeSchema {
+                key: BTreeMap::new(),
+                fields: BTreeMap::from([("value".to_string(), value)]),
+            },
+        )])
+    }
+
+    fn conflicting_formats(report: &ValidationReport) -> Vec<&ValidationError> {
+        report
+            .errors
+            .iter()
+            .filter(|e| matches!(e, ValidationError::ConflictingFormat { .. }))
+            .collect()
+    }
+
+    #[test]
+    fn detects_format_disagreeing_with_its_field_type() {
+        let report = validate_schema(formatted_field_schema(FieldType::Mac, FieldFormat::Uuid));
+        assert!(report.errors.iter().any(|e| matches!(
+            e,
+            ValidationError::ConflictingFormat {
+                type_name,
+                field,
+                field_type,
+                format,
+                type_check,
+            } if type_name == "device"
+                && field == "value"
+                && field_type == "mac"
+                && format == "format(uuid)"
+                && type_check == "format(mac)"
+        )));
+    }
+
+    #[test]
+    fn detects_format_disagreeing_with_its_field_type_in_a_key_field() {
+        let mut slug = schema_field(FieldType::Slug);
+        slug.format = Some(FieldFormat::Uuid);
+        let device = TypeSchema {
+            key: BTreeMap::from([("slug".to_string(), slug)]),
+            fields: BTreeMap::new(),
+        };
+        let report = validate_schema(BTreeMap::from([("device".to_string(), device)]));
+        assert!(report.errors.iter().any(|e| matches!(
+            e,
+            ValidationError::ConflictingFormat { type_name, field, .. }
+                if type_name == "device" && field == "key.slug"
+        )));
+    }
+
+    #[test]
+    fn a_satisfiable_disagreement_is_still_refused() {
+        // the rule is the disagreement, not unsatisfiability: `aa-bb-cc-dd-ee-ff`
+        // is both a mac and a slug, so the field holds values and alembic simply
+        // means something the backend it provisioned does not.
+        assert!(matches_format(&FieldFormat::Mac, "aa-bb-cc-dd-ee-ff"));
+        assert!(matches_format(&FieldFormat::Slug, "aa-bb-cc-dd-ee-ff"));
+        let report = validate_schema(formatted_field_schema(FieldType::Mac, FieldFormat::Slug));
+        assert_eq!(conflicting_formats(&report).len(), 1, "{:?}", report.errors);
+    }
+
+    #[test]
+    fn a_format_restating_its_field_type_is_accepted() {
+        for (field_type, format) in [
+            (FieldType::Uuid, FieldFormat::Uuid),
+            (FieldType::Cidr, FieldFormat::Cidr),
+            (FieldType::Prefix, FieldFormat::Prefix),
+            (FieldType::Mac, FieldFormat::Mac),
+            (FieldType::Slug, FieldFormat::Slug),
+        ] {
+            let report = validate_schema(formatted_field_schema(field_type.clone(), format));
+            assert!(
+                conflicting_formats(&report).is_empty(),
+                "{field_type:?} conflicts with its own format: {:?}",
+                report.errors
+            );
+        }
+    }
+
+    #[test]
+    fn cidr_and_prefix_do_not_conflict_with_each_other() {
+        for (field_type, format) in [
+            (FieldType::Cidr, FieldFormat::Prefix),
+            (FieldType::Prefix, FieldFormat::Cidr),
+        ] {
+            let report =
+                validate_schema(formatted_field_schema(field_type.clone(), format.clone()));
+            assert!(
+                conflicting_formats(&report).is_empty(),
+                "{field_type:?} conflicts with {format:?}: {:?}",
+                report.errors
+            );
+        }
+    }
+
+    #[test]
+    fn a_format_on_a_type_carrying_none_is_accepted() {
+        for field_type in [
+            FieldType::String,
+            FieldType::Text,
+            FieldType::IpAddress,
+            FieldType::Json,
+            FieldType::Ref {
+                target: "device".to_string(),
+            },
+        ] {
+            let report = validate_schema(formatted_field_schema(
+                field_type.clone(),
+                FieldFormat::Uuid,
+            ));
+            assert!(
+                conflicting_formats(&report).is_empty(),
+                "{field_type:?} conflicts with a declared format: {:?}",
+                report.errors
+            );
+        }
+    }
+
+    #[test]
+    fn a_pattern_on_a_format_typed_field_is_untouched() {
+        // a pattern narrows the type rather than contradicting it, and core
+        // stacking the two is the settled behaviour.
+        let mut value = schema_field(FieldType::Mac);
+        value.pattern = Some("^00:".to_string());
+        let device = TypeSchema {
+            key: BTreeMap::new(),
+            fields: BTreeMap::from([("value".to_string(), value)]),
+        };
+        let report = validate_schema(BTreeMap::from([("device".to_string(), device)]));
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+    }
+
+    #[test]
+    fn detects_a_format_on_an_rfc_3339_typed_field() {
+        for (field_type, label, format) in [
+            (FieldType::Time, "time", FieldFormat::Uuid),
+            (FieldType::Date, "date", FieldFormat::Slug),
+            (FieldType::Datetime, "datetime", FieldFormat::Mac),
+        ] {
+            let report = validate_schema(formatted_field_schema(field_type, format.clone()));
+            let conflicts = conflicting_formats(&report);
+            assert_eq!(conflicts.len(), 1, "{label}: {:?}", report.errors);
+            assert!(
+                matches!(
+                    conflicts[0],
+                    ValidationError::ConflictingFormat { type_name, field, field_type, format: declared, .. }
+                        if type_name == "device"
+                            && field == "value"
+                            && field_type == label
+                            && *declared == format_label(&format)
+                ),
+                "{label}: {:?}",
+                conflicts[0]
+            );
+            // an rfc 3339 check has no `format(...)` spelling, so it is named for
+            // what it is rather than forced into one.
+            assert_eq!(
+                conflicts[0].to_string(),
+                format!(
+                    "conflicting format on device.value: declared {}, but a {label} type already checks rfc 3339 (docs/ir.md)",
+                    format_label(&format)
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn every_format_disagrees_with_an_rfc_3339_type() {
+        // none of the six formats is the rfc 3339 check, so unlike `cidr`/`prefix`
+        // there is no agreeing pair to except.
+        for field_type in [FieldType::Date, FieldType::Datetime, FieldType::Time] {
+            for format in [
+                FieldFormat::Slug,
+                FieldFormat::IpAddress,
+                FieldFormat::Cidr,
+                FieldFormat::Prefix,
+                FieldFormat::Mac,
+                FieldFormat::Uuid,
+            ] {
+                let report =
+                    validate_schema(formatted_field_schema(field_type.clone(), format.clone()));
+                assert_eq!(
+                    conflicting_formats(&report).len(),
+                    1,
+                    "{field_type:?} accepts {format:?}: {:?}",
+                    report.errors
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn detects_a_format_on_an_rfc_3339_typed_key_field() {
+        let mut day = schema_field(FieldType::Date);
+        day.format = Some(FieldFormat::Uuid);
+        let device = TypeSchema {
+            key: BTreeMap::from([("day".to_string(), day)]),
+            fields: BTreeMap::new(),
+        };
+        let report = validate_schema(BTreeMap::from([("device".to_string(), device)]));
+        assert!(report.errors.iter().any(|e| matches!(
+            e,
+            ValidationError::ConflictingFormat { type_name, field, .. }
+                if type_name == "device" && field == "key.day"
+        )));
+    }
+
     #[test]
     fn detects_empty_enum_in_attr_field() {
         let device = TypeSchema {
@@ -2417,6 +2738,46 @@ mod tests {
             .expect("empty-enum error present");
         assert_eq!(
             empty_enum.source,
+            Some(SourceLocation::file_line("inventory.yaml", 7))
+        );
+    }
+
+    #[test]
+    fn with_sources_attaches_location_for_conflicting_format() {
+        let mut asset = schema_field(FieldType::Mac);
+        asset.format = Some(FieldFormat::Uuid);
+        let device = TypeSchema {
+            key: BTreeMap::from([("name".to_string(), schema_field(FieldType::String))]),
+            fields: BTreeMap::from([("asset".to_string(), asset)]),
+        };
+        let mut key = BTreeMap::new();
+        key.insert("name".to_string(), serde_json::json!("leaf1"));
+        let object = Object::new(
+            uid(1),
+            TypeName::new("device"),
+            Key::from(key),
+            JsonMap(BTreeMap::from([(
+                "asset".to_string(),
+                serde_json::json!("aa:bb:cc:dd:ee:ff"),
+            )])),
+        )
+        .unwrap()
+        .with_source(SourceLocation::file_line("inventory.yaml", 7));
+
+        let inventory = Inventory {
+            schema: Schema {
+                types: BTreeMap::from([("device".to_string(), device)]),
+            },
+            objects: vec![object],
+        };
+        let located = validate_inventory(&inventory).with_sources(&inventory.objects);
+
+        let conflict = located
+            .iter()
+            .find(|l| matches!(l.error, ValidationError::ConflictingFormat { .. }))
+            .expect("conflicting-format error present");
+        assert_eq!(
+            conflict.source,
             Some(SourceLocation::file_line("inventory.yaml", 7))
         );
     }
@@ -3004,6 +3365,37 @@ mod tests {
         }
     }
 
+    // the other side of `format_check`: two formats sharing a variant are one
+    // predicate by construction, so what needs holding is that two formats given
+    // *different* variants really do differ. otherwise a duplicated arm would
+    // have `validate_schema_format_agreement` report a conflict between two
+    // spellings of the same check.
+
+    #[test]
+    fn distinct_format_checks_disagree_on_some_value() {
+        let formats = [
+            FieldFormat::Slug,
+            FieldFormat::IpAddress,
+            FieldFormat::Cidr,
+            FieldFormat::Prefix,
+            FieldFormat::Mac,
+            FieldFormat::Uuid,
+        ];
+        for left in &formats {
+            for right in &formats {
+                if format_check(left) == format_check(right) {
+                    continue;
+                }
+                assert!(
+                    FORMAT_CORPUS
+                        .iter()
+                        .any(|value| matches_format(left, value) != matches_format(right, value)),
+                    "{left:?} and {right:?} are separate checks but accept the same corpus"
+                );
+            }
+        }
+    }
+
     // the type-implied table may only name types core itself checks through
     // `matches_format`; a type checked some other way has no format to carry.
     #[test]
@@ -3404,6 +3796,7 @@ mod tests {
             ValidationError::UnknownRefTarget { .. } => "unknown_ref_target",
             ValidationError::InvalidSchemaPattern { .. } => "invalid_schema_pattern",
             ValidationError::ConstraintOnNonStringField { .. } => "constraint_on_non_string_field",
+            ValidationError::ConflictingFormat { .. } => "conflicting_format",
             ValidationError::EmptyEnum { .. } => "empty_enum",
             ValidationError::NonScalarKeyField { .. } => "non_scalar_key_field",
             ValidationError::NullableKeyField { .. } => "nullable_key_field",
@@ -3414,9 +3807,9 @@ mod tests {
     fn every_error_variant_serializes_its_pinned_kind() {
         // `kind` is the consumer contract (docs/cli.md), so renaming a variant is
         // a breaking change to the wire format rather than a refactor. the table
-        // is hand-maintained: a nineteenth variant gets its wire_kind arm from the
+        // is hand-maintained: a twentieth variant gets its wire_kind arm from the
         // compiler, but is neither serialized nor compared until it is added here.
-        let all: [ValidationError; 18] = [
+        let all: [ValidationError; 19] = [
             ValidationError::DuplicateUid(uid(1)),
             ValidationError::DuplicateKey("dcim.site::fra1".into()),
             ValidationError::MissingType,
@@ -3469,6 +3862,13 @@ mod tests {
                 field: "count".into(),
                 constraint: "pattern".into(),
                 field_type: "int".into(),
+            },
+            ValidationError::ConflictingFormat {
+                type_name: "dcim.site".into(),
+                field: "asset".into(),
+                field_type: "mac".into(),
+                format: "format(uuid)".into(),
+                type_check: "format(mac)".into(),
             },
             ValidationError::EmptyEnum {
                 type_name: "dcim.site".into(),
