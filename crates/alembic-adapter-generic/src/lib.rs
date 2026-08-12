@@ -2,10 +2,10 @@
 
 use alembic_core::{key_string, JsonMap, Key, Schema, TypeName, TypeSchema, Uid};
 use alembic_engine::{
-    apply_non_delete_journaled, build_key_from_schema, describe_missing_refs, is_missing_ref_error,
-    normalize_attrs_refs, resolved_ids_identity, Adapter, AppliedOp, ApplyReport, BackendId,
-    Emitter, ObservedObject, ObservedState, Observer, Op, ProvisionReport, RetryApplyDriver,
-    StateMappings,
+    apply_non_delete_journaled, build_key_from_schema, bullet_list, describe_missing_refs,
+    is_missing_ref_error, normalize_attrs_refs, resolved_ids_identity, Adapter, AppliedOp,
+    ApplyReport, BackendId, Emitter, ObservedObject, ObservedState, Observer, Op, ProvisionReport,
+    RetryApplyDriver, StateMappings,
 };
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
@@ -284,6 +284,37 @@ impl GenericAdapter {
         Ok(())
     }
 
+    /// refuse a plan holding deletes the config declines, before any op is
+    /// applied. found in the delete loop instead, the creates and updates have
+    /// landed and the journal makes every re-run fail at the same delete.
+    fn guard_undeletable_types(&self, ops: &[Op]) -> Result<()> {
+        let declining: Vec<&str> = ops
+            .iter()
+            .filter_map(|op| match op {
+                Op::Delete { type_name, .. } => Some(type_name.as_str()),
+                _ => None,
+            })
+            // a type with no entry at all keeps apply_delete's "no config for
+            // x"; this is about a configured type that declines deletes.
+            .filter(|name| {
+                self.config.types.get(*name).is_some_and(|endpoint| {
+                    matches!(endpoint.delete_strategy, DeleteStrategy::None)
+                })
+            })
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        if declining.is_empty() {
+            return Ok(());
+        }
+        // named, not counted, and one refusal for all of them: every one has to
+        // be edited before the plan applies.
+        Err(anyhow!(
+            "delete not supported (delete_strategy: none); set delete_strategy: standard for these types:\n{}",
+            bullet_list(&declining)
+        ))
+    }
+
     fn backend_id_to_url(&self, endpoint: &EndpointConfig, id: &BackendId) -> String {
         let id_str = match id {
             BackendId::Int(n) => n.to_string(),
@@ -391,6 +422,8 @@ impl Emitter for GenericAdapter {
         ops: &[Op],
         state: &alembic_engine::StateStore,
     ) -> Result<ApplyReport> {
+        self.guard_undeletable_types(ops)?;
+
         let mut applied = Vec::new();
         let mut resolved = resolved_ids_identity(state);
         for op in ops {

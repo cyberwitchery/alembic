@@ -1372,6 +1372,172 @@ async fn test_apply_delete_none_strategy() {
 }
 
 #[tokio::test]
+async fn test_apply_delete_none_strategy_refuses_before_writing() {
+    let server = MockServer::start();
+    // the creates and updates the same plan holds. neither may be issued: found
+    // in the delete loop instead, they land and the plan can never complete.
+    let create = server.mock(|when, then| {
+        when.method(POST).path("/api/sites");
+        then.status(201)
+            .header("content-type", "application/json")
+            .json_body(serde_json::json!({"id": 43, "name": "new-site"}));
+    });
+    let update = server.mock(|when, then| {
+        when.method(PUT).path("/api/sites/42");
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(serde_json::json!({"id": 42, "name": "renamed"}));
+    });
+
+    let config = test_config(&server.base_url());
+    let adapter = GenericAdapter::new(config).unwrap();
+    let schema = test_schema();
+
+    let create_uid = Uid::new_v4();
+    let mut create_key = BTreeMap::new();
+    create_key.insert("name".to_string(), serde_json::json!("new-site"));
+    let mut create_attrs = BTreeMap::new();
+    create_attrs.insert("name".to_string(), serde_json::json!("new-site"));
+
+    let update_uid = Uid::new_v4();
+    let mut update_key = BTreeMap::new();
+    update_key.insert("name".to_string(), serde_json::json!("renamed"));
+    let mut update_attrs = BTreeMap::new();
+    update_attrs.insert("name".to_string(), serde_json::json!("renamed"));
+
+    let delete_uid = Uid::new_v4();
+    let mut delete_key = BTreeMap::new();
+    delete_key.insert("name".to_string(), serde_json::json!("to-delete"));
+
+    let ops = vec![
+        Op::Create {
+            uid: create_uid,
+            type_name: TypeName::new("site".to_string()),
+            desired: alembic_core::Object {
+                uid: create_uid,
+                type_name: TypeName::new("site".to_string()),
+                key: Key::from(create_key),
+                attrs: create_attrs.into(),
+                source: None,
+            },
+        },
+        Op::Update {
+            uid: update_uid,
+            type_name: TypeName::new("site".to_string()),
+            desired: alembic_core::Object {
+                uid: update_uid,
+                type_name: TypeName::new("site".to_string()),
+                key: Key::from(update_key),
+                attrs: update_attrs.into(),
+                source: None,
+            },
+            backend_id: Some(BackendId::Int(42)),
+            changes: vec![],
+        },
+        Op::Delete {
+            uid: delete_uid,
+            type_name: TypeName::new("site".to_string()),
+            key: Key::from(delete_key),
+            backend_id: Some(BackendId::Int(7)),
+        },
+    ];
+
+    let state = new_state_store();
+    let err = adapter.write(&schema, &ops, &state).await.unwrap_err();
+    let message = err.to_string();
+    assert!(
+        message.contains("delete not supported") && message.contains("- site"),
+        "unexpected error: {message}"
+    );
+    assert!(
+        message.contains("delete_strategy: standard"),
+        "error does not name the fix: {message}"
+    );
+    create.assert_calls(0);
+    update.assert_calls(0);
+}
+
+#[tokio::test]
+async fn test_apply_delete_standard_alongside_create() {
+    let server = MockServer::start();
+    let create = server.mock(|when, then| {
+        when.method(POST).path("/api/sites");
+        then.status(201)
+            .header("content-type", "application/json")
+            .json_body(serde_json::json!({"id": 42, "name": "new-site"}));
+    });
+    let delete = server.mock(|when, then| {
+        when.method(DELETE).path("/api/devices/7");
+        then.status(204);
+    });
+
+    let config = test_config(&server.base_url());
+    let adapter = GenericAdapter::new(config).unwrap();
+    let schema = test_schema();
+
+    let create_uid = Uid::new_v4();
+    let mut create_key = BTreeMap::new();
+    create_key.insert("name".to_string(), serde_json::json!("new-site"));
+    let mut create_attrs = BTreeMap::new();
+    create_attrs.insert("name".to_string(), serde_json::json!("new-site"));
+
+    let delete_uid = Uid::new_v4();
+    let mut delete_key = BTreeMap::new();
+    delete_key.insert("name".to_string(), serde_json::json!("to-delete"));
+
+    let ops = vec![
+        Op::Create {
+            uid: create_uid,
+            type_name: TypeName::new("site".to_string()),
+            desired: alembic_core::Object {
+                uid: create_uid,
+                type_name: TypeName::new("site".to_string()),
+                key: Key::from(create_key),
+                attrs: create_attrs.into(),
+                source: None,
+            },
+        },
+        Op::Delete {
+            uid: delete_uid,
+            type_name: TypeName::new("device".to_string()),
+            key: Key::from(delete_key),
+            backend_id: Some(BackendId::Int(7)),
+        },
+    ];
+
+    let state = new_state_store();
+    let report = adapter.write(&schema, &ops, &state).await.unwrap();
+    create.assert();
+    delete.assert();
+    assert_eq!(report.applied.len(), 2);
+}
+
+#[tokio::test]
+async fn test_apply_delete_unconfigured_type() {
+    let config = test_config("http://example.com");
+    let adapter = GenericAdapter::new(config).unwrap();
+    let schema = test_schema();
+
+    let uid = Uid::new_v4();
+    let mut key = BTreeMap::new();
+    key.insert("name".to_string(), serde_json::json!("to-delete"));
+
+    let ops = vec![Op::Delete {
+        uid,
+        type_name: TypeName::new("unknown".to_string()),
+        key: Key::from(key),
+        backend_id: Some(BackendId::Int(42)),
+    }];
+
+    let state = new_state_store();
+    let err = adapter.write(&schema, &ops, &state).await.unwrap_err();
+    assert!(
+        err.to_string().contains("no config for unknown"),
+        "unexpected error: {err}"
+    );
+}
+
+#[tokio::test]
 async fn test_apply_delete_missing_backend_id() {
     let config = test_config("http://example.com");
     let adapter = GenericAdapter::new(config).unwrap();
