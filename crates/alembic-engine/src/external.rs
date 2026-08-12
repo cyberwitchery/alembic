@@ -190,7 +190,8 @@ pub trait ExternalAdapter {
     /// report which role this adapter implements. the default, the full read+write
     /// [`ExternalRole::Adapter`], keeps existing adapters unchanged; an emit-only
     /// adapter overrides this to report [`ExternalRole::Emitter`] so the host
-    /// errors on observe instead of reading nothing.
+    /// errors on observe instead of reading nothing; a read-only one reports
+    /// [`ExternalRole::Observer`] so the host errors on apply instead of writing.
     fn capabilities(&mut self) -> ExternalCapabilities {
         ExternalCapabilities::default()
     }

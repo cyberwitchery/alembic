@@ -2435,6 +2435,151 @@ async fn run_plan_report_refuses_an_external_adapter_declaring_emitter() {
     assert!(format!("{err:#}").contains("write-only"), "{err:#}");
 }
 
+// an external backend pointing at the observer example, the inventory to run it
+// against, and the path the example appends each received method to.
+fn observer_role_fixture(dir: &Path) -> (PathBuf, PathBuf, PathBuf) {
+    let adapter = example_binary("observer_role_adapter");
+    let log = dir.join("methods.log");
+    let config = dir.join("backend.yaml");
+    std::fs::write(
+        &config,
+        format!(
+            "backend: external\ncommand: \"{}\"\ntimeout_seconds: 5\nenv:\n  OBSERVER_ROLE_ADAPTER_LOG: \"{}\"\n",
+            adapter.display(),
+            log.display()
+        ),
+    )
+    .unwrap();
+    (write_site_inventory(dir), config, log)
+}
+
+// every method the example recorded receiving, having asserted that none of them
+// was a provisioning one.
+fn methods_without_provisioning(log: &Path) -> String {
+    let methods = std::fs::read_to_string(log).unwrap_or_default();
+    assert!(
+        !methods.contains("ensure_schema") && !methods.contains("preview_schema"),
+        "the host must never ask a declared observer for schema, got: {methods}"
+    );
+    methods
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn run_refuses_to_write_an_external_adapter_declaring_observer() {
+    let _guard = cwd_lock().lock().await;
+    let dir = tempdir().unwrap();
+    let state_path = dir.path().join(".alembic").join("state.json");
+    let _env = EnvVarGuard::acquire_async(&[
+        ("ALEMBIC_STATE_BACKEND", Some("local")),
+        ("ALEMBIC_STATE_PATH", Some(state_path.to_str().unwrap())),
+    ])
+    .await;
+    // the example stubs a successful `write`, so only the declared role stands
+    // between the plan and a write.
+    let (inventory, config, log) = observer_role_fixture(dir.path());
+    // the plan path is missing on purpose: the refusal fires before read_plan,
+    // as run_apply_read_only_backend_fails_before_prompting pins for a built-in
+    let plan_path = dir.path().join("does-not-exist.json");
+
+    let cwd = std::env::current_dir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
+    let provision = run(
+        Cli {
+            command: Command::Plan {
+                file: inventory,
+                output: Some(dir.path().join("provisioned.json")),
+                backend: Some("external".to_string()),
+                backend_config: Some(config.clone()),
+                provision: true,
+                dry_run: false,
+                report: false,
+                allow_delete: false,
+            },
+        },
+        AppConfig::load().unwrap(),
+    )
+    .await;
+    let applied = run(
+        Cli {
+            command: Command::Apply {
+                plan: plan_path,
+                output: None,
+                backend: Some("external".to_string()),
+                backend_config: Some(config),
+                allow_delete: false,
+                interactive: false,
+            },
+        },
+        AppConfig::load().unwrap(),
+    )
+    .await;
+    std::env::set_current_dir(cwd).unwrap();
+
+    for (command, result) in [("plan --provision", provision), ("apply", applied)] {
+        let err = format!(
+            "{:#}",
+            result.expect_err("a declared observer cannot be written to")
+        );
+        assert!(
+            err.contains("backend is read-only; it cannot apply changes"),
+            "{command}: {err}"
+        );
+    }
+    // the refusal comes before the request, not from an error the adapter raised
+    let methods = methods_without_provisioning(&log);
+    assert!(!methods.contains("write"), "nothing was written: {methods}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn run_plan_and_import_an_external_adapter_declaring_observer() {
+    let _guard = cwd_lock().lock().await;
+    let dir = tempdir().unwrap();
+    let state_path = dir.path().join(".alembic").join("state.json");
+    let _env = EnvVarGuard::acquire_async(&[
+        ("ALEMBIC_STATE_BACKEND", Some("local")),
+        ("ALEMBIC_STATE_PATH", Some(state_path.to_str().unwrap())),
+    ])
+    .await;
+    let (inventory, config, log) = observer_role_fixture(dir.path());
+
+    let cwd = std::env::current_dir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
+    let planned = run(
+        Cli {
+            command: Command::Plan {
+                file: inventory.clone(),
+                output: Some(dir.path().join("plan.json")),
+                backend: Some("external".to_string()),
+                backend_config: Some(config.clone()),
+                provision: false,
+                dry_run: false,
+                report: false,
+                allow_delete: false,
+            },
+        },
+        AppConfig::load().unwrap(),
+    )
+    .await;
+    let imported = run(
+        Cli {
+            command: Command::Import {
+                output: dir.path().join("observed.json"),
+                file: inventory,
+                backend: Some("external".to_string()),
+                backend_config: Some(config),
+            },
+        },
+        AppConfig::load().unwrap(),
+    )
+    .await;
+    std::env::set_current_dir(cwd).unwrap();
+
+    planned.expect("a declared observer plans");
+    imported.expect("a declared observer imports");
+    let methods = methods_without_provisioning(&log);
+    assert!(methods.contains("read"), "both commands read: {methods}");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn run_plan_without_report_still_plans_a_write_only_backend() {
     let _guard = cwd_lock().lock().await;

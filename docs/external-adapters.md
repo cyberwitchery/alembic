@@ -190,9 +190,10 @@ backend state the run did not create. the `deleted_*` lists are also read by the
 host: see the gate under `preview_schema`. `created_tags` may also be answered from
 `write` instead, when the tags come from the ops rather than the schema.
 
-answer the method even when you provision nothing, with an empty report: apply
-propagates the error otherwise, and leaving it to the unknown-method branch fails
-the built-in `protocol/ensure-schema-empty` check.
+answer the method even when you provision nothing, with an empty report, unless
+you declare the `observer` role: apply propagates the error otherwise, and leaving
+it to the unknown-method branch fails the built-in `protocol/ensure-schema-empty`
+check.
 
 ### preview_schema
 
