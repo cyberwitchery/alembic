@@ -44,8 +44,8 @@ impl Kind {
 #[clap(author, version, about, long_about = None)]
 struct Args {
     /// the number of devices to generate; the support objects they reference come on top.
-    #[clap(short, long, default_value = "10")]
-    num_ops: u128,
+    #[clap(short, long, alias = "num-ops", default_value = "10")]
+    num_devices: u128,
     /// the kind of file to generate.
     #[clap(short, long, value_enum, default_value_t = Kind::Plan)]
     kind: Kind,
@@ -59,7 +59,7 @@ fn main() -> Result<()> {
     let output = args
         .output
         .unwrap_or_else(|| PathBuf::from(args.kind.default_output()));
-    write_json(&render(args.kind, args.num_ops)?, &output)
+    write_json(&render(args.kind, args.num_devices)?, &output)
 }
 
 /// build the requested artifact and render it as pretty json.
@@ -102,8 +102,8 @@ fn write_json(json: &str, path: &Path) -> Result<()> {
     fs::write(path, json).with_context(|| format!("writing to {}", path.display()))
 }
 
-/// the objects a generated artifact carries: the support pools first, so a plan
-/// creates every ref target before the object pointing at it, then the devices.
+/// the objects a generated artifact carries: the support pools first, then the
+/// devices.
 ///
 /// each pool is capped at the device count as well as its own size, so every
 /// emitted support object is referenced by at least one device.
