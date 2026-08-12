@@ -51,8 +51,9 @@ typo'd `delete_strategy` would refuse the plan those delete ops came from.
   conflict is returned.
 - update sends `update_method` (patch or put) to `path`/`id` with the attrs as the json body.
 - delete with `delete_strategy: standard` sends DELETE to `path`/`id` (a 404 is treated as
-  already gone); with the default `none`, apply refuses the plan before it writes anything,
-  naming every type that declines deletes.
+  already gone). a delete this config cannot perform, whether its type has no `types:` entry,
+  its strategy is the default `none`, or the op carries no backend id, refuses the whole plan
+  before anything is written, naming every one.
 
 ## pagination
 
@@ -112,6 +113,6 @@ the first page.
 - a mistyped *final* `next_path` key (`nextt` for `next`) reads as a one-page api, because
   an api omitting the key is the ordinary way to end the chain.
 - `update_method` must be `PATCH` or `PUT`.
-- deletes require `delete_strategy: standard`; with the default `none`, a plan holding a
-  delete for the type is refused up front, creates and updates included.
+- deletes require a `types:` entry with `delete_strategy: standard`, and a backend id on the
+  op; anything else refuses the plan up front, creates and updates included.
 - no schema provisioning; the backend schema must already exist.

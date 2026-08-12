@@ -1371,11 +1371,8 @@ async fn test_apply_delete_none_strategy() {
     );
 }
 
-#[tokio::test]
-async fn test_apply_delete_none_strategy_refuses_before_writing() {
-    let server = MockServer::start();
-    // the creates and updates the same plan holds. neither may be issued: found
-    // in the delete loop instead, they land and the plan can never complete.
+/// the create and update endpoints a refused plan must leave untouched.
+fn site_write_mocks(server: &MockServer) -> (httpmock::Mock<'_>, httpmock::Mock<'_>) {
     let create = server.mock(|when, then| {
         when.method(POST).path("/api/sites");
         then.status(201)
@@ -1388,11 +1385,12 @@ async fn test_apply_delete_none_strategy_refuses_before_writing() {
             .header("content-type", "application/json")
             .json_body(serde_json::json!({"id": 42, "name": "renamed"}));
     });
+    (create, update)
+}
 
-    let config = test_config(&server.base_url());
-    let adapter = GenericAdapter::new(config).unwrap();
-    let schema = test_schema();
-
+/// the create and update `site_write_mocks` answers: the ops a plan holds
+/// alongside its deletes, and the ones that land when a delete is refused late.
+fn site_write_ops() -> Vec<Op> {
     let create_uid = Uid::new_v4();
     let mut create_key = BTreeMap::new();
     create_key.insert("name".to_string(), serde_json::json!("new-site"));
@@ -1405,11 +1403,7 @@ async fn test_apply_delete_none_strategy_refuses_before_writing() {
     let mut update_attrs = BTreeMap::new();
     update_attrs.insert("name".to_string(), serde_json::json!("renamed"));
 
-    let delete_uid = Uid::new_v4();
-    let mut delete_key = BTreeMap::new();
-    delete_key.insert("name".to_string(), serde_json::json!("to-delete"));
-
-    let ops = vec![
+    vec![
         Op::Create {
             uid: create_uid,
             type_name: TypeName::new("site".to_string()),
@@ -1434,25 +1428,106 @@ async fn test_apply_delete_none_strategy_refuses_before_writing() {
             backend_id: Some(BackendId::Int(42)),
             changes: vec![],
         },
-        Op::Delete {
-            uid: delete_uid,
-            type_name: TypeName::new("site".to_string()),
-            key: Key::from(delete_key),
-            backend_id: Some(BackendId::Int(7)),
-        },
-    ];
+    ]
+}
+
+fn delete_op(type_name: &str, key_name: &str, backend_id: Option<BackendId>) -> Op {
+    let mut key = BTreeMap::new();
+    key.insert("name".to_string(), serde_json::json!(key_name));
+    Op::Delete {
+        uid: Uid::new_v4(),
+        type_name: TypeName::new(type_name.to_string()),
+        key: Key::from(key),
+        backend_id,
+    }
+}
+
+#[tokio::test]
+async fn test_apply_delete_none_strategy_refuses_before_writing() {
+    let server = MockServer::start();
+    // the creates and updates the same plan holds. neither may be issued: found
+    // in the delete loop instead, they land and the plan can never complete.
+    let (create, update) = site_write_mocks(&server);
+
+    let config = test_config(&server.base_url());
+    let adapter = GenericAdapter::new(config).unwrap();
+    let schema = test_schema();
+
+    let mut ops = site_write_ops();
+    ops.push(delete_op("site", "to-delete", Some(BackendId::Int(7))));
 
     let state = new_state_store();
     let err = adapter.write(&schema, &ops, &state).await.unwrap_err();
     let message = err.to_string();
     assert!(
-        message.contains("delete not supported") && message.contains("- site"),
+        message.contains("delete not supported for type site (delete_strategy: none)"),
         "unexpected error: {message}"
     );
     assert!(
         message.contains("delete_strategy: standard"),
         "error does not name the fix: {message}"
     );
+    create.assert_calls(0);
+    update.assert_calls(0);
+}
+
+#[tokio::test]
+async fn test_apply_delete_missing_backend_id_refuses_before_writing() {
+    let server = MockServer::start();
+    let (create, update) = site_write_mocks(&server);
+
+    let config = test_config(&server.base_url());
+    let adapter = GenericAdapter::new(config).unwrap();
+    let schema = test_schema();
+
+    let mut ops = site_write_ops();
+    ops.push(delete_op("device", "to-delete", None));
+
+    let state = new_state_store();
+    let err = adapter.write(&schema, &ops, &state).await.unwrap_err();
+    let message = err.to_string();
+    assert!(
+        message.contains("delete requires backend id")
+            && message.contains(r#"device {"name":"to-delete"}"#),
+        "error does not name the object: {message}"
+    );
+    create.assert_calls(0);
+    update.assert_calls(0);
+}
+
+#[tokio::test]
+async fn test_apply_delete_refusal_names_every_cause() {
+    let server = MockServer::start();
+    let (create, update) = site_write_mocks(&server);
+
+    let config = test_config(&server.base_url());
+    let adapter = GenericAdapter::new(config).unwrap();
+    let schema = test_schema();
+
+    // one plan, one refusal: stopping at the first leaves the other two to be
+    // discovered one apply at a time.
+    let mut ops = site_write_ops();
+    ops.push(delete_op(
+        "unknown",
+        "unconfigured",
+        Some(BackendId::Int(1)),
+    ));
+    ops.push(delete_op("site", "declined", Some(BackendId::Int(2))));
+    ops.push(delete_op("device", "no-id", None));
+
+    let state = new_state_store();
+    let err = adapter.write(&schema, &ops, &state).await.unwrap_err();
+    let message = err.to_string();
+    for expected in [
+        "no config for unknown",
+        "delete not supported for type site (delete_strategy: none)",
+        r#"delete requires backend id for device {"name":"no-id"}"#,
+    ] {
+        assert!(
+            message.contains(expected),
+            "refusal omits {expected}: {message}"
+        );
+    }
     create.assert_calls(0);
     update.assert_calls(0);
 }
@@ -1514,20 +1589,15 @@ async fn test_apply_delete_standard_alongside_create() {
 
 #[tokio::test]
 async fn test_apply_delete_unconfigured_type() {
-    let config = test_config("http://example.com");
+    let server = MockServer::start();
+    let (create, update) = site_write_mocks(&server);
+
+    let config = test_config(&server.base_url());
     let adapter = GenericAdapter::new(config).unwrap();
     let schema = test_schema();
 
-    let uid = Uid::new_v4();
-    let mut key = BTreeMap::new();
-    key.insert("name".to_string(), serde_json::json!("to-delete"));
-
-    let ops = vec![Op::Delete {
-        uid,
-        type_name: TypeName::new("unknown".to_string()),
-        key: Key::from(key),
-        backend_id: Some(BackendId::Int(42)),
-    }];
+    let mut ops = site_write_ops();
+    ops.push(delete_op("unknown", "to-delete", Some(BackendId::Int(42))));
 
     let state = new_state_store();
     let err = adapter.write(&schema, &ops, &state).await.unwrap_err();
@@ -1535,6 +1605,8 @@ async fn test_apply_delete_unconfigured_type() {
         err.to_string().contains("no config for unknown"),
         "unexpected error: {err}"
     );
+    create.assert_calls(0);
+    update.assert_calls(0);
 }
 
 #[tokio::test]

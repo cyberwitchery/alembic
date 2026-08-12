@@ -284,34 +284,61 @@ impl GenericAdapter {
         Ok(())
     }
 
-    /// refuse a plan holding deletes the config declines, before any op is
-    /// applied. found in the delete loop instead, the creates and updates have
+    /// refuse a plan holding a delete this config cannot perform, before any op
+    /// is applied: config presence, delete strategy and backend id, in one
+    /// pass. found in the delete phase instead, the creates and updates have
     /// landed and the journal makes every re-run fail at the same delete.
-    fn guard_undeletable_types(&self, ops: &[Op]) -> Result<()> {
-        let declining: Vec<&str> = ops
-            .iter()
-            .filter_map(|op| match op {
-                Op::Delete { type_name, .. } => Some(type_name.as_str()),
-                _ => None,
-            })
-            // a type with no entry at all keeps apply_delete's "no config for
-            // x"; this is about a configured type that declines deletes.
-            .filter(|name| {
-                self.config.types.get(*name).is_some_and(|endpoint| {
-                    matches!(endpoint.delete_strategy, DeleteStrategy::None)
-                })
-            })
-            .collect::<BTreeSet<_>>()
+    fn guard_deletable_ops(&self, ops: &[Op]) -> Result<()> {
+        let mut unconfigured = BTreeSet::new();
+        let mut declining = BTreeSet::new();
+        let mut unidentified = BTreeSet::new();
+
+        for op in ops {
+            let Op::Delete {
+                type_name,
+                key,
+                backend_id,
+                ..
+            } = op
+            else {
+                continue;
+            };
+            match self.config.types.get(type_name.as_str()) {
+                None => {
+                    unconfigured.insert(format!(
+                        "no config for {type_name}; add a types: entry for it"
+                    ));
+                }
+                Some(endpoint) => match endpoint.delete_strategy {
+                    DeleteStrategy::None => {
+                        declining.insert(format!(
+                            "delete not supported for type {type_name} (delete_strategy: none); set delete_strategy: standard"
+                        ));
+                    }
+                    DeleteStrategy::Standard => {}
+                },
+            }
+            if backend_id.is_none() {
+                unidentified.insert(format!(
+                    "delete requires backend id for {type_name} {}; re-plan against the backend",
+                    key_string(key)
+                ));
+            }
+        }
+
+        // grouped by cause and named, not counted: each is its own edit, and
+        // stopping at the first leaves the rest to be found one apply at a time.
+        let blocked: Vec<String> = unconfigured
             .into_iter()
+            .chain(declining)
+            .chain(unidentified)
             .collect();
-        if declining.is_empty() {
+        if blocked.is_empty() {
             return Ok(());
         }
-        // named, not counted, and one refusal for all of them: every one has to
-        // be edited before the plan applies.
         Err(anyhow!(
-            "delete not supported (delete_strategy: none); set delete_strategy: standard for these types:\n{}",
-            bullet_list(&declining)
+            "plan holds deletes this config cannot apply; nothing was applied:\n{}",
+            bullet_list(&blocked)
         ))
     }
 
@@ -422,7 +449,7 @@ impl Emitter for GenericAdapter {
         ops: &[Op],
         state: &alembic_engine::StateStore,
     ) -> Result<ApplyReport> {
-        self.guard_undeletable_types(ops)?;
+        self.guard_deletable_ops(ops)?;
 
         let mut applied = Vec::new();
         let mut resolved = resolved_ids_identity(state);
