@@ -7,7 +7,7 @@ use alembic_engine::{
     Emitter, ObservedObject, ObservedState, Observer, Op, ProvisionReport, RetryApplyDriver,
     StateMappings,
 };
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -347,7 +347,16 @@ impl Observer for GenericAdapter {
                     };
 
                     let attrs = normalize_attrs_refs(&attrs, &type_schema, &mappings);
-                    let key = build_key_from_schema(&type_schema, &attrs)?;
+                    let key = build_key_from_schema(&type_schema, &attrs).with_context(|| {
+                        format!(
+                            "build key for {} at {}/{}: a key field must be declared in `fields:` \
+                             and carried in `attrs:` to be sent on create, unless the backend \
+                             derives it and returns it",
+                            type_name,
+                            endpoint.path.trim_end_matches('/'),
+                            backend_id
+                        )
+                    })?;
 
                     observed.push(ObservedObject {
                         type_name: type_name.clone(),

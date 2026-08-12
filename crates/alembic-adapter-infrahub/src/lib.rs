@@ -467,7 +467,8 @@ impl InfrahubAdapter {
             .read_type_objects(&schema_info, type_name, type_schema)
             .await?;
         for (backend_id, attrs) in objects {
-            let obj_key = build_key_from_schema(type_schema, &attrs)?;
+            let obj_key = build_key_from_schema(type_schema, &attrs)
+                .with_context(|| format!("build key for {}", type_name))?;
             if obj_key == target_key {
                 if let BackendId::String(id) = backend_id {
                     return Ok(Some(id));
@@ -665,7 +666,8 @@ impl Observer for InfrahubAdapter {
                 .get(node.type_name.as_str())
                 .ok_or_else(|| anyhow!("missing schema for {}", node.type_name))?;
             let attrs = normalize_attrs_refs(&node.attrs, type_schema, &mappings);
-            let key = build_key_from_schema(type_schema, &attrs)?;
+            let key = build_key_from_schema(type_schema, &attrs)
+                .with_context(|| format!("build key for {}", node.type_name))?;
             state.insert(ObservedObject {
                 type_name: node.type_name.clone(),
                 key,
