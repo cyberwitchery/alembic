@@ -1,6 +1,6 @@
 //! generic rest adapter for alembic.
 
-use alembic_core::{JsonMap, Key, Schema, TypeName, TypeSchema, Uid};
+use alembic_core::{key_string, JsonMap, Key, Schema, TypeName, TypeSchema, Uid};
 use alembic_engine::{
     apply_non_delete_journaled, build_key_from_schema, describe_missing_refs, is_missing_ref_error,
     normalize_attrs_refs, resolved_ids_identity, Adapter, AppliedOp, ApplyReport, BackendId,
@@ -148,7 +148,7 @@ impl GenericAdapter {
             Err(err) if err.status() == Some(reqwest::StatusCode::CONFLICT) => {
                 // a prior (possibly interrupted) run may already have created this
                 // object; reuse the existing one when present.
-                let key = build_key_from_schema(type_schema, &desired.attrs)?;
+                let key = key_from_inventory(type_schema, desired, type_name)?;
                 if let Some(existing) = self
                     .lookup_backend_id(type_name, endpoint, type_schema, mappings, &key)
                     .await?
@@ -202,7 +202,13 @@ impl GenericAdapter {
                 _ => return Err(anyhow!("expected object in results")),
             };
             let attrs = normalize_attrs_refs(&attrs, type_schema, mappings);
-            if build_key_from_schema(type_schema, &attrs)? == *key {
+            let listed = key_from_response(
+                type_schema,
+                &attrs,
+                type_name,
+                endpoint.path.trim_end_matches('/'),
+            )?;
+            if listed == *key {
                 let id_val = resolve_path(&item, &endpoint.id_path)?;
                 let backend_id = parse_backend_id(id_val)?;
                 return Ok(Some(backend_id));
@@ -347,16 +353,12 @@ impl Observer for GenericAdapter {
                     };
 
                     let attrs = normalize_attrs_refs(&attrs, &type_schema, &mappings);
-                    let key = build_key_from_schema(&type_schema, &attrs).with_context(|| {
-                        format!(
-                            "build key for {} at {}/{}: a key field must be declared in `fields:` \
-                             and carried in `attrs:` to be sent on create, unless the backend \
-                             derives it and returns it",
-                            type_name,
-                            endpoint.path.trim_end_matches('/'),
-                            backend_id
-                        )
-                    })?;
+                    let key = key_from_response(
+                        &type_schema,
+                        &attrs,
+                        &type_name,
+                        &format!("{}/{}", endpoint.path.trim_end_matches('/'), backend_id),
+                    )?;
 
                     observed.push(ObservedObject {
                         type_name: type_name.clone(),
@@ -748,6 +750,37 @@ fn parse_backend_id(id_val: serde_json::Value) -> Result<BackendId> {
         serde_json::Value::String(s) => Ok(BackendId::String(s)),
         _ => Err(anyhow!("id must be number or string")),
     }
+}
+
+/// build an object's key from what the api returned, naming where it came from.
+fn key_from_response(
+    type_schema: &TypeSchema,
+    attrs: &JsonMap,
+    type_name: &TypeName,
+    at: &str,
+) -> Result<Key> {
+    build_key_from_schema(type_schema, attrs).with_context(|| {
+        format!(
+            "build key for {type_name} at {at}: a key field must be declared in `fields:` \
+             and carried in `attrs:` to be sent on create, unless the backend derives it \
+             and returns it"
+        )
+    })
+}
+
+/// build an object's key from the inventory's own attrs, naming the object.
+fn key_from_inventory(
+    type_schema: &TypeSchema,
+    desired: &alembic_core::Object,
+    type_name: &TypeName,
+) -> Result<Key> {
+    build_key_from_schema(type_schema, &desired.attrs).with_context(|| {
+        format!(
+            "build key for {type_name} {}: a key field declared in `key:` must also be \
+             carried in `attrs:` to be sent on create",
+            key_string(&desired.key)
+        )
+    })
 }
 
 /// builds the generic api request body from an object's attrs, encoding a
