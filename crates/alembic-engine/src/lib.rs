@@ -54,7 +54,7 @@ pub use loader::{load_inventory, load_inventory_unvalidated};
 pub use pipeline::{guard_drift_report, guard_schema_deletes};
 pub use plan_view::render_plan;
 pub use planner::{plan, sort_ops_for_apply};
-pub use state::{PostgresTlsMode, StateData, StateStore};
+pub use state::{PostgresTlsMode, StateData, StateLock, StateStore};
 pub use transform::{compile_map, eval_map_transform, load_map_spec, MapSpec, TransformsSpec};
 pub use types::{
     Adapter, AppliedOp, ApplyReport, Backend, BackendId, Emitter, FieldChange, ObservedObject,
