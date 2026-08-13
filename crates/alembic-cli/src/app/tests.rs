@@ -2453,10 +2453,14 @@ fn observer_role_fixture(dir: &Path) -> (PathBuf, PathBuf, PathBuf) {
     (write_site_inventory(dir), config, log)
 }
 
-// every method the example recorded receiving, having asserted that none of them
-// was a provisioning one.
+// every method the example recorded receiving, having asserted that the log
+// happened at all and that none of the methods was a provisioning one.
 fn methods_without_provisioning(log: &Path) -> String {
-    let methods = std::fs::read_to_string(log).unwrap_or_default();
+    let methods = std::fs::read_to_string(log).expect("the example wrote its method log");
+    assert!(
+        methods.contains("capabilities"),
+        "the log records what the host sent, got: {methods}"
+    );
     assert!(
         !methods.contains("ensure_schema") && !methods.contains("preview_schema"),
         "the host must never ask a declared observer for schema, got: {methods}"

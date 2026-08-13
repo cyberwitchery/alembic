@@ -259,7 +259,7 @@ the adapter contract the adapter implements. the result carries a `role`:
 an adapter that does not answer capabilities (the unknown-method error, or any
 other probe failure) defaults to `adapter`, so existing adapters keep working
 unchanged. the rust sdk answers it automatically: the trait's default reports
-`adapter`, and an emit-only adapter overrides it in one method:
+`adapter`, and an adapter that implements one side overrides it in one method:
 
 ```rust
 fn capabilities(&mut self) -> ExternalCapabilities {
