@@ -64,6 +64,17 @@ now behaves differently. a changed rust signature is not breaking: every
 reverse dependency of the engine crates is in this workspace, so no external
 caller exists to break. mention it in the bullet, do not mark it.
 
+## prose
+
+`//` comments, `///` blocks, clap help and the pages under `docs/` match the
+density of the file they are in. the bar is the blocks already around yours,
+not the diff you just wrote: a `///` block is one or two lines unless it is
+load-bearing, and the paragraph goes on the reference page.
+
+say what holds now, not what the old code did or which bug this closes. that,
+and why the alternative was rejected, goes where the changelog section already
+sends it: the pr description.
+
 # rust
 
 this is a rust project. write idiomatic rust: prefer ownership over references where it simplifies code, use `?` for error propagation, and leverage the type system to make invalid states unrepresentable.
