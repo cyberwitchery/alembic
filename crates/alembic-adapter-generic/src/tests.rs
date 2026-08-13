@@ -930,6 +930,189 @@ async fn test_observe_missing_schema() {
     assert!(err.to_string().contains("missing schema for"));
 }
 
+/// site keyed on `slug`, which is declared in `fields:` only when `declared`.
+fn slug_keyed_site_schema(declared: bool) -> Schema {
+    let mut fields = BTreeMap::new();
+    fields.insert("name".to_string(), field_schema(FieldType::String));
+    if declared {
+        fields.insert("slug".to_string(), field_schema(FieldType::Slug));
+    }
+    let mut key = BTreeMap::new();
+    key.insert("slug".to_string(), field_schema(FieldType::Slug));
+
+    let mut types = BTreeMap::new();
+    types.insert("site".to_string(), TypeSchema { key, fields });
+    Schema { types }
+}
+
+#[tokio::test]
+async fn test_observe_undeclared_key_field_names_the_type_and_the_field() {
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(GET).path("/api/sites");
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(serde_json::json!([{"id": 1, "name": "FRA1"}]));
+    });
+
+    let config = test_config(&server.base_url());
+    let adapter = GenericAdapter::new(config).unwrap();
+
+    let err = adapter
+        .read(
+            &slug_keyed_site_schema(false),
+            &[TypeName::new("site".to_string())],
+            &new_state_store(),
+        )
+        .await
+        .unwrap_err();
+
+    let msg = format!("{err:#}");
+    assert!(msg.contains("build key for site at /api/sites/1"), "{msg}");
+    assert!(msg.contains("`fields:`"), "{msg}");
+    assert!(msg.contains("missing key field slug"), "{msg}");
+}
+
+#[tokio::test]
+async fn test_apply_create_then_observe_round_trips_the_key() {
+    let server = MockServer::start();
+    let create = server.mock(|when, then| {
+        when.method(POST)
+            .path("/api/sites")
+            .json_body(serde_json::json!({"name": "FRA1", "slug": "fra1"}));
+        then.status(201)
+            .header("content-type", "application/json")
+            .json_body(serde_json::json!({"id": 1, "name": "FRA1", "slug": "fra1"}));
+    });
+    let list = server.mock(|when, then| {
+        when.method(GET).path("/api/sites");
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(serde_json::json!([{"id": 1, "name": "FRA1", "slug": "fra1"}]));
+    });
+
+    let config = test_config(&server.base_url());
+    let adapter = GenericAdapter::new(config).unwrap();
+    let schema = slug_keyed_site_schema(true);
+    let state_store = new_state_store();
+
+    let uid = Uid::new_v4();
+    let mut key = BTreeMap::new();
+    key.insert("slug".to_string(), serde_json::json!("fra1"));
+    let key = Key::from(key);
+    let mut attrs = BTreeMap::new();
+    attrs.insert("name".to_string(), serde_json::json!("FRA1"));
+    attrs.insert("slug".to_string(), serde_json::json!("fra1"));
+
+    let ops = vec![Op::Create {
+        uid,
+        type_name: TypeName::new("site".to_string()),
+        desired: alembic_core::Object {
+            uid,
+            type_name: TypeName::new("site".to_string()),
+            key: key.clone(),
+            attrs: attrs.into(),
+            source: None,
+        },
+    }];
+
+    adapter.write(&schema, &ops, &state_store).await.unwrap();
+    create.assert();
+
+    let observed = adapter
+        .read(&schema, &[TypeName::new("site".to_string())], &state_store)
+        .await
+        .unwrap();
+    list.assert();
+
+    let obj = observed.by_key.values().next().unwrap();
+    assert_eq!(obj.key, key);
+    assert_eq!(obj.backend_id, Some(BackendId::Int(1)));
+}
+
+/// a create op for a slug-keyed site, with the attrs the caller supplies.
+fn slug_keyed_site_create(attrs: Vec<(&str, serde_json::Value)>) -> Vec<Op> {
+    let uid = Uid::new_v4();
+    let mut key = BTreeMap::new();
+    key.insert("slug".to_string(), serde_json::json!("fra1"));
+    let mut map = BTreeMap::new();
+    for (name, value) in attrs {
+        map.insert(name.to_string(), value);
+    }
+    vec![Op::Create {
+        uid,
+        type_name: TypeName::new("site".to_string()),
+        desired: alembic_core::Object {
+            uid,
+            type_name: TypeName::new("site".to_string()),
+            key: Key::from(key),
+            attrs: map.into(),
+            source: None,
+        },
+    }]
+}
+
+#[tokio::test]
+async fn test_create_conflict_key_field_absent_from_attrs_names_the_object() {
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(POST).path("/api/sites");
+        then.status(409);
+    });
+
+    let config = test_config(&server.base_url());
+    let adapter = GenericAdapter::new(config).unwrap();
+    let ops = slug_keyed_site_create(vec![("name", serde_json::json!("FRA1"))]);
+
+    let err = adapter
+        .write(&slug_keyed_site_schema(false), &ops, &new_state_store())
+        .await
+        .unwrap_err();
+
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains(r#"build key for site {"slug":"fra1"}"#),
+        "{msg}"
+    );
+    assert!(msg.contains("`attrs:`"), "{msg}");
+    assert!(msg.contains("missing key field slug"), "{msg}");
+}
+
+#[tokio::test]
+async fn test_create_conflict_lookup_of_a_keyless_object_names_the_endpoint() {
+    // the inventory is right, the objects on the backend are not: they were
+    // created before the key field was declared, so the recovery lookup rebuilds
+    // a key from a response that does not carry one.
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(POST).path("/api/sites");
+        then.status(409);
+    });
+    server.mock(|when, then| {
+        when.method(GET).path("/api/sites");
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(serde_json::json!([{"id": 1, "name": "FRA1"}]));
+    });
+
+    let config = test_config(&server.base_url());
+    let adapter = GenericAdapter::new(config).unwrap();
+    let ops = slug_keyed_site_create(vec![
+        ("name", serde_json::json!("FRA1")),
+        ("slug", serde_json::json!("fra1")),
+    ]);
+
+    let err = adapter
+        .write(&slug_keyed_site_schema(true), &ops, &new_state_store())
+        .await
+        .unwrap_err();
+
+    let msg = format!("{err:#}");
+    assert!(msg.contains("build key for site at /api/sites"), "{msg}");
+    assert!(msg.contains("`fields:`"), "{msg}");
+    assert!(msg.contains("missing key field slug"), "{msg}");
+}
+
 // tests for apply with mocked server
 #[tokio::test]
 async fn test_apply_create() {

@@ -264,7 +264,7 @@ impl InfrahubAdapter {
                 // a prior (possibly interrupted) run may already have created this
                 // object; adopt a matching existing object, surface a genuine create
                 // failure, and don't mask a failure of the lookup itself.
-                let key = build_key_from_schema(type_schema, &desired.attrs)?;
+                let key = key_from_inventory(type_schema, desired, type_name)?;
                 match self
                     .find_backend_id(type_name, type_schema, &key, resolved)
                     .await
@@ -346,7 +346,7 @@ impl InfrahubAdapter {
         } else if let Some(BackendId::String(id)) = resolved.get(&uid) {
             id.clone()
         } else {
-            let key = build_key_from_schema(type_schema, &desired.attrs)?;
+            let key = key_from_inventory(type_schema, desired, type_name)?;
             self.lookup_backend_id(type_name, type_schema, &key, resolved)
                 .await?
         };
@@ -467,7 +467,8 @@ impl InfrahubAdapter {
             .read_type_objects(&schema_info, type_name, type_schema)
             .await?;
         for (backend_id, attrs) in objects {
-            let obj_key = build_key_from_schema(type_schema, &attrs)?;
+            let obj_key = build_key_from_schema(type_schema, &attrs)
+                .with_context(|| format!("build key for {}", type_name))?;
             if obj_key == target_key {
                 if let BackendId::String(id) = backend_id {
                     return Ok(Some(id));
@@ -645,7 +646,8 @@ impl Observer for InfrahubAdapter {
                     continue;
                 }
                 let norm = normalize_attrs_refs(&node.attrs, type_schema, &mappings);
-                let key = build_key_from_schema(type_schema, &norm)?;
+                let key = build_key_from_schema(type_schema, &norm)
+                    .with_context(|| format!("build key for {}", node.type_name))?;
                 let uid = uid_v5(node.type_name.as_str(), &key_string(&key));
                 mappings.insert(node.type_name.as_str(), node.backend_id.clone(), uid);
                 resolved[i] = true;
@@ -665,7 +667,8 @@ impl Observer for InfrahubAdapter {
                 .get(node.type_name.as_str())
                 .ok_or_else(|| anyhow!("missing schema for {}", node.type_name))?;
             let attrs = normalize_attrs_refs(&node.attrs, type_schema, &mappings);
-            let key = build_key_from_schema(type_schema, &attrs)?;
+            let key = build_key_from_schema(type_schema, &attrs)
+                .with_context(|| format!("build key for {}", node.type_name))?;
             state.insert(ObservedObject {
                 type_name: node.type_name.clone(),
                 key,
@@ -1977,6 +1980,21 @@ fn build_input(
         }
     }
     Ok(Value::Object(map))
+}
+
+/// build an object's key from the inventory's own attrs, naming the object.
+fn key_from_inventory(
+    type_schema: &alembic_core::TypeSchema,
+    desired: &alembic_core::Object,
+    type_name: &TypeName,
+) -> Result<Key> {
+    build_key_from_schema(type_schema, &desired.attrs).with_context(|| {
+        format!(
+            "build key for {type_name} {}: a key field declared in `key:` must also be \
+             carried in `attrs:` to be sent on create",
+            key_string(&desired.key)
+        )
+    })
 }
 
 /// resolve a key's relationship fields from canonical uids to backend ids, so it
@@ -3356,6 +3374,129 @@ schema { query: Query }
             !chain.contains("execute infrahub create"),
             "the lookup failure must not be masked as the create error, got: {chain}"
         );
+    }
+
+    fn name_keyed_site_schema() -> Schema {
+        schema_with(vec![(
+            "dcim.site",
+            type_schema(
+                vec![("name", field_schema(FieldType::String, true))],
+                vec![],
+            ),
+        )])
+    }
+
+    /// a site declaring `name` in `key:` and carrying it nowhere.
+    fn keyless_site_object(uid: Uid) -> Object {
+        Object {
+            uid,
+            type_name: TypeName::new("dcim.site"),
+            key: Key::from(BTreeMap::from([("name".to_string(), json!("Site A"))])),
+            attrs: JsonMap::default(),
+            source: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn write_create_conflict_key_field_absent_from_attrs_names_the_object() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/schema.graphql");
+            then.status(200).body(GRAPHQL_SCHEMA);
+        });
+        server.mock(|when, then| {
+            when.method(POST).path("/graphql").body_includes("Create");
+            then.status(200).json_body(json!({
+                "data": null,
+                "errors": [{ "message": "An object already exists" }]
+            }));
+        });
+
+        let adapter = InfrahubAdapter::new(&server.base_url(), "token", None).unwrap();
+        let uid = Uid::parse_str("00000000-0000-0000-0000-000000000210").unwrap();
+        let ops = vec![Op::Create {
+            uid,
+            type_name: TypeName::new("dcim.site"),
+            desired: keyless_site_object(uid),
+        }];
+
+        let state = StateStore::new(None, StateData::default());
+        let err = adapter
+            .write(&name_keyed_site_schema(), &ops, &state)
+            .await
+            .unwrap_err();
+
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains(r#"build key for dcim.site {"name":"Site A"}"#),
+            "{chain}"
+        );
+        assert!(chain.contains("`attrs:`"), "{chain}");
+        assert!(chain.contains("missing key field name"), "{chain}");
+    }
+
+    #[tokio::test]
+    async fn write_update_without_a_backend_id_key_field_absent_names_the_object() {
+        // an update whose id is neither on the op nor resolved falls back to a
+        // lookup by key, so it builds the key from the inventory's own attrs.
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/schema.graphql");
+            then.status(200).body(GRAPHQL_SCHEMA);
+        });
+
+        let adapter = InfrahubAdapter::new(&server.base_url(), "token", None).unwrap();
+        let uid = Uid::parse_str("00000000-0000-0000-0000-000000000211").unwrap();
+        let ops = vec![Op::Update {
+            uid,
+            type_name: TypeName::new("dcim.site"),
+            desired: keyless_site_object(uid),
+            changes: vec![],
+            backend_id: None,
+        }];
+
+        let state = StateStore::new(None, StateData::default());
+        let err = adapter
+            .write(&name_keyed_site_schema(), &ops, &state)
+            .await
+            .unwrap_err();
+
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains(r#"build key for dcim.site {"name":"Site A"}"#),
+            "{chain}"
+        );
+        assert!(chain.contains("`attrs:`"), "{chain}");
+        assert!(chain.contains("missing key field name"), "{chain}");
+    }
+
+    #[tokio::test]
+    async fn read_key_field_absent_from_the_response_names_the_type() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/schema.graphql");
+            then.status(200).body(GRAPHQL_SCHEMA);
+        });
+        server.mock(|when, then| {
+            when.method(POST).path("/graphql").body_includes("DcimSite");
+            then.status(200).json_body(json!({
+                "data": { "DcimSite": { "count": 1, "edges": [
+                    { "node": { "id": "site-1", "hfid": "site-1" } }
+                ] } },
+                "errors": []
+            }));
+        });
+
+        let adapter = InfrahubAdapter::new(&server.base_url(), "token", None).unwrap();
+        let state = StateStore::new(None, StateData::default());
+        let err = adapter
+            .read(&name_keyed_site_schema(), &[], &state)
+            .await
+            .unwrap_err();
+
+        let chain = format!("{err:#}");
+        assert!(chain.contains("build key for dcim.site"), "{chain}");
+        assert!(chain.contains("missing key field name"), "{chain}");
     }
 
     #[tokio::test]

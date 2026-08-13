@@ -44,10 +44,11 @@ typo'd `delete_strategy` would fail the delete ops the plan showed.
 - observe GETs `path` per type, takes the array at `results_path` (or the response root),
   and reads each object's id from `id_path`. with `next_path` set it then follows the page
   chain (see below) and observes every page; without it, exactly one request is issued.
-- create POSTs to `path` with the object's attrs as the json body and reads the new id from
-  the response via `id_path`. on a create conflict (409) the adapter re-lists the endpoint,
-  following pagination the same way observe does, and reuses the existing object whose key
-  matches; if none matches, the conflict is returned.
+- create POSTs to `path` with the object's attrs as the json body, the key not merged in
+  (see keys and matching), and reads the new id from the response via `id_path`. on a
+  create conflict (409) the adapter re-lists the endpoint, following pagination the same
+  way observe does, and reuses the existing object whose key matches; if none matches, the
+  conflict is returned.
 - update sends `update_method` (patch or put) to `path`/`id` with the attrs as the json body.
 - delete with `delete_strategy: standard` sends DELETE to `path`/`id` (a 404 is treated as
   already gone); with the default `none`, delete ops fail.
@@ -90,6 +91,10 @@ the first page.
 ## keys and matching
 
 - keys are derived from the schema key fields when observing objects.
+- a create sends an object's `attrs` alone, and the key is rebuilt from what the api
+  returns, so a key field must also be declared in `fields:` and carried in `attrs:`
+  unless the backend derives it and returns it. one that is neither is never sent, does
+  not come back on list, and every later observe of that type errors naming it.
 - key matching uses the canonical form of the key map; it reconciles an existing object
   during create-conflict recovery.
 

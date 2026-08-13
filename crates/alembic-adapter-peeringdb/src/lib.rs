@@ -5,7 +5,7 @@
 
 use alembic_core::{JsonMap, Schema, TypeName};
 use alembic_engine::{build_key_from_schema, BackendId, ObservedObject, ObservedState, Observer};
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
@@ -186,7 +186,8 @@ fn to_observed_objects<T: Serialize + HasId>(
             ));
         }
 
-        let key = build_key_from_schema(type_schema, &attrs)?;
+        let key = build_key_from_schema(type_schema, &attrs)
+            .with_context(|| format!("build key for {type_name}"))?;
 
         objects.push(ObservedObject {
             type_name: type_name.clone(),
