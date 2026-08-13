@@ -3,7 +3,7 @@ use super::*;
 use alembic_adapter_django::emit::{run_emit, DjangoConfig};
 use alembic_adapter_registry::{AdapterConfig, ExternalConfig};
 use alembic_core::{Inventory, Schema};
-use alembic_engine::{Op, StateData, StateStore};
+use alembic_engine::{Op, StateData, StateLock, StateStore};
 use std::collections::BTreeMap;
 use tempfile::tempdir;
 
@@ -1812,6 +1812,167 @@ objects:
     std::env::set_current_dir(cwd).unwrap();
 }
 
+#[test]
+fn plan_takes_a_shared_lock_only_when_it_saves_nothing() {
+    assert_eq!(state_lock_for_plan(true, false, false), StateLock::Shared);
+    assert_eq!(state_lock_for_plan(false, true, false), StateLock::Shared);
+    // --provision writes backend schema, so it is not a read-only run
+    assert_eq!(state_lock_for_plan(true, false, true), StateLock::Exclusive);
+    // the write path saves state
+    assert_eq!(
+        state_lock_for_plan(false, false, false),
+        StateLock::Exclusive
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn two_concurrent_report_runs_both_succeed() {
+    use serde_json::json;
+
+    let _guard = cwd_lock().lock().await;
+    let server = nautobot_plan_server(json!([]));
+    let dir = tempdir().unwrap();
+    let state_path = dir.path().join(".alembic").join("state.json");
+    let _env = EnvVarGuard::acquire_async(&[
+        ("ALEMBIC_STATE_BACKEND", Some("local")),
+        ("ALEMBIC_STATE_PATH", Some(state_path.to_str().unwrap())),
+    ])
+    .await;
+    let inventory = dir.path().join("inventory.yaml");
+    let config = dir.path().join("adapter.yaml");
+    write_device_inventory(&inventory);
+    std::fs::write(
+        &config,
+        format!(
+            "backend: nautobot\nurl: {}\ntoken: token\n",
+            server.base_url()
+        ),
+    )
+    .unwrap();
+
+    let cwd = std::env::current_dir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
+
+    // a reader of the test's own, so the two runs overlap by construction rather
+    // than by scheduling luck.
+    let reader = StateStore::load_with(&state_path, StateLock::Shared).unwrap();
+    let (first, second) = tokio::join!(
+        run(
+            report_cli(inventory.clone(), config.clone()),
+            AppConfig::load().unwrap()
+        ),
+        run(report_cli(inventory, config), AppConfig::load().unwrap()),
+    );
+    drop(reader);
+
+    std::env::set_current_dir(cwd).unwrap();
+    first.expect("first drift report");
+    second.expect("a second drift report must not be refused by the first");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_saving_plan_run_is_refused_while_a_report_runs() {
+    use serde_json::json;
+
+    let _guard = cwd_lock().lock().await;
+    let server = nautobot_plan_server(json!([]));
+    let dir = tempdir().unwrap();
+    let state_path = dir.path().join(".alembic").join("state.json");
+    let _env = EnvVarGuard::acquire_async(&[
+        ("ALEMBIC_STATE_BACKEND", Some("local")),
+        ("ALEMBIC_STATE_PATH", Some(state_path.to_str().unwrap())),
+    ])
+    .await;
+    let inventory = dir.path().join("inventory.yaml");
+    let config = dir.path().join("adapter.yaml");
+    write_device_inventory(&inventory);
+    std::fs::write(
+        &config,
+        format!(
+            "backend: nautobot\nurl: {}\ntoken: token\n",
+            server.base_url()
+        ),
+    )
+    .unwrap();
+
+    let cwd = std::env::current_dir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
+
+    // the reader stands in for a running drift report.
+    let reader = StateStore::load_with(&state_path, StateLock::Shared).unwrap();
+    let saving = Cli {
+        command: Command::Plan {
+            file: inventory.clone(),
+            output: Some(dir.path().join("plan.json")),
+            backend: None,
+            backend_config: Some(config.clone()),
+            provision: false,
+            dry_run: false,
+            report: false,
+            allow_delete: false,
+        },
+    };
+    let refused = run(saving, AppConfig::load().unwrap()).await;
+    // --provision writes schema, so it stays exclusive even under --report
+    let mut provisioning = report_cli(inventory, config);
+    if let Command::Plan { provision, .. } = &mut provisioning.command {
+        *provision = true;
+    }
+    let refused_provision = run(provisioning, AppConfig::load().unwrap()).await;
+    drop(reader);
+
+    std::env::set_current_dir(cwd).unwrap();
+    for err in [
+        refused.expect_err("a saving run must not start under a reader"),
+        refused_provision.expect_err("--provision must not start under a reader"),
+    ] {
+        assert!(
+            err.to_string().contains("state lock"),
+            "expected a state-lock error, got: {err}"
+        );
+    }
+}
+
+fn write_device_inventory(path: &Path) {
+    std::fs::write(
+        path,
+        r#"
+schema:
+  types:
+    dcim.device:
+      key:
+        name:
+          type: string
+      fields:
+        name:
+          type: string
+objects:
+  - uid: "00000000-0000-0000-0000-000000000001"
+    type: dcim.device
+    key:
+      name: "leaf01"
+    attrs:
+      name: "leaf01"
+"#,
+    )
+    .unwrap();
+}
+
+fn report_cli(file: PathBuf, config: PathBuf) -> Cli {
+    Cli {
+        command: Command::Plan {
+            file,
+            output: None,
+            backend: None,
+            backend_config: Some(config),
+            provision: false,
+            dry_run: false,
+            report: true,
+            allow_delete: false,
+        },
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn run_plan_report_writes_the_drift_report_to_output() {
     use serde_json::json;
@@ -2907,7 +3068,7 @@ objects: []
     std::env::set_current_dir(dir.path()).unwrap();
 
     let inventory = load_inventory(&inventory).unwrap();
-    let mut state = load_state().await.unwrap();
+    let mut state = load_state(StateLock::Exclusive).await.unwrap();
     let backend = create_backend(&[], None, Some(config)).unwrap();
 
     // without report-forced delete-detection, allow_delete=false emits no

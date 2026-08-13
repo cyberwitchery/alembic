@@ -1,4 +1,4 @@
-use alembic_engine::{PostgresTlsMode, StateStore};
+use alembic_engine::{PostgresTlsMode, StateLock, StateStore};
 use anyhow::{anyhow, Result};
 use std::path::{Path, PathBuf};
 
@@ -14,10 +14,10 @@ pub(super) enum StateBackendConfig {
     },
 }
 
-pub(super) async fn load_state() -> Result<StateStore> {
+pub(super) async fn load_state(lock: StateLock) -> Result<StateStore> {
     let root = Path::new(".");
     let store = match resolve_state_backend_config(root)? {
-        StateBackendConfig::Local { path } => StateStore::load(path)?,
+        StateBackendConfig::Local { path } => StateStore::load_with(path, lock)?,
         StateBackendConfig::Postgres { url, key, tls_mode } => {
             StateStore::load_postgres(url, key, tls_mode).await?
         }

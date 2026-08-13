@@ -18,6 +18,17 @@ pub struct StateData {
     pub mappings: BTreeMap<TypeName, BTreeMap<Uid, BackendId>>,
 }
 
+/// how a local-file run holds the state lock.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum StateLock {
+    /// a run that may save state; excludes every other run.
+    #[default]
+    Exclusive,
+    /// a run that only reads; coexists with other shared holders, and is still
+    /// refused while an exclusive holder runs.
+    Shared,
+}
+
 /// TLS configuration for postgres state backend connections.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PostgresTlsMode {
@@ -38,11 +49,12 @@ pub struct StateStore {
     backend: Option<Arc<Mutex<dyn StateBackend>>>,
     data: StateData,
     journal_dir: Option<PathBuf>,
-    // advisory exclusive lock held for a local-file store's whole lifetime, so two
-    // concurrent runs against the same state file cannot both load-modify-save it
-    // and clobber each other's mappings (the save is atomic but last-writer-wins).
-    // released when the last clone of the store drops. `None` for the postgres
-    // backend (it has its own optimistic lock) and for in-memory stores.
+    // advisory lock held for a local-file store's whole lifetime, so two concurrent
+    // runs against the same state file cannot both load-modify-save it and clobber
+    // each other's mappings (the save is atomic but last-writer-wins). shared for a
+    // run that will not save, exclusive otherwise. released when the last clone of
+    // the store drops. `None` for the postgres backend (it has its own optimistic
+    // lock) and for in-memory stores.
     lock: Option<Arc<File>>,
 }
 
@@ -68,13 +80,18 @@ impl StateStore {
         self.journal_dir.as_deref()
     }
 
-    /// load state from a file path.
+    /// load state from a file path under an exclusive lock.
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
+        Self::load_with(path, StateLock::Exclusive)
+    }
+
+    /// load state from a file path, holding `lock` for the store's lifetime.
+    pub fn load_with(path: impl AsRef<Path>, lock: StateLock) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
         // take the state lock before reading, and hold it for this store's whole
         // lifetime, so a concurrent run can't load the same snapshot and race us to
         // save. fail fast rather than block if another run already holds it.
-        let lock = acquire_state_lock(&path)?;
+        let lock = acquire_state_lock(&path, lock)?;
         // always create a backend so we can save to the same path later.
         // the backend's load() method handles missing files gracefully.
         let backend: Option<Arc<Mutex<dyn StateBackend>>> =
@@ -150,11 +167,11 @@ impl StateStore {
     }
 }
 
-/// take an exclusive advisory lock for a local state file. the lock lives in a
-/// sidecar `<path>.lock` file (created if missing) and is released when the
-/// returned handle, and every clone of the owning store, is dropped or the
-/// process exits. errors if another run already holds it.
-fn acquire_state_lock(path: &Path) -> Result<Arc<File>> {
+/// take an advisory lock for a local state file. the lock lives in a sidecar
+/// `<path>.lock` file (created if missing) and is released when the returned
+/// handle, and every clone of the owning store, is dropped or the process exits.
+/// errors if another run holds an incompatible lock.
+fn acquire_state_lock(path: &Path, mode: StateLock) -> Result<Arc<File>> {
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
             fs::create_dir_all(parent)
@@ -172,7 +189,11 @@ fn acquire_state_lock(path: &Path) -> Result<Arc<File>> {
         .truncate(false)
         .open(&lock_path)
         .with_context(|| format!("open state lock: {}", lock_path.display()))?;
-    match file.try_lock() {
+    let taken = match mode {
+        StateLock::Exclusive => file.try_lock(),
+        StateLock::Shared => file.try_lock_shared(),
+    };
+    match taken {
         Ok(()) => Ok(Arc::new(file)),
         Err(TryLockError::WouldBlock) => Err(anyhow!(
             "another alembic run holds the state lock at {}; wait for it to finish",
@@ -552,5 +573,44 @@ mod tests {
         // once the first store drops, the lock releases and a later run can load.
         drop(first);
         StateStore::load(&path).expect("lock should be free after the holder drops");
+    }
+
+    #[test]
+    fn shared_state_locks_coexist() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("state.json");
+
+        let _first = StateStore::load_with(&path, StateLock::Shared).expect("first shared load");
+        StateStore::load_with(&path, StateLock::Shared).expect("shared loads must coexist");
+    }
+
+    #[test]
+    fn shared_state_lock_still_blocks_an_exclusive_loader() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("state.json");
+
+        let first = StateStore::load_with(&path, StateLock::Shared).expect("first shared load");
+        let err = StateStore::load(&path).expect_err("a saving run must not run under a reader");
+        assert!(
+            err.to_string().contains("state lock"),
+            "expected a state-lock error, got: {err}"
+        );
+
+        drop(first);
+        StateStore::load(&path).expect("lock should be free after the reader drops");
+    }
+
+    #[test]
+    fn exclusive_state_lock_blocks_a_shared_loader() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("state.json");
+
+        let _first = StateStore::load(&path).expect("first exclusive load");
+        let err = StateStore::load_with(&path, StateLock::Shared)
+            .expect_err("a reader must not run under a saving run");
+        assert!(
+            err.to_string().contains("state lock"),
+            "expected a state-lock error, got: {err}"
+        );
     }
 }
