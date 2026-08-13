@@ -8,7 +8,7 @@ use alembic_adapter_registry::{create_backend, Plugin};
 use alembic_engine::{
     apply_plan, build_plan, guard_drift_report, guard_schema_deletes, load_inventory,
     load_inventory_unvalidated, plan_write_only, render_plan, ApplyReport, Backend, DriftReport,
-    Plan, Tense,
+    Plan, StateLock, Tense,
 };
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
@@ -211,6 +211,16 @@ fn should_detect_deletes(allow_delete: bool, report: bool) -> bool {
     allow_delete || report
 }
 
+/// how a `plan` run holds the state lock. a run that saves nothing needs no more
+/// than a reader's share; `--provision` writes backend schema, so it is not one.
+fn state_lock_for_plan(report: bool, dry_run: bool, provision: bool) -> StateLock {
+    if (report || dry_run) && !provision {
+        StateLock::Shared
+    } else {
+        StateLock::Exclusive
+    }
+}
+
 /// the `-o`/`--output` path a command will write, if any. the one place that
 /// knows, so every write site is preflighted by construction; matching
 /// exhaustively means a new *variant* has to answer this. a new `-o` on an
@@ -269,7 +279,7 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             allow_delete,
         } => {
             let inventory = load_inventory(&file)?;
-            let mut state = load_state().await?;
+            let mut state = load_state(state_lock_for_plan(report, dry_run, provision)).await?;
             let plugins = search_for_plugins(&config)?;
             let backend = create_backend(&plugins, backend.as_deref(), backend_config)?;
             // a drift report asserts what the backend holds; one that observes
@@ -366,7 +376,7 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             allow_delete,
             interactive,
         } => {
-            let mut state = load_state().await?;
+            let mut state = load_state(StateLock::Exclusive).await?;
             let plugins = search_for_plugins(&config)?;
             let backend = create_backend(&plugins, backend.as_deref(), backend_config)?;
             // reject a backend that cannot apply before reading the plan or prompting

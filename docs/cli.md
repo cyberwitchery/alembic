@@ -142,6 +142,7 @@ NETBOX_URL=https://netbox.example.com NETBOX_TOKEN=$NETBOX_TOKEN \
 - `--provision` runs adapter provisioning (`ensure_schema`) before observing backend state; provisioning that would delete custom object types/fields the inventory no longer declares is blocked unless `--allow-delete` is also given (such deletes cascade to their objects on the backend)
 - `--dry-run` prints the raw plan json instead of writing it; it writes no file, so `-o`/`--output` is rejected with it at parse time rather than accepted and ignored
 - `--report` prints a read-only drift report and exits without writing a plan file or saving state; `-o`/`--output` writes that report as json (optional: without it the report is the printed summary only)
+- saving nothing, `--report` and `--dry-run` take the state lock shared (see [state](state.md)), so two of them can run at once in the same directory; adding `--provision` makes the run exclusive again, since it writes backend schema
 - `--report` and `--dry-run` are mutually exclusive (both exit without applying); passing both is rejected at parse time
 - `--provision` cannot be combined with `--dry-run` (rejected at parse time): a `--dry-run` preview promises not to write, but `--provision` still writes backend schema (`ensure_schema`). combining `--provision` with `--report` stays allowed as the documented "provision schema, then preview drift" workflow (see below)
 - accepts any type string and arbitrary attrs (schema validation is required)
