@@ -109,6 +109,7 @@ pub enum ExternalRole {
 
 /// result payload of the capabilities method.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ExternalCapabilities {
     /// which side of the adapter contract the adapter implements.
     #[serde(default)]
@@ -117,6 +118,7 @@ pub struct ExternalCapabilities {
 
 /// observed object representation for external adapters.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ExternalObject {
     /// object type.
     pub type_name: TypeName,
@@ -304,6 +306,42 @@ mod tests {
     use serde_yaml::Value;
     use std::io::BufReader;
     use std::io::{BufRead, Write};
+
+    #[test]
+    fn a_misspelled_attrs_key_is_rejected() {
+        // `attrs` defaults, so a typo would otherwise observe the object with no
+        // attributes and replan every one of them as a change, forever.
+        let err = serde_json::from_str::<ExternalObject>(
+            r#"{"type_name":"device","key":{"name":"fra1"},"atrs":{"name":"FRA1"}}"#,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("atrs"), "{err}");
+    }
+
+    #[test]
+    fn an_observed_object_may_still_omit_attrs() {
+        let object: ExternalObject =
+            serde_json::from_str(r#"{"type_name":"device","key":{"name":"fra1"}}"#).unwrap();
+        assert!(object.attrs.is_empty());
+    }
+
+    #[test]
+    fn a_misspelled_role_key_is_rejected() {
+        let err = serde_json::from_str::<ExternalCapabilities>(r#"{"rol":"adapter"}"#).unwrap_err();
+        assert!(err.to_string().contains("rol"), "{err}");
+    }
+
+    #[test]
+    fn a_misspelled_applied_key_is_rejected() {
+        let err = serde_json::from_str::<ApplyReport>(r#"{"aplied":[]}"#).unwrap_err();
+        assert!(err.to_string().contains("aplied"), "{err}");
+    }
+
+    #[test]
+    fn an_apply_report_may_still_omit_applied() {
+        let report: ApplyReport = serde_json::from_str("{}").unwrap();
+        assert!(report.applied.is_empty());
+    }
 
     #[test]
     fn external_response_ok_serializes() {

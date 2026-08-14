@@ -220,6 +220,7 @@ pub struct AppliedOp {
 
 /// aggregated apply report.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ApplyReport {
     /// list of operations applied by the adapter.
     #[serde(default)]
