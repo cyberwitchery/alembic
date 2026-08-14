@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **breaking** external adapters: an unknown key in an observed object, capabilities or apply report is now rejected
 - an external adapter may omit `applied` from a `write` result and `attrs` from a `read` object. a result the host cannot read names the method it answered
 - the generic backend refuses a plan holding a delete it cannot perform, naming every one, before it writes anything: a type with no `types:` entry, a `delete_strategy` left at the default `none`, or an op carrying no backend id. the same plan's creates and updates used to land and be journalled first, so the run died half-converged and every re-run failed at the same delete. add the entry, set `delete_strategy: standard`, or re-plan
 - generic: the shipped example inventory declares each key field in `fields:` as well, so it survives its own apply. a create posts an object's attrs alone and observe rebuilds the key from what the api returns, so a key field the backend does not derive was never sent, and every later `plan` and `import` against that backend failed with `missing key field`. that error now names the type, the object and what to declare; infrahub and peeringdb name the type too
