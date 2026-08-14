@@ -222,6 +222,7 @@ pub struct AppliedOp {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ApplyReport {
     /// list of operations applied by the adapter.
+    #[serde(default)]
     pub applied: Vec<AppliedOp>,
     /// operations an interrupted run applied, recovered from its journal on resume,
     /// with the backend id each one returned.
@@ -531,6 +532,17 @@ mod tests {
         assert!(serde_json::from_str::<ProvisionReport>("{}")
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn apply_report_defaults_omitted_applied() {
+        // apply calls write on every run, including a converged one whose plan has
+        // no ops, and a non-Rust adapter answers that with an empty result.
+        let report: ApplyReport = serde_json::from_str("{}").unwrap();
+        assert!(report.applied.is_empty());
+        assert!(report.resumed.is_empty());
+        assert_eq!(report.previously_applied_count, None);
+        assert!(report.provision.is_empty());
     }
 
     #[test]

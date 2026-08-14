@@ -3302,6 +3302,124 @@ async fn run_plan_previews_schema_over_a_write_only_backend() {
     );
 }
 
+// a hand-written external adapter, the integration path docs/external-adapters.md
+// sells: no sdk, so its result is exactly what it prints. it records the create in
+// a store file, reads back what it recorded, and answers a converged write (no
+// ops) with `converged`.
+#[cfg(unix)]
+fn hand_written_adapter_fixture(dir: &Path, converged: &str) -> (PathBuf, PathBuf) {
+    use std::os::unix::fs::PermissionsExt;
+    let script = dir.join("adapter.sh");
+    std::fs::write(
+        &script,
+        r#"#!/usr/bin/env bash
+req="$(cat)"
+case "$req" in
+  *'"method":"capabilities"'*)
+    printf '{"ok":true,"result":{"role":"adapter"}}' ;;
+  *'"method":"read"'*)
+    if [ -f "$STORE" ]; then
+      printf '{"ok":true,"result":[{"type_name":"dcim.site","key":{"site":"fra1"},"attrs":{"name":"FRA1","slug":"fra1"},"backend_id":"site-1"}]}'
+    else
+      printf '{"ok":true,"result":[]}'
+    fi ;;
+  *'"ops":[]'*)
+    printf '%s' "$CONVERGED_WRITE" ;;
+  *'"method":"write"'*)
+    : >"$STORE"
+    printf '{"ok":true,"result":{"applied":[{"uid":"00000000-0000-0000-0000-000000000001","type_name":"dcim.site","backend_id":"site-1"}]}}' ;;
+  *)
+    printf '{"ok":true,"result":{}}' ;;
+esac
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let config = dir.join("backend.yaml");
+    std::fs::write(
+        &config,
+        format!(
+            "backend: external\ncommand: \"{}\"\ntimeout_seconds: 5\nenv:\n  STORE: \"{}\"\n  CONVERGED_WRITE: '{}'\n",
+            script.display(),
+            dir.join("store").display(),
+            converged
+        ),
+    )
+    .unwrap();
+    (write_site_inventory(dir), config)
+}
+
+// apply calls write on every run, so a converged re-run hands the adapter an empty
+// op list and it answers with an empty result. leaving `applied` out of that result
+// must plan and apply exactly like spelling it out.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn run_applies_a_converged_hand_written_adapter_that_omits_applied() {
+    let _guard = cwd_lock().lock().await;
+    for (case, converged) in [
+        ("omitted", r#"{"ok":true,"result":{}}"#),
+        ("spelled out", r#"{"ok":true,"result":{"applied":[]}}"#),
+    ] {
+        let dir = tempdir().unwrap();
+        let state_path = dir.path().join(".alembic").join("state.json");
+        let _env = EnvVarGuard::acquire_async(&[
+            ("ALEMBIC_STATE_BACKEND", Some("local")),
+            ("ALEMBIC_STATE_PATH", Some(state_path.to_str().unwrap())),
+        ])
+        .await;
+        let (inventory, config) = hand_written_adapter_fixture(dir.path(), converged);
+
+        let cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+        // two full cycles: the first creates the site, the second finds it there
+        let mut rounds = Vec::new();
+        for round in 0..2 {
+            let plan_path = dir.path().join(format!("plan-{round}.json"));
+            let planned = run(
+                Cli {
+                    command: Command::Plan {
+                        file: inventory.clone(),
+                        output: Some(plan_path.clone()),
+                        backend: Some("external".to_string()),
+                        backend_config: Some(config.clone()),
+                        provision: false,
+                        dry_run: false,
+                        report: false,
+                        allow_delete: false,
+                    },
+                },
+                AppConfig::load().unwrap(),
+            )
+            .await;
+            let applied = run(
+                Cli {
+                    command: Command::Apply {
+                        plan: plan_path.clone(),
+                        output: None,
+                        backend: Some("external".to_string()),
+                        backend_config: Some(config.clone()),
+                        allow_delete: false,
+                        interactive: false,
+                    },
+                },
+                AppConfig::load().unwrap(),
+            )
+            .await;
+            rounds.push((planned, applied, plan_path));
+        }
+        std::env::set_current_dir(cwd).unwrap();
+
+        let mut ops = Vec::new();
+        for (round, (planned, applied, plan_path)) in rounds.into_iter().enumerate() {
+            planned.unwrap_or_else(|err| panic!("{case}: plan {round} failed: {err:#}"));
+            applied.unwrap_or_else(|err| panic!("{case}: apply {round} failed: {err:#}"));
+            ops.push(read_plan(&plan_path).unwrap().ops.len());
+        }
+        assert_eq!(ops, [1, 0], "{case}: the second run is the converged one");
+    }
+}
+
 /// a plugin directory that is genuinely absent is the default case (`./plugins`
 /// usually is), so it stays an empty list rather than an error.
 #[test]

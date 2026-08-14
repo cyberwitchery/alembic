@@ -292,6 +292,12 @@ impl AdapterConfig {
 /// default external-adapter request timeout, in seconds.
 const DEFAULT_EXTERNAL_TIMEOUT_SECS: u64 = 120;
 
+/// context for a payload the adapter answered but the host cannot read. all five
+/// methods deserialize through the same two call sites, so the name says which one.
+fn deserialize_context(method: &str) -> String {
+    format!("deserialize external adapter {method} result")
+}
+
 #[derive(Debug)]
 struct ProcessAdapter {
     command: String,
@@ -344,11 +350,12 @@ impl ProcessAdapter {
     }
 
     async fn call<R: DeserializeOwned>(&self, request: ExternalRequestRef<'_>) -> Result<R> {
+        let method = request.method();
         let result = self
             .call_raw(request)
             .await?
             .ok_or_else(|| anyhow!("external adapter response missing result"))?;
-        serde_json::from_value(result).context("deserialize external adapter result")
+        serde_json::from_value(result).with_context(|| deserialize_context(method))
     }
 
     /// like [`ProcessAdapter::call`] but tolerates a null/absent result, mapping it to
@@ -357,11 +364,12 @@ impl ProcessAdapter {
         &self,
         request: ExternalRequestRef<'_>,
     ) -> Result<Option<R>> {
+        let method = request.method();
         match self.call_raw(request).await? {
             None | Some(JsonValue::Null) => Ok(None),
             Some(value) => serde_json::from_value(value)
                 .map(Some)
-                .context("deserialize external adapter result"),
+                .with_context(|| deserialize_context(method)),
         }
     }
 

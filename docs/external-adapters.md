@@ -110,6 +110,9 @@ response:
 }
 ```
 
+`attrs` and `backend_id` are optional, the way `ensure_schema` below states for
+its report: a key-only object answers with `type_name` and `key` alone.
+
 ### write
 
 request:
@@ -141,6 +144,10 @@ response:
   }
 }
 ```
+
+the result's keys are optional the same way, so a write that applied nothing
+answers `{}`. apply sends the method on every run, including a converged one whose
+plan carries no ops.
 
 the result may also carry a `provision` key, in the same shape `ensure_schema`
 returns, for anything the write itself provisioned. this is for what only the ops
