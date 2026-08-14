@@ -4,7 +4,7 @@ pub(crate) fn comma_separated(elems: &[impl Display]) -> String {
     separated(elems, ", ")
 }
 
-pub(crate) fn bullet_list(elems: &[impl Display]) -> String {
+pub fn bullet_list(elems: &[impl Display]) -> String {
     format!("- {}", separated(elems, "\n- "))
 }
 

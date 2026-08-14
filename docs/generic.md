@@ -37,7 +37,7 @@ each `types` entry is an endpoint config:
 a key that is not one of the above is a parse error naming it, at both levels and whether
 the config is inline under `config:` or in its own file. every one of these keys defaults
 silently otherwise, so a typo'd `headers` would send every request unauthenticated and a
-typo'd `delete_strategy` would fail the delete ops the plan showed.
+typo'd `delete_strategy` would refuse the plan those delete ops came from.
 
 ## observe and apply
 
@@ -51,7 +51,9 @@ typo'd `delete_strategy` would fail the delete ops the plan showed.
   conflict is returned.
 - update sends `update_method` (patch or put) to `path`/`id` with the attrs as the json body.
 - delete with `delete_strategy: standard` sends DELETE to `path`/`id` (a 404 is treated as
-  already gone); with the default `none`, delete ops fail.
+  already gone). a delete this config cannot perform, whether its type has no `types:` entry,
+  its strategy is the default `none`, or the op carries no backend id, refuses the whole plan
+  before anything is written, naming every one.
 
 ## pagination
 
@@ -111,5 +113,6 @@ the first page.
 - a mistyped *final* `next_path` key (`nextt` for `next`) reads as a one-page api, because
   an api omitting the key is the ordinary way to end the chain.
 - `update_method` must be `PATCH` or `PUT`.
-- deletes require `delete_strategy: standard`; with the default `none`, delete ops fail.
+- deletes require a `types:` entry with `delete_strategy: standard`, and a backend id on the
+  op; anything else refuses the plan up front, creates and updates included.
 - no schema provisioning; the backend schema must already exist.

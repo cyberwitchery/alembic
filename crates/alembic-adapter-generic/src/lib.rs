@@ -2,10 +2,10 @@
 
 use alembic_core::{key_string, JsonMap, Key, Schema, TypeName, TypeSchema, Uid};
 use alembic_engine::{
-    apply_non_delete_journaled, build_key_from_schema, describe_missing_refs, is_missing_ref_error,
-    normalize_attrs_refs, resolved_ids_identity, Adapter, AppliedOp, ApplyReport, BackendId,
-    Emitter, ObservedObject, ObservedState, Observer, Op, ProvisionReport, RetryApplyDriver,
-    StateMappings,
+    apply_non_delete_journaled, build_key_from_schema, bullet_list, describe_missing_refs,
+    is_missing_ref_error, normalize_attrs_refs, resolved_ids_identity, Adapter, AppliedOp,
+    ApplyReport, BackendId, Emitter, ObservedObject, ObservedState, Observer, Op, ProvisionReport,
+    RetryApplyDriver, StateMappings,
 };
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
@@ -284,6 +284,64 @@ impl GenericAdapter {
         Ok(())
     }
 
+    /// refuse a plan holding a delete this config cannot perform, before any op
+    /// is applied: config presence, delete strategy and backend id, in one
+    /// pass. found in the delete phase instead, the creates and updates have
+    /// landed and the journal makes every re-run fail at the same delete.
+    fn guard_deletable_ops(&self, ops: &[Op]) -> Result<()> {
+        let mut unconfigured = BTreeSet::new();
+        let mut declining = BTreeSet::new();
+        let mut unidentified = BTreeSet::new();
+
+        for op in ops {
+            let Op::Delete {
+                type_name,
+                key,
+                backend_id,
+                ..
+            } = op
+            else {
+                continue;
+            };
+            match self.config.types.get(type_name.as_str()) {
+                None => {
+                    unconfigured.insert(format!(
+                        "no config for {type_name}; add a types: entry for it"
+                    ));
+                }
+                Some(endpoint) => match endpoint.delete_strategy {
+                    DeleteStrategy::None => {
+                        declining.insert(format!(
+                            "delete not supported for type {type_name} (delete_strategy: none); set delete_strategy: standard"
+                        ));
+                    }
+                    DeleteStrategy::Standard => {}
+                },
+            }
+            if backend_id.is_none() {
+                unidentified.insert(format!(
+                    "delete requires backend id for {type_name} {}; re-plan against the backend",
+                    key_string(key)
+                ));
+            }
+        }
+
+        // grouped by cause and named, not counted: each is its own edit, and
+        // stopping at the first leaves the rest to be found one apply at a time.
+        let blocked: Vec<String> = unconfigured
+            .into_iter()
+            .chain(declining)
+            .chain(unidentified)
+            .collect();
+        if blocked.is_empty() {
+            return Ok(());
+        }
+        Err(anyhow!(
+            "plan holds deletes this config cannot apply; nothing was applied:\n{}",
+            bullet_list(&blocked)
+        ))
+    }
+
     fn backend_id_to_url(&self, endpoint: &EndpointConfig, id: &BackendId) -> String {
         let id_str = match id {
             BackendId::Int(n) => n.to_string(),
@@ -391,6 +449,8 @@ impl Emitter for GenericAdapter {
         ops: &[Op],
         state: &alembic_engine::StateStore,
     ) -> Result<ApplyReport> {
+        self.guard_deletable_ops(ops)?;
+
         let mut applied = Vec::new();
         let mut resolved = resolved_ids_identity(state);
         for op in ops {
