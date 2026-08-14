@@ -81,6 +81,19 @@ pub enum ExternalRequestRef<'a> {
     Capabilities,
 }
 
+impl ExternalRequestRef<'_> {
+    /// the `method` this request carries on the wire.
+    pub fn method(&self) -> &'static str {
+        match self {
+            Self::Read { .. } => "read",
+            Self::Write { .. } => "write",
+            Self::EnsureSchema { .. } => "ensure_schema",
+            Self::PreviewSchema { .. } => "preview_schema",
+            Self::Capabilities => "capabilities",
+        }
+    }
+}
+
 /// the role an external adapter reports through the capabilities method.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -110,6 +123,7 @@ pub struct ExternalObject {
     /// natural key for matching.
     pub key: Key,
     /// observed attributes.
+    #[serde(default)]
     pub attrs: JsonMap,
     /// backend id when known.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -413,6 +427,46 @@ mod tests {
         })
         .unwrap();
         assert_eq!(owned_envelope, ref_envelope);
+    }
+
+    #[test]
+    fn request_method_names_the_serde_tag() {
+        // the error context an unreadable result is reported under comes from
+        // method(), so it must keep saying what the request said.
+        let schema = Schema::default();
+        let types = Vec::new();
+        let ops = Vec::new();
+        let state = StateData::default();
+        let requests = [
+            ExternalRequestRef::Read {
+                schema: &schema,
+                types: &types,
+                state: state.clone(),
+            },
+            ExternalRequestRef::Write {
+                schema: &schema,
+                ops: &ops,
+                state: state.clone(),
+            },
+            ExternalRequestRef::EnsureSchema { schema: &schema },
+            ExternalRequestRef::PreviewSchema { schema: &schema },
+            ExternalRequestRef::Capabilities,
+        ];
+        for request in requests {
+            let value = serde_json::to_value(&request).unwrap();
+            assert_eq!(value["method"], request.method(), "{value}");
+        }
+    }
+
+    #[test]
+    fn external_object_defaults_omitted_attrs() {
+        // a key-only object has nothing to put in attrs, and a non-Rust adapter
+        // answers that by leaving the key out.
+        let object: ExternalObject =
+            serde_json::from_value(json!({"type_name": "dcim.site", "key": {"site": "fra1"}}))
+                .unwrap();
+        assert!(object.attrs.is_empty());
+        assert!(object.backend_id.is_none());
     }
 
     #[derive(Debug, Default)]
