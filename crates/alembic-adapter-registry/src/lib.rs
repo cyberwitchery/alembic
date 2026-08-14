@@ -292,12 +292,6 @@ impl AdapterConfig {
 /// default external-adapter request timeout, in seconds.
 const DEFAULT_EXTERNAL_TIMEOUT_SECS: u64 = 120;
 
-/// context for a payload the adapter answered but the host cannot read. all five
-/// methods deserialize through the same two call sites, so the name says which one.
-fn deserialize_context(method: &str) -> String {
-    format!("deserialize external adapter {method} result")
-}
-
 #[derive(Debug)]
 struct ProcessAdapter {
     command: String,
@@ -329,6 +323,8 @@ impl ProcessAdapter {
     /// send a request and return the raw success payload, or `None` when the adapter
     /// reported success with a null/absent `result` field.
     async fn call_raw(&self, request: ExternalRequestRef<'_>) -> Result<Option<JsonValue>> {
+        // bound before the envelope takes the request; the exits below name it.
+        let method = request.method();
         let envelope = ExternalEnvelopeRef {
             version: EXTERNAL_PROTOCOL_VERSION,
             request,
@@ -336,14 +332,14 @@ impl ProcessAdapter {
         };
         let payload = serde_json::to_vec(&envelope).context("serialize external request")?;
         let output = self.run(payload).await?;
-        let stdout =
-            String::from_utf8(output.stdout).context("external adapter response not utf-8")?;
-        let response: ExternalResponse<JsonValue> =
-            serde_json::from_str(&stdout).context("parse external adapter response")?;
+        let stdout = String::from_utf8(output.stdout)
+            .with_context(|| format!("external adapter {method} response not utf-8"))?;
+        let response: ExternalResponse<JsonValue> = serde_json::from_str(&stdout)
+            .with_context(|| format!("parse external adapter {method} response"))?;
         if !response.ok {
             let message = response
                 .error
-                .unwrap_or_else(|| "external adapter error".to_string());
+                .unwrap_or_else(|| format!("external adapter {method} error"));
             return Err(anyhow!(message));
         }
         Ok(response.result)
@@ -354,8 +350,9 @@ impl ProcessAdapter {
         let result = self
             .call_raw(request)
             .await?
-            .ok_or_else(|| anyhow!("external adapter response missing result"))?;
-        serde_json::from_value(result).with_context(|| deserialize_context(method))
+            .ok_or_else(|| anyhow!("external adapter {method} response missing result"))?;
+        serde_json::from_value(result)
+            .with_context(|| format!("deserialize external adapter {method} result"))
     }
 
     /// like [`ProcessAdapter::call`] but tolerates a null/absent result, mapping it to
@@ -369,7 +366,7 @@ impl ProcessAdapter {
             None | Some(JsonValue::Null) => Ok(None),
             Some(value) => serde_json::from_value(value)
                 .map(Some)
-                .with_context(|| deserialize_context(method)),
+                .with_context(|| format!("deserialize external adapter {method} result")),
         }
     }
 
@@ -1004,6 +1001,70 @@ esac
                 "{name} did not default to the adapter role"
             );
         }
+    }
+
+    /// a script that answers capabilities as an adapter and `answer` to everything else.
+    fn answering_script(answer: &str) -> String {
+        format!(
+            r#"#!/usr/bin/env bash
+req="$(cat)"
+case "$req" in
+  *'"method":"capabilities"'*) printf '{{"ok":true,"result":{{"role":"adapter"}}}}' ;;
+  *) {answer} ;;
+esac
+"#
+        )
+    }
+
+    /// every exit that reads what the adapter answered names the method it was sent,
+    /// so a hand-written adapter's broken reply says which call failed.
+    #[tokio::test]
+    async fn external_answer_errors_name_the_method() {
+        let _spawn = spawn_lock().lock().await;
+        let dir = tempdir().unwrap();
+        let schema = Schema {
+            types: BTreeMap::new(),
+        };
+        // ensure_schema, because no exit's own wording could carry it by accident.
+        let cases = [
+            (
+                "not-utf8.sh",
+                r"printf '\377\376'",
+                "external adapter ensure_schema response not utf-8",
+            ),
+            (
+                "stray-line.sh",
+                r#"printf 'warning: sourced a profile\n{"ok":true,"result":{}}'"#,
+                "parse external adapter ensure_schema response",
+            ),
+            (
+                "no-error.sh",
+                r#"printf '{"ok":false}'"#,
+                "external adapter ensure_schema error",
+            ),
+            (
+                "no-result.sh",
+                r#"printf '{"ok":true}'"#,
+                "external adapter ensure_schema response missing result",
+            ),
+        ];
+
+        let mut unnamed = Vec::new();
+        for (name, answer, expected) in cases {
+            let backend = build_external(dir.path(), name, &answering_script(answer));
+            let err = backend
+                .emitter()
+                .unwrap()
+                .ensure_schema(&schema)
+                .await
+                .unwrap_err();
+            let message = err.to_string();
+            if !message.contains(expected) {
+                unnamed.push(format!("{name}: expected {expected:?}, got {message:?}"));
+            }
+        }
+        // collected, not asserted in the loop, so a regression names every exit it hit.
+        assert!(unnamed.is_empty(), "{}", unnamed.join("\n"));
     }
 
     #[tokio::test]
