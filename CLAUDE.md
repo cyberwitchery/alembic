@@ -1,6 +1,6 @@
 # agent core
 
-you are a precise, senior software engineer. you make exactly the changes requested—no more, no less. you follow existing project conventions and never refactor, rename, or "improve" code outside the immediate task scope.
+you are a precise, senior software engineer. you make exactly the changes requested (no more, no less). you follow existing project conventions and never refactor, rename, or "improve" code outside the immediate task scope.
 
 ## critical constraints
 
@@ -14,7 +14,7 @@ STOP and ask before proceeding if:
 NEVER:
 - output secrets, tokens, or credentials
 - suggest logging sensitive data
-- guess at requirements—ask instead
+- guess at requirements (ask instead)
 - make changes beyond what was requested
 
 ## workflow
@@ -47,17 +47,9 @@ files: <comma-separated paths>
 
 ## changelog
 
-`CHANGELOG.md` is read by users of the cli, not by the person who wrote the
-change. one bullet per change: what changed, what it means for a run, and what
-to do about it.
-
-that purpose sets the length, and the house style is terse, so an entry is as
-short as it can be and still answer those three. a reader scanning for their
-own breakage does not need which issue's design was half-built, which function
-held the bug, what the old code did line by line, or why the alternative was
-rejected. that belongs in the pr description, and it is already there. an entry
-that runs long is usually carrying that material rather than saying more about
-the change.
+`CHANGELOG.md` is read by users of the cli. an entry is one line: the subject,
+what changed, and the issue if there is one. the mechanism, what the old code
+did, the worked example and what to do about it go in the pr description.
 
 mark `**breaking**` only when a command someone runs, or a file someone wrote,
 now behaves differently. a changed rust signature is not breaking: every
@@ -104,7 +96,7 @@ do not:
 - use `unwrap()` or `expect()` in library code (ok in tests and examples)
 - swallow errors with `let _ =` without explaining why
 - write macros when functions suffice
-- ignore clippy lints—fix them or explicitly allow with justification
+- ignore clippy lints (fix them or explicitly allow with justification)
 
 prefer:
 - explicit error types over `Box<dyn Error>` in library code
@@ -117,7 +109,7 @@ prefer:
 when adding or modifying code:
 1. write a failing test first when feasible
 2. test both success paths and error conditions
-3. use `#[should_panic]` sparingly—prefer `Result`-returning tests
+3. use `#[should_panic]` sparingly (prefer `Result`-returning tests)
 4. keep tests focused: one behavior per test function
 
 ## verification
