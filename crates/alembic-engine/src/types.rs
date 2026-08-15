@@ -586,7 +586,13 @@ mod tests {
             r#"{"op":"delete","uid":"11111111-1111-1111-1111-111111111111","type_name":"device","key":{}}"#,
         )
         .unwrap();
-        assert!(matches!(op, Op::Delete { backend_id: None, .. }));
+        assert!(matches!(
+            op,
+            Op::Delete {
+                backend_id: None,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -599,8 +605,9 @@ mod tests {
 
     #[test]
     fn a_misspelled_summary_key_is_rejected() {
-        let err = serde_json::from_str::<PlanSummary>(r#"{"create":1,"update":0,"delete":0,"dlete":3}"#)
-            .unwrap_err();
+        let err =
+            serde_json::from_str::<PlanSummary>(r#"{"create":1,"update":0,"delete":0,"dlete":3}"#)
+                .unwrap_err();
         assert!(err.to_string().contains("dlete"), "{err}");
     }
 
