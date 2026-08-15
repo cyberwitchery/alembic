@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- **breaking** `alembic-adapter-test` sends a read+write adapter the empty `write` too; run the suite in a scratch directory. `--no-provisioning-check` is now `--no-write-checks`
+- **breaking** `alembic-adapter-test` sends a read+write adapter the empty `write` too, so point it at a disposable backend; `--no-provisioning-check`, now `--no-write-checks`, skips that write as well
 - **breaking** external adapters: an unknown key in an observed object, capabilities or apply report is now rejected
 - an external adapter may omit `applied` from a `write` result and `attrs` from a `read` object. a result the host cannot read names the method it answered
 - generic: a plan holding a delete the backend cannot perform is refused before anything is written
@@ -16,7 +16,7 @@
 - netbox: renaming a declared type into the same custom object type name keeps the backend type it owns (#369)
 - infrahub: two declared types that render one graphql kind fail the run; rename one (#372)
 - peeringdb observes `netixlan` records rather than organizations, and `PEERINGDB_API_KEY` is optional (#267)
-- `alembic-adapter-test`: `protocol/ensure-schema-empty` is opt-out through `--no-provisioning-check`, and a turned-off check is reported as `skipped`
+- `alembic-adapter-test`: `protocol/ensure-schema-empty` and `protocol/write-empty` are opt-out through `--no-write-checks`, and a turned-off check is reported as `skipped`
 - netbox: two declared types whose names collapse to one custom object type name fail the run; rename one
 - netbox converges an existing custom object type field, so a declared `pattern:`, `format:`, `description:` or `required:` reaches the backend
 - nautobot: two declared types sharing one custom field must declare the same `enum` values in the same order
