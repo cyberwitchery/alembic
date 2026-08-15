@@ -348,11 +348,11 @@ emitter and a full adapter are sent both, an observer neither. the runner has no
 `--allow-delete` gate, so point it at a disposable backend and run it from a
 scratch directory.
 
-both run by default; `--no-write-checks` (once `--no-provisioning-check`, still
-accepted) turns them off and reports each as `skipped`, counted apart from the
-passes. opt-out because the hand-rolled adapter these exist for is the one
-whose author would not enable them. they are the checks built to write, not
-every request that can: the version probe is write-shaped for an emitter.
+both are off unless you pass `--write-checks`, and each is reported as `skipped`
+rather than dropped, counted apart from the passes. for an emitter the version
+probe rides that same write, so it is skipped too, with its own reason: an
+emitter implements no other method for it to ride. `--no-provisioning-check`,
+the old spelling, is the default now, so it warns and refuses `--write-checks`.
 
 to exercise `read`, `write`, and `ensure_schema` with requests of your own,
 pass `--cases` a file or directory of cases. a case is a complete request and

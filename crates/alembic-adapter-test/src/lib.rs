@@ -20,9 +20,8 @@ use std::time::{Duration, Instant};
 pub struct Outcome {
     pub name: String,
     pub failure: Option<Failure>,
-    /// why the check did not run, when it was turned off. a skipped check
-    /// certifies nothing, so it is neither a pass nor a failure and the report
-    /// counts it apart from both.
+    /// why the check did not run. a skipped check certifies nothing, so it is
+    /// neither a pass nor a failure and the report counts it apart from both.
     pub skipped: Option<String>,
 }
 
@@ -32,26 +31,19 @@ impl Outcome {
         self.failure.is_none() && self.skipped.is_none()
     }
 
-    /// whether the check was turned off rather than run.
+    /// whether the check was not sent rather than run.
     pub fn skipped(&self) -> bool {
         self.skipped.is_some()
     }
 }
 
-/// which built-in checks to run. every check is on by default: one that does not
-/// run certifies nothing, and the population these exist for is the adapter that
-/// would otherwise be certified into a failing apply.
-#[derive(Debug, Clone, Copy)]
+/// which built-in checks to run. the writing ones are off by default: a
+/// conformance run is not asked to touch the operator's backend.
+#[derive(Debug, Clone, Copy, Default)]
 pub struct Builtins {
     /// `protocol/write-empty` and `protocol/ensure-schema-empty` both write, at
-    /// the adapter's own default target; off does not cover the version probe.
+    /// the adapter's own default target; on, an emitter's version probe writes too.
     pub writes: bool,
-}
-
-impl Default for Builtins {
-    fn default() -> Self {
-        Self { writes: true }
-    }
 }
 
 /// why a check failed, with the diagnostics needed to debug the adapter.
@@ -82,7 +74,7 @@ pub struct Expect {
     pub error: Option<String>,
 }
 
-/// run the backend-independent protocol checks against the adapter command.
+/// run the backend-independent protocol checks that do not write. see [`Builtins`].
 pub fn run_builtin(adapter: &[String], timeout: Duration) -> Vec<Outcome> {
     run_builtin_with(adapter, timeout, Builtins::default())
 }
@@ -128,10 +120,20 @@ pub fn run_builtin_with(adapter: &[String], timeout: Duration, builtins: Builtin
     // it is sent a method the role implements. sent as a read, an emitter refuses
     // it for role reasons and answers the probe without ever reading `version`.
     let (_, probe_method, probe_request) = &liveness[0];
-    let mismatched = {
+    let version_mismatch = if builtins.writes || *probe_method != "write" {
         let mut mismatched = probe_request.clone();
         mismatched["version"] = json!(version + 1);
-        mismatched
+        check(
+            adapter,
+            timeout,
+            "protocol/version-mismatch",
+            &request_bytes(&mismatched),
+            probe_method,
+            Expectation::MustError,
+        )
+    } else {
+        // an emitter implements only the write, so nothing is left to ride.
+        skipped("protocol/version-mismatch", PROBE_RIDES_A_WRITE)
     };
     let mut outcomes = vec![
         check(
@@ -142,14 +144,7 @@ pub fn run_builtin_with(adapter: &[String], timeout: Duration, builtins: Builtin
             "read",
             Expectation::MustError,
         ),
-        check(
-            adapter,
-            timeout,
-            "protocol/version-mismatch",
-            &request_bytes(&mismatched),
-            probe_method,
-            Expectation::MustError,
-        ),
+        version_mismatch,
         check(
             adapter,
             timeout,
@@ -174,7 +169,7 @@ pub fn run_builtin_with(adapter: &[String], timeout: Duration, builtins: Builtin
                 Expectation::MustSucceed,
             )
         } else {
-            turned_off(name)
+            skipped(name, WRITES_ARE_OPT_IN)
         }
     }));
     // previewing is provisioning, so the host reaches both methods through an
@@ -210,19 +205,22 @@ pub fn run_builtin_with(adapter: &[String], timeout: Duration, builtins: Builtin
                 Expectation::MustSucceed,
             )
         } else {
-            turned_off("protocol/ensure-schema-empty")
+            skipped("protocol/ensure-schema-empty", WRITES_ARE_OPT_IN)
         });
     }
     outcomes
 }
 
-/// a check the caller turned off, reported rather than omitted: a reader counting
+const WRITES_ARE_OPT_IN: &str = "writes are opt-in, pass --write-checks";
+const PROBE_RIDES_A_WRITE: &str = "an emitter's version probe rides its write, pass --write-checks";
+
+/// a check the runner did not send, reported rather than omitted: a reader counting
 /// passes must not read a suite that never sent the request as one that certified it.
-fn turned_off(name: &str) -> Outcome {
+fn skipped(name: &str, reason: &str) -> Outcome {
     Outcome {
         name: name.to_string(),
         failure: None,
-        skipped: Some("turned off with --no-write-checks".to_string()),
+        skipped: Some(reason.to_string()),
     }
 }
 

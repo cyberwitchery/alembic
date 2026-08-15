@@ -2,7 +2,7 @@ use alembic_adapter_test::{
     load_cases, run_builtin, run_builtin_with, run_cases, Builtins, Case, Expect, Outcome,
 };
 use serde_json::json;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
@@ -11,6 +11,11 @@ const TIMEOUT: Duration = Duration::from_secs(10);
 
 fn sh(script: &str) -> Vec<String> {
     vec!["sh".into(), "-c".into(), script.into()]
+}
+
+/// the built-ins with the writing checks asked for, now that they are opt-in.
+fn run_builtin_writing(adapter: &[String]) -> Vec<Outcome> {
+    run_builtin_with(adapter, TIMEOUT, Builtins { writes: true })
 }
 
 fn find<'a>(outcomes: &'a [Outcome], name: &str) -> &'a Outcome {
@@ -58,7 +63,11 @@ fn forked_adapter_does_not_outlast_the_timeout() {
     // (plus the capabilities probe) is ~timeout + a grace, so eight runs stay
     // under this bound.
     let start = Instant::now();
-    let outcomes = run_builtin(&sh("sleep 30 & wait"), Duration::from_millis(300));
+    let outcomes = run_builtin_with(
+        &sh("sleep 30 & wait"),
+        Duration::from_millis(300),
+        Builtins { writes: true },
+    );
     assert!(outcomes.iter().all(|o| !o.passed()));
     assert!(
         start.elapsed() < Duration::from_secs(15),
@@ -244,7 +253,7 @@ fn declared_emitter_with_erroring_read_passes() {
       *'"method":"preview_schema"'*) printf '{"ok":true,"result":null}' ;;
       *) printf '{"ok":false,"error":"read is not supported"}' ;;
     esac"#;
-    let outcomes = run_builtin(&sh(script), TIMEOUT);
+    let outcomes = run_builtin_writing(&sh(script));
     for outcome in &outcomes {
         assert!(
             outcome.passed(),
@@ -275,7 +284,7 @@ fn a_full_adapter_with_a_broken_write_is_caught() {
       *'"method":"preview_schema"'*) printf '{"ok":true,"result":null}' ;;
       *) printf '{"ok":false,"error":"unknown method"}' ;;
     esac"#;
-    let outcomes = run_builtin(&sh(script), TIMEOUT);
+    let outcomes = run_builtin_writing(&sh(script));
     let write = find(&outcomes, "protocol/write-empty");
     assert!(!write.passed(), "a full adapter's write must be checked");
     assert!(
@@ -309,7 +318,7 @@ fn an_emitter_that_leaves_ensure_schema_to_unknown_method_fails() {
       *'"method":"preview_schema"'*) printf '{"ok":true,"result":null}' ;;
       *) printf '{"ok":false,"error":"unknown method"}' ;;
     esac"#;
-    let outcomes = run_builtin(&sh(script), TIMEOUT);
+    let outcomes = run_builtin_writing(&sh(script));
     let ensure = find(&outcomes, "protocol/ensure-schema-empty");
     assert!(
         message(ensure).contains("unknown method"),
@@ -339,7 +348,7 @@ fn ensure_schema_check_follows_the_declared_role() {
       *'"method":"read"'*) printf '{"ok":true,"result":[]}' ;;
       *) printf '{"ok":false,"error":"write is not supported"}' ;;
     esac"#;
-    let outcomes = run_builtin(&sh(script), TIMEOUT);
+    let outcomes = run_builtin_writing(&sh(script));
     assert!(!outcomes
         .iter()
         .any(|o| o.name == "protocol/ensure-schema-empty"));
@@ -355,7 +364,7 @@ fn ensure_schema_check_follows_the_declared_role() {
     }
 
     let script = script.replace("observer", "emitter");
-    let outcomes = run_builtin(&sh(&script), TIMEOUT);
+    let outcomes = run_builtin_writing(&sh(&script));
     assert!(outcomes
         .iter()
         .any(|o| o.name == "protocol/ensure-schema-empty"));
@@ -412,7 +421,7 @@ fn garbage_capabilities_fails_and_defaults_to_adapter() {
       *'"method":"read"'*) printf '{"ok":true,"result":[]}' ;;
       *) printf '{"ok":false,"error":"unsupported"}' ;;
     esac"#;
-    let outcomes = run_builtin(&sh(script), TIMEOUT);
+    let outcomes = run_builtin_writing(&sh(script));
     let capabilities = find(&outcomes, "protocol/capabilities");
     assert!(!capabilities.passed());
     assert!(
@@ -447,7 +456,7 @@ fn version_mismatch_follows_the_declared_role() {
       *'"method":"preview_schema"'*) printf '{"ok":true,"result":null}' ;;
       *) printf '{"ok":false,"error":"read is not supported"}' ;;
     esac"#;
-    let outcomes = run_builtin(&sh(script), TIMEOUT);
+    let outcomes = run_builtin_writing(&sh(script));
     let mismatch = find(&outcomes, "protocol/version-mismatch");
     assert!(
         !mismatch.passed(),
@@ -465,7 +474,7 @@ fn version_mismatch_follows_the_declared_role() {
       *'"method":"read"'*) printf '{"ok":true,"result":[]}' ;;
       *) printf '{"ok":false,"error":"write is not supported"}' ;;
     esac"#;
-    let outcomes = run_builtin(&sh(script), TIMEOUT);
+    let outcomes = run_builtin_writing(&sh(script));
     assert!(!find(&outcomes, "protocol/version-mismatch").passed());
 }
 
@@ -492,7 +501,7 @@ fn python_example_passes_builtin() {
         eprintln!("skipping python_example_passes_builtin: python3 not found");
         return;
     }
-    let outcomes = run_builtin(&python_adapter(), TIMEOUT);
+    let outcomes = run_builtin_writing(&python_adapter());
     for outcome in &outcomes {
         assert!(
             outcome.passed(),
@@ -649,33 +658,29 @@ fn fixtures_match_the_protocol_types() {
     assert_eq!(checked, 8, "expected 8 fixtures, checked {checked}");
 }
 
-/// opt-out: `run_builtin`, what a caller passing no `Builtins` gets, runs both
-/// writing checks.
+/// opt-in: `run_builtin`, what a caller passing no `Builtins` gets, sends neither
+/// writing check and reports both as skipped rather than dropping them.
 #[test]
-fn run_builtin_certifies_the_writing_checks_by_default() {
-    assert!(Builtins::default().writes);
+fn run_builtin_leaves_the_writing_checks_off() {
+    assert!(!Builtins::default().writes);
 
     let outcomes = run_builtin(&sh(&emitter_writing("/dev/null")), TIMEOUT);
-    for name in ["protocol/write-empty", "protocol/ensure-schema-empty"] {
-        let outcome = find(&outcomes, name);
-        assert!(outcome.passed(), "{name}: {:?}", outcome.failure);
-        assert!(!outcome.skipped(), "the default must not skip {name}");
-    }
-}
-
-/// turning them off marks both checks skipped, and a skipped check is not a pass.
-#[test]
-fn a_turned_off_builtin_is_skipped_rather_than_passed() {
-    let outcomes = run_builtin_with(
-        &sh(&emitter_writing("/dev/null")),
-        TIMEOUT,
-        Builtins { writes: false },
-    );
     for name in ["protocol/write-empty", "protocol/ensure-schema-empty"] {
         let outcome = find(&outcomes, name);
         assert!(outcome.skipped(), "{name} must be reported, not dropped");
         assert!(!outcome.passed(), "a skipped check certifies nothing");
         assert!(outcome.failure.is_none(), "and it is not a failure either");
+    }
+}
+
+/// asking for them runs both, and neither reads as skipped.
+#[test]
+fn the_writing_checks_run_when_asked_for() {
+    let outcomes = run_builtin_writing(&sh(&emitter_writing("/dev/null")));
+    for name in ["protocol/write-empty", "protocol/ensure-schema-empty"] {
+        let outcome = find(&outcomes, name);
+        assert!(outcome.passed(), "{name}: {:?}", outcome.failure);
+        assert!(!outcome.skipped(), "--write-checks must not skip {name}");
     }
 }
 
@@ -697,6 +702,56 @@ fn emitter_writing(path: &str) -> String {
       *) printf '{{"ok":false,"error":"this adapter is write-only"}}' ;;
     esac"#
     )
+}
+
+/// the same emitter, appending every method it is sent to `log`, so a check can
+/// assert on what arrived rather than on what the report claims.
+fn emitter_logging(log: &str) -> String {
+    format!(
+        r#"req=$(cat)
+    case "$req" in
+      *'"version":1'*) ;;
+      *) printf '{{"ok":false,"error":"unsupported protocol version"}}'; exit 0 ;;
+    esac
+    case "$req" in
+      *'"method":"capabilities"'*) echo capabilities >> {log}
+        printf '{{"ok":true,"result":{{"role":"emitter"}}}}' ;;
+      *'"method":"write"'*) echo write >> {log}
+        printf '{{"ok":true,"result":{{"applied":[]}}}}' ;;
+      *'"method":"ensure_schema"'*) echo ensure_schema >> {log}
+        printf '{{"ok":true,"result":{{}}}}' ;;
+      *'"method":"preview_schema"'*) echo preview_schema >> {log}
+        printf '{{"ok":true,"result":null}}' ;;
+      *) printf '{{"ok":false,"error":"this adapter is write-only"}}' ;;
+    esac"#
+    )
+}
+
+fn received(log: &Path) -> Vec<String> {
+    std::fs::read_to_string(log)
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_string)
+        .collect()
+}
+
+/// what the adapter was sent, not what the report says about it: the methods that
+/// do arrive are the control on the two that must not.
+#[test]
+fn no_writing_method_reaches_the_adapter_by_default() {
+    let dir = tempdir().unwrap();
+    let log = dir.path().join("methods");
+    let adapter = sh(&emitter_logging(&log.display().to_string()));
+
+    run_builtin(&adapter, TIMEOUT);
+    assert_eq!(received(&log), ["capabilities", "preview_schema"]);
+
+    std::fs::remove_file(&log).unwrap();
+    run_builtin_writing(&adapter);
+    assert_eq!(
+        received(&log),
+        ["capabilities", "write", "preview_schema", "ensure_schema"]
+    );
 }
 
 /// an emitter's liveness check is a real `write`: gated off it must not touch
@@ -726,13 +781,14 @@ fn the_gate_decides_whether_the_liveness_check_reaches_the_artifact() {
     assert!(find(&outcomes, "protocol/write-empty").passed());
 }
 
-/// the version probe rides a write-shaped request and is not gated, so a
-/// version-blind emitter is caught and its artifact rendered anyway.
+/// the version probe rides an emitter's write, so off it is reported as skipped
+/// rather than sent, and the adapter it exists to catch goes uncaught.
 #[test]
-fn the_version_probe_is_not_gated_and_a_version_blind_emitter_writes_anyway() {
+fn the_version_probe_is_skipped_for_an_emitter_with_writes_off() {
     let dir = tempdir().unwrap();
     let artifact = dir.path().join("topology.dot");
-    std::fs::write(&artifact, "digraph topology {\n}\n").unwrap();
+    let before = "digraph topology {\n}\n";
+    std::fs::write(&artifact, before).unwrap();
     let script = format!(
         r#"req=$(cat)
     case "$req" in
@@ -745,21 +801,29 @@ fn the_version_probe_is_not_gated_and_a_version_blind_emitter_writes_anyway() {
         path = artifact.display()
     );
 
-    let outcomes = run_builtin_with(&sh(&script), TIMEOUT, Builtins { writes: false });
+    let outcomes = run_builtin(&sh(&script), TIMEOUT);
     let probe = find(&outcomes, "protocol/version-mismatch");
+    assert!(probe.skipped(), "the probe must be reported, not dropped");
+    assert!(!probe.passed(), "a skipped probe certifies nothing");
     assert!(
-        !probe.skipped(),
-        "the gate must not reach the version probe"
-    );
-    assert!(
-        probe.failure.is_some(),
-        "which is why it still catches this"
+        probe.skipped.as_deref().unwrap().contains("emitter"),
+        "{:?}",
+        probe.skipped
     );
     assert_eq!(
         std::fs::read_to_string(&artifact).unwrap(),
-        "rendered",
-        "and the probe is a real write for this adapter"
+        before,
+        "and it did not ride a write"
     );
+
+    let outcomes = run_builtin_writing(&sh(&script));
+    let probe = find(&outcomes, "protocol/version-mismatch");
+    assert!(!probe.skipped(), "asked for, the probe is sent");
+    assert!(
+        probe.failure.is_some(),
+        "which is what catches this adapter"
+    );
+    assert_eq!(std::fs::read_to_string(&artifact).unwrap(), "rendered");
 }
 
 /// the gate does not weaken what it leaves on: a failing `write` still fails.
@@ -776,7 +840,7 @@ fn an_emitter_whose_write_errors_still_fails_with_the_gate_on() {
       *'"method":"preview_schema"'*) printf '{"ok":true,"result":null}' ;;
       *) printf '{"ok":false,"error":"the output path is not writable"}' ;;
     esac"#;
-    let outcomes = run_builtin(&sh(script), TIMEOUT);
+    let outcomes = run_builtin_writing(&sh(script));
     let liveness = find(&outcomes, "protocol/write-empty");
     assert!(
         message(liveness).contains("not writable"),
@@ -864,10 +928,10 @@ fn emitter_reporting_deletes(envelope: &str, key: &str) -> String {
 fn a_misspelled_schema_delete_fails() {
     // this report is the --allow-delete gate, so a typo here reports nothing to
     // delete and provisions past it in silence.
-    let outcomes = run_builtin(
-        &sh(&emitter_reporting_deletes("result", "deletd_object_types")),
-        TIMEOUT,
-    );
+    let outcomes = run_builtin_writing(&sh(&emitter_reporting_deletes(
+        "result",
+        "deletd_object_types",
+    )));
     for name in [
         "protocol/preview-schema-empty",
         "protocol/ensure-schema-empty",
@@ -900,10 +964,10 @@ fn a_misspelled_result_key_fails() {
 fn a_correctly_spelled_schema_delete_still_passes() {
     // the control for both checks above: the same adapter, one word apart. without
     // it the suite cannot tell them from checks that reject both spellings.
-    let outcomes = run_builtin(
-        &sh(&emitter_reporting_deletes("result", "deleted_object_types")),
-        TIMEOUT,
-    );
+    let outcomes = run_builtin_writing(&sh(&emitter_reporting_deletes(
+        "result",
+        "deleted_object_types",
+    )));
     for outcome in &outcomes {
         assert!(
             outcome.passed(),
