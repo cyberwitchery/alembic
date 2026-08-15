@@ -1516,6 +1516,69 @@ fn apply_plan_over_a_write_only_backend_that_provisions_nothing() {
 }
 
 #[test]
+fn apply_plan_names_the_gate_it_could_not_run() {
+    // no preview means no gate, and ensure_schema still runs: the operator hears
+    // that before the delete rather than reading it in the past tense after.
+    let (backend, provisioned) = provisioning_emitter(
+        ProvisionReport {
+            deleted_object_types: vec!["dcim.fossil".to_string()],
+            ..Default::default()
+        },
+        None,
+    );
+    let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
+    let (report, logged) = crate::test_log::capture(|| {
+        futures::executor::block_on(apply_plan(&backend, &empty_plan(), &mut state, false)).unwrap()
+    });
+    assert!(
+        logged.contains("unavailable for this backend")
+            && logged.contains("not gated by --allow-delete"),
+        "got: {logged}"
+    );
+    // saying so is the whole change: the provisioning still happens.
+    assert_eq!(provisioned.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(report.provision.deleted_object_types, vec!["dcim.fossil"]);
+}
+
+#[test]
+fn apply_plan_says_nothing_when_the_gate_ran_or_was_waived() {
+    let dir = tempdir().unwrap();
+    let clean = ProvisionReport {
+        created_object_types: vec!["dcim.widget".to_string()],
+        ..Default::default()
+    };
+    // the adapter previews, so the gate ran on what it reported.
+    let (backend, _) = provisioning_emitter(clean.clone(), Some(clean));
+    let mut state = StateStore::load(dir.path().join("previewed.json")).unwrap();
+    let logged = crate::test_log::capture(|| {
+        futures::executor::block_on(apply_plan(&backend, &empty_plan(), &mut state, false)).unwrap()
+    })
+    .1;
+    assert!(
+        !logged.contains("unavailable for this backend"),
+        "got: {logged}"
+    );
+
+    // --allow-delete waives the gate by design, so a skipped gate is not news.
+    let (backend, _) = provisioning_emitter(
+        ProvisionReport {
+            deleted_object_types: vec!["dcim.fossil".to_string()],
+            ..Default::default()
+        },
+        None,
+    );
+    let mut state = StateStore::load(dir.path().join("waived.json")).unwrap();
+    let logged = crate::test_log::capture(|| {
+        futures::executor::block_on(apply_plan(&backend, &empty_plan(), &mut state, true)).unwrap()
+    })
+    .1;
+    assert!(
+        !logged.contains("unavailable for this backend"),
+        "got: {logged}"
+    );
+}
+
+#[test]
 fn apply_plan_updates_state() {
     let adapter = TestAdapter {
         observed: ObservedState::default(),

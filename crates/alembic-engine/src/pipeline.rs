@@ -154,11 +154,14 @@ pub(crate) async fn apply(
     let emitter = backend.emitter()?;
     // authoritative gate: self-preview at the chokepoint before ensure_schema, so
     // no caller can forget (mirrors `plan --provision`). preview_schema defaults
-    // to Ok(None), leaving backends that cannot preview unaffected; an Err fails
+    // to Ok(None), which skips the gate rather than failing it; an Err fails
     // closed rather than provision blind.
     if !allow_delete {
-        if let Some(preview) = emitter.preview_schema(&plan.schema).await? {
-            guard_schema_deletes(&preview, allow_delete)?;
+        match emitter.preview_schema(&plan.schema).await? {
+            Some(preview) => guard_schema_deletes(&preview, allow_delete)?,
+            None => tracing::warn!(
+                "schema preview: unavailable for this backend; provisioning is not gated by --allow-delete"
+            ),
         }
     }
     let provision = emitter.ensure_schema(&plan.schema).await?;

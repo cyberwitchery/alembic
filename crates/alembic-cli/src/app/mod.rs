@@ -300,8 +300,11 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                 // no longer declares; gate it behind --allow-delete like apply,
                 // checking the read-only preview before writing schema.
                 if !allow_delete {
-                    if let Some(preview) = emitter.preview_schema(&inventory.schema).await? {
-                        guard_schema_deletes(&preview, allow_delete)?;
+                    match emitter.preview_schema(&inventory.schema).await? {
+                        Some(preview) => guard_schema_deletes(&preview, allow_delete)?,
+                        None => eprintln!(
+                            "schema preview: unavailable for this backend; provisioning is not gated by --allow-delete"
+                        ),
                     }
                 }
                 let provision_report = emitter.ensure_schema(&inventory.schema).await?;

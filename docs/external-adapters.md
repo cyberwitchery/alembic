@@ -221,8 +221,8 @@ would delete, even if the same call also creates: what you list is what the
 operator is shown.
 
 a `null` result skips the gate rather than failing it, so an adapter that cannot
-preview provisions unchecked. that is deliberate, and it is the trade for not
-implementing the method: if your adapter can delete schema, preview it.
+preview provisions unchecked, and the run says so before it provisions. that is the
+trade for not implementing the method: if your adapter can delete schema, preview it.
 
 request:
 
