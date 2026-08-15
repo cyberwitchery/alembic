@@ -117,11 +117,15 @@ pub fn plan_write_only(inventory: &Inventory, state: &StateStore) -> Result<Plan
     ))
 }
 
+/// adopt existing backend objects by matching declared keys against an
+/// observation. returns whether it learned a mapping, which is what earns
+/// `pipeline::observe` another read.
 pub(crate) fn bootstrap_state_from_observed(
     state: &mut StateStore,
     desired: &[Object],
     observed: &ObservedState,
-) {
+) -> bool {
+    let mut learned = false;
     for object in desired {
         if state
             .backend_id(object.type_name.clone(), object.uid)
@@ -135,9 +139,11 @@ pub(crate) fn bootstrap_state_from_observed(
         {
             if let Some(backend_id) = &obs.backend_id {
                 state.set_backend_id(object.type_name.clone(), object.uid, backend_id.clone());
+                learned = true;
             }
         }
     }
+    learned
 }
 
 /// apply a plan and update the state store. full adapters provision schema

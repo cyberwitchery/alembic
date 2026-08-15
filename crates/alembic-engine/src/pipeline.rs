@@ -25,10 +25,22 @@ pub(crate) async fn observe(
     }
     let types_vec: Vec<_> = types.into_iter().collect();
 
-    let observed = adapter.read(&inventory.schema, &types_vec, state).await?;
+    let mut observed = adapter.read(&inventory.schema, &types_vec, state).await?;
     detect_key_collisions(&observed)?;
 
-    crate::bootstrap_state_from_observed(state, &inventory.objects, &observed);
+    // identity learned from one observation changes the next: adapters resolve
+    // ref-typed fields through state, so an object keyed on a ref only reads
+    // back in uid space once the ref's mapping is known. re-read until the
+    // bootstrap learns nothing, which is a chain's depth in rounds. bounded
+    // because a round earns its re-read by mapping a declared object, and
+    // mappings are only ever added.
+    for _ in 0..=inventory.objects.len() {
+        if !crate::bootstrap_state_from_observed(state, &inventory.objects, &observed) {
+            break;
+        }
+        observed = adapter.read(&inventory.schema, &types_vec, state).await?;
+        detect_key_collisions(&observed)?;
+    }
     Ok(observed)
 }
 

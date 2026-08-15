@@ -1083,6 +1083,246 @@ fn build_plan_bootstraps_state_by_key() {
     );
 }
 
+fn field_of(r#type: FieldType) -> FieldSchema {
+    FieldSchema {
+        r#type,
+        required: true,
+        nullable: false,
+        description: None,
+        format: None,
+        pattern: None,
+    }
+}
+
+fn ref_to(target: &str) -> FieldSchema {
+    field_of(FieldType::Ref {
+        target: target.to_string(),
+    })
+}
+
+/// a site keyed on a slug, a device keyed on a ref to the site, an interface
+/// keyed on a ref to the device. `depth` picks how much of the chain to take.
+fn ref_chain_inventory(depth: usize) -> Inventory {
+    let mut types = BTreeMap::new();
+    types.insert(
+        "dcim.site".to_string(),
+        TypeSchema {
+            key: BTreeMap::from([("slug".to_string(), field_of(FieldType::Slug))]),
+            fields: BTreeMap::from([
+                ("slug".to_string(), field_of(FieldType::Slug)),
+                ("name".to_string(), field_of(FieldType::String)),
+            ]),
+        },
+    );
+    types.insert(
+        "dcim.device".to_string(),
+        TypeSchema {
+            key: BTreeMap::from([
+                ("site".to_string(), ref_to("dcim.site")),
+                ("name".to_string(), field_of(FieldType::String)),
+            ]),
+            fields: BTreeMap::from([
+                ("site".to_string(), ref_to("dcim.site")),
+                ("name".to_string(), field_of(FieldType::String)),
+            ]),
+        },
+    );
+    types.insert(
+        "dcim.interface".to_string(),
+        TypeSchema {
+            key: BTreeMap::from([
+                ("device".to_string(), ref_to("dcim.device")),
+                ("name".to_string(), field_of(FieldType::String)),
+            ]),
+            fields: BTreeMap::from([
+                ("device".to_string(), ref_to("dcim.device")),
+                ("name".to_string(), field_of(FieldType::String)),
+            ]),
+        },
+    );
+
+    let mut objects = vec![obj(
+        uid(1),
+        "dcim.site",
+        "slug=fra1",
+        json!({ "slug": "fra1", "name": "FRA1" }),
+    )];
+    if depth >= 1 {
+        objects.push(obj(
+            uid(2),
+            "dcim.device",
+            &format!("site={};name=leaf01", uid(1)),
+            json!({ "site": uid(1).to_string(), "name": "leaf01" }),
+        ));
+    }
+    if depth >= 2 {
+        objects.push(obj(
+            uid(3),
+            "dcim.interface",
+            &format!("device={};name=eth0", uid(2)),
+            json!({ "device": uid(2).to_string(), "name": "eth0" }),
+        ));
+    }
+    Inventory {
+        schema: Schema { types },
+        objects,
+    }
+}
+
+/// an adapter's read path in miniature: ref-typed fields come back as backend
+/// ids and are normalized through state, so an object keyed on a ref only reads
+/// in uid space once that ref is mapped.
+#[derive(Clone)]
+struct RefChainAdapter {
+    rows: Vec<(TypeName, BackendId, serde_json::Value)>,
+    reads: std::sync::Arc<std::sync::Mutex<usize>>,
+}
+
+impl RefChainAdapter {
+    fn new(rows: Vec<(TypeName, BackendId, serde_json::Value)>) -> Self {
+        RefChainAdapter {
+            rows,
+            reads: std::sync::Arc::new(std::sync::Mutex::new(0)),
+        }
+    }
+
+    fn reads(&self) -> usize {
+        *self.reads.lock().unwrap()
+    }
+}
+
+#[async_trait::async_trait]
+impl Observer for RefChainAdapter {
+    async fn read(
+        &self,
+        schema: &alembic_core::Schema,
+        _types: &[TypeName],
+        state: &StateStore,
+    ) -> anyhow::Result<ObservedState> {
+        *self.reads.lock().unwrap() += 1;
+        let mappings = StateMappings::from_state(state);
+        let mut observed = ObservedState::default();
+        for (type_name, backend_id, raw) in &self.rows {
+            let type_schema = &schema.types[type_name.as_str()];
+            let attrs = normalize_attrs_refs(&attrs_map(raw.clone()), type_schema, &mappings);
+            observed.insert(ObservedObject {
+                type_name: type_name.clone(),
+                key: build_key_from_schema(type_schema, &attrs)?,
+                attrs,
+                backend_id: Some(backend_id.clone()),
+            })?;
+        }
+        Ok(observed)
+    }
+}
+
+/// backend rows for the chain, refs held as backend ids (the shape a backend
+/// that assigns its own ids returns).
+fn ref_chain_rows(depth: usize) -> Vec<(TypeName, BackendId, serde_json::Value)> {
+    let mut rows = vec![(
+        t("dcim.site"),
+        BackendId::Int(1),
+        json!({ "slug": "fra1", "name": "FRA1" }),
+    )];
+    if depth >= 1 {
+        rows.push((
+            t("dcim.device"),
+            BackendId::Int(2),
+            json!({ "site": 1, "name": "leaf01" }),
+        ));
+    }
+    if depth >= 2 {
+        rows.push((
+            t("dcim.interface"),
+            BackendId::Int(3),
+            json!({ "device": 2, "name": "eth0" }),
+        ));
+    }
+    rows
+}
+
+#[test]
+fn build_plan_bootstraps_object_keyed_on_a_ref() {
+    let inventory = ref_chain_inventory(1);
+    let adapter = RefChainAdapter::new(ref_chain_rows(1));
+    let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
+    let plan =
+        futures::executor::block_on(build_plan(&adapter, &inventory, &mut state, false)).unwrap();
+
+    assert!(plan.ops.is_empty(), "unexpected ops: {:?}", plan.ops);
+    assert_eq!(
+        state.backend_id(t("dcim.device"), uid(2)),
+        Some(BackendId::Int(2))
+    );
+    assert_eq!(adapter.reads(), 3);
+}
+
+#[test]
+fn build_plan_bootstraps_a_chain_of_ref_keyed_objects() {
+    let inventory = ref_chain_inventory(2);
+    let adapter = RefChainAdapter::new(ref_chain_rows(2));
+    let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
+    let plan =
+        futures::executor::block_on(build_plan(&adapter, &inventory, &mut state, false)).unwrap();
+
+    // one re-read maps the device and stops, leaving the interface a create.
+    assert!(plan.ops.is_empty(), "unexpected ops: {:?}", plan.ops);
+    assert_eq!(
+        state.backend_id(t("dcim.interface"), uid(3)),
+        Some(BackendId::Int(3))
+    );
+    assert_eq!(adapter.reads(), 4);
+}
+
+#[test]
+fn build_plan_bootstraps_a_chain_already_in_uid_space() {
+    // control: a backend holding the same chain keyed by uid converges to the
+    // same plan and the same mappings, without the rounds.
+    let inventory = ref_chain_inventory(2);
+    let adapter = RefChainAdapter::new(vec![
+        (
+            t("dcim.site"),
+            BackendId::Int(1),
+            json!({ "slug": "fra1", "name": "FRA1" }),
+        ),
+        (
+            t("dcim.device"),
+            BackendId::Int(2),
+            json!({ "site": uid(1).to_string(), "name": "leaf01" }),
+        ),
+        (
+            t("dcim.interface"),
+            BackendId::Int(3),
+            json!({ "device": uid(2).to_string(), "name": "eth0" }),
+        ),
+    ]);
+    let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
+    let plan =
+        futures::executor::block_on(build_plan(&adapter, &inventory, &mut state, false)).unwrap();
+
+    assert!(plan.ops.is_empty(), "unexpected ops: {:?}", plan.ops);
+    assert_eq!(
+        state.backend_id(t("dcim.interface"), uid(3)),
+        Some(BackendId::Int(3))
+    );
+    assert_eq!(adapter.reads(), 2);
+}
+
+#[test]
+fn build_plan_reads_once_when_state_is_warm() {
+    let inventory = ref_chain_inventory(2);
+    let adapter = RefChainAdapter::new(ref_chain_rows(2));
+    let dir = tempdir().unwrap();
+    let mut state = StateStore::load(dir.path().join("state.json")).unwrap();
+    futures::executor::block_on(build_plan(&adapter, &inventory, &mut state, false)).unwrap();
+
+    let warm = RefChainAdapter::new(ref_chain_rows(2));
+    let plan =
+        futures::executor::block_on(build_plan(&warm, &inventory, &mut state, false)).unwrap();
+    assert!(plan.ops.is_empty(), "unexpected ops: {:?}", plan.ops);
+    assert_eq!(warm.reads(), 1);
+}
+
 #[test]
 fn insert_with_duplicate_backend_id() {
     let id = 123;
@@ -1150,24 +1390,34 @@ fn build_plan_reobserves_after_bootstrap() {
         "site=fra1",
         json!({ "name": "FRA1", "slug": "fra1" }),
     )]);
-    let mut first = ObservedState::default();
-    first
-        .insert(ObservedObject {
-            type_name: t("dcim.site"),
-            key: key_str("site=fra1"),
-            attrs: attrs_map(json!({ "name": "FRA1", "slug": "fra1" })),
-            backend_id: Some(BackendId::Int(1)),
-        })
-        .unwrap();
-    let second = first.clone();
+    // the two observations differ, so only the second one plans to nothing: an
+    // adapter resolves against state, and the first read is taken before the
+    // bootstrap has learned this object's identity.
+    let observation = |name: &str| {
+        let mut observed = ObservedState::default();
+        observed
+            .insert(ObservedObject {
+                type_name: t("dcim.site"),
+                key: key_str("site=fra1"),
+                attrs: attrs_map(json!({ "name": name, "slug": "fra1" })),
+                backend_id: Some(BackendId::Int(1)),
+            })
+            .unwrap();
+        observed
+    };
 
+    let states = std::sync::Arc::new(std::sync::Mutex::new(vec![
+        observation("stale"),
+        observation("FRA1"),
+    ]));
     let adapter = ReobserveAdapter {
-        states: std::sync::Arc::new(std::sync::Mutex::new(vec![first, second])),
+        states: states.clone(),
     };
     let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
     let plan =
         futures::executor::block_on(build_plan(&adapter, &inventory, &mut state, false)).unwrap();
-    assert!(plan.ops.is_empty());
+    assert!(plan.ops.is_empty(), "unexpected ops: {:?}", plan.ops);
+    assert!(states.lock().unwrap().is_empty(), "second read not taken");
 }
 
 #[test]
