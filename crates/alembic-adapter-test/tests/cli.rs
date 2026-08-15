@@ -131,6 +131,24 @@ fn unreadable_cases_path_exits_2() {
 }
 
 #[test]
+fn a_cases_path_resolving_to_no_cases_exits_2() {
+    // the ci snippet in docs/external-adapters.md points `--cases` at a path, so a
+    // renamed or moved case directory would otherwise certify only the built-ins.
+    let dir = tempdir().expect("create case dir");
+
+    let out = Command::new(BIN)
+        .args(["--cases"])
+        .arg(dir.path())
+        .args(["--", "sh", "-c", "true"])
+        .output()
+        .expect("run binary");
+
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("no cases"), "{stderr}");
+}
+
+#[test]
 fn missing_adapter_argument_exits_2() {
     // with no `-- adapter`, clap rejects the usage and exits 2.
     let out = Command::new(BIN).output().expect("run binary");

@@ -292,6 +292,7 @@ pub fn run_cases(adapter: &[String], timeout: Duration, cases: &[Case]) -> Vec<O
 }
 
 /// load cases from a `.json` file or a directory of `.json` files (sorted).
+/// a path yielding no cases is an error: an empty case set certifies nothing.
 pub fn load_cases(path: &Path) -> anyhow::Result<Vec<Case>> {
     let metadata =
         std::fs::metadata(path).with_context(|| format!("reading cases at {}", path.display()))?;
@@ -317,6 +318,12 @@ pub fn load_cases(path: &Path) -> anyhow::Result<Vec<Case>> {
         let case: Case =
             serde_json::from_str(&text).with_context(|| format!("parsing {}", file.display()))?;
         cases.push(case);
+    }
+    if cases.is_empty() {
+        anyhow::bail!(
+            "no cases at {}: looked for `.json` files in that directory itself, not in subdirectories",
+            path.display()
+        );
     }
     Ok(cases)
 }
@@ -723,6 +730,7 @@ fn collect(rx: mpsc::Receiver<Vec<u8>>, deadline: Instant) -> Vec<u8> {
 mod tests {
     use super::{load_cases, Case, Expect};
     use std::path::Path;
+    use tempfile::tempdir;
 
     fn examples() -> &'static Path {
         Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/cases"))
@@ -762,5 +770,36 @@ mod tests {
     fn the_committed_fixtures_still_load() {
         let cases = load_cases(examples()).unwrap();
         assert_eq!(cases.len(), 6, "every committed fixture must still parse");
+    }
+
+    #[test]
+    fn an_empty_case_directory_is_an_error() {
+        let dir = tempdir().expect("create case dir");
+        let err = load_cases(dir.path()).unwrap_err().to_string();
+        assert!(err.contains("no cases"), "{err}");
+    }
+
+    #[test]
+    fn a_case_directory_holding_no_json_files_is_an_error() {
+        let dir = tempdir().expect("create case dir");
+        std::fs::write(dir.path().join("read.yaml"), "name: read").expect("write case");
+        let err = load_cases(dir.path()).unwrap_err().to_string();
+        assert!(err.contains("no cases"), "{err}");
+    }
+
+    #[test]
+    fn cases_one_directory_down_are_an_error() {
+        // the message has to name the layout, or a reader who grouped cases per
+        // backend cannot tell why the run refused a directory full of them.
+        let dir = tempdir().expect("create case dir");
+        let nested = dir.path().join("netbox");
+        std::fs::create_dir(&nested).expect("create subdirectory");
+        std::fs::copy(
+            examples().join("delete-unsupported.json"),
+            nested.join("delete-unsupported.json"),
+        )
+        .expect("copy fixture");
+        let err = load_cases(dir.path()).unwrap_err().to_string();
+        assert!(err.contains("subdirectories"), "{err}");
     }
 }
