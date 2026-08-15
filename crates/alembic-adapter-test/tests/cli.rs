@@ -146,6 +146,10 @@ fn a_cases_path_resolving_to_no_cases_exits_2() {
     assert_eq!(out.status.code(), Some(2));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("no cases"), "{stderr}");
+    assert!(
+        stderr.contains("subdirectories"),
+        "the message has to name the layout, or someone who grouped cases per backend cannot tell what happened; {stderr}"
+    );
 }
 
 #[test]
