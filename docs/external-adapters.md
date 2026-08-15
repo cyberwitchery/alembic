@@ -32,9 +32,10 @@ all requests include a `version` field (the current protocol version is `1`) and
 `setup` object: the adapter's `setup:` config block, or `null` when there is none
 (`{}` is also accepted).
 
-a response carries only the keys the protocol defines, at every level: an unknown
-one is an error naming it, rather than a default standing in for an answer the
-adapter never gave. the `key` and `attrs` maps you fill stay your own.
+apart from the `capabilities` probe, whose failures all fall back to the default
+role, a response carries only the keys the protocol defines, at every level: an
+unknown one is an error naming it, rather than a default standing in for an
+answer the adapter never gave. the `key` and `attrs` maps you fill stay your own.
 
 ## rust sdk
 
