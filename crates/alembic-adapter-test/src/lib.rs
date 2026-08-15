@@ -43,15 +43,14 @@ impl Outcome {
 /// would otherwise be certified into a failing apply.
 #[derive(Debug, Clone, Copy)]
 pub struct Builtins {
-    /// `protocol/ensure-schema-empty`. this one sends a real `ensure_schema`, so
-    /// an adapter that converges reads it as "delete everything you own"; turn it
-    /// off for a runner pointed at a backend that is not disposable.
-    pub provisioning: bool,
+    /// `protocol/write-empty` and `protocol/ensure-schema-empty` both write, at
+    /// the adapter's own default target; off does not cover the version probe.
+    pub writes: bool,
 }
 
 impl Default for Builtins {
     fn default() -> Self {
-        Self { provisioning: true }
+        Self { writes: true }
     }
 }
 
@@ -92,53 +91,48 @@ pub fn run_builtin(adapter: &[String], timeout: Duration) -> Vec<Outcome> {
 pub fn run_builtin_with(adapter: &[String], timeout: Duration, builtins: Builtins) -> Vec<Outcome> {
     // requests use the version the engine sends, so the suite tracks the protocol it tests.
     let version = EXTERNAL_PROTOCOL_VERSION;
-    // the declared role decides which liveness check runs below, so probe it first.
+    // the declared role decides which liveness checks run below, so probe it first.
     let (role, capabilities) = probe_capabilities(adapter, timeout);
-    // a declared emitter does not implement read (the host never sends it one),
-    // so its liveness check is an empty write instead of the empty read forced
-    // on observers and full adapters.
-    let (liveness_name, method, request) = match role {
-        ExternalRole::Emitter => (
-            "protocol/write-empty",
-            "write",
-            json!({
-                "version": version,
-                "setup": {},
-                "method": "write",
-                "schema": { "types": {} },
-                "ops": [],
-                "state": {}
-            }),
-        ),
-        ExternalRole::Observer | ExternalRole::Adapter => (
-            "protocol/read-empty",
-            "read",
-            json!({
-                "version": version,
-                "setup": {},
-                "method": "read",
-                "schema": { "types": {} },
-                "types": [],
-                "state": {}
-            }),
-        ),
+    let read_empty = (
+        "protocol/read-empty",
+        "read",
+        json!({
+            "version": version,
+            "setup": {},
+            "method": "read",
+            "schema": { "types": {} },
+            "types": [],
+            "state": {}
+        }),
+    );
+    let write_empty = (
+        "protocol/write-empty",
+        "write",
+        json!({
+            "version": version,
+            "setup": {},
+            "method": "write",
+            "schema": { "types": {} },
+            "ops": [],
+            "state": {}
+        }),
+    );
+    // the liveness checks are the methods the host sends this role: a read for an
+    // observer, a write for an emitter, both for a full read+write adapter.
+    let liveness = match role {
+        ExternalRole::Emitter => vec![write_empty],
+        ExternalRole::Observer => vec![read_empty],
+        ExternalRole::Adapter => vec![read_empty, write_empty],
     };
-    // the version probe is that same request with an unsupported version, so it
-    // rides a method the role implements. sent as a read, an emitter refuses it
-    // for role reasons and answers the probe without ever reading `version`.
+    // the version probe rides the first of those with an unsupported version, so
+    // it is sent a method the role implements. sent as a read, an emitter refuses
+    // it for role reasons and answers the probe without ever reading `version`.
+    let (_, probe_method, probe_request) = &liveness[0];
     let mismatched = {
-        let mut mismatched = request.clone();
+        let mut mismatched = probe_request.clone();
         mismatched["version"] = json!(version + 1);
         mismatched
     };
-    let liveness = check(
-        adapter,
-        timeout,
-        liveness_name,
-        &request_bytes(&request),
-        method,
-        Expectation::MustSucceed,
-    );
     let mut outcomes = vec![
         check(
             adapter,
@@ -153,7 +147,7 @@ pub fn run_builtin_with(adapter: &[String], timeout: Duration, builtins: Builtin
             timeout,
             "protocol/version-mismatch",
             &request_bytes(&mismatched),
-            method,
+            probe_method,
             Expectation::MustError,
         ),
         check(
@@ -165,8 +159,24 @@ pub fn run_builtin_with(adapter: &[String], timeout: Duration, builtins: Builtin
             Expectation::MustError,
         ),
         capabilities,
-        liveness,
     ];
+    // a check is gated because it writes, not because of the role it was picked
+    // for: the empty write rides the same gate as the provisioning one, the empty
+    // read writes nothing and never does.
+    outcomes.extend(liveness.iter().map(|(name, method, request)| {
+        if builtins.writes || *method != "write" {
+            check(
+                adapter,
+                timeout,
+                name,
+                &request_bytes(request),
+                method,
+                Expectation::MustSucceed,
+            )
+        } else {
+            turned_off(name)
+        }
+    }));
     // previewing is provisioning, so the host reaches both methods through an
     // emitter and both checks follow the declared role, as the liveness probe does.
     if matches!(role, ExternalRole::Emitter | ExternalRole::Adapter) {
@@ -185,7 +195,7 @@ pub fn run_builtin_with(adapter: &[String], timeout: Duration, builtins: Builtin
             // a null result ("cannot preview"); both count as success.
             Expectation::MustSucceed,
         ));
-        outcomes.push(if builtins.provisioning {
+        outcomes.push(if builtins.writes {
             check(
                 adapter,
                 timeout,
@@ -200,16 +210,20 @@ pub fn run_builtin_with(adapter: &[String], timeout: Duration, builtins: Builtin
                 Expectation::MustSucceed,
             )
         } else {
-            // reported rather than omitted: a reader counting passes must not
-            // read a suite that never sent ensure_schema as one that certified it.
-            Outcome {
-                name: "protocol/ensure-schema-empty".to_string(),
-                failure: None,
-                skipped: Some("turned off with --no-provisioning-check".to_string()),
-            }
+            turned_off("protocol/ensure-schema-empty")
         });
     }
     outcomes
+}
+
+/// a check the caller turned off, reported rather than omitted: a reader counting
+/// passes must not read a suite that never sent the request as one that certified it.
+fn turned_off(name: &str) -> Outcome {
+    Outcome {
+        name: name.to_string(),
+        failure: None,
+        skipped: Some("turned off with --no-write-checks".to_string()),
+    }
 }
 
 /// probe the adapter's declared role with a capabilities request. answering with

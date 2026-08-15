@@ -164,38 +164,43 @@ fn a_case_whose_expectation_key_is_misspelled_exits_2() {
     assert!(stderr.contains("errror"), "{stderr}");
 }
 
-/// the provisioning built-in is opt-out: it runs unless it is turned off, since a
-/// check that does not run certifies nothing.
+/// the writing built-ins are opt-out: a check that does not run certifies nothing.
 #[test]
-fn the_provisioning_check_runs_by_default() {
+fn the_writing_checks_run_by_default() {
     let (code, stdout) = run_builtin_against("sdk_emitter");
     assert_eq!(code, Some(0), "{stdout}");
-    let line = stdout
-        .lines()
-        .find(|line| line.contains("protocol/ensure-schema-empty"))
-        .expect("the provisioning check must run without a flag");
-    assert!(line.contains("ok"), "{stdout}");
+    for name in ["protocol/write-empty", "protocol/ensure-schema-empty"] {
+        let line = stdout
+            .lines()
+            .find(|line| line.contains(name))
+            .unwrap_or_else(|| panic!("{name} must run without a flag; {stdout}"));
+        assert!(line.contains("ok"), "{stdout}");
+    }
     assert!(!stdout.contains("skipped"), "{stdout}");
 }
 
-/// turning it off reports the check as skipped rather than dropping it, so a
-/// reader cannot mistake a suite that never sent `ensure_schema` for one that
-/// certified it.
+/// turning them off reports both checks as skipped rather than dropping them, so
+/// a reader cannot mistake a suite that never sent `write` or `ensure_schema` for
+/// one that certified them.
 #[test]
-fn turning_the_provisioning_check_off_reports_it_as_skipped() {
-    let (code, stdout) = run_builtin_against_with("sdk_emitter", &["--no-provisioning-check"]);
-    assert_eq!(code, Some(0), "a skipped check is not a failure; {stdout}");
-    let line = stdout
-        .lines()
-        .find(|line| line.contains("protocol/ensure-schema-empty"))
-        .expect("the skipped check must still be listed");
-    assert!(line.contains("skipped"), "{stdout}");
-    assert!(
-        !line.contains("ok"),
-        "a skipped check must not read as a pass; {stdout}"
-    );
-    assert!(
-        stdout.contains("1 skipped"),
-        "the summary must count it apart from passes; {stdout}"
-    );
+fn turning_the_writing_checks_off_reports_them_as_skipped() {
+    for flag in ["--no-write-checks", "--no-provisioning-check"] {
+        let (code, stdout) = run_builtin_against_with("sdk_emitter", &[flag]);
+        assert_eq!(code, Some(0), "a skipped check is not a failure; {stdout}");
+        for name in ["protocol/write-empty", "protocol/ensure-schema-empty"] {
+            let line = stdout
+                .lines()
+                .find(|line| line.contains(name))
+                .unwrap_or_else(|| panic!("{name} must still be listed; {stdout}"));
+            assert!(line.contains("skipped"), "{flag}: {stdout}");
+            assert!(
+                !line.contains("ok"),
+                "a skipped check must not read as a pass; {stdout}"
+            );
+        }
+        assert!(
+            stdout.contains("2 skipped"),
+            "the summary must count them apart from passes; {flag}: {stdout}"
+        );
+    }
 }

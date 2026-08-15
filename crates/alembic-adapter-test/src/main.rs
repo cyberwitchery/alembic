@@ -15,13 +15,9 @@ struct Cli {
     /// per-check timeout, in seconds.
     #[arg(long, default_value_t = 10)]
     timeout: u64,
-    /// skip `protocol/ensure-schema-empty`, the one built-in that writes. it
-    /// sends a real `ensure_schema` with an empty schema, which an adapter that
-    /// converges reads as "delete everything you own"; the runner has no
-    /// `--allow-delete` gate of its own. leave it on unless the backend behind
-    /// the adapter is not disposable.
-    #[arg(long)]
-    no_provisioning_check: bool,
+    /// skip `protocol/write-empty` and `protocol/ensure-schema-empty`: they write for real.
+    #[arg(long, alias = "no-provisioning-check")]
+    no_write_checks: bool,
     /// the adapter command and its arguments, after `--`.
     #[arg(last = true, required = true)]
     adapter: Vec<String>,
@@ -32,7 +28,7 @@ fn main() -> ExitCode {
     let timeout = Duration::from_secs(cli.timeout);
 
     let builtins = Builtins {
-        provisioning: !cli.no_provisioning_check,
+        writes: !cli.no_write_checks,
     };
     let mut outcomes = run_builtin_with(&cli.adapter, timeout, builtins);
     if let Some(path) = cli.cases {
