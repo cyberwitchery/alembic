@@ -206,10 +206,11 @@ check.
 
 the host calls this at plan time to show what `ensure_schema` would provision,
 without writing anything. return the same `ProvisionReport` shape `ensure_schema`
-would, or a `null` result if the adapter cannot preview (which the host reports as
-`schema preview: unavailable for this backend`). answer it either way, unless you
-declare the `observer` role: leaving it to the unknown-method branch fails the
-built-in `protocol/preview-schema-empty` check.
+would (an empty report when there is nothing to provision), or a `null` result if
+the adapter cannot preview, which plain `plan` reports as `schema preview:
+unavailable for this backend` and the provisioning paths refuse outright. answer it
+either way, unless you declare the `observer` role: leaving it to the unknown-method
+branch fails the built-in `protocol/preview-schema-empty` check.
 
 this report is also the destructive-provisioning gate. before `plan --provision` or
 `apply` calls `ensure_schema`, the host previews and refuses the run with
@@ -220,9 +221,12 @@ without listing it here takes the objects with it and never prompts. list what y
 would delete, even if the same call also creates: what you list is what the
 operator is shown.
 
-a `null` result skips the gate rather than failing it, so an adapter that cannot
-preview provisions unchecked, and the run says so before it provisions. that is the
-trade for not implementing the method: if your adapter can delete schema, preview it.
+a `null` result refuses the run rather than skipping the gate: `plan --provision` and
+`apply` stop with `this backend cannot preview schema`, since a delete nobody can see
+is the case the gate is for. the rust sdk's default answers an empty report ("nothing
+to provision"), which pairs with the `ensure_schema` default and passes, so `null` is
+something an adapter says deliberately. an adapter that provisions anything must
+preview it; an operator who wants it anyway passes `--allow-delete`.
 
 request:
 

@@ -7,9 +7,8 @@ use anyhow::Result;
 
 alembic_external_main!(UnpreviewableEmitterAdapter::default());
 
-// the unsafe half of the sdk's two defaults: it overrides `ensure_schema` to delete
-// schema and inherits the `None` preview, so the --allow-delete gate has nothing to
-// gate on.
+// an adapter that deletes schema and declares it cannot preview: the gate has
+// nothing to gate on, so provisioning is refused rather than run blind.
 #[derive(Debug, Default)]
 pub struct UnpreviewableEmitterAdapter {}
 
@@ -37,6 +36,10 @@ impl ExternalAdapter for UnpreviewableEmitterAdapter {
             deleted_object_fields: vec!["dcim.fossil.age".to_string()],
             ..Default::default()
         })
+    }
+
+    fn preview_schema(&mut self, _schema: &Schema) -> Result<Option<ProvisionReport>> {
+        Ok(None)
     }
 
     fn capabilities(&mut self) -> ExternalCapabilities {

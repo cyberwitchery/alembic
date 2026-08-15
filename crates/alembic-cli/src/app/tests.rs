@@ -2149,9 +2149,9 @@ objects:
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn run_plan_report_omits_the_schema_preview_when_the_backend_cannot_preview() {
-    // the compatibility claim, measured: a backend answering Ok(None) writes the
-    // same three-key document it wrote before the preview was carried.
+async fn run_plan_report_carries_an_empty_schema_preview_for_a_backend_that_provisions_nothing() {
+    // an adapter overriding neither provisioning method reports nothing to
+    // provision, the same document the generic backend writes.
     let _guard = cwd_lock().lock().await;
     let dir = tempdir().unwrap();
     let state_path = dir.path().join(".alembic").join("state.json");
@@ -2194,8 +2194,9 @@ async fn run_plan_report_omits_the_schema_preview_when_the_backend_cannot_previe
 
     let raw = std::fs::read_to_string(&out).unwrap();
     assert_eq!(
-        raw, "{\n  \"changed\": [],\n  \"missing\": [],\n  \"extra\": []\n}",
-        "a backend that cannot preview must write byte-identical json"
+        raw,
+        "{\n  \"changed\": [],\n  \"missing\": [],\n  \"extra\": [],\n  \"schema_preview\": {}\n}",
+        "nothing to provision is a report, not an omission"
     );
 }
 

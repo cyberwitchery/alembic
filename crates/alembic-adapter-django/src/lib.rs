@@ -2,7 +2,7 @@
 
 use crate::emit::{CommandRunner, DjangoConfig};
 use alembic_core::{key_string, FieldFormat, FieldType, Inventory, Object, Schema, TypeSchema};
-use alembic_engine::{pluralize, AppliedOp, ApplyReport, Emitter, Op, ProvisionReport, StateStore};
+use alembic_engine::{pluralize, AppliedOp, ApplyReport, Emitter, Op, StateStore};
 use anyhow::{anyhow, bail, Context, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -64,12 +64,6 @@ impl Emitter for DjangoAdapter {
         let runner = CommandRunner::new();
         emit::run_emit(&runner, &inventory, &self.config)?;
         Ok(apply_report)
-    }
-
-    // django provisions nothing: preview reports that, rather than the default
-    // None the cli renders as a capability limit.
-    async fn preview_schema(&self, _schema: &Schema) -> Result<Option<ProvisionReport>> {
-        Ok(Some(ProvisionReport::default()))
     }
 }
 
