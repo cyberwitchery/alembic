@@ -1,8 +1,8 @@
 use alembic_core::{JsonMap, Schema, TypeName};
 use alembic_engine::{
-    alembic_external_main, build_key_from_schema, normalize_attrs_refs, ApplyReport,
-    ExternalAdapter, ExternalCapabilities, ExternalObject, ExternalRole, Op, StateData,
-    StateMappings,
+    alembic_external_main, build_key_from_schema, normalize_attrs_refs, resolve_ref_keyed_identity,
+    ApplyReport, ExternalAdapter, ExternalCapabilities, ExternalObject, ExternalRole, Op, RawNode,
+    StateData, StateMappings,
 };
 use anyhow::{anyhow, Result};
 use serde_json::json;
@@ -11,8 +11,8 @@ alembic_external_main!(RefChainAdapter::default());
 
 /// a backend holding a site, a device keyed on a ref to it, and an interface
 /// keyed on a ref to the device, with every ref stored as a backend id. reads
-/// resolve those ids through the state the host hands over, like the built-in
-/// adapters do.
+/// resolve those ids through the engine's `resolve_ref_keyed_identity`, like
+/// the built-in adapters do.
 #[derive(Debug, Default)]
 pub struct RefChainAdapter {}
 
@@ -68,21 +68,33 @@ impl ExternalAdapter for RefChainAdapter {
             }
         }
 
-        let mut observed = Vec::new();
-        for (type_name, backend_id, raw) in rows() {
-            let type_schema = schema
-                .types
-                .get(type_name)
-                .ok_or_else(|| anyhow!("undeclared type {type_name}"))?;
-            let attrs = normalize_attrs_refs(&attrs_of(raw), type_schema, &mappings);
-            observed.push(ExternalObject {
+        let raw: Vec<RawNode> = rows()
+            .into_iter()
+            .map(|(type_name, backend_id, attrs)| RawNode {
                 type_name: TypeName::new(type_name),
-                key: build_key_from_schema(type_schema, &attrs)?,
-                attrs,
-                backend_id: Some(alembic_engine::BackendId::Int(backend_id)),
-            });
-        }
-        Ok(observed)
+                backend_id: alembic_engine::BackendId::Int(backend_id),
+                attrs: attrs_of(attrs),
+            })
+            .collect();
+
+        Ok(resolve_ref_keyed_identity(
+            &raw,
+            schema,
+            &mut mappings,
+            |node, type_schema, mappings| normalize_attrs_refs(&node.attrs, type_schema, mappings),
+            |node, type_schema, attrs| {
+                build_key_from_schema(type_schema, attrs)
+                    .map_err(|err| anyhow!("build key for {}: {err}", node.type_name))
+            },
+        )?
+        .into_iter()
+        .map(|object| ExternalObject {
+            type_name: object.type_name,
+            key: object.key,
+            attrs: object.attrs,
+            backend_id: object.backend_id,
+        })
+        .collect())
     }
 
     fn write(&mut self, _schema: &Schema, _ops: &[Op], _state: &StateData) -> Result<ApplyReport> {

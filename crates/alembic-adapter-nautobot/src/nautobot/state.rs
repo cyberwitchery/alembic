@@ -1,5 +1,7 @@
 use alembic_core::Uid;
-use alembic_engine::{resolved_ids_from_state, state_mappings_by_id, BackendId, StateStore};
+use alembic_engine::{
+    resolved_ids_from_state, state_mappings_by_id, BackendId, RefMappings, StateStore,
+};
 use std::collections::BTreeMap;
 
 #[derive(Debug, Default, Clone)]
@@ -12,6 +14,24 @@ impl StateMappings {
         self.by_type
             .get(type_name)
             .and_then(|mapping| mapping.get(backend_id).copied())
+    }
+}
+
+impl RefMappings for StateMappings {
+    fn uid_of(&self, type_name: &str, backend_id: &BackendId) -> Option<Uid> {
+        match backend_id {
+            BackendId::String(id) => self.uid_for(type_name, id),
+            _ => None,
+        }
+    }
+
+    fn learn(&mut self, type_name: &str, backend_id: BackendId, uid: Uid) {
+        if let BackendId::String(id) = backend_id {
+            self.by_type
+                .entry(type_name.to_string())
+                .or_default()
+                .insert(id, uid);
+        }
     }
 }
 

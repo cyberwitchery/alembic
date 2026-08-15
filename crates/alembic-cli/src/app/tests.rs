@@ -2750,29 +2750,31 @@ schema:
           target: dcim.device
         name:
           type: string
+# canonical uids, as `alembic import` writes them: a ref-typed key field names
+# the uid its target derives.
 objects:
-  - uid: "00000000-0000-0000-0000-000000000001"
+  - uid: "8c998348-947f-568d-bbb0-efbed3c3f903"
     type: dcim.site
     key:
       slug: "fra1"
     attrs:
       slug: "fra1"
       name: "FRA1"
-  - uid: "00000000-0000-0000-0000-000000000002"
+  - uid: "46a4f856-9778-577f-bb3a-d9c63a59fe56"
     type: dcim.device
     key:
-      site: "00000000-0000-0000-0000-000000000001"
+      site: "8c998348-947f-568d-bbb0-efbed3c3f903"
       name: "leaf01"
     attrs:
-      site: "00000000-0000-0000-0000-000000000001"
+      site: "8c998348-947f-568d-bbb0-efbed3c3f903"
       name: "leaf01"
-  - uid: "00000000-0000-0000-0000-000000000003"
+  - uid: "e677c075-7bc8-54b5-ac34-ee71611bc7a1"
     type: dcim.interface
     key:
-      device: "00000000-0000-0000-0000-000000000002"
+      device: "46a4f856-9778-577f-bb3a-d9c63a59fe56"
       name: "eth0"
     attrs:
-      device: "00000000-0000-0000-0000-000000000002"
+      device: "46a4f856-9778-577f-bb3a-d9c63a59fe56"
       name: "eth0"
 "#,
     )
@@ -2834,10 +2836,7 @@ async fn run_plan_adopts_a_backend_whose_keys_hold_refs() {
         plan["ops"]
     );
     let reads = std::fs::read_to_string(&log).unwrap().lines().count();
-    assert_eq!(
-        reads, 4,
-        "one read per level learned, then one that settles"
-    );
+    assert_eq!(reads, 1, "the adapter resolves the chain in its own read");
 }
 
 #[tokio::test(flavor = "multi_thread")]

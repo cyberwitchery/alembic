@@ -1141,26 +1141,32 @@ fn ref_chain_inventory(depth: usize) -> Inventory {
         },
     );
 
+    // canonical uids, as `alembic import` writes them: identity is derived from
+    // the key below the adapter, so a ref-typed key field has to name the uid
+    // its target derives.
     let mut objects = vec![obj(
-        uid(1),
+        chain_uid("dcim.site", "slug=fra1"),
         "dcim.site",
         "slug=fra1",
         json!({ "slug": "fra1", "name": "FRA1" }),
     )];
     if depth >= 1 {
+        let key = format!("site={};name=leaf01", chain_uid("dcim.site", "slug=fra1"));
         objects.push(obj(
-            uid(2),
+            chain_uid("dcim.device", &key),
             "dcim.device",
-            &format!("site={};name=leaf01", uid(1)),
-            json!({ "site": uid(1).to_string(), "name": "leaf01" }),
+            &key,
+            json!({ "site": chain_uid("dcim.site", "slug=fra1").to_string(), "name": "leaf01" }),
         ));
     }
     if depth >= 2 {
+        let device = format!("site={};name=leaf01", chain_uid("dcim.site", "slug=fra1"));
+        let key = format!("device={};name=eth0", chain_uid("dcim.device", &device));
         objects.push(obj(
-            uid(3),
+            chain_uid("dcim.interface", &key),
             "dcim.interface",
-            &format!("device={};name=eth0", uid(2)),
-            json!({ "device": uid(2).to_string(), "name": "eth0" }),
+            &key,
+            json!({ "device": chain_uid("dcim.device", &device).to_string(), "name": "eth0" }),
         ));
     }
     Inventory {
@@ -1169,9 +1175,18 @@ fn ref_chain_inventory(depth: usize) -> Inventory {
     }
 }
 
+/// the uid a type derives from a key, the shape `key_str` writes.
+fn chain_uid(type_name: &str, key: &str) -> Uid {
+    alembic_core::uid_v5(type_name, &alembic_core::key_string(&key_str(key)))
+}
+
+/// the uid of the chain object at `level` (0 site, 1 device, 2 interface).
+fn chain_object_uid(level: usize) -> Uid {
+    ref_chain_inventory(level).objects[level].uid
+}
+
 /// an adapter's read path in miniature: ref-typed fields come back as backend
-/// ids and are normalized through state, so an object keyed on a ref only reads
-/// in uid space once that ref is mapped.
+/// ids and go through `resolve_ref_keyed_identity`, like the built-in adapters.
 #[derive(Clone)]
 struct RefChainAdapter {
     rows: Vec<(TypeName, BackendId, serde_json::Value)>,
@@ -1200,17 +1215,25 @@ impl Observer for RefChainAdapter {
         state: &StateStore,
     ) -> anyhow::Result<ObservedState> {
         *self.reads.lock().unwrap() += 1;
-        let mappings = StateMappings::from_state(state);
-        let mut observed = ObservedState::default();
-        for (type_name, backend_id, raw) in &self.rows {
-            let type_schema = &schema.types[type_name.as_str()];
-            let attrs = normalize_attrs_refs(&attrs_map(raw.clone()), type_schema, &mappings);
-            observed.insert(ObservedObject {
+        let raw: Vec<RawNode> = self
+            .rows
+            .iter()
+            .map(|(type_name, backend_id, attrs)| RawNode {
                 type_name: type_name.clone(),
-                key: build_key_from_schema(type_schema, &attrs)?,
-                attrs,
-                backend_id: Some(backend_id.clone()),
-            })?;
+                backend_id: backend_id.clone(),
+                attrs: attrs_map(attrs.clone()),
+            })
+            .collect();
+        let mut mappings = StateMappings::from_state(state);
+        let mut observed = ObservedState::default();
+        for object in resolve_ref_keyed_identity(
+            &raw,
+            schema,
+            &mut mappings,
+            |node, type_schema, mappings| normalize_attrs_refs(&node.attrs, type_schema, mappings),
+            |_, type_schema, attrs| build_key_from_schema(type_schema, attrs),
+        )? {
+            observed.insert(object)?;
         }
         Ok(observed)
     }
@@ -1251,10 +1274,10 @@ fn build_plan_bootstraps_object_keyed_on_a_ref() {
 
     assert!(plan.ops.is_empty(), "unexpected ops: {:?}", plan.ops);
     assert_eq!(
-        state.backend_id(t("dcim.device"), uid(2)),
+        state.backend_id(t("dcim.device"), chain_object_uid(1)),
         Some(BackendId::Int(2))
     );
-    assert_eq!(adapter.reads(), 3);
+    assert_eq!(adapter.reads(), 1);
 }
 
 #[test]
@@ -1265,19 +1288,19 @@ fn build_plan_bootstraps_a_chain_of_ref_keyed_objects() {
     let plan =
         futures::executor::block_on(build_plan(&adapter, &inventory, &mut state, false)).unwrap();
 
-    // one re-read maps the device and stops, leaving the interface a create.
+    // the whole chain resolves inside the one read the adapter takes.
     assert!(plan.ops.is_empty(), "unexpected ops: {:?}", plan.ops);
     assert_eq!(
-        state.backend_id(t("dcim.interface"), uid(3)),
+        state.backend_id(t("dcim.interface"), chain_object_uid(2)),
         Some(BackendId::Int(3))
     );
-    assert_eq!(adapter.reads(), 4);
+    assert_eq!(adapter.reads(), 1);
 }
 
 #[test]
 fn build_plan_bootstraps_a_chain_already_in_uid_space() {
     // control: a backend holding the same chain keyed by uid converges to the
-    // same plan and the same mappings, without the rounds.
+    // same plan and the same mappings.
     let inventory = ref_chain_inventory(2);
     let adapter = RefChainAdapter::new(vec![
         (
@@ -1288,12 +1311,12 @@ fn build_plan_bootstraps_a_chain_already_in_uid_space() {
         (
             t("dcim.device"),
             BackendId::Int(2),
-            json!({ "site": uid(1).to_string(), "name": "leaf01" }),
+            json!({ "site": chain_object_uid(0).to_string(), "name": "leaf01" }),
         ),
         (
             t("dcim.interface"),
             BackendId::Int(3),
-            json!({ "device": uid(2).to_string(), "name": "eth0" }),
+            json!({ "device": chain_object_uid(1).to_string(), "name": "eth0" }),
         ),
     ]);
     let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
@@ -1302,10 +1325,10 @@ fn build_plan_bootstraps_a_chain_already_in_uid_space() {
 
     assert!(plan.ops.is_empty(), "unexpected ops: {:?}", plan.ops);
     assert_eq!(
-        state.backend_id(t("dcim.interface"), uid(3)),
+        state.backend_id(t("dcim.interface"), chain_object_uid(2)),
         Some(BackendId::Int(3))
     );
-    assert_eq!(adapter.reads(), 2);
+    assert_eq!(adapter.reads(), 1);
 }
 
 #[test]
@@ -1365,7 +1388,7 @@ fn insert_with_duplicate_natural_key() {
 }
 
 #[test]
-fn build_plan_reobserves_after_bootstrap() {
+fn build_plan_observes_once_and_bootstraps() {
     #[derive(Clone)]
     struct ReobserveAdapter {
         states: std::sync::Arc<std::sync::Mutex<Vec<ObservedState>>>,
@@ -1390,9 +1413,9 @@ fn build_plan_reobserves_after_bootstrap() {
         "site=fra1",
         json!({ "name": "FRA1", "slug": "fra1" }),
     )]);
-    // the two observations differ, so only the second one plans to nothing: an
-    // adapter resolves against state, and the first read is taken before the
-    // bootstrap has learned this object's identity.
+    // the second observation is stale, so a plan taken against it would report
+    // an update: identity is resolved below the adapter, and one read is all
+    // `observe` takes.
     let observation = |name: &str| {
         let mut observed = ObservedState::default();
         observed
@@ -1407,8 +1430,8 @@ fn build_plan_reobserves_after_bootstrap() {
     };
 
     let states = std::sync::Arc::new(std::sync::Mutex::new(vec![
-        observation("stale"),
         observation("FRA1"),
+        observation("stale"),
     ]));
     let adapter = ReobserveAdapter {
         states: states.clone(),
@@ -1417,7 +1440,11 @@ fn build_plan_reobserves_after_bootstrap() {
     let plan =
         futures::executor::block_on(build_plan(&adapter, &inventory, &mut state, false)).unwrap();
     assert!(plan.ops.is_empty(), "unexpected ops: {:?}", plan.ops);
-    assert!(states.lock().unwrap().is_empty(), "second read not taken");
+    assert_eq!(states.lock().unwrap().len(), 1, "more than one read taken");
+    assert_eq!(
+        state.backend_id(t("dcim.site"), uid(1)),
+        Some(BackendId::Int(1))
+    );
 }
 
 #[test]

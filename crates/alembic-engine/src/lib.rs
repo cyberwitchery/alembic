@@ -32,8 +32,9 @@ mod tests;
 
 pub use adapter_ops::{
     backend_id_from_value, build_key_from_schema, build_request_body, collect_tag_names,
-    normalize_attrs_refs, query_filters_from_key, resolve_nested_ref_uid, resolve_value_for_type,
-    resolved_ids_from_state, resolved_ids_identity, state_mappings_by_id, StateMappings,
+    normalize_attrs_refs, query_filters_from_key, resolve_nested_ref_uid,
+    resolve_ref_keyed_identity, resolve_value_for_type, resolved_ids_from_state,
+    resolved_ids_identity, state_mappings_by_id, RawNode, RefMappings, StateMappings,
 };
 pub use apply_retry::{
     apply_non_delete_journaled, apply_non_delete_with_retries, describe_missing_refs,
@@ -118,14 +119,12 @@ pub fn plan_write_only(inventory: &Inventory, state: &StateStore) -> Result<Plan
 }
 
 /// adopt existing backend objects by matching declared keys against an
-/// observation. returns whether it learned a mapping, which is what earns
-/// `pipeline::observe` another read.
+/// observation.
 pub(crate) fn bootstrap_state_from_observed(
     state: &mut StateStore,
     desired: &[Object],
     observed: &ObservedState,
-) -> bool {
-    let mut learned = false;
+) {
     for object in desired {
         if state
             .backend_id(object.type_name.clone(), object.uid)
@@ -139,11 +138,9 @@ pub(crate) fn bootstrap_state_from_observed(
         {
             if let Some(backend_id) = &obs.backend_id {
                 state.set_backend_id(object.type_name.clone(), object.uid, backend_id.clone());
-                learned = true;
             }
         }
     }
-    learned
 }
 
 /// apply a plan and update the state store. full adapters provision schema

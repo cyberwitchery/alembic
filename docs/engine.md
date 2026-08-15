@@ -7,13 +7,13 @@ the engine is responsible for loading, validating, planning, and applying change
 1) load inventory files (supports `include` / `imports`)
 2) validate object envelopes, keys, and schema references
 3) observe backend state via adapter (default scope: desired + schema types)
-4) bootstrap state mappings by key when missing, re-observing while it learns one
+4) bootstrap state mappings by key when missing
 5) plan deterministic operations
 6) provision schema primitives on apply (custom fields/custom objects where supported)
 7) apply operations in dependency order
 8) optionally import canonical inventory from backend state
 
-the bootstrap re-reads because adapters resolve ref-typed fields through state: an object keyed on a ref only reads back in uid space once that ref is mapped.
+an object keyed on a ref only matches by key once that ref reads back in uid space, so an adapter resolves ref-keyed identity within its own read (`resolve_ref_keyed_identity`) rather than leaning on state.
 
 ## validation
 

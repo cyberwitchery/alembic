@@ -11,9 +11,9 @@ use alembic_core::{
 };
 use alembic_engine::{
     apply_non_delete_journaled, build_key_from_schema, collect_tag_names, describe_missing_refs,
-    is_missing_ref_error, query_filters_from_key, resolve_nested_ref_uid, Adapter, AppliedOp,
-    ApplyReport, BackendId, Emitter, ObservedObject, ObservedState, Observer, Op, ProvisionReport,
-    RetryApplyDriver,
+    is_missing_ref_error, query_filters_from_key, resolve_nested_ref_uid,
+    resolve_ref_keyed_identity, Adapter, AppliedOp, ApplyReport, BackendId, Emitter, ObservedState,
+    Observer, Op, ProvisionReport, RawNode, RetryApplyDriver,
 };
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
@@ -31,7 +31,7 @@ impl Observer for NautobotAdapter {
         state_store: &alembic_engine::StateStore,
     ) -> Result<ObservedState> {
         let registry: ObjectTypeRegistry = self.client.fetch_object_types().await?;
-        let mappings = state_mappings(state_store);
+        let mut mappings = state_mappings(state_store);
 
         let requested: BTreeSet<TypeName> = if types.is_empty() {
             // empty means every schema-declared type; skip backend types the schema omits.
@@ -50,43 +50,51 @@ impl Observer for NautobotAdapter {
                 .info_for(&type_name)
                 .ok_or_else(|| anyhow!("unsupported type {}", type_name))?
                 .clone();
-            let type_schema = schema
+            schema
                 .types
                 .get(type_name.as_str())
-                .ok_or_else(|| anyhow!("missing schema for {}", type_name))?
-                .clone();
+                .ok_or_else(|| anyhow!("missing schema for {}", type_name))?;
             let client = Arc::clone(&self.client);
-            let registry = registry.clone();
-            let mappings = mappings.clone();
-            let schema = schema.clone();
 
             tasks.push(tokio::spawn(async move {
                 let resource: Resource<Value> = client.resource(info.endpoint.clone());
                 let objects = client.list_all(&resource, None).await?;
-                let mut observed = Vec::new();
+                let mut raw = Vec::new();
                 for object in objects {
-                    let (backend_id, mut attrs) = extract_attrs(object)?;
-                    normalize_attrs(&mut attrs, &type_schema, &schema, &registry, &mappings);
-                    let key = build_key_from_schema(&type_schema, &attrs)
-                        .with_context(|| format!("build key for {}", type_name))?;
-                    observed.push(ObservedObject {
+                    let (backend_id, attrs) = extract_attrs(object)?;
+                    raw.push(RawNode {
                         type_name: type_name.clone(),
-                        key,
+                        backend_id: BackendId::String(backend_id),
                         attrs,
-                        backend_id: Some(BackendId::String(backend_id)),
                     });
                 }
-                Ok::<Vec<ObservedObject>, anyhow::Error>(observed)
+                Ok::<Vec<RawNode>, anyhow::Error>(raw)
             }));
         }
 
+        let mut raw = Vec::new();
+        for result in futures::future::join_all(tasks).await {
+            raw.extend(result??);
+        }
+
+        let observed = resolve_ref_keyed_identity(
+            &raw,
+            schema,
+            &mut mappings,
+            |node, type_schema, mappings| {
+                let mut attrs = node.attrs.clone();
+                normalize_attrs(&mut attrs, type_schema, schema, &registry, mappings);
+                attrs
+            },
+            |node, type_schema, attrs| {
+                build_key_from_schema(type_schema, attrs)
+                    .with_context(|| format!("build key for {}", node.type_name))
+            },
+        )?;
+
         let mut state = ObservedState::default();
-        let results = futures::future::join_all(tasks).await;
-        for result in results {
-            let objects = result??;
-            for object in objects {
-                state.insert(object)?;
-            }
+        for object in observed {
+            state.insert(object)?;
         }
 
         Ok(state)

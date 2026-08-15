@@ -12,9 +12,9 @@ use alembic_core::{
 };
 use alembic_engine::{
     apply_non_delete_journaled, build_key_from_schema, collect_tag_names, describe_missing_refs,
-    is_missing_ref_error, query_filters_from_key, resolve_nested_ref_uid, Adapter, AppliedOp,
-    ApplyReport, BackendId, Emitter, ObservedObject, ObservedState, Observer, Op, ProvisionReport,
-    RetryApplyDriver,
+    is_missing_ref_error, query_filters_from_key, resolve_nested_ref_uid,
+    resolve_ref_keyed_identity, Adapter, AppliedOp, ApplyReport, BackendId, Emitter, ObservedState,
+    Observer, Op, ProvisionReport, RawNode, RetryApplyDriver,
 };
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
@@ -35,8 +35,7 @@ impl Observer for NetBoxAdapter {
         state_store: &alembic_engine::StateStore,
     ) -> Result<ObservedState> {
         let registry: ObjectTypeRegistry = build_registry_for_schema(self, schema).await?;
-        let mut state = ObservedState::default();
-        let mappings = state_mappings(state_store);
+        let mut mappings = state_mappings(state_store);
 
         let requested: BTreeSet<TypeName> = if types.is_empty() {
             // empty means every schema-declared type; skip backend types the schema omits.
@@ -49,11 +48,12 @@ impl Observer for NetBoxAdapter {
             types.iter().cloned().collect()
         };
 
+        let mut raw = Vec::new();
         for type_name in requested {
             let info = registry
                 .info_for(&type_name)
                 .ok_or_else(|| anyhow!("unsupported type {}", type_name))?;
-            let type_schema = schema
+            schema
                 .types
                 .get(type_name.as_str())
                 .ok_or_else(|| anyhow!("missing schema for {}", type_name))?;
@@ -68,21 +68,36 @@ impl Observer for NetBoxAdapter {
                 Err(err) => return Err(err),
             };
             for object in objects {
-                let (backend_id, mut attrs) = extract_attrs(object)?;
+                let (backend_id, attrs) = extract_attrs(object)?;
+                raw.push(RawNode {
+                    type_name: type_name.clone(),
+                    backend_id: BackendId::Int(backend_id),
+                    attrs,
+                });
+            }
+        }
+
+        let observed = resolve_ref_keyed_identity(
+            &raw,
+            schema,
+            &mut mappings,
+            |node, type_schema, mappings| {
+                let mut attrs = node.attrs.clone();
                 // decode generic FKs first: they carry a nested object brief that
                 // `normalize_attrs` would otherwise mangle as an ordinary ref.
-                decode_generic_fks(&mut attrs, &type_name, schema, &registry, &mappings);
-                normalize_attrs(&mut attrs, type_schema, schema, &registry, &mappings);
+                decode_generic_fks(&mut attrs, &node.type_name, schema, &registry, mappings);
+                normalize_attrs(&mut attrs, type_schema, schema, &registry, mappings);
+                attrs
+            },
+            |node, type_schema, attrs| {
+                build_key_from_schema(type_schema, attrs)
+                    .with_context(|| format!("build key for {}", node.type_name))
+            },
+        )?;
 
-                let key = build_key_from_schema(type_schema, &attrs)
-                    .with_context(|| format!("build key for {}", type_name))?;
-                state.insert(ObservedObject {
-                    type_name: type_name.clone(),
-                    key,
-                    attrs,
-                    backend_id: Some(BackendId::Int(backend_id)),
-                })?;
-            }
+        let mut state = ObservedState::default();
+        for object in observed {
+            state.insert(object)?;
         }
 
         Ok(state)
