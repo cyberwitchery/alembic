@@ -208,6 +208,7 @@ impl ObservedState {
 
 /// result for a single applied operation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AppliedOp {
     /// ir uid for the operation.
     pub uid: Uid,
@@ -239,6 +240,7 @@ pub struct ApplyReport {
 
 /// report of what an apply provisioned, across `ensure_schema` and `write`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProvisionReport {
     /// custom fields created on the backend.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
