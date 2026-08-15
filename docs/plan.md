@@ -57,3 +57,4 @@ plans are json files that can be re-applied. the plan is deterministic for a giv
 - the plan embeds the schema used during planning to drive apply-time reference resolution; see `docs/ir.md` for the field schema.
 - `summary` is optional, counts of each op kind.
 - `schema_preview` is optional, the read-only schema preview plan records (shape in `docs/external-adapters.md`, when it is populated in `docs/cli.md`).
+- keys are exact: an unknown one is an error, so a misspelled `summary` or `schema_preview` cannot read as absent.

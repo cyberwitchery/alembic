@@ -449,6 +449,22 @@ fn read_plan_invalid_json_errors() {
 }
 
 #[test]
+fn read_plan_rejects_a_misspelled_key() {
+    // the plan file is the one document the host takes from someone else. a
+    // misspelled `schema_preview` read as a plan carrying none, and apply's early
+    // delete gate is only reached by the plans that carry one.
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("plan.json");
+    std::fs::write(
+        &path,
+        r#"{"schema":{"types":{}},"ops":[],"schema_preveiw":{"deleted_object_types":["dcim.site"]}}"#,
+    )
+    .unwrap();
+    let err = read_plan(&path).unwrap_err();
+    assert!(format!("{err:#}").contains("schema_preveiw"), "{err:#}");
+}
+
+#[test]
 fn warn_misleading_output_extension_flags_yaml() {
     // always-JSON outputs named like yaml get a (non-fatal) heads-up that mentions
     // the path and the actual format.
