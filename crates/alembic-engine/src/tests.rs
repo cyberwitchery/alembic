@@ -1332,6 +1332,52 @@ fn build_plan_bootstraps_a_chain_already_in_uid_space() {
 }
 
 #[test]
+fn build_plan_keeps_a_declared_uid_state_already_maps() {
+    // a hand-authored inventory naming its own uids, the shape docs/ir.md writes
+    // and `alembic map` emits: once state maps one, derivation must not take it
+    // back, or the ref-keyed child never adopts.
+    let declared_site: Uid = "00000000-0000-0000-0000-000000000001".parse().unwrap();
+    let declared_device: Uid = "00000000-0000-0000-0000-000000000002".parse().unwrap();
+    let inventory = Inventory {
+        schema: ref_chain_inventory(1).schema,
+        objects: vec![
+            obj(
+                declared_site,
+                "dcim.site",
+                "slug=fra1",
+                json!({ "slug": "fra1", "name": "FRA1" }),
+            ),
+            obj(
+                declared_device,
+                "dcim.device",
+                &format!("site={declared_site};name=leaf01"),
+                json!({ "site": declared_site.to_string(), "name": "leaf01" }),
+            ),
+        ],
+    };
+
+    let dir = tempdir().unwrap();
+    let mut state = StateStore::load(dir.path().join("state.json")).unwrap();
+    // the site adopts on its slug; the device cannot yet, its observed key holds
+    // the uid the site derives rather than the declared one.
+    let cold = RefChainAdapter::new(ref_chain_rows(1));
+    futures::executor::block_on(build_plan(&cold, &inventory, &mut state, false)).unwrap();
+    assert_eq!(
+        state.backend_id(t("dcim.site"), declared_site),
+        Some(BackendId::Int(1))
+    );
+
+    let warm = RefChainAdapter::new(ref_chain_rows(1));
+    let plan =
+        futures::executor::block_on(build_plan(&warm, &inventory, &mut state, false)).unwrap();
+    assert!(plan.ops.is_empty(), "unexpected ops: {:?}", plan.ops);
+    assert_eq!(
+        state.backend_id(t("dcim.device"), declared_device),
+        Some(BackendId::Int(2))
+    );
+}
+
+#[test]
 fn build_plan_reads_once_when_state_is_warm() {
     let inventory = ref_chain_inventory(2);
     let adapter = RefChainAdapter::new(ref_chain_rows(2));

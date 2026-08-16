@@ -395,9 +395,10 @@ pub struct RawNode {
 /// an object's uid derives from its key, which may itself hold references (an
 /// interface keyed by `(device, name)`), so this runs to a fixpoint: each round
 /// settles the nodes whose key refs are already known, seeding the next, until
-/// nothing new resolves. `mappings` seeds it with whatever state holds; a
-/// reference cycle leaves the stragglers on backend ids, still internally
-/// consistent.
+/// nothing new resolves. state is authoritative for the identity of an object
+/// it already maps and derivation only fills the gaps, so an inventory uid that
+/// is not the derived one keeps converging. a reference cycle leaves the
+/// stragglers on backend ids, still internally consistent.
 ///
 /// `normalize` rewrites a node's refs through the mappings learned so far and
 /// `build_key` reads the key out of the result: the id space and the error
@@ -435,7 +436,12 @@ where
             let attrs = normalize(node, type_schema, mappings);
             let key = build_key(node, type_schema, &attrs)?;
             let uid = uid_v5(node.type_name.as_str(), &key_string(&key));
-            mappings.learn(node.type_name.as_str(), node.backend_id.clone(), uid);
+            if mappings
+                .uid_of(node.type_name.as_str(), &node.backend_id)
+                .is_none()
+            {
+                mappings.learn(node.type_name.as_str(), node.backend_id.clone(), uid);
+            }
             resolved[i] = true;
             progressed = true;
         }
