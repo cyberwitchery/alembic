@@ -4,8 +4,8 @@ use alembic_core::{key_string, JsonMap, Key, Schema, TypeName, TypeSchema, Uid};
 use alembic_engine::{
     apply_non_delete_journaled, build_key_from_schema, bullet_list, describe_missing_refs,
     is_missing_ref_error, normalize_attrs_refs, resolved_ids_identity, Adapter, AppliedOp,
-    ApplyReport, BackendId, Emitter, ObservedObject, ObservedState, Observer, Op, ProvisionReport,
-    RetryApplyDriver, StateMappings,
+    ApplyReport, BackendId, Emitter, ObservedObject, ObservedState, Observer, Op, RetryApplyDriver,
+    StateMappings,
 };
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
@@ -577,15 +577,6 @@ impl Emitter for GenericAdapter {
             previously_applied_count,
             ..Default::default()
         })
-    }
-
-    // the generic rest adapter never provisions schema: it assumes the backend
-    // schema already exists, so ensure_schema is the no-op default (an empty
-    // report). preview must mirror that honestly as "nothing to provision"
-    // rather than the default None, which the cli renders as "preview
-    // unavailable for this backend" -- a capability limit generic does not have.
-    async fn preview_schema(&self, _schema: &Schema) -> Result<Option<ProvisionReport>> {
-        Ok(Some(ProvisionReport::default()))
     }
 }
 

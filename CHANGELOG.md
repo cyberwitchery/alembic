@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- provisioning is refused when the adapter cannot preview schema. the rust sdk default now previews an empty report
 - `alembic-adapter-test` writes only when asked. pass `--write-checks`, or a ci run stops certifying the two writing checks
 - `alembic-adapter-test` fails a `--cases` path that resolves to no cases instead of certifying only the built-ins
 - **breaking** external adapters: an unknown key in an observed object, capabilities or apply report is now rejected
