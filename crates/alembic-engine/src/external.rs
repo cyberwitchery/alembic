@@ -134,6 +134,7 @@ pub struct ExternalObject {
 
 /// response wrapper for external adapters.
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ExternalResponse<T> {
     /// whether the request succeeded.
     pub ok: bool,
@@ -297,9 +298,9 @@ macro_rules! alembic_external_main {
 mod tests {
     use super::ExternalResponse;
     use crate::{
-        run_external_adapter, ApplyReport, ExternalAdapter, ExternalCapabilities, ExternalEnvelope,
-        ExternalEnvelopeRef, ExternalObject, ExternalRequest, ExternalRequestRef, ExternalRole, Op,
-        ProvisionReport, StateData, EXTERNAL_PROTOCOL_VERSION,
+        run_external_adapter, AppliedOp, ApplyReport, ExternalAdapter, ExternalCapabilities,
+        ExternalEnvelope, ExternalEnvelopeRef, ExternalObject, ExternalRequest, ExternalRequestRef,
+        ExternalRole, Op, ProvisionReport, StateData, EXTERNAL_PROTOCOL_VERSION,
     };
     use alembic_core::{Key, Object, Schema, TypeName, TypeSchema, Uid};
     use serde_json::json;
@@ -341,6 +342,60 @@ mod tests {
     fn an_apply_report_may_still_omit_applied() {
         let report: ApplyReport = serde_json::from_str("{}").unwrap();
         assert!(report.applied.is_empty());
+    }
+
+    #[test]
+    fn a_misspelled_backend_id_key_is_rejected() {
+        // a typo'd id reads as the adapter returning none, and the run drops a
+        // mapping it was told to keep.
+        let err = serde_json::from_str::<AppliedOp>(
+            r#"{"uid":"11111111-1111-1111-1111-111111111111","type_name":"device","bakcend_id":"7"}"#,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("bakcend_id"), "{err}");
+    }
+
+    #[test]
+    fn an_applied_op_may_still_omit_backend_id() {
+        let applied: AppliedOp = serde_json::from_str(
+            r#"{"uid":"11111111-1111-1111-1111-111111111111","type_name":"device"}"#,
+        )
+        .unwrap();
+        assert!(applied.backend_id.is_none());
+    }
+
+    #[test]
+    fn a_misspelled_provision_category_is_rejected() {
+        // every category defaults, so a typo'd delete reads as an empty report and
+        // provisions past the --allow-delete gate.
+        let err =
+            serde_json::from_str::<ProvisionReport>(r#"{"deleted_obejct_types":["dcim.site"]}"#)
+                .unwrap_err();
+        assert!(err.to_string().contains("deleted_obejct_types"), "{err}");
+    }
+
+    #[test]
+    fn a_provision_report_may_still_omit_every_category() {
+        let report: ProvisionReport = serde_json::from_str("{}").unwrap();
+        assert_eq!(report, ProvisionReport::default());
+    }
+
+    #[test]
+    fn a_misspelled_result_key_is_rejected() {
+        // a typo'd `result` reads as an absent one, which preview_schema takes for
+        // "cannot preview" and skips the gate on.
+        let err = serde_json::from_str::<ExternalResponse<ProvisionReport>>(
+            r#"{"ok":true,"reslt":{"deleted_object_types":["dcim.site"]}}"#,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("reslt"), "{err}");
+    }
+
+    #[test]
+    fn a_response_may_still_omit_result() {
+        let response: ExternalResponse<ProvisionReport> =
+            serde_json::from_str(r#"{"ok":true}"#).unwrap();
+        assert!(response.result.is_none());
     }
 
     #[test]

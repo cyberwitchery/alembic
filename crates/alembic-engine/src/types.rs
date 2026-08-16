@@ -38,6 +38,7 @@ impl From<String> for BackendId {
 
 /// field-level change for an update op.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Hash, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct FieldChange {
     /// field name within attrs.
     pub field: String,
@@ -49,7 +50,7 @@ pub struct FieldChange {
 
 /// plan operation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Hash, Eq)]
-#[serde(tag = "op", rename_all = "snake_case")]
+#[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Op {
     /// create a new backend object.
     Create {
@@ -115,6 +116,7 @@ pub(crate) fn stable_json_hash<T: Serialize>(value: &T) -> u64 {
 
 /// full plan document.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Plan {
     /// schema definitions required for apply.
     pub schema: Schema,
@@ -131,6 +133,7 @@ pub struct Plan {
 
 /// high-level summary of plan operations.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PlanSummary {
     /// number of objects to create.
     pub create: usize,
@@ -208,6 +211,7 @@ impl ObservedState {
 
 /// result for a single applied operation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AppliedOp {
     /// ir uid for the operation.
     pub uid: Uid,
@@ -239,6 +243,7 @@ pub struct ApplyReport {
 
 /// report of what an apply provisioned, across `ensure_schema` and `write`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProvisionReport {
     /// custom fields created on the backend.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -543,6 +548,66 @@ mod tests {
         assert!(report.resumed.is_empty());
         assert_eq!(report.previously_applied_count, None);
         assert!(report.provision.is_empty());
+    }
+
+    #[test]
+    fn a_misspelled_schema_preview_key_is_rejected() {
+        // both optional plan keys default, so a typo'd preview reads as a plan that
+        // carries none and apply's early --allow-delete gate never runs.
+        let err = serde_json::from_str::<Plan>(
+            r#"{"schema":{"types":{}},"ops":[],"schema_preveiw":{"deleted_object_types":["dcim.site"]}}"#,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("schema_preveiw"), "{err}");
+    }
+
+    #[test]
+    fn a_plan_may_still_omit_its_summary_and_preview() {
+        let plan: Plan = serde_json::from_str(r#"{"schema":{"types":{}},"ops":[]}"#).unwrap();
+        assert!(plan.summary.is_none());
+        assert!(plan.schema_preview.is_none());
+    }
+
+    #[test]
+    fn a_misspelled_op_key_is_rejected() {
+        // a create carries no backend id; one spelled onto it was dropped, and the
+        // plan the operator read named a backend object the run never looked at.
+        let err = serde_json::from_str::<Op>(
+            r#"{"op":"create","uid":"11111111-1111-1111-1111-111111111111","type_name":"device","desired":{"uid":"11111111-1111-1111-1111-111111111111","type":"device","key":{},"attrs":{}},"backend_id":"7"}"#,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("backend_id"), "{err}");
+    }
+
+    #[test]
+    fn an_op_may_still_omit_its_backend_id() {
+        let op: Op = serde_json::from_str(
+            r#"{"op":"delete","uid":"11111111-1111-1111-1111-111111111111","type_name":"device","key":{}}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            op,
+            Op::Delete {
+                backend_id: None,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn a_misspelled_field_change_key_is_rejected() {
+        let err =
+            serde_json::from_str::<FieldChange>(r#"{"field":"tier","form":1,"from":1,"to":2}"#)
+                .unwrap_err();
+        assert!(err.to_string().contains("form"), "{err}");
+    }
+
+    #[test]
+    fn a_misspelled_summary_key_is_rejected() {
+        let err =
+            serde_json::from_str::<PlanSummary>(r#"{"create":1,"update":0,"delete":0,"dlete":3}"#)
+                .unwrap_err();
+        assert!(err.to_string().contains("dlete"), "{err}");
     }
 
     #[test]

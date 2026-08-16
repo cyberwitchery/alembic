@@ -481,41 +481,34 @@ fn validate(run: &RunResult, method: &str, expectation: &Expectation) -> Result<
     Ok(())
 }
 
-/// deserialize a success payload into the type its method requires, then reject a
-/// key that type does not own: nearly every field defaults, so a misspelled one
-/// deserializes to the default and reads as conformant. [`Expect`]'s rule, other channel.
+/// reject a key the method's type does not own, then deserialize the payload into
+/// that type. the walk goes first because it names where the key sat, which the
+/// typed parse cannot. [`Expect`]'s rule, other channel.
 fn check_payload(method: &str, result: &Value) -> Result<(), String> {
-    let template = match method {
-        "read" => {
-            serde_json::from_value::<Vec<ExternalObject>>(result.clone())
-                .map_err(|e| format!("bad read result: {e}"))?;
-            as_template(vec![observed_object()])
-        }
-        "write" => {
-            serde_json::from_value::<ApplyReport>(result.clone())
-                .map_err(|e| format!("bad write result: {e}"))?;
-            as_template(apply_report())
-        }
-        "ensure_schema" => {
-            serde_json::from_value::<ProvisionReport>(result.clone())
-                .map_err(|e| format!("bad ensure_schema result: {e}"))?;
-            as_template(provision_report())
-        }
-        "preview_schema" => {
-            serde_json::from_value::<Option<ProvisionReport>>(result.clone())
-                .map_err(|e| format!("bad preview_schema result: {e}"))?;
-            as_template(provision_report())
-        }
-        "capabilities" => {
-            serde_json::from_value::<ExternalCapabilities>(result.clone())
-                .map_err(|e| format!("bad capabilities result: {e}"))?;
+    type Parse = fn(Value) -> serde_json::Result<()>;
+    let (template, parse): (Value, Parse) = match method {
+        "read" => (as_template(vec![observed_object()])?, |value| {
+            serde_json::from_value::<Vec<ExternalObject>>(value).map(drop)
+        }),
+        "write" => (as_template(apply_report())?, |value| {
+            serde_json::from_value::<ApplyReport>(value).map(drop)
+        }),
+        "ensure_schema" => (as_template(provision_report())?, |value| {
+            serde_json::from_value::<ProvisionReport>(value).map(drop)
+        }),
+        "preview_schema" => (as_template(provision_report())?, |value| {
+            serde_json::from_value::<Option<ProvisionReport>>(value).map(drop)
+        }),
+        "capabilities" => (
             as_template(ExternalCapabilities {
                 role: ExternalRole::default(),
-            })
-        }
+            })?,
+            |value| serde_json::from_value::<ExternalCapabilities>(value).map(drop),
+        ),
         other => return Err(format!("unknown method {other}")),
-    }?;
-    reject_unknown_keys(&template, result, "").map_err(|e| format!("bad {method} result: {e}"))
+    };
+    reject_unknown_keys(&template, result, "").map_err(|e| format!("bad {method} result: {e}"))?;
+    parse(result.clone()).map_err(|e| format!("bad {method} result: {e}"))
 }
 
 /// serialize a payload into the template [`reject_unknown_keys`] walks. strict

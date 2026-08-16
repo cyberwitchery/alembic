@@ -32,6 +32,11 @@ all requests include a `version` field (the current protocol version is `1`) and
 `setup` object: the adapter's `setup:` config block, or `null` when there is none
 (`{}` is also accepted).
 
+apart from the `capabilities` probe, whose failures all fall back to the default
+role, a response carries only the keys the protocol defines, at every level: an
+unknown one is an error naming it, rather than a default standing in for an
+answer the adapter never gave. the `key` and `attrs` maps you fill stay your own.
+
 ## rust sdk
 
 `alembic-engine` ships a small helper module for external adapters that removes
@@ -344,8 +349,8 @@ unknown-method error stays conformant and means the default read+write role.
 "right-shaped" also means only the keys the protocol defines: a response
 carrying an unknown one fails, naming where it sat, from the envelope beside
 `result` down to inside `applied` and `provision`. your own `key` and `attrs`
-maps are not checked. the host is laxer on purpose, so run the runner that
-ships with your alembic.
+maps are not checked. the host rejects the same keys but names only the key, so
+a failure here is the one that says where to look.
 
 two built-ins write. the empty schema provisioning is a real `ensure_schema`,
 which a converging adapter reads as "delete everything you own", and the empty
