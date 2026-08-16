@@ -2,7 +2,8 @@
 
 ## Unreleased
 
-- **breaking** `alembic-adapter-test` writes only when asked: pass `--write-checks`, or a ci run stops certifying the two writing checks
+- `alembic-adapter-test` writes only when asked. pass `--write-checks`, or a ci run stops certifying the two writing checks
+- `alembic-adapter-test` fails a `--cases` path that resolves to no cases instead of certifying only the built-ins
 - **breaking** external adapters: an unknown key in an observed object, capabilities or apply report is now rejected
 - an external adapter may omit `applied` from a `write` result and `attrs` from a `read` object. a result the host cannot read names the method it answered
 - generic: a plan holding a delete the backend cannot perform is refused before anything is written
