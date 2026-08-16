@@ -261,3 +261,40 @@ impl Drop for EnvVarGuard {
         }
     }
 }
+
+/// RAII guard that pins the process working directory for the lifetime of a
+/// test, restoring it on drop, a panic included.
+///
+/// construction takes [`cwd_lock`]. use [`CwdGuard::acquire`] from `#[test]`
+/// functions and [`CwdGuard::acquire_async`] from `#[tokio::test]` functions.
+pub(crate) struct CwdGuard {
+    _lock: tokio::sync::MutexGuard<'static, ()>,
+    saved: PathBuf,
+}
+
+impl CwdGuard {
+    /// acquire the cwd lock synchronously (for non-async tests).
+    pub(crate) fn acquire() -> Self {
+        Self::with_lock(cwd_lock().blocking_lock())
+    }
+
+    /// acquire the cwd lock from an async context (for `#[tokio::test]` tests).
+    pub(crate) async fn acquire_async() -> Self {
+        Self::with_lock(cwd_lock().lock().await)
+    }
+
+    fn with_lock(lock: tokio::sync::MutexGuard<'static, ()>) -> Self {
+        Self {
+            _lock: lock,
+            saved: std::env::current_dir().unwrap(),
+        }
+    }
+}
+
+impl Drop for CwdGuard {
+    fn drop(&mut self) {
+        // drop cannot propagate, and a cwd that will not restore panics the
+        // next test that saves one.
+        let _ = std::env::set_current_dir(&self.saved);
+    }
+}
