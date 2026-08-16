@@ -77,7 +77,7 @@ fn an_sdk_emitter_passes_every_built_in_check() {
     // the sdk rejects an unsupported version before setup and before dispatch, so
     // an emitter built on it answers the version probe whichever method it rides.
     // this is the check that the org's emit-only adapters stay green.
-    let (code, stdout) = run_builtin_against("sdk_emitter");
+    let (code, stdout) = run_builtin_against_with("sdk_emitter", &["--write-checks"]);
     assert_eq!(code, Some(0), "{stdout}");
     assert!(stdout.contains("protocol/write-empty"), "{stdout}");
     assert!(
@@ -88,20 +88,23 @@ fn an_sdk_emitter_passes_every_built_in_check() {
 
 #[test]
 fn an_emitter_that_ignores_the_version_fails_the_version_probe() {
-    // the probe used to be sent as a `read`, which a declared emitter refuses for
-    // role reasons -- so this adapter passed it without ever reading `version`.
-    let (code, stdout) = run_builtin_against("version_blind_emitter");
-    assert_eq!(code, Some(1), "{stdout}");
-    let mismatch = stdout
-        .lines()
-        .find(|line| line.contains("protocol/version-mismatch"))
-        .expect("the version-mismatch check must run");
-    assert!(
-        mismatch.contains("FAILED"),
-        "a version-blind emitter must fail the version probe; {stdout}"
-    );
+    // the probe rides the emitter's `preview_schema`, so no flag is needed to catch
+    // this adapter and asking for the writing checks does not change the verdict.
+    for flags in [&[][..], &["--write-checks"][..]] {
+        let (code, stdout) = run_builtin_against_with("version_blind_emitter", flags);
+        assert_eq!(code, Some(1), "{stdout}");
+        let mismatch = stdout
+            .lines()
+            .find(|line| line.contains("protocol/version-mismatch"))
+            .expect("the version-mismatch check must run");
+        assert!(
+            mismatch.contains("FAILED"),
+            "a version-blind emitter must fail the version probe; {stdout}"
+        );
+    }
     // and only that check: the rest of the suite still certifies it.
-    assert!(stdout.contains("6 passed, 1 failed"), "{stdout}");
+    let (_, stdout) = run_builtin_against("version_blind_emitter");
+    assert!(stdout.contains("4 passed, 2 skipped, 1 failed"), "{stdout}");
 }
 
 #[test]
@@ -186,38 +189,64 @@ fn a_case_whose_expectation_key_is_misspelled_exits_2() {
     assert!(stderr.contains("errror"), "{stderr}");
 }
 
-/// the provisioning built-in is opt-out: it runs unless it is turned off, since a
-/// check that does not run certifies nothing.
+/// the writing built-ins are opt-in, and reported as skipped rather than dropped.
+/// the version probe is not one of them: it rides a method that writes nothing.
 #[test]
-fn the_provisioning_check_runs_by_default() {
+fn the_writing_checks_are_off_by_default() {
     let (code, stdout) = run_builtin_against("sdk_emitter");
-    assert_eq!(code, Some(0), "{stdout}");
-    let line = stdout
+    assert_eq!(code, Some(0), "a skipped check is not a failure; {stdout}");
+    for name in ["protocol/write-empty", "protocol/ensure-schema-empty"] {
+        let line = stdout
+            .lines()
+            .find(|line| line.contains(name))
+            .unwrap_or_else(|| panic!("{name} must still be listed; {stdout}"));
+        assert!(line.contains("skipped"), "{stdout}");
+        assert!(
+            !line.contains("   ok"),
+            "a skipped check must not read as a pass; {stdout}"
+        );
+    }
+    assert!(stdout.contains("writes are opt-in"), "{stdout}");
+    let probe = stdout
         .lines()
-        .find(|line| line.contains("protocol/ensure-schema-empty"))
-        .expect("the provisioning check must run without a flag");
-    assert!(line.contains("ok"), "{stdout}");
-    assert!(!stdout.contains("skipped"), "{stdout}");
+        .find(|line| line.contains("protocol/version-mismatch"))
+        .expect("the version probe must run by default");
+    assert!(probe.contains("ok"), "{stdout}");
+    assert!(
+        stdout.contains("5 passed, 2 skipped"),
+        "the summary must count them apart from passes; {stdout}"
+    );
 }
 
-/// turning it off reports the check as skipped rather than dropping it, so a
-/// reader cannot mistake a suite that never sent `ensure_schema` for one that
-/// certified it.
+/// asked for, both run.
 #[test]
-fn turning_the_provisioning_check_off_reports_it_as_skipped() {
-    let (code, stdout) = run_builtin_against_with("sdk_emitter", &["--no-provisioning-check"]);
-    assert_eq!(code, Some(0), "a skipped check is not a failure; {stdout}");
-    let line = stdout
-        .lines()
-        .find(|line| line.contains("protocol/ensure-schema-empty"))
-        .expect("the skipped check must still be listed");
-    assert!(line.contains("skipped"), "{stdout}");
-    assert!(
-        !line.contains("ok"),
-        "a skipped check must not read as a pass; {stdout}"
-    );
-    assert!(
-        stdout.contains("1 skipped"),
-        "the summary must count it apart from passes; {stdout}"
-    );
+fn write_checks_runs_them() {
+    let (code, stdout) = run_builtin_against_with("sdk_emitter", &["--write-checks"]);
+    assert_eq!(code, Some(0), "{stdout}");
+    assert!(!stdout.contains("skipped"), "{stdout}");
+    assert!(stdout.contains("7 passed"), "{stdout}");
+}
+
+/// the old spelling is the default now: it still parses and still means no writing
+/// check ran, but it says so rather than reading as a flag that did something.
+#[test]
+fn no_provisioning_check_warns_and_keeps_its_meaning() {
+    let out = Command::new(BIN)
+        .args(["--no-provisioning-check", "--"])
+        .arg(example_binary("sdk_emitter"))
+        .output()
+        .expect("run binary");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "{stdout}");
+    assert!(stderr.contains("--no-provisioning-check"), "{stderr}");
+    assert!(stdout.contains("5 passed, 2 skipped"), "{stdout}");
+
+    // and it cannot be quietly overruled: asking for both is a usage error.
+    let out = Command::new(BIN)
+        .args(["--no-provisioning-check", "--write-checks", "--"])
+        .arg(example_binary("sdk_emitter"))
+        .output()
+        .expect("run binary");
+    assert_eq!(out.status.code(), Some(2));
 }
