@@ -1,6 +1,6 @@
 //! an emitter that dispatches on `method` itself and never reads `version`, the
-//! bug the suite exists to catch. it refuses `read` for role reasons, which is
-//! what used to answer the version probe on its behalf.
+//! bug the suite exists to catch. it refuses `read` for role reasons, so a probe
+//! sent as a read would answer the check without reaching that bug.
 
 use alembic_engine::{ApplyReport, ProvisionReport};
 use serde_json::{json, Value};

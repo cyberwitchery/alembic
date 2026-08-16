@@ -42,7 +42,7 @@ impl Outcome {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Builtins {
     /// `protocol/write-empty` and `protocol/ensure-schema-empty` both write, at
-    /// the adapter's own default target; on, an emitter's version probe writes too.
+    /// the adapter's own default target.
     pub writes: bool,
 }
 
@@ -109,31 +109,38 @@ pub fn run_builtin_with(adapter: &[String], timeout: Duration, builtins: Builtin
             "state": {}
         }),
     );
+    let preview_empty = (
+        "protocol/preview-schema-empty",
+        "preview_schema",
+        json!({
+            "version": version,
+            "setup": {},
+            "method": "preview_schema",
+            "schema": { "types": {} }
+        }),
+    );
+    // the version probe rides a method the role implements that writes nothing:
+    // an emitter refuses a read for role reasons, answering without reading `version`.
+    let (_, probe_method, probe_request) = match role {
+        ExternalRole::Emitter => &preview_empty,
+        ExternalRole::Observer | ExternalRole::Adapter => &read_empty,
+    };
+    let mut mismatched = probe_request.clone();
+    mismatched["version"] = json!(version + 1);
+    let version_mismatch = check(
+        adapter,
+        timeout,
+        "protocol/version-mismatch",
+        &request_bytes(&mismatched),
+        probe_method,
+        Expectation::MustError,
+    );
     // the liveness checks are the methods the host sends this role: a read for an
     // observer, a write for an emitter, both for a full read+write adapter.
     let liveness = match role {
         ExternalRole::Emitter => vec![write_empty],
         ExternalRole::Observer => vec![read_empty],
         ExternalRole::Adapter => vec![read_empty, write_empty],
-    };
-    // the version probe rides the first of those with an unsupported version, so
-    // it is sent a method the role implements. sent as a read, an emitter refuses
-    // it for role reasons and answers the probe without ever reading `version`.
-    let (_, probe_method, probe_request) = &liveness[0];
-    let version_mismatch = if builtins.writes || *probe_method != "write" {
-        let mut mismatched = probe_request.clone();
-        mismatched["version"] = json!(version + 1);
-        check(
-            adapter,
-            timeout,
-            "protocol/version-mismatch",
-            &request_bytes(&mismatched),
-            probe_method,
-            Expectation::MustError,
-        )
-    } else {
-        // an emitter implements only the write, so nothing is left to ride.
-        skipped("protocol/version-mismatch", PROBE_RIDES_A_WRITE)
     };
     let mut outcomes = vec![
         check(
@@ -175,17 +182,13 @@ pub fn run_builtin_with(adapter: &[String], timeout: Duration, builtins: Builtin
     // previewing is provisioning, so the host reaches both methods through an
     // emitter and both checks follow the declared role, as the liveness probe does.
     if matches!(role, ExternalRole::Emitter | ExternalRole::Adapter) {
+        let (name, method, request) = &preview_empty;
         outcomes.push(check(
             adapter,
             timeout,
-            "protocol/preview-schema-empty",
-            &request_bytes(&json!({
-                "version": version,
-                "setup": {},
-                "method": "preview_schema",
-                "schema": { "types": {} }
-            })),
-            "preview_schema",
+            name,
+            &request_bytes(request),
+            method,
             // a conformant adapter answers preview_schema, either with a report or
             // a null result ("cannot preview"); both count as success.
             Expectation::MustSucceed,
@@ -212,7 +215,6 @@ pub fn run_builtin_with(adapter: &[String], timeout: Duration, builtins: Builtin
 }
 
 const WRITES_ARE_OPT_IN: &str = "writes are opt-in, pass --write-checks";
-const PROBE_RIDES_A_WRITE: &str = "an emitter's version probe rides its write, pass --write-checks";
 
 /// a check the runner did not send, reported rather than omitted: a reader counting
 /// passes must not read a suite that never sent the request as one that certified it.

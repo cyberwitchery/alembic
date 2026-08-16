@@ -240,7 +240,7 @@ fn declared_emitter_with_erroring_read_passes() {
     // role and errors on read. the runner skips the empty read for a declared
     // emitter and probes liveness with an empty write instead.
     // the version gate comes first, as the sdk's does: without it the emitter
-    // would fail the version probe, which now rides the same write.
+    // would fail the version probe, which rides its `preview_schema`.
     let script = r#"req=$(cat)
     case "$req" in
       *'"version":1'*) ;;
@@ -456,17 +456,23 @@ fn version_mismatch_follows_the_declared_role() {
       *'"method":"preview_schema"'*) printf '{"ok":true,"result":null}' ;;
       *) printf '{"ok":false,"error":"read is not supported"}' ;;
     esac"#;
-    let outcomes = run_builtin_writing(&sh(script));
-    let mismatch = find(&outcomes, "protocol/version-mismatch");
-    assert!(
-        !mismatch.passed(),
-        "the version probe must ride a method the emitter implements"
-    );
-    assert!(
-        message(mismatch).contains("expected a structured error"),
-        "{}",
-        message(mismatch)
-    );
+    // the carrier writes nothing, so this holds at the default as well as with
+    // the writing checks asked for.
+    for outcomes in [
+        run_builtin(&sh(script), TIMEOUT),
+        run_builtin_writing(&sh(script)),
+    ] {
+        let mismatch = find(&outcomes, "protocol/version-mismatch");
+        assert!(
+            !mismatch.skipped(),
+            "the version probe must ride a method the emitter implements"
+        );
+        assert!(
+            message(mismatch).contains("expected a structured error"),
+            "{}",
+            message(mismatch)
+        );
+    }
     // an observer keeps the read: it implements read and refuses write, so the
     // probe would be vacuous the other way round.
     let script = r#"req=$(cat); case "$req" in
@@ -781,10 +787,10 @@ fn the_gate_decides_whether_the_liveness_check_reaches_the_artifact() {
     assert!(find(&outcomes, "protocol/write-empty").passed());
 }
 
-/// the version probe rides an emitter's write, so off it is reported as skipped
-/// rather than sent, and the adapter it exists to catch goes uncaught.
+/// the probe rides an emitter's `preview_schema`, so the default catches a
+/// version-blind one with the artifact intact; the writing checks then clobber it.
 #[test]
-fn the_version_probe_is_skipped_for_an_emitter_with_writes_off() {
+fn the_version_probe_catches_an_emitter_without_writing() {
     let dir = tempdir().unwrap();
     let artifact = dir.path().join("topology.dot");
     let before = "digraph topology {\n}\n";
@@ -803,12 +809,11 @@ fn the_version_probe_is_skipped_for_an_emitter_with_writes_off() {
 
     let outcomes = run_builtin(&sh(&script), TIMEOUT);
     let probe = find(&outcomes, "protocol/version-mismatch");
-    assert!(probe.skipped(), "the probe must be reported, not dropped");
-    assert!(!probe.passed(), "a skipped probe certifies nothing");
+    assert!(!probe.skipped(), "the probe must be sent, not skipped");
     assert!(
-        probe.skipped.as_deref().unwrap().contains("emitter"),
-        "{:?}",
-        probe.skipped
+        message(probe).contains("expected a structured error"),
+        "{}",
+        message(probe)
     );
     assert_eq!(
         std::fs::read_to_string(&artifact).unwrap(),
@@ -818,12 +823,12 @@ fn the_version_probe_is_skipped_for_an_emitter_with_writes_off() {
 
     let outcomes = run_builtin_writing(&sh(&script));
     let probe = find(&outcomes, "protocol/version-mismatch");
-    assert!(!probe.skipped(), "asked for, the probe is sent");
-    assert!(
-        probe.failure.is_some(),
-        "which is what catches this adapter"
+    assert!(probe.failure.is_some(), "asked for, the same defect fails");
+    assert_eq!(
+        std::fs::read_to_string(&artifact).unwrap(),
+        "rendered",
+        "and protocol/write-empty renders over the artifact"
     );
-    assert_eq!(std::fs::read_to_string(&artifact).unwrap(), "rendered");
 }
 
 /// the gate does not weaken what it leaves on: a failing `write` still fails.

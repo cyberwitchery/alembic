@@ -328,9 +328,10 @@ adapter is ever asked for it. the runner probes `capabilities` first: the
 liveness checks are the methods the host sends that role, an empty read for an
 observer, an empty write for an emitter, both for a full read+write adapter. an
 emitter is never sent a read by the host and may answer one with an error. the
-version probe rides the first of those, a read for the roles that read and an
-unsupported-version write for an emitter: probed with a read an emitter would
-refuse it for role reasons, answering the check without ever reading `version`.
+version probe rides a method the role implements that writes nothing, an
+unsupported-version read for the roles that read and a `preview_schema` for an
+emitter: probed with a read an emitter would refuse it for role reasons,
+answering the check without ever reading `version`.
 the malformed-json and unknown-method probes need no such care, since both are
 expected to error whatever the role. answering `capabilities` itself with the
 unknown-method error stays conformant and means the default read+write role.
@@ -349,10 +350,10 @@ emitter and a full adapter are sent both, an observer neither. the runner has no
 scratch directory.
 
 both are off unless you pass `--write-checks`, and each is reported as `skipped`
-rather than dropped, counted apart from the passes. for an emitter the version
-probe rides that same write, so it is skipped too, with its own reason: an
-emitter implements no other method for it to ride. `--no-provisioning-check`,
-the old spelling, is the default now, so it warns and refuses `--write-checks`.
+rather than dropped, counted apart from the passes. every other check still
+runs, the version probe included, so a bare invocation certifies everything but
+those two. `--no-provisioning-check`, the old spelling, is the default now, so
+it warns and refuses `--write-checks`.
 
 to exercise `read`, `write`, and `ensure_schema` with requests of your own,
 pass `--cases` a file or directory of cases. a case is a complete request and
