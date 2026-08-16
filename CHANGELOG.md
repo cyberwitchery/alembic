@@ -3,6 +3,7 @@
 ## Unreleased
 
 - provisioning is refused when the adapter cannot preview schema. the rust sdk default now previews an empty report
+- `alembic-adapter-test` writes only when asked. pass `--write-checks`, or a ci run stops certifying the two writing checks
 - `alembic-adapter-test` fails a `--cases` path that resolves to no cases instead of certifying only the built-ins
 - **breaking** external adapters: an unknown key in an observed object, capabilities or apply report is now rejected
 - an external adapter may omit `applied` from a `write` result and `attrs` from a `read` object. a result the host cannot read names the method it answered
@@ -17,7 +18,7 @@
 - netbox: renaming a declared type into the same custom object type name keeps the backend type it owns (#369)
 - infrahub: two declared types that render one graphql kind fail the run; rename one (#372)
 - peeringdb observes `netixlan` records rather than organizations, and `PEERINGDB_API_KEY` is optional (#267)
-- `alembic-adapter-test`: `protocol/ensure-schema-empty` is opt-out through `--no-provisioning-check`, and a turned-off check is reported as `skipped`
+- `alembic-adapter-test`: `protocol/write-empty` joins `protocol/ensure-schema-empty` as a writing check, and a read+write adapter is sent it too
 - netbox: two declared types whose names collapse to one custom object type name fail the run; rename one
 - netbox converges an existing custom object type field, so a declared `pattern:`, `format:`, `description:` or `required:` reaches the backend
 - nautobot: two declared types sharing one custom field must declare the same `enum` values in the same order

@@ -326,18 +326,20 @@ behaviour: malformed json, an unsupported version, and an unknown method each
 produce a structured error; the process exits 0 within the timeout after writing
 exactly one json document (surrounding whitespace and multi-line json are fine,
 logs on stdout are not); the envelope is consistent; and a valid read of an empty
-inventory succeeds with a right-shaped payload, as do a schema preview and an
-empty provisioning, so an adapter that errors on every request does not pass.
-provisioning follows the declared role, since only an emitting adapter is ever
-asked for it. the runner probes `capabilities` first: a declared emitter is never
-sent a read by the host, so its liveness check is an empty write instead of the
-empty read, and it may answer `read` with an error. the version probe rides that
-same role-appropriate method, so an emitter is sent an unsupported-version write:
-probed with a read it would refuse for role reasons, answering the check without
-ever reading `version`. the malformed-json and unknown-method probes need no such
-care, since both are expected to error whatever the role. answering
-`capabilities` itself with the unknown-method error stays conformant and means
-the default read+write role.
+inventory succeeds with a right-shaped payload, as do an empty write, a schema
+preview and an empty provisioning, so an adapter that errors on every request
+does not pass. provisioning follows the declared role, since only an emitting
+adapter is ever asked for it. the runner probes `capabilities` first: the
+liveness checks are the methods the host sends that role, an empty read for an
+observer, an empty write for an emitter, both for a full read+write adapter. an
+emitter is never sent a read by the host and may answer one with an error. the
+version probe rides a method the role implements that writes nothing, an
+unsupported-version read for the roles that read and a `preview_schema` for an
+emitter: probed with a read an emitter would refuse it for role reasons,
+answering the check without ever reading `version`.
+the malformed-json and unknown-method probes need no such care, since both are
+expected to error whatever the role. answering `capabilities` itself with the
+unknown-method error stays conformant and means the default read+write role.
 
 "right-shaped" also means only the keys the protocol defines: a response
 carrying an unknown one fails, naming where it sat, from the envelope beside
@@ -345,17 +347,18 @@ carrying an unknown one fails, naming where it sat, from the envelope beside
 maps are not checked. the host is laxer on purpose, so run the runner that
 ships with your alembic.
 
-the empty schema provisioning is a real `ensure_schema`, and a converging
-adapter reads it as "delete everything you own". the runner is not the host
-and has no `--allow-delete` gate, so point it at a disposable backend.
+two built-ins write. the empty schema provisioning is a real `ensure_schema`,
+which a converging adapter reads as "delete everything you own", and the empty
+write is a real `write` at the default output path `setup: {}` selects. an
+emitter and a full adapter are sent both, an observer neither. the runner has no
+`--allow-delete` gate, so point it at a disposable backend and run it from a
+scratch directory.
 
-it runs by default, and `--no-provisioning-check` turns it off. opt-out rather
-than opt-in: a check nobody remembers to enable certifies nothing, and the
-adapter this one exists for -- the hand-rolled emitter that would otherwise be
-certified into an apply that fails on `unknown method` -- is exactly the one
-whose author would not enable it. a turned-off check is reported as `skipped`
-and counted apart from the passes, so a suite that never sent `ensure_schema`
-does not read as one that certified it.
+both are off unless you pass `--write-checks`, and each is reported as `skipped`
+rather than dropped, counted apart from the passes. every other check still
+runs, the version probe included, so a bare invocation certifies everything but
+those two. `--no-provisioning-check`, the old spelling, is the default now, so
+it warns and refuses `--write-checks`.
 
 to exercise `read`, `write`, and `ensure_schema` with requests of your own,
 pass `--cases` a file or directory of cases. a case is a complete request and
