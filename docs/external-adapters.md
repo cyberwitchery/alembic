@@ -223,10 +223,11 @@ operator is shown.
 
 a `null` result refuses the run rather than skipping the gate: `plan --provision` and
 `apply` stop with `this backend cannot preview schema`, since a delete nobody can see
-is the case the gate is for. the rust sdk's default answers an empty report ("nothing
-to provision"), which pairs with the `ensure_schema` default and passes, so `null` is
-something an adapter says deliberately. an adapter that provisions anything must
-preview it; an operator who wants it anyway passes `--allow-delete`.
+is the case the gate is for. so `null` is a capability statement, not a default to
+fall through: an adapter that provisions anything must answer a report, and an
+operator who wants the run without one passes `--allow-delete`. the rust sdk's default
+answers the empty report; check what your sdk's default answers, since one that
+answers `null` refuses every provisioning run.
 
 request:
 
