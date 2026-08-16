@@ -2,7 +2,8 @@
 
 ## Unreleased
 
-- **breaking** provisioning is refused when the adapter cannot preview schema; the rust sdk default now previews an empty report
+- provisioning is refused when the adapter cannot preview schema. the rust sdk default now previews an empty report
+- `alembic-adapter-test` fails a `--cases` path that resolves to no cases instead of certifying only the built-ins
 - **breaking** external adapters: an unknown key in an observed object, capabilities or apply report is now rejected
 - an external adapter may omit `applied` from a `write` result and `attrs` from a `read` object. a result the host cannot read names the method it answered
 - generic: a plan holding a delete the backend cannot perform is refused before anything is written

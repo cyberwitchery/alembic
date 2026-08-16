@@ -382,7 +382,8 @@ structurally. `error` pins the exact message an `ok: false` case must come back 
 a key that is none of those three is a parse error naming it, and so is a
 stray key beside `name`/`request`/`expect`: `result` and `error` are the assertions, so
 a typo in one would drop it and report the case as passing. the runner exits `0` when
-every check passes, `1` when a check fails, and `2` on a usage or fixtures error, so it
+every check passes, `1` when a check fails, and `2` on a usage or fixtures error,
+including a `--cases` directory with no `.json` files directly in it, so it
 drops straight into ci:
 
 ```console
