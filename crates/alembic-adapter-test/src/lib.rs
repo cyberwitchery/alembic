@@ -292,6 +292,7 @@ pub fn run_cases(adapter: &[String], timeout: Duration, cases: &[Case]) -> Vec<O
 }
 
 /// load cases from a `.json` file or a directory of `.json` files (sorted).
+/// a path yielding no cases returns an empty vec; the caller decides what that means.
 pub fn load_cases(path: &Path) -> anyhow::Result<Vec<Case>> {
     let metadata =
         std::fs::metadata(path).with_context(|| format!("reading cases at {}", path.display()))?;
@@ -310,6 +311,8 @@ pub fn load_cases(path: &Path) -> anyhow::Result<Vec<Case>> {
     } else {
         files.push(path.to_path_buf());
     }
+    // one file is one case, which is what lets the runner report an empty result
+    // as "no `.json` file directly in that directory".
     let mut cases = Vec::new();
     for file in files {
         let text = std::fs::read_to_string(&file)
@@ -723,6 +726,7 @@ fn collect(rx: mpsc::Receiver<Vec<u8>>, deadline: Instant) -> Vec<u8> {
 mod tests {
     use super::{load_cases, Case, Expect};
     use std::path::Path;
+    use tempfile::tempdir;
 
     fn examples() -> &'static Path {
         Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/cases"))
@@ -762,5 +766,31 @@ mod tests {
     fn the_committed_fixtures_still_load() {
         let cases = load_cases(examples()).unwrap();
         assert_eq!(cases.len(), 6, "every committed fixture must still parse");
+    }
+
+    #[test]
+    fn an_empty_case_directory_loads_no_cases() {
+        let dir = tempdir().expect("create case dir");
+        assert!(load_cases(dir.path()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_case_directory_holding_no_json_files_loads_no_cases() {
+        let dir = tempdir().expect("create case dir");
+        std::fs::write(dir.path().join("read.yaml"), "name: read").expect("write case");
+        assert!(load_cases(dir.path()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn cases_one_directory_down_are_not_loaded() {
+        let dir = tempdir().expect("create case dir");
+        let nested = dir.path().join("netbox");
+        std::fs::create_dir(&nested).expect("create subdirectory");
+        std::fs::copy(
+            examples().join("delete-unsupported.json"),
+            nested.join("delete-unsupported.json"),
+        )
+        .expect("copy fixture");
+        assert!(load_cases(dir.path()).unwrap().is_empty());
     }
 }

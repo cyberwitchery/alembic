@@ -37,6 +37,14 @@ fn main() -> ExitCode {
     let mut outcomes = run_builtin_with(&cli.adapter, timeout, builtins);
     if let Some(path) = cli.cases {
         match load_cases(&path) {
+            // a suite that ran no cases must not report a pass.
+            Ok(cases) if cases.is_empty() => {
+                eprintln!(
+                    "error: no cases at {}: looked for `.json` files in that directory itself, not in subdirectories",
+                    path.display()
+                );
+                return ExitCode::from(2);
+            }
             Ok(cases) => outcomes.extend(run_cases(&cli.adapter, timeout, &cases)),
             Err(e) => {
                 // the cause carries what is wrong with the fixture (the stray or
