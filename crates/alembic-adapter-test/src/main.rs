@@ -15,12 +15,11 @@ struct Cli {
     /// per-check timeout, in seconds.
     #[arg(long, default_value_t = 10)]
     timeout: u64,
-    /// skip `protocol/ensure-schema-empty`, the one built-in that writes. it
-    /// sends a real `ensure_schema` with an empty schema, which an adapter that
-    /// converges reads as "delete everything you own"; the runner has no
-    /// `--allow-delete` gate of its own. leave it on unless the backend behind
-    /// the adapter is not disposable.
+    /// also run `protocol/write-empty` and `protocol/ensure-schema-empty`: they write for real.
     #[arg(long)]
+    write_checks: bool,
+    /// deprecated: off is the default now.
+    #[arg(long, conflicts_with = "write_checks")]
     no_provisioning_check: bool,
     /// the adapter command and its arguments, after `--`.
     #[arg(last = true, required = true)]
@@ -31,12 +30,23 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     let timeout = Duration::from_secs(cli.timeout);
 
+    if cli.no_provisioning_check {
+        eprintln!("warning: --no-provisioning-check is the default now; drop it, or pass --write-checks to run the writing checks");
+    }
     let builtins = Builtins {
-        provisioning: !cli.no_provisioning_check,
+        writes: cli.write_checks,
     };
     let mut outcomes = run_builtin_with(&cli.adapter, timeout, builtins);
     if let Some(path) = cli.cases {
         match load_cases(&path) {
+            // a suite that ran no cases must not report a pass.
+            Ok(cases) if cases.is_empty() => {
+                eprintln!(
+                    "error: no cases at {}: looked for `.json` files in that directory itself, not in subdirectories",
+                    path.display()
+                );
+                return ExitCode::from(2);
+            }
             Ok(cases) => outcomes.extend(run_cases(&cli.adapter, timeout, &cases)),
             Err(e) => {
                 // the cause carries what is wrong with the fixture (the stray or

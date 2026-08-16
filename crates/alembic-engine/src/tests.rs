@@ -1470,13 +1470,11 @@ fn provisioning_emitter(
 
 #[test]
 fn apply_plan_provisions_over_a_write_only_backend() {
-    let (backend, provisioned) = provisioning_emitter(
-        ProvisionReport {
-            created_fields: vec!["dcim.site.tier".to_string()],
-            ..Default::default()
-        },
-        None,
-    );
+    let creates = ProvisionReport {
+        created_fields: vec!["dcim.site.tier".to_string()],
+        ..Default::default()
+    };
+    let (backend, provisioned) = provisioning_emitter(creates.clone(), Some(creates));
     let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
     let report =
         futures::executor::block_on(apply_plan(&backend, &empty_plan(), &mut state, false))
@@ -1504,14 +1502,89 @@ fn apply_plan_self_previews_a_write_only_backend_before_provisioning() {
 
 #[test]
 fn apply_plan_over_a_write_only_backend_that_provisions_nothing() {
-    // django's shape: it declares neither method, so apply runs the defaults and
-    // comes out with nothing to report.
-    let (backend, provisioned) = provisioning_emitter(ProvisionReport::default(), None);
+    // django's shape, spelled out: the defaults it inherits answer an empty
+    // report on both methods, so apply comes out with nothing to report.
+    let (backend, provisioned) =
+        provisioning_emitter(ProvisionReport::default(), Some(ProvisionReport::default()));
     let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
     let report =
         futures::executor::block_on(apply_plan(&backend, &empty_plan(), &mut state, false))
             .unwrap();
     assert_eq!(provisioned.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert!(report.provision.is_empty());
+}
+
+#[test]
+fn apply_plan_refuses_an_emitter_that_cannot_preview() {
+    // no preview means no gate, so the run is refused before ensure_schema
+    // writes rather than reported in the past tense after it did.
+    let (backend, provisioned) = provisioning_emitter(
+        ProvisionReport {
+            deleted_object_types: vec!["dcim.fossil".to_string()],
+            ..Default::default()
+        },
+        None,
+    );
+    let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
+    let err = futures::executor::block_on(apply_plan(&backend, &empty_plan(), &mut state, false))
+        .unwrap_err();
+    assert!(err.to_string().contains("cannot preview schema"), "{err}");
+    assert!(
+        err.to_string().contains("implement preview_schema"),
+        "{err}"
+    );
+    assert!(err.to_string().contains("--allow-delete"), "{err}");
+    assert_eq!(provisioned.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
+#[test]
+fn apply_plan_provisions_when_the_gate_ran_or_was_waived() {
+    let dir = tempdir().unwrap();
+    let clean = ProvisionReport {
+        created_object_types: vec!["dcim.widget".to_string()],
+        ..Default::default()
+    };
+    // the adapter previews, so the gate runs on what it reported and passes.
+    let (backend, _) = provisioning_emitter(clean.clone(), Some(clean));
+    let mut state = StateStore::load(dir.path().join("previewed.json")).unwrap();
+    futures::executor::block_on(apply_plan(&backend, &empty_plan(), &mut state, false)).unwrap();
+
+    // --allow-delete short-circuits the gate, so the unpreviewable one provisions.
+    let (backend, provisioned) = provisioning_emitter(
+        ProvisionReport {
+            deleted_object_types: vec!["dcim.fossil".to_string()],
+            ..Default::default()
+        },
+        None,
+    );
+    let mut state = StateStore::load(dir.path().join("waived.json")).unwrap();
+    let report =
+        futures::executor::block_on(apply_plan(&backend, &empty_plan(), &mut state, true)).unwrap();
+    assert_eq!(provisioned.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(report.provision.deleted_object_types, vec!["dcim.fossil"]);
+}
+
+#[test]
+fn an_emitter_overriding_neither_provisioning_method_passes_the_gate() {
+    // the shape every emit-only adapter ships: the two defaults now agree that
+    // it provisions nothing, so the gate has an honest empty preview to run on.
+    struct NoProvisioning;
+    #[async_trait::async_trait]
+    impl Emitter for NoProvisioning {
+        async fn write(
+            &self,
+            _schema: &Schema,
+            _ops: &[Op],
+            _state: &StateStore,
+        ) -> anyhow::Result<ApplyReport> {
+            Ok(ApplyReport::default())
+        }
+    }
+    let backend = Backend::Emitter(Box::new(NoProvisioning));
+    let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
+    let report =
+        futures::executor::block_on(apply_plan(&backend, &empty_plan(), &mut state, false))
+            .unwrap();
     assert!(report.provision.is_empty());
 }
 

@@ -211,10 +211,11 @@ check.
 
 the host calls this at plan time to show what `ensure_schema` would provision,
 without writing anything. return the same `ProvisionReport` shape `ensure_schema`
-would, or a `null` result if the adapter cannot preview (which the host reports as
-`schema preview: unavailable for this backend`). answer it either way, unless you
-declare the `observer` role: leaving it to the unknown-method branch fails the
-built-in `protocol/preview-schema-empty` check.
+would (an empty report when there is nothing to provision), or a `null` result if
+the adapter cannot preview, which plain `plan` reports as `schema preview:
+unavailable for this backend` and the provisioning paths refuse outright. answer it
+either way, unless you declare the `observer` role: leaving it to the unknown-method
+branch fails the built-in `protocol/preview-schema-empty` check.
 
 this report is also the destructive-provisioning gate. before `plan --provision` or
 `apply` calls `ensure_schema`, the host previews and refuses the run with
@@ -225,9 +226,13 @@ without listing it here takes the objects with it and never prompts. list what y
 would delete, even if the same call also creates: what you list is what the
 operator is shown.
 
-a `null` result skips the gate rather than failing it, so an adapter that cannot
-preview provisions unchecked. that is deliberate, and it is the trade for not
-implementing the method: if your adapter can delete schema, preview it.
+a `null` result refuses the run rather than skipping the gate: `plan --provision` and
+`apply` stop with `this backend cannot preview schema`, since a delete nobody can see
+is the case the gate is for. so `null` is a capability statement, not a default to
+fall through: an adapter that provisions anything must answer a report, and an
+operator who wants the run without one passes `--allow-delete`. the rust sdk's default
+answers the empty report; check what your sdk's default answers, since one that
+answers `null` refuses every provisioning run.
 
 request:
 
@@ -326,18 +331,20 @@ behaviour: malformed json, an unsupported version, and an unknown method each
 produce a structured error; the process exits 0 within the timeout after writing
 exactly one json document (surrounding whitespace and multi-line json are fine,
 logs on stdout are not); the envelope is consistent; and a valid read of an empty
-inventory succeeds with a right-shaped payload, as do a schema preview and an
-empty provisioning, so an adapter that errors on every request does not pass.
-provisioning follows the declared role, since only an emitting adapter is ever
-asked for it. the runner probes `capabilities` first: a declared emitter is never
-sent a read by the host, so its liveness check is an empty write instead of the
-empty read, and it may answer `read` with an error. the version probe rides that
-same role-appropriate method, so an emitter is sent an unsupported-version write:
-probed with a read it would refuse for role reasons, answering the check without
-ever reading `version`. the malformed-json and unknown-method probes need no such
-care, since both are expected to error whatever the role. answering
-`capabilities` itself with the unknown-method error stays conformant and means
-the default read+write role.
+inventory succeeds with a right-shaped payload, as do an empty write, a schema
+preview and an empty provisioning, so an adapter that errors on every request
+does not pass. provisioning follows the declared role, since only an emitting
+adapter is ever asked for it. the runner probes `capabilities` first: the
+liveness checks are the methods the host sends that role, an empty read for an
+observer, an empty write for an emitter, both for a full read+write adapter. an
+emitter is never sent a read by the host and may answer one with an error. the
+version probe rides a method the role implements that writes nothing, an
+unsupported-version read for the roles that read and a `preview_schema` for an
+emitter: probed with a read an emitter would refuse it for role reasons,
+answering the check without ever reading `version`.
+the malformed-json and unknown-method probes need no such care, since both are
+expected to error whatever the role. answering `capabilities` itself with the
+unknown-method error stays conformant and means the default read+write role.
 
 "right-shaped" also means only the keys the protocol defines: a response
 carrying an unknown one fails, naming where it sat, from the envelope beside
@@ -345,17 +352,18 @@ carrying an unknown one fails, naming where it sat, from the envelope beside
 maps are not checked. the host rejects the same keys but names only the key, so
 a failure here is the one that says where to look.
 
-the empty schema provisioning is a real `ensure_schema`, and a converging
-adapter reads it as "delete everything you own". the runner is not the host
-and has no `--allow-delete` gate, so point it at a disposable backend.
+two built-ins write. the empty schema provisioning is a real `ensure_schema`,
+which a converging adapter reads as "delete everything you own", and the empty
+write is a real `write` at the default output path `setup: {}` selects. an
+emitter and a full adapter are sent both, an observer neither. the runner has no
+`--allow-delete` gate, so point it at a disposable backend and run it from a
+scratch directory.
 
-it runs by default, and `--no-provisioning-check` turns it off. opt-out rather
-than opt-in: a check nobody remembers to enable certifies nothing, and the
-adapter this one exists for -- the hand-rolled emitter that would otherwise be
-certified into an apply that fails on `unknown method` -- is exactly the one
-whose author would not enable it. a turned-off check is reported as `skipped`
-and counted apart from the passes, so a suite that never sent `ensure_schema`
-does not read as one that certified it.
+both are off unless you pass `--write-checks`, and each is reported as `skipped`
+rather than dropped, counted apart from the passes. every other check still
+runs, the version probe included, so a bare invocation certifies everything but
+those two. `--no-provisioning-check`, the old spelling, is the default now, so
+it warns and refuses `--write-checks`.
 
 to exercise `read`, `write`, and `ensure_schema` with requests of your own,
 pass `--cases` a file or directory of cases. a case is a complete request and
@@ -382,7 +390,8 @@ structurally. `error` pins the exact message an `ok: false` case must come back 
 a key that is none of those three is a parse error naming it, and so is a
 stray key beside `name`/`request`/`expect`: `result` and `error` are the assertions, so
 a typo in one would drop it and report the case as passing. the runner exits `0` when
-every check passes, `1` when a check fails, and `2` on a usage or fixtures error, so it
+every check passes, `1` when a check fails, and `2` on a usage or fixtures error,
+including a `--cases` directory with no `.json` files directly in it, so it
 drops straight into ci:
 
 ```console

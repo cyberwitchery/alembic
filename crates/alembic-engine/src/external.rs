@@ -196,12 +196,12 @@ pub trait ExternalAdapter {
         Ok(ProvisionReport::default())
     }
 
-    /// preview schema provisioning, writing nothing. `None` (the default) means this
-    /// adapter cannot preview schema; `Some(report)` is what [`ExternalAdapter::ensure_schema`]
-    /// would provision.
+    /// preview schema provisioning, writing nothing. the default pairs with
+    /// [`ExternalAdapter::ensure_schema`]'s: nothing to provision. `None` means
+    /// "cannot preview", and refuses to provision at all.
     fn preview_schema(&mut self, schema: &Schema) -> Result<Option<ProvisionReport>> {
         let _ = schema;
-        Ok(None)
+        Ok(Some(ProvisionReport::default()))
     }
 
     /// report which role this adapter implements. the default, the full read+write

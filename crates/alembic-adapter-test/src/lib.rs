@@ -20,9 +20,8 @@ use std::time::{Duration, Instant};
 pub struct Outcome {
     pub name: String,
     pub failure: Option<Failure>,
-    /// why the check did not run, when it was turned off. a skipped check
-    /// certifies nothing, so it is neither a pass nor a failure and the report
-    /// counts it apart from both.
+    /// why the check did not run. a skipped check certifies nothing, so it is
+    /// neither a pass nor a failure and the report counts it apart from both.
     pub skipped: Option<String>,
 }
 
@@ -32,27 +31,19 @@ impl Outcome {
         self.failure.is_none() && self.skipped.is_none()
     }
 
-    /// whether the check was turned off rather than run.
+    /// whether the check was not sent rather than run.
     pub fn skipped(&self) -> bool {
         self.skipped.is_some()
     }
 }
 
-/// which built-in checks to run. every check is on by default: one that does not
-/// run certifies nothing, and the population these exist for is the adapter that
-/// would otherwise be certified into a failing apply.
-#[derive(Debug, Clone, Copy)]
+/// which built-in checks to run. the writing ones are off by default: a
+/// conformance run is not asked to touch the operator's backend.
+#[derive(Debug, Clone, Copy, Default)]
 pub struct Builtins {
-    /// `protocol/ensure-schema-empty`. this one sends a real `ensure_schema`, so
-    /// an adapter that converges reads it as "delete everything you own"; turn it
-    /// off for a runner pointed at a backend that is not disposable.
-    pub provisioning: bool,
-}
-
-impl Default for Builtins {
-    fn default() -> Self {
-        Self { provisioning: true }
-    }
+    /// `protocol/write-empty` and `protocol/ensure-schema-empty` both write, at
+    /// the adapter's own default target.
+    pub writes: bool,
 }
 
 /// why a check failed, with the diagnostics needed to debug the adapter.
@@ -83,7 +74,7 @@ pub struct Expect {
     pub error: Option<String>,
 }
 
-/// run the backend-independent protocol checks against the adapter command.
+/// run the backend-independent protocol checks that do not write. see [`Builtins`].
 pub fn run_builtin(adapter: &[String], timeout: Duration) -> Vec<Outcome> {
     run_builtin_with(adapter, timeout, Builtins::default())
 }
@@ -92,53 +83,65 @@ pub fn run_builtin(adapter: &[String], timeout: Duration) -> Vec<Outcome> {
 pub fn run_builtin_with(adapter: &[String], timeout: Duration, builtins: Builtins) -> Vec<Outcome> {
     // requests use the version the engine sends, so the suite tracks the protocol it tests.
     let version = EXTERNAL_PROTOCOL_VERSION;
-    // the declared role decides which liveness check runs below, so probe it first.
+    // the declared role decides which liveness checks run below, so probe it first.
     let (role, capabilities) = probe_capabilities(adapter, timeout);
-    // a declared emitter does not implement read (the host never sends it one),
-    // so its liveness check is an empty write instead of the empty read forced
-    // on observers and full adapters.
-    let (liveness_name, method, request) = match role {
-        ExternalRole::Emitter => (
-            "protocol/write-empty",
-            "write",
-            json!({
-                "version": version,
-                "setup": {},
-                "method": "write",
-                "schema": { "types": {} },
-                "ops": [],
-                "state": {}
-            }),
-        ),
-        ExternalRole::Observer | ExternalRole::Adapter => (
-            "protocol/read-empty",
-            "read",
-            json!({
-                "version": version,
-                "setup": {},
-                "method": "read",
-                "schema": { "types": {} },
-                "types": [],
-                "state": {}
-            }),
-        ),
+    let read_empty = (
+        "protocol/read-empty",
+        "read",
+        json!({
+            "version": version,
+            "setup": {},
+            "method": "read",
+            "schema": { "types": {} },
+            "types": [],
+            "state": {}
+        }),
+    );
+    let write_empty = (
+        "protocol/write-empty",
+        "write",
+        json!({
+            "version": version,
+            "setup": {},
+            "method": "write",
+            "schema": { "types": {} },
+            "ops": [],
+            "state": {}
+        }),
+    );
+    let preview_empty = (
+        "protocol/preview-schema-empty",
+        "preview_schema",
+        json!({
+            "version": version,
+            "setup": {},
+            "method": "preview_schema",
+            "schema": { "types": {} }
+        }),
+    );
+    // the version probe rides a method the role implements that writes nothing:
+    // an emitter refuses a read for role reasons, answering without reading `version`.
+    let (_, probe_method, probe_request) = match role {
+        ExternalRole::Emitter => &preview_empty,
+        ExternalRole::Observer | ExternalRole::Adapter => &read_empty,
     };
-    // the version probe is that same request with an unsupported version, so it
-    // rides a method the role implements. sent as a read, an emitter refuses it
-    // for role reasons and answers the probe without ever reading `version`.
-    let mismatched = {
-        let mut mismatched = request.clone();
-        mismatched["version"] = json!(version + 1);
-        mismatched
-    };
-    let liveness = check(
+    let mut mismatched = probe_request.clone();
+    mismatched["version"] = json!(version + 1);
+    let version_mismatch = check(
         adapter,
         timeout,
-        liveness_name,
-        &request_bytes(&request),
-        method,
-        Expectation::MustSucceed,
+        "protocol/version-mismatch",
+        &request_bytes(&mismatched),
+        probe_method,
+        Expectation::MustError,
     );
+    // the liveness checks are the methods the host sends this role: a read for an
+    // observer, a write for an emitter, both for a full read+write adapter.
+    let liveness = match role {
+        ExternalRole::Emitter => vec![write_empty],
+        ExternalRole::Observer => vec![read_empty],
+        ExternalRole::Adapter => vec![read_empty, write_empty],
+    };
     let mut outcomes = vec![
         check(
             adapter,
@@ -148,14 +151,7 @@ pub fn run_builtin_with(adapter: &[String], timeout: Duration, builtins: Builtin
             "read",
             Expectation::MustError,
         ),
-        check(
-            adapter,
-            timeout,
-            "protocol/version-mismatch",
-            &request_bytes(&mismatched),
-            method,
-            Expectation::MustError,
-        ),
+        version_mismatch,
         check(
             adapter,
             timeout,
@@ -165,27 +161,39 @@ pub fn run_builtin_with(adapter: &[String], timeout: Duration, builtins: Builtin
             Expectation::MustError,
         ),
         capabilities,
-        liveness,
     ];
+    // a check is gated because it writes, not because of the role it was picked
+    // for: the empty write rides the same gate as the provisioning one, the empty
+    // read writes nothing and never does.
+    outcomes.extend(liveness.iter().map(|(name, method, request)| {
+        if builtins.writes || *method != "write" {
+            check(
+                adapter,
+                timeout,
+                name,
+                &request_bytes(request),
+                method,
+                Expectation::MustSucceed,
+            )
+        } else {
+            skipped(name, WRITES_ARE_OPT_IN)
+        }
+    }));
     // previewing is provisioning, so the host reaches both methods through an
     // emitter and both checks follow the declared role, as the liveness probe does.
     if matches!(role, ExternalRole::Emitter | ExternalRole::Adapter) {
+        let (name, method, request) = &preview_empty;
         outcomes.push(check(
             adapter,
             timeout,
-            "protocol/preview-schema-empty",
-            &request_bytes(&json!({
-                "version": version,
-                "setup": {},
-                "method": "preview_schema",
-                "schema": { "types": {} }
-            })),
-            "preview_schema",
+            name,
+            &request_bytes(request),
+            method,
             // a conformant adapter answers preview_schema, either with a report or
             // a null result ("cannot preview"); both count as success.
             Expectation::MustSucceed,
         ));
-        outcomes.push(if builtins.provisioning {
+        outcomes.push(if builtins.writes {
             check(
                 adapter,
                 timeout,
@@ -200,16 +208,22 @@ pub fn run_builtin_with(adapter: &[String], timeout: Duration, builtins: Builtin
                 Expectation::MustSucceed,
             )
         } else {
-            // reported rather than omitted: a reader counting passes must not
-            // read a suite that never sent ensure_schema as one that certified it.
-            Outcome {
-                name: "protocol/ensure-schema-empty".to_string(),
-                failure: None,
-                skipped: Some("turned off with --no-provisioning-check".to_string()),
-            }
+            skipped("protocol/ensure-schema-empty", WRITES_ARE_OPT_IN)
         });
     }
     outcomes
+}
+
+const WRITES_ARE_OPT_IN: &str = "writes are opt-in, pass --write-checks";
+
+/// a check the runner did not send, reported rather than omitted: a reader counting
+/// passes must not read a suite that never sent the request as one that certified it.
+fn skipped(name: &str, reason: &str) -> Outcome {
+    Outcome {
+        name: name.to_string(),
+        failure: None,
+        skipped: Some(reason.to_string()),
+    }
 }
 
 /// probe the adapter's declared role with a capabilities request. answering with
@@ -292,6 +306,7 @@ pub fn run_cases(adapter: &[String], timeout: Duration, cases: &[Case]) -> Vec<O
 }
 
 /// load cases from a `.json` file or a directory of `.json` files (sorted).
+/// a path yielding no cases returns an empty vec; the caller decides what that means.
 pub fn load_cases(path: &Path) -> anyhow::Result<Vec<Case>> {
     let metadata =
         std::fs::metadata(path).with_context(|| format!("reading cases at {}", path.display()))?;
@@ -310,6 +325,8 @@ pub fn load_cases(path: &Path) -> anyhow::Result<Vec<Case>> {
     } else {
         files.push(path.to_path_buf());
     }
+    // one file is one case, which is what lets the runner report an empty result
+    // as "no `.json` file directly in that directory".
     let mut cases = Vec::new();
     for file in files {
         let text = std::fs::read_to_string(&file)
@@ -716,6 +733,7 @@ fn collect(rx: mpsc::Receiver<Vec<u8>>, deadline: Instant) -> Vec<u8> {
 mod tests {
     use super::{load_cases, Case, Expect};
     use std::path::Path;
+    use tempfile::tempdir;
 
     fn examples() -> &'static Path {
         Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/cases"))
@@ -755,5 +773,31 @@ mod tests {
     fn the_committed_fixtures_still_load() {
         let cases = load_cases(examples()).unwrap();
         assert_eq!(cases.len(), 6, "every committed fixture must still parse");
+    }
+
+    #[test]
+    fn an_empty_case_directory_loads_no_cases() {
+        let dir = tempdir().expect("create case dir");
+        assert!(load_cases(dir.path()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_case_directory_holding_no_json_files_loads_no_cases() {
+        let dir = tempdir().expect("create case dir");
+        std::fs::write(dir.path().join("read.yaml"), "name: read").expect("write case");
+        assert!(load_cases(dir.path()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn cases_one_directory_down_are_not_loaded() {
+        let dir = tempdir().expect("create case dir");
+        let nested = dir.path().join("netbox");
+        std::fs::create_dir(&nested).expect("create subdirectory");
+        std::fs::copy(
+            examples().join("delete-unsupported.json"),
+            nested.join("delete-unsupported.json"),
+        )
+        .expect("copy fixture");
+        assert!(load_cases(dir.path()).unwrap().is_empty());
     }
 }

@@ -457,11 +457,10 @@ pub trait Emitter: Send + Sync {
     }
 
     /// read-only counterpart to [`Emitter::ensure_schema`]: report what provisioning
-    /// apply would perform, writing nothing. `None` means this adapter cannot preview
-    /// schema (reported honestly, never as "no schema changes"); `Some(report)` is the
-    /// provisioning it would carry out, `Some(empty)` that there is nothing to provision.
+    /// would perform, writing nothing. the default pairs with `ensure_schema`'s: nothing
+    /// to provision. `None` means "cannot preview", and refuses to provision at all.
     async fn preview_schema(&self, _schema: &Schema) -> anyhow::Result<Option<ProvisionReport>> {
-        Ok(None)
+        Ok(Some(ProvisionReport::default()))
     }
 }
 

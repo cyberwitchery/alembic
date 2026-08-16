@@ -6,7 +6,7 @@ mod state;
 
 use alembic_adapter_registry::{create_backend, Plugin};
 use alembic_engine::{
-    apply_plan, build_plan, guard_drift_report, guard_schema_deletes, load_inventory,
+    apply_plan, build_plan, guard_drift_report, guard_schema_provisioning, load_inventory,
     load_inventory_unvalidated, plan_write_only, render_plan, ApplyReport, Backend, DriftReport,
     Plan, StateLock, Tense,
 };
@@ -300,9 +300,10 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                 // no longer declares; gate it behind --allow-delete like apply,
                 // checking the read-only preview before writing schema.
                 if !allow_delete {
-                    if let Some(preview) = emitter.preview_schema(&inventory.schema).await? {
-                        guard_schema_deletes(&preview, allow_delete)?;
-                    }
+                    guard_schema_provisioning(
+                        emitter.preview_schema(&inventory.schema).await?,
+                        allow_delete,
+                    )?;
                 }
                 let provision_report = emitter.ensure_schema(&inventory.schema).await?;
                 if !provision_report.is_empty() {

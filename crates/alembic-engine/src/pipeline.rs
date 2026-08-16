@@ -62,6 +62,23 @@ fn detect_key_collisions(observed: &ObservedState) -> Result<()> {
     Ok(())
 }
 
+/// gate provisioning on the adapter's schema preview, for both `plan --provision`
+/// and `apply`. `None` is the adapter reporting it cannot preview, which refuses:
+/// an unpreviewable delete is the case the gate exists for.
+pub fn guard_schema_provisioning(
+    preview: Option<ProvisionReport>,
+    allow_delete: bool,
+) -> Result<()> {
+    match preview {
+        Some(preview) => guard_schema_deletes(&preview, allow_delete),
+        None if allow_delete => Ok(()),
+        None => Err(anyhow!(
+            "this backend cannot preview schema, so the --allow-delete gate cannot run; \
+             implement preview_schema, or re-run with --allow-delete to provision unpreviewed"
+        )),
+    }
+}
+
 /// refuse destructive schema provisioning (deleting custom object types/fields
 /// the inventory no longer declares) unless `allow_delete` is set. these deletes
 /// cascade to their objects on the backend, so they are gated behind the same
@@ -153,13 +170,10 @@ pub(crate) async fn apply(
     // so read+write and write-only take the same path from here.
     let emitter = backend.emitter()?;
     // authoritative gate: self-preview at the chokepoint before ensure_schema, so
-    // no caller can forget (mirrors `plan --provision`). preview_schema defaults
-    // to Ok(None), leaving backends that cannot preview unaffected; an Err fails
-    // closed rather than provision blind.
+    // no caller can forget (mirrors `plan --provision`). an Err fails closed
+    // rather than provision blind, and so does a `None` preview.
     if !allow_delete {
-        if let Some(preview) = emitter.preview_schema(&plan.schema).await? {
-            guard_schema_deletes(&preview, allow_delete)?;
-        }
+        guard_schema_provisioning(emitter.preview_schema(&plan.schema).await?, allow_delete)?;
     }
     let provision = emitter.ensure_schema(&plan.schema).await?;
 
