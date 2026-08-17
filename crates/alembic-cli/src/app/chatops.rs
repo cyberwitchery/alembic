@@ -1,4 +1,4 @@
-//! integration with Slack and other chat services via webhook
+//! integration with various chat services
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -80,7 +80,7 @@ pub async fn notify(
         .await?;
 
     match res.error_for_status() {
-        Ok(ok) => {
+        Ok(_) => {
             println!("chatops notification sent ({})", backend.name());
             Ok(())
         }
