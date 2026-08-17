@@ -1,8 +1,11 @@
 //! cli for the external adapter conformance runner.
 
-use alembic_adapter_test::{load_cases, run_builtin_with, run_cases, Builtins, Failure, Outcome};
+use alembic_adapter_test::{
+    load_cases, run_builtin_with, run_cases, Builtins, Case, Failure, Outcome,
+};
+use anyhow::Context;
 use clap::Parser;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
@@ -38,7 +41,7 @@ fn main() -> ExitCode {
     };
     let mut outcomes = run_builtin_with(&cli.adapter, timeout, builtins);
     if let Some(path) = cli.cases {
-        match load_cases(&path) {
+        let cases = match load_cases(&path) {
             // a suite that ran no cases must not report a pass.
             Ok(cases) if cases.is_empty() => {
                 eprintln!(
@@ -47,16 +50,86 @@ fn main() -> ExitCode {
                 );
                 return ExitCode::from(2);
             }
-            Ok(cases) => outcomes.extend(run_cases(&cli.adapter, timeout, &cases)),
+            Ok(cases) => cases,
             Err(e) => {
                 // the cause carries what is wrong with the fixture (the stray or
                 // malformed key); the context alone only names the file.
                 eprintln!("error: {e:#}");
                 return ExitCode::from(2);
             }
+        };
+        // a suite that ran some of them must not either.
+        match unloaded_case_dirs(&path) {
+            Ok(dirs) if !dirs.is_empty() => {
+                let list: Vec<String> = dirs.iter().map(|d| d.display().to_string()).collect();
+                eprintln!(
+                    "error: cases in {} are not loaded: `--cases` reads {} itself, not its subdirectories",
+                    list.join(", "),
+                    path.display()
+                );
+                return ExitCode::from(2);
+            }
+            Ok(_) => {}
+            Err(e) => {
+                eprintln!("error: {e:#}");
+                return ExitCode::from(2);
+            }
         }
+        outcomes.extend(run_cases(&cli.adapter, timeout, &cases));
     }
     report(&outcomes)
+}
+
+/// subdirectories of a `--cases` directory holding case files, sorted. a `--cases`
+/// file has none.
+fn unloaded_case_dirs(path: &Path) -> anyhow::Result<Vec<PathBuf>> {
+    if !path.is_dir() {
+        return Ok(Vec::new());
+    }
+    let mut dirs = Vec::new();
+    for entry in std::fs::read_dir(path).with_context(|| format!("reading {}", path.display()))? {
+        let entry = entry?;
+        let child = entry.path();
+        if entry.file_type()?.is_dir() && holds_case_files(&child)? {
+            dirs.push(child);
+        }
+    }
+    dirs.sort();
+    Ok(dirs)
+}
+
+/// whether a tree holds a file that loads as a case: one grouped two levels down
+/// is dropped as silently as one directly inside.
+///
+/// the boundary is a case rather than a `.json`, so a directory kept for notes or
+/// editor settings does not stop the run. the cost is a malformed case grouped
+/// below, which no longer reports here; the zero-case guard still catches the
+/// layout that puts every case in a subdirectory.
+///
+/// a symlinked directory reads as a file rather than a directory here, so the
+/// walk cannot be sent out of the tree or around a cycle.
+fn holds_case_files(dir: &Path) -> anyhow::Result<bool> {
+    for entry in std::fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
+        let entry = entry?;
+        let path = entry.path();
+        if entry.file_type()?.is_dir() {
+            if holds_case_files(&path)? {
+                return Ok(true);
+            }
+        } else if path.extension().and_then(|e| e.to_str()) == Some("json")
+            && loads_as_a_case(&path)
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// whether `path` parses as a case, the judgement `load_cases` applies one
+/// directory up. unreadable is not a case: this decides whether to report, and
+/// the run that reports it never reads the file.
+fn loads_as_a_case(path: &Path) -> bool {
+    std::fs::read_to_string(path).is_ok_and(|text| serde_json::from_str::<Case>(&text).is_ok())
 }
 
 /// print one line per outcome, a summary, and pick the exit code.

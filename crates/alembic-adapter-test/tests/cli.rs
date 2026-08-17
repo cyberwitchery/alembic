@@ -156,6 +156,129 @@ fn a_cases_path_resolving_to_no_cases_exits_2() {
 }
 
 #[test]
+fn cases_in_a_subdirectory_exit_2_even_when_others_loaded() {
+    // one file at the top level is the only difference from the total miss above.
+    let dir = tempdir().expect("create case dir");
+    std::fs::copy(
+        manifest("examples/cases/write-create.json"),
+        dir.path().join("write-create.json"),
+    )
+    .expect("copy fixture");
+    let nested = dir.path().join("netbox");
+    std::fs::create_dir(&nested).expect("create subdirectory");
+    std::fs::copy(
+        manifest("examples/cases/read-empty.json"),
+        nested.join("read-empty.json"),
+    )
+    .expect("copy fixture");
+
+    let out = Command::new(BIN)
+        .args(["--cases"])
+        .arg(dir.path())
+        .arg("--")
+        .arg(example_binary("sdk_emitter"))
+        .output()
+        .expect("run binary");
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(2), "{stdout}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("netbox"), "{stderr}");
+    assert!(!stdout.contains("passed"), "{stdout}");
+}
+
+#[test]
+fn cases_two_directories_down_are_named_too() {
+    let dir = tempdir().expect("create case dir");
+    std::fs::copy(
+        manifest("examples/cases/write-create.json"),
+        dir.path().join("write-create.json"),
+    )
+    .expect("copy fixture");
+    let nested = dir.path().join("backends").join("netbox");
+    std::fs::create_dir_all(&nested).expect("create subdirectories");
+    std::fs::copy(
+        manifest("examples/cases/read-empty.json"),
+        nested.join("read-empty.json"),
+    )
+    .expect("copy fixture");
+
+    let out = Command::new(BIN)
+        .args(["--cases"])
+        .arg(dir.path())
+        .arg("--")
+        .arg(example_binary("sdk_emitter"))
+        .output()
+        .expect("run binary");
+
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("backends"), "{stderr}");
+}
+
+#[test]
+fn a_subdirectory_holding_no_cases_is_not_a_fixtures_error() {
+    let dir = tempdir().expect("create case dir");
+    std::fs::copy(
+        manifest("examples/cases/write-create.json"),
+        dir.path().join("write-create.json"),
+    )
+    .expect("copy fixture");
+    let notes = dir.path().join("notes");
+    std::fs::create_dir(&notes).expect("create subdirectory");
+    std::fs::write(notes.join("README.md"), "how these cases were captured\n").expect("write file");
+
+    let out = Command::new(BIN)
+        .args(["--cases"])
+        .arg(dir.path())
+        .arg("--")
+        .arg(example_binary("sdk_emitter"))
+        .output()
+        .expect("run binary");
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{stdout}{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(stdout.contains("case/write a create op"), "{stdout}");
+}
+
+#[test]
+fn a_subdirectory_holding_a_json_that_is_not_a_case_is_not_a_fixtures_error() {
+    // the boundary the check draws is case, not `.json`: a directory kept for
+    // notes or editor settings holds neither.
+    let dir = tempdir().expect("create case dir");
+    std::fs::copy(
+        manifest("examples/cases/write-create.json"),
+        dir.path().join("write-create.json"),
+    )
+    .expect("copy fixture");
+    let vscode = dir.path().join(".vscode");
+    std::fs::create_dir(&vscode).expect("create subdirectory");
+    std::fs::write(vscode.join("settings.json"), r#"{"editor.tabSize": 2}"#).expect("write file");
+
+    let out = Command::new(BIN)
+        .args(["--cases"])
+        .arg(dir.path())
+        .arg("--")
+        .arg(example_binary("sdk_emitter"))
+        .output()
+        .expect("run binary");
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{stdout}{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(stdout.contains("case/write a create op"), "{stdout}");
+}
+
+#[test]
 fn missing_adapter_argument_exits_2() {
     // with no `-- adapter`, clap rejects the usage and exits 2.
     let out = Command::new(BIN).output().expect("run binary");
