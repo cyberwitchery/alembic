@@ -66,7 +66,8 @@ fn a_misspelled_provision_category_fails_the_apply() {
 
 #[test]
 fn a_misspelled_result_key_fails_the_apply() {
-    // taken for "cannot preview", this one provisioned the delete and exited 0.
+    // an absent result carries a meaning of its own, so a typo'd `result` has to
+    // be an error rather than that meaning.
     let (ok, stdout, stderr) = apply(&[("ADAPTER_RESULT_KEY", "reslt")]);
     assert!(
         !ok,

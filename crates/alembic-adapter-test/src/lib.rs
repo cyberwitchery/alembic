@@ -189,8 +189,8 @@ pub fn run_builtin_with(adapter: &[String], timeout: Duration, builtins: Builtin
             name,
             &request_bytes(request),
             method,
-            // a conformant adapter answers preview_schema, either with a report or
-            // a null result ("cannot preview"); both count as success.
+            // certifies only that the adapter answers preview_schema; what the answer
+            // means for a provisioning run is in docs/external-adapters.md.
             Expectation::MustSucceed,
         ));
         outcomes.push(if builtins.writes {
@@ -393,8 +393,7 @@ fn parse_response(run: &RunResult) -> Result<ExternalResponse<Value>, String> {
         .map_err(|_| "stdout has trailing output after the json document".to_string())?;
 
     // [`check_payload`]'s rule at the outer level: `result` misspelled deserializes
-    // to `None`, which for preview_schema reads as "cannot preview" and skips the
-    // --allow-delete gate the payload check exists to defend.
+    // to `None`, which for preview_schema refuses the provisioning run it should pass.
     reject_unknown_keys(&as_template(response_envelope())?, &value, "")
         .map_err(|e| format!("bad response envelope: {e}"))?;
 

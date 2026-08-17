@@ -954,8 +954,7 @@ fn a_misspelled_schema_delete_fails() {
 #[test]
 fn a_misspelled_result_key_fails() {
     // one level up, same gate: preview_schema is allowed to answer `(true, None,
-    // None)`, so a typo'd `result` reads as "cannot preview" and the run skips the
-    // --allow-delete refusal rather than hitting it.
+    // None)`, so a typo'd `result` reads as "cannot preview" and refuses the run.
     let outcomes = run_builtin(
         &sh(&emitter_reporting_deletes("resutl", "deleted_object_types")),
         TIMEOUT,
