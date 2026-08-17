@@ -3,6 +3,7 @@
 ## Unreleased
 
 - a read returning two objects under one key names both colliding backend ids, not just the key
+- `plan` refuses an observation whose ref-typed fields hold backend ids rather than the target's uid
 - `alembic-adapter-test` fails a `--cases` directory whose subdirectories hold cases it does not load
 - `apply` rejects a plan file carrying an unknown key rather than dropping it, `schema_preview` included
 - external adapters: an unknown key in a provisioning report, an applied operation or the response envelope is rejected
