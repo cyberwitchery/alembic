@@ -1,6 +1,8 @@
 //! cli for the external adapter conformance runner.
 
-use alembic_adapter_test::{load_cases, run_builtin_with, run_cases, Builtins, Failure, Outcome};
+use alembic_adapter_test::{
+    load_cases, run_builtin_with, run_cases, Builtins, Case, Failure, Outcome,
+};
 use anyhow::Context;
 use clap::Parser;
 use std::path::{Path, PathBuf};
@@ -96,8 +98,16 @@ fn unloaded_case_dirs(path: &Path) -> anyhow::Result<Vec<PathBuf>> {
     Ok(dirs)
 }
 
-/// whether a tree holds a `.json` file: a case grouped two levels down is dropped as
-/// silently as one directly inside. a symlinked directory is left alone.
+/// whether a tree holds a file that loads as a case: one grouped two levels down
+/// is dropped as silently as one directly inside.
+///
+/// the boundary is a case rather than a `.json`, so a directory kept for notes or
+/// editor settings does not stop the run. the cost is a malformed case grouped
+/// below, which no longer reports here; the zero-case guard still catches the
+/// layout that puts every case in a subdirectory.
+///
+/// a symlinked directory reads as a file rather than a directory here, so the
+/// walk cannot be sent out of the tree or around a cycle.
 fn holds_case_files(dir: &Path) -> anyhow::Result<bool> {
     for entry in std::fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
         let entry = entry?;
@@ -106,11 +116,20 @@ fn holds_case_files(dir: &Path) -> anyhow::Result<bool> {
             if holds_case_files(&path)? {
                 return Ok(true);
             }
-        } else if path.extension().and_then(|e| e.to_str()) == Some("json") {
+        } else if path.extension().and_then(|e| e.to_str()) == Some("json")
+            && loads_as_a_case(&path)
+        {
             return Ok(true);
         }
     }
     Ok(false)
+}
+
+/// whether `path` parses as a case, the judgement `load_cases` applies one
+/// directory up. unreadable is not a case: this decides whether to report, and
+/// the run that reports it never reads the file.
+fn loads_as_a_case(path: &Path) -> bool {
+    std::fs::read_to_string(path).is_ok_and(|text| serde_json::from_str::<Case>(&text).is_ok())
 }
 
 /// print one line per outcome, a summary, and pick the exit code.

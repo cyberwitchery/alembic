@@ -247,6 +247,38 @@ fn a_subdirectory_holding_no_cases_is_not_a_fixtures_error() {
 }
 
 #[test]
+fn a_subdirectory_holding_a_json_that_is_not_a_case_is_not_a_fixtures_error() {
+    // the boundary the check draws is case, not `.json`: a directory kept for
+    // notes or editor settings holds neither.
+    let dir = tempdir().expect("create case dir");
+    std::fs::copy(
+        manifest("examples/cases/write-create.json"),
+        dir.path().join("write-create.json"),
+    )
+    .expect("copy fixture");
+    let vscode = dir.path().join(".vscode");
+    std::fs::create_dir(&vscode).expect("create subdirectory");
+    std::fs::write(vscode.join("settings.json"), r#"{"editor.tabSize": 2}"#).expect("write file");
+
+    let out = Command::new(BIN)
+        .args(["--cases"])
+        .arg(dir.path())
+        .arg("--")
+        .arg(example_binary("sdk_emitter"))
+        .output()
+        .expect("run binary");
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{stdout}{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(stdout.contains("case/write a create op"), "{stdout}");
+}
+
+#[test]
 fn missing_adapter_argument_exits_2() {
     // with no `-- adapter`, clap rejects the usage and exits 2.
     let out = Command::new(BIN).output().expect("run binary");
