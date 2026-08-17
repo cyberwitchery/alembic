@@ -383,7 +383,7 @@ mod tests {
     #[test]
     fn a_misspelled_result_key_is_rejected() {
         // a typo'd `result` reads as an absent one, which preview_schema takes for
-        // "cannot preview" and skips the gate on.
+        // "cannot preview" and refuses the run.
         let err = serde_json::from_str::<ExternalResponse<ProvisionReport>>(
             r#"{"ok":true,"reslt":{"deleted_object_types":["dcim.site"]}}"#,
         )
