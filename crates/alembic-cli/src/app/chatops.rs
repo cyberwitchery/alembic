@@ -81,7 +81,7 @@ pub async fn notify(
 
     match res.error_for_status() {
         Ok(ok) => {
-            println!("chatops notification sent ({}): {:?}", backend.name(), ok);
+            println!("chatops notification sent ({})", backend.name());
             Ok(())
         }
         Err(e) => Err(anyhow::anyhow!(
