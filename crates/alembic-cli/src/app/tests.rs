@@ -2708,6 +2708,137 @@ async fn run_plan_and_import_an_external_adapter_declaring_observer() {
     assert!(methods.contains("read"), "both commands read: {methods}");
 }
 
+fn write_ref_chain_inventory(dir: &Path) -> PathBuf {
+    let inventory = dir.join("chain.yaml");
+    std::fs::write(
+        &inventory,
+        r#"
+schema:
+  types:
+    dcim.site:
+      key:
+        slug:
+          type: slug
+      fields:
+        slug:
+          type: slug
+        name:
+          type: string
+    dcim.device:
+      key:
+        site:
+          type: ref
+          target: dcim.site
+        name:
+          type: string
+      fields:
+        site:
+          type: ref
+          target: dcim.site
+        name:
+          type: string
+    dcim.interface:
+      key:
+        device:
+          type: ref
+          target: dcim.device
+        name:
+          type: string
+      fields:
+        device:
+          type: ref
+          target: dcim.device
+        name:
+          type: string
+# canonical uids, as `alembic import` writes them: a ref-typed key field names
+# the uid its target derives.
+objects:
+  - uid: "8c998348-947f-568d-bbb0-efbed3c3f903"
+    type: dcim.site
+    key:
+      slug: "fra1"
+    attrs:
+      slug: "fra1"
+      name: "FRA1"
+  - uid: "46a4f856-9778-577f-bb3a-d9c63a59fe56"
+    type: dcim.device
+    key:
+      site: "8c998348-947f-568d-bbb0-efbed3c3f903"
+      name: "leaf01"
+    attrs:
+      site: "8c998348-947f-568d-bbb0-efbed3c3f903"
+      name: "leaf01"
+  - uid: "e677c075-7bc8-54b5-ac34-ee71611bc7a1"
+    type: dcim.interface
+    key:
+      device: "46a4f856-9778-577f-bb3a-d9c63a59fe56"
+      name: "eth0"
+    attrs:
+      device: "46a4f856-9778-577f-bb3a-d9c63a59fe56"
+      name: "eth0"
+"#,
+    )
+    .unwrap();
+    inventory
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn run_plan_adopts_a_backend_whose_keys_hold_refs() {
+    let _cwd = CwdGuard::acquire_async().await;
+    let dir = tempdir().unwrap();
+    let state_path = dir.path().join(".alembic").join("state.json");
+    let _env = EnvVarGuard::acquire_async(&[
+        ("ALEMBIC_STATE_BACKEND", Some("local")),
+        ("ALEMBIC_STATE_PATH", Some(state_path.to_str().unwrap())),
+    ])
+    .await;
+
+    let adapter = example_binary("ref_chain_adapter");
+    let log = dir.path().join("reads.log");
+    let config = dir.path().join("backend.yaml");
+    std::fs::write(
+        &config,
+        format!(
+            "backend: external\ncommand: \"{}\"\ntimeout_seconds: 5\nenv:\n  REF_CHAIN_ADAPTER_LOG: \"{}\"\n",
+            adapter.display(),
+            log.display()
+        ),
+    )
+    .unwrap();
+    let inventory = write_ref_chain_inventory(dir.path());
+    let out = dir.path().join("plan.json");
+
+    std::env::set_current_dir(dir.path()).unwrap();
+    let planned = run(
+        Cli {
+            command: Command::Plan {
+                file: inventory,
+                output: Some(out.clone()),
+                backend: Some("external".to_string()),
+                backend_config: Some(config),
+                provision: false,
+                dry_run: false,
+                report: false,
+                allow_delete: false,
+            },
+        },
+        AppConfig::load().unwrap(),
+    )
+    .await;
+    planned.expect("the chain plans");
+
+    let plan: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    assert_eq!(
+        plan["ops"].as_array().map(Vec::len),
+        Some(0),
+        "the backend already holds the chain: {}",
+        plan["ops"]
+    );
+    let reads = std::fs::read_to_string(&log).unwrap().lines().count();
+    assert_eq!(reads, 1, "the adapter resolves the chain in its own read");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn run_plan_without_report_still_plans_a_write_only_backend() {
     let _cwd = CwdGuard::acquire_async().await;

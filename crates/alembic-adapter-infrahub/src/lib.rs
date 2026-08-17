@@ -1,10 +1,10 @@
 //! infrahub graphql adapter for alembic.
 
-use alembic_core::{key_string, uid_v5, FieldType, JsonMap, Key, Schema, TypeName, Uid};
+use alembic_core::{key_string, FieldType, JsonMap, Key, Schema, TypeName, Uid};
 use alembic_engine::{
-    apply_non_delete_journaled, backend_id_from_value, build_key_from_schema, is_missing_ref_error,
-    normalize_attrs_refs, resolve_value_for_type, resolved_ids_identity, Adapter, AppliedOp,
-    ApplyReport, BackendId, Emitter, ObservedObject, ObservedState, Observer, Op, ProvisionReport,
+    apply_non_delete_journaled, build_key_from_schema, is_missing_ref_error, normalize_attrs_refs,
+    resolve_ref_keyed_identity, resolve_value_for_type, resolved_ids_identity, Adapter, AppliedOp,
+    ApplyReport, BackendId, Emitter, ObservedState, Observer, Op, ProvisionReport, RawNode,
     RetryApplyDriver, StateMappings, StateStore,
 };
 use anyhow::{anyhow, Context, Result};
@@ -603,8 +603,8 @@ impl Observer for InfrahubAdapter {
             types.to_vec()
         };
 
-        // phase 1: fetch every node of every requested type as raw
-        // `(backend id, attrs)` pairs, refs still pointing at backend ids.
+        // fetch every node of every requested type as raw `(backend id, attrs)`
+        // pairs, refs still pointing at backend ids; the engine resolves them.
         let mut raw: Vec<RawNode> = Vec::new();
         for type_name in requested {
             let type_schema = schema
@@ -623,58 +623,21 @@ impl Observer for InfrahubAdapter {
             }
         }
 
-        // phase 2: resolve each node's canonical uid statelessly. an object's
-        // uid derives from its key, which may itself contain references (an
-        // interface keyed by (device, name)), so resolve to a fixpoint: each
-        // round settles the objects whose key references are already known,
-        // seeding the next round, until nothing new resolves. (saved state, if
-        // any, is folded in up front; a reference cycle leaves the stragglers
-        // pointing at backend ids, still internally consistent.)
         let mut mappings = StateMappings::from_state(state_store);
-        let mut resolved = vec![false; raw.len()];
-        loop {
-            let mut progressed = false;
-            for (i, node) in raw.iter().enumerate() {
-                if resolved[i] {
-                    continue;
-                }
-                let type_schema = schema
-                    .types
-                    .get(node.type_name.as_str())
-                    .ok_or_else(|| anyhow!("missing schema for {}", node.type_name))?;
-                if !key_refs_resolved(type_schema, &node.attrs, &mappings) {
-                    continue;
-                }
-                let norm = normalize_attrs_refs(&node.attrs, type_schema, &mappings);
-                let key = build_key_from_schema(type_schema, &norm)
-                    .with_context(|| format!("build key for {}", node.type_name))?;
-                let uid = uid_v5(node.type_name.as_str(), &key_string(&key));
-                mappings.insert(node.type_name.as_str(), node.backend_id.clone(), uid);
-                resolved[i] = true;
-                progressed = true;
-            }
-            if !progressed {
-                break;
-            }
-        }
+        let observed = resolve_ref_keyed_identity(
+            &raw,
+            schema,
+            &mut mappings,
+            |node, type_schema, mappings| normalize_attrs_refs(&node.attrs, type_schema, mappings),
+            |node, type_schema, attrs| {
+                build_key_from_schema(type_schema, attrs)
+                    .with_context(|| format!("build key for {}", node.type_name))
+            },
+        )?;
 
-        // phase 3: materialize every node with refs resolved against the full
-        // mapping (key refs in an unresolved cycle stay as backend ids).
         let mut state = ObservedState::default();
-        for node in &raw {
-            let type_schema = schema
-                .types
-                .get(node.type_name.as_str())
-                .ok_or_else(|| anyhow!("missing schema for {}", node.type_name))?;
-            let attrs = normalize_attrs_refs(&node.attrs, type_schema, &mappings);
-            let key = build_key_from_schema(type_schema, &attrs)
-                .with_context(|| format!("build key for {}", node.type_name))?;
-            state.insert(ObservedObject {
-                type_name: node.type_name.clone(),
-                key,
-                attrs,
-                backend_id: Some(node.backend_id.clone()),
-            })?;
+        for object in observed {
+            state.insert(object)?;
         }
 
         Ok(state)
@@ -2088,45 +2051,6 @@ fn validate_value(field: &str, field_type: &FieldType, value: &Value) -> Result<
     Ok(())
 }
 
-/// a node observed from Infrahub before its references are resolved: the
-/// relationship attrs still hold backend ids.
-struct RawNode {
-    type_name: TypeName,
-    backend_id: BackendId,
-    attrs: JsonMap,
-}
-
-/// whether every reference-typed *key* field of `attrs` already resolves to a
-/// canonical uid in `mappings` (so the object's own uid can be derived). a key
-/// field that is absent or not a reference imposes no constraint.
-fn key_refs_resolved(
-    type_schema: &alembic_core::TypeSchema,
-    attrs: &JsonMap,
-    mappings: &StateMappings,
-) -> bool {
-    for (field, schema) in &type_schema.key {
-        let target = match &schema.r#type {
-            FieldType::Ref { target } | FieldType::ListRef { target } => target,
-            _ => continue,
-        };
-        let Some(value) = attrs.get(field) else {
-            continue;
-        };
-        let items = match value {
-            Value::Array(items) => items.clone(),
-            other => vec![other.clone()],
-        };
-        for item in items {
-            if let Some(bid) = backend_id_from_value(&item) {
-                if mappings.uid_for(target, &bid).is_none() {
-                    return false;
-                }
-            }
-        }
-    }
-    true
-}
-
 // kept local, not the engine's deep collector: infrahub graphql refs are flat
 // uid strings/arrays, so this stays shallow (see #174).
 fn describe_missing_refs(ops: &[Op], resolved: &BTreeMap<Uid, BackendId>) -> String {
@@ -2172,7 +2096,9 @@ mod tests {
     use alembic_core::{
         key_string, FieldSchema, FieldType, JsonMap, Key, Object, Schema, TypeName, TypeSchema,
     };
-    use alembic_engine::{AdapterApplyError, BackendId, Op, StateData, StateStore};
+    use alembic_engine::{
+        backend_id_from_value, AdapterApplyError, BackendId, Op, StateData, StateStore,
+    };
     use httpmock::prelude::*;
     use httpmock::Mock;
     use serde_json::json;

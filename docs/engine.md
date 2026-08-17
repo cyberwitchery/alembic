@@ -13,6 +13,8 @@ the engine is responsible for loading, validating, planning, and applying change
 7) apply operations in dependency order
 8) optionally import canonical inventory from backend state
 
+an object keyed on a ref only matches by key once that ref reads back in uid space, so an adapter resolves ref-keyed identity within its own read (`resolve_ref_keyed_identity`) rather than leaning on state.
+
 ## validation
 
 validation ensures:

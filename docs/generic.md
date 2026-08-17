@@ -88,7 +88,8 @@ the first page.
   list and map fields.
 - if a referenced uid cannot be resolved (not in state or created earlier in the same apply),
   apply fails with a missing reference error.
-- on observe, ref-typed fields are normalized back to alembic uids using state.
+- on observe, ref-typed fields are normalized back to alembic uids, from state and from the
+  identity the read resolves for the objects it holds.
 
 ## keys and matching
 
