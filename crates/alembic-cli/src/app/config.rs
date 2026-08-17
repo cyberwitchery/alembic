@@ -1,5 +1,6 @@
 //! configuration for the cli tool
 
+use crate::app::chatops::ChatopsBackend;
 use figment::providers::{Serialized, Yaml};
 use figment::{
     providers::{Env, Format},
@@ -14,6 +15,7 @@ use std::path::PathBuf;
 #[serde(deny_unknown_fields)]
 pub struct AppConfig {
     pub plugins_dir: PathBuf,
+    pub chatops_backend: Option<ChatopsBackend>,
 }
 
 impl AppConfig {
@@ -38,6 +40,7 @@ impl Default for AppConfig {
     fn default() -> AppConfig {
         AppConfig {
             plugins_dir: "./plugins".into(),
+            chatops_backend: None,
         }
     }
 }

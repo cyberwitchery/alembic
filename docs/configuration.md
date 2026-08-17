@@ -15,6 +15,8 @@ not silently ignored settings.
 - `plugins_dir` where the alembic cli will look for plugin
   configuration files (which must have the file ending `.yaml` or `.yml`).
 
+- `chatops_backend` if set this will send chat notifications, see [chatops.md](chatops.md)
+
 the `ALEMBIC_STATE_*` variables are a separate, env-only surface: they select the
 state backend rather than a configuration key, and cannot be set in
 `alembic.yaml`. see [state](state.md) for the full list.

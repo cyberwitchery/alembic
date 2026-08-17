@@ -1,5 +1,6 @@
 //! cli entrypoint for alembic.
 
+pub mod chatops;
 pub mod config;
 mod io;
 mod state;
@@ -27,6 +28,7 @@ use alembic_core::TypeName;
 use self::io::warn_misleading_output_extension;
 #[cfg(test)]
 use self::state::{resolve_state_backend_config, state_path, StateBackendConfig};
+use crate::app::chatops::Notification;
 #[cfg(test)]
 use alembic_adapter_django::emit::Runner;
 #[cfg(test)]
@@ -367,6 +369,11 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                 // write); the machine-readable copy is the written plan file.
                 println!("{}", render_plan(&plan));
                 println!("\nplan written to {}", output.display());
+
+                if let Some(chatops_backend) = &config.chatops_backend {
+                    chatops::notify(chatops_backend, &Notification::Plan(render_plan(&plan)))
+                        .await?;
+                }
             }
         }
         Command::Apply {
