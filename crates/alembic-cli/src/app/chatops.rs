@@ -67,11 +67,6 @@ pub async fn notify(
 ) -> Result<(), anyhow::Error> {
     let client = reqwest::Client::new();
 
-    println!(
-        "Sending notification to url: {}",
-        backend.notification_url()
-    );
-
     let res = client
         .post(backend.notification_url())
         .header("Content-Type", "application/json")
