@@ -145,13 +145,12 @@ impl StateStore {
             .and_then(|map| map.get(&uid).cloned())
     }
 
-    /// set a backend id mapping.
+    /// set a backend id mapping. a backend object answers to one uid, so any
+    /// uid this one supersedes is dropped.
     pub fn set_backend_id(&mut self, type_name: TypeName, uid: Uid, backend_id: BackendId) {
-        self.data
-            .mappings
-            .entry(type_name)
-            .or_default()
-            .insert(uid, backend_id);
+        let type_map = self.data.mappings.entry(type_name).or_default();
+        type_map.retain(|_, mapped| *mapped != backend_id);
+        type_map.insert(uid, backend_id);
     }
 
     /// remove a backend id mapping.
@@ -460,6 +459,51 @@ mod tests {
         assert_eq!(
             store.backend_id(t("site"), uid(1)),
             Some(BackendId::Int(99))
+        );
+    }
+
+    #[test]
+    fn set_backend_id_drops_the_uid_it_supersedes() {
+        let mut store = StateStore::new(None, StateData::default());
+        store.set_backend_id(t("site"), uid(1), BackendId::Int(42));
+        store.set_backend_id(t("site"), uid(2), BackendId::Int(42));
+        assert_eq!(store.backend_id(t("site"), uid(1)), None);
+        assert_eq!(
+            store.backend_id(t("site"), uid(2)),
+            Some(BackendId::Int(42))
+        );
+        assert_eq!(store.all_mappings()[&t("site")].len(), 1);
+    }
+
+    #[test]
+    fn set_backend_id_keeps_the_uids_of_other_backend_ids() {
+        let mut store = StateStore::new(None, StateData::default());
+        store.set_backend_id(t("site"), uid(1), BackendId::Int(42));
+        store.set_backend_id(t("site"), uid(2), BackendId::Int(43));
+        assert_eq!(
+            store.backend_id(t("site"), uid(1)),
+            Some(BackendId::Int(42))
+        );
+        assert_eq!(
+            store.backend_id(t("site"), uid(2)),
+            Some(BackendId::Int(43))
+        );
+    }
+
+    #[test]
+    fn set_backend_id_supersedes_within_one_type() {
+        // backend ids are only unique per type, so the same id under another type
+        // is a different object and keeps its uid.
+        let mut store = StateStore::new(None, StateData::default());
+        store.set_backend_id(t("site"), uid(1), BackendId::Int(42));
+        store.set_backend_id(t("device"), uid(2), BackendId::Int(42));
+        assert_eq!(
+            store.backend_id(t("site"), uid(1)),
+            Some(BackendId::Int(42))
+        );
+        assert_eq!(
+            store.backend_id(t("device"), uid(2)),
+            Some(BackendId::Int(42))
         );
     }
 

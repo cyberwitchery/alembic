@@ -3,7 +3,7 @@ use alembic_core::{
     FieldSchema, FieldType, Inventory, JsonMap, Key, Object, Schema, TypeName, TypeSchema, Uid,
 };
 use serde_json::json;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use tempfile::tempdir;
 use uuid::Uuid;
 
@@ -2245,4 +2245,150 @@ fn apply_plan_rejects_read_only_observer() {
         .unwrap_err()
         .to_string();
     assert!(err.contains("read-only"));
+}
+
+/// a backend holding a site and a device whose `site` attr is the site's backend
+/// id. reads resolve that id back to a uid through the state store, the way the
+/// built-in adapters do.
+struct RefBackend;
+
+#[async_trait::async_trait]
+impl Observer for RefBackend {
+    async fn read(
+        &self,
+        schema: &Schema,
+        _types: &[TypeName],
+        state: &StateStore,
+    ) -> anyhow::Result<ObservedState> {
+        let raw = vec![
+            RawNode {
+                type_name: t("dcim.site"),
+                backend_id: BackendId::Int(1),
+                attrs: attrs_map(json!({ "slug": "fra1" })),
+            },
+            RawNode {
+                type_name: t("dcim.device"),
+                backend_id: BackendId::Int(2),
+                attrs: attrs_map(json!({ "name": "leaf01", "site": 1 })),
+            },
+        ];
+        let mut mappings = StateMappings::from_state(state);
+        let resolved = resolve_ref_keyed_identity(
+            &raw,
+            schema,
+            &mut mappings,
+            |node, type_schema, mappings| normalize_attrs_refs(&node.attrs, type_schema, mappings),
+            |_, type_schema, attrs| build_key_from_schema(type_schema, attrs),
+        )?;
+        let mut observed = ObservedState::default();
+        for object in resolved {
+            observed.insert(object)?;
+        }
+        Ok(observed)
+    }
+}
+
+fn ref_backend_schema() -> Schema {
+    let field = |r#type: FieldType, required: bool| FieldSchema {
+        r#type,
+        required,
+        nullable: !required,
+        description: None,
+        format: None,
+        pattern: None,
+    };
+    let mut types = BTreeMap::new();
+    types.insert(
+        "dcim.site".to_string(),
+        TypeSchema {
+            key: BTreeMap::from([("slug".to_string(), field(FieldType::String, true))]),
+            fields: BTreeMap::new(),
+        },
+    );
+    types.insert(
+        "dcim.device".to_string(),
+        TypeSchema {
+            key: BTreeMap::from([("name".to_string(), field(FieldType::String, true))]),
+            fields: BTreeMap::from([(
+                "site".to_string(),
+                field(
+                    FieldType::Ref {
+                        target: "dcim.site".to_string(),
+                    },
+                    false,
+                ),
+            )]),
+        },
+    );
+    Schema { types }
+}
+
+/// the two backend objects as an inventory claiming `site_uid` and `device_uid`,
+/// the device referencing the site by uid.
+fn ref_backend_inventory(site_uid: Uid, device_uid: Uid) -> Inventory {
+    Inventory {
+        schema: ref_backend_schema(),
+        objects: vec![
+            obj(site_uid, "dcim.site", "slug=fra1", json!({})),
+            obj(
+                device_uid,
+                "dcim.device",
+                "name=leaf01",
+                json!({ "site": site_uid.to_string() }),
+            ),
+        ],
+    }
+}
+
+/// every backend id in state answers to exactly one uid.
+fn backend_ids_are_unambiguous(state: &StateStore) -> bool {
+    state
+        .all_mappings()
+        .values()
+        .all(|mapping| mapping.values().collect::<BTreeSet<_>>().len() == mapping.len())
+}
+
+#[tokio::test]
+async fn plan_converges_once_the_desired_set_claims_new_uids() {
+    let dir = tempdir().unwrap();
+    let mut state = StateStore::load(dir.path().join("state.json")).unwrap();
+    // the mappings a settled run left behind. they sort after the uids the
+    // inventory below claims, and the state inversion keeps the last uid it
+    // walks, so leaving them in state is enough to decide every ref.
+    state.set_backend_id(t("dcim.site"), uid(900), BackendId::Int(1));
+    state.set_backend_id(t("dcim.device"), uid(901), BackendId::Int(2));
+
+    let inventory = ref_backend_inventory(uid(10), uid(11));
+    let first = build_plan(&RefBackend, &inventory, &mut state, false)
+        .await
+        .unwrap();
+    // the first plan reads before it adopts, so the device's ref still resolves
+    // to the uid state held: one update, and the harness is doing something.
+    assert_eq!(first.ops.len(), 1, "{:?}", first.ops);
+
+    let second = build_plan(&RefBackend, &inventory, &mut state, false)
+        .await
+        .unwrap();
+    assert!(
+        second.ops.is_empty(),
+        "the model is settled and replanned anyway: {:?}",
+        second.ops
+    );
+    assert!(backend_ids_are_unambiguous(&state));
+}
+
+#[tokio::test]
+async fn plan_only_runs_leave_the_mapping_count_flat() {
+    let dir = tempdir().unwrap();
+    let mut state = StateStore::load(dir.path().join("state.json")).unwrap();
+    // an observer can never be applied through, so a plan-only loop is the only
+    // thing that ever writes here and nothing prunes behind it.
+    for round in 0..4u128 {
+        let inventory = ref_backend_inventory(uid(100 + round * 2), uid(101 + round * 2));
+        build_plan(&RefBackend, &inventory, &mut state, false)
+            .await
+            .unwrap();
+    }
+    let mappings: usize = state.all_mappings().values().map(|m| m.len()).sum();
+    assert_eq!(mappings, 2, "{:?}", state.all_mappings());
 }
