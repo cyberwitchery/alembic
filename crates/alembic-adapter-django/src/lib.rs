@@ -969,6 +969,27 @@ fn serializer_fields(model: &ModelSpec) -> Vec<&str> {
     fields
 }
 
+/// the value the fixture carries for `spec`.
+///
+/// a datetime goes out with an uppercase separator. `loaddata` reads it with
+/// django's `parse_datetime`, which falls back to a regex taking only `T` when
+/// `datetime.fromisoformat` declines, and below python 3.11 `fromisoformat`
+/// declines a trailing `Z`. rfc 3339 lets the inventory write either case, so
+/// the two meet here rather than in `validate`.
+fn fixture_value(spec: &FieldSpec, value: &Value) -> Value {
+    match (&spec.field_type, value) {
+        (DjangoFieldType::DateTime, Value::String(raw)) => {
+            // rfc 3339 fixes the separator at index 10, after `full-date`.
+            let mut out = raw.clone();
+            if out.as_bytes().get(10) == Some(&b't') {
+                out.replace_range(10..11, "T");
+            }
+            Value::String(out)
+        }
+        _ => value.clone(),
+    }
+}
+
 /// the ir objects as a django fixture: the uid is the primary key, so relations
 /// carry over as-is and `loaddata` is idempotent across runs.
 fn fixture_entries(app_name: &str, models: &[ModelSpec], objects: &[Object]) -> Result<Vec<Value>> {
@@ -996,7 +1017,7 @@ fn fixture_entries(app_name: &str, models: &[ModelSpec], objects: &[Object]) -> 
             match value {
                 Some(Value::Null) | None => {}
                 Some(value) => {
-                    fields.insert(spec.name.clone(), value.clone());
+                    fields.insert(spec.name.clone(), fixture_value(spec, value));
                 }
             }
         }
@@ -2096,6 +2117,40 @@ mod tests {
         let err = emit_django_app(dir.path(), &inventory, DjangoEmitOptions::default())
             .expect_err("a relation to a type outside the model must fail");
         assert!(err.to_string().contains("dcim.site"), "{err}");
+    }
+
+    #[test]
+    fn a_datetime_is_emitted_with_an_uppercase_separator() {
+        // rfc 3339 permits a lowercase `t` and `validate` takes it, but django
+        // reads the fixture with `parse_datetime`, whose regex fallback wants an
+        // uppercase one. the fallback is reached whenever `fromisoformat`
+        // declines, which it does for a trailing `Z` below python 3.11.
+        let inventory = Inventory {
+            schema: schema_of(vec![(
+                "ops.window",
+                type_schema(
+                    vec![("slug", field(FieldType::Slug))],
+                    vec![("starts_at", optional(FieldType::Datetime))],
+                ),
+            )]),
+            objects: vec![obj(
+                1,
+                "ops.window",
+                "slug=maintenance",
+                attrs_map(vec![
+                    ("slug", json!("maintenance")),
+                    ("starts_at", json!("2026-08-01t22:00:00Z")),
+                ]),
+            )],
+        };
+
+        let dir = emit_to_temp(&inventory);
+        let fixture: Value = serde_json::from_str(
+            &fs::read_to_string(dir.path().join(FIXTURES_DIR).join(FIXTURE_FILE)).unwrap(),
+        )
+        .unwrap();
+        let entry = &fixture.as_array().expect("a fixture list")[0];
+        assert_eq!(entry["fields"]["starts_at"], json!("2026-08-01T22:00:00Z"));
     }
 
     #[test]
