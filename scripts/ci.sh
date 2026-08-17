@@ -6,6 +6,9 @@ set -e
 cd "$(dirname "$0")/.."
 
 echo "--- Lint & Analysis ---"
+echo "Checking the release publish list..."
+./scripts/check-publish-list.sh
+
 echo "Running fmt..."
 cargo fmt --all -- --check
 
