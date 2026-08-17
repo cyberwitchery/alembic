@@ -11,6 +11,9 @@ chatops_backend:
 Available backends are:
 
 - `Slack`
+    - `secret`
+- `Discord`
+    - `token`
 
 Notifications will be sent on the following events:
 
