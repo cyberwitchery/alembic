@@ -640,12 +640,11 @@ fn preflight_output_path_accepts_an_existing_file_and_keeps_it() {
 #[test]
 fn preflight_output_path_accepts_a_bare_filename() {
     // a bare filename has an empty parent, which create_dir_all cannot take.
+    let _cwd = CwdGuard::acquire();
     let dir = tempdir().unwrap();
-    let cwd = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
     let result = io::preflight_output_path(Path::new("plan.json"));
     let leftovers = std::fs::read_dir(dir.path()).unwrap().count();
-    std::env::set_current_dir(cwd).unwrap();
     result.expect("a bare filename in a writable cwd is a valid output");
     assert_eq!(leftovers, 0, "the probe must clean up after itself");
 }
@@ -896,7 +895,7 @@ async fn run_validate_writes_the_located_errors_and_still_fails() {
 
 #[tokio::test]
 async fn run_map_ir() {
-    let _guard = cwd_lock().lock().await;
+    let _cwd = CwdGuard::acquire_async().await;
     let dir = tempdir().unwrap();
     let input = dir.path().join("in.json");
     let spec = dir.path().join("map.yaml");
@@ -943,7 +942,6 @@ rules:
 "#,
     )
     .unwrap();
-    let cwd = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
 
     let cli = Cli {
@@ -959,7 +957,6 @@ rules:
     assert!(raw.contains("location.site"));
     assert!(raw.contains("\"label\""));
     assert!(!raw.contains("dcim.site"));
-    std::env::set_current_dir(cwd).unwrap();
 }
 
 #[tokio::test]
@@ -1065,7 +1062,7 @@ async fn run_map_without_flat_args_errors() {
 
 #[tokio::test]
 async fn run_plan_missing_credentials_errors() {
-    let _guard = cwd_lock().lock().await;
+    let _cwd = CwdGuard::acquire_async().await;
     let dir = tempdir().unwrap();
     let state_path = dir.path().join(".alembic").join("state.json");
     let _env = EnvVarGuard::acquire_async(&[
@@ -1099,7 +1096,6 @@ objects:
 "#,
     )
     .unwrap();
-    let cwd = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
 
     let cli = Cli {
@@ -1116,12 +1112,11 @@ objects:
     };
     let err = run(cli, AppConfig::load().unwrap()).await.unwrap_err();
     assert!(err.to_string().contains("missing NETBOX_URL"));
-    std::env::set_current_dir(cwd).unwrap();
 }
 
 #[tokio::test]
 async fn run_apply_missing_credentials_errors() {
-    let _guard = cwd_lock().lock().await;
+    let _cwd = CwdGuard::acquire_async().await;
     let dir = tempdir().unwrap();
     let state_path = dir.path().join(".alembic").join("state.json");
     let _env = EnvVarGuard::acquire_async(&[
@@ -1131,7 +1126,6 @@ async fn run_apply_missing_credentials_errors() {
     .await;
     let plan_path = dir.path().join("plan.json");
     std::fs::write(&plan_path, r#"{ "ops": [] }"#).unwrap();
-    let cwd = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
 
     let cli = Cli {
@@ -1146,12 +1140,11 @@ async fn run_apply_missing_credentials_errors() {
     };
     let err = run(cli, AppConfig::load().unwrap()).await.unwrap_err();
     assert!(err.to_string().contains("missing NETBOX_URL"));
-    std::env::set_current_dir(cwd).unwrap();
 }
 
 #[tokio::test]
 async fn run_apply_interactive_delete_requires_allow_delete() {
-    let _guard = cwd_lock().lock().await;
+    let _cwd = CwdGuard::acquire_async().await;
     let dir = tempdir().unwrap();
     let state_path = dir.path().join(".alembic").join("state.json");
     let _env = EnvVarGuard::acquire_async(&[
@@ -1174,7 +1167,6 @@ async fn run_apply_interactive_delete_requires_allow_delete() {
         schema_preview: None,
     };
     write_plan(&plan_path, &plan).unwrap();
-    let cwd = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
 
     // django is write-only, so it passes the capability gate and reaches the
@@ -1193,7 +1185,6 @@ async fn run_apply_interactive_delete_requires_allow_delete() {
     assert!(err
         .to_string()
         .contains("plan contains delete operations; re-run with --allow-delete"));
-    std::env::set_current_dir(cwd).unwrap();
 }
 
 #[tokio::test]
@@ -1201,7 +1192,7 @@ async fn run_apply_read_only_backend_fails_before_prompting() {
     // the plan path is missing on purpose: the read-only error must fire before
     // read_plan (hence before the post-read_plan prompt loop) on both paths.
     // absence-of-prompt is checked out-of-process in tests/apply_capability.rs.
-    let _guard = cwd_lock().lock().await;
+    let _cwd = CwdGuard::acquire_async().await;
     let dir = tempdir().unwrap();
     let state_path = dir.path().join(".alembic").join("state.json");
     let _env = EnvVarGuard::acquire_async(&[
@@ -1210,7 +1201,6 @@ async fn run_apply_read_only_backend_fails_before_prompting() {
     ])
     .await;
     let missing_plan = dir.path().join("does-not-exist.json");
-    let cwd = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
 
     for interactive in [true, false] {
@@ -1232,7 +1222,6 @@ async fn run_apply_read_only_backend_fails_before_prompting() {
              before the plan is read, got: {err}"
         );
     }
-    std::env::set_current_dir(cwd).unwrap();
 }
 
 // a one-create plan against a generic rest backend, plus the config pointing at
@@ -1288,7 +1277,7 @@ types:
 async fn run_apply_writes_the_report_to_output() {
     use httpmock::Method::POST;
 
-    let _guard = cwd_lock().lock().await;
+    let _cwd = CwdGuard::acquire_async().await;
     let server = httpmock::MockServer::start();
     server.mock(|when, then| {
         when.method(POST).path("/sites/");
@@ -1305,7 +1294,6 @@ async fn run_apply_writes_the_report_to_output() {
     let (plan_path, config_path) = generic_apply_fixture(dir.path(), &server.base_url());
     let report_path = dir.path().join("nested/report.json");
 
-    let cwd = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
     let cli = Cli {
         command: Command::Apply {
@@ -1318,7 +1306,6 @@ async fn run_apply_writes_the_report_to_output() {
         },
     };
     let result = run(cli, AppConfig::load().unwrap()).await;
-    std::env::set_current_dir(cwd).unwrap();
     result.unwrap();
 
     let raw = std::fs::read_to_string(&report_path).unwrap();
@@ -1419,7 +1406,7 @@ types:
 async fn run_apply_resumes_with_the_ids_the_interrupted_run_created() {
     use httpmock::Method::POST;
 
-    let _guard = cwd_lock().lock().await;
+    let _cwd = CwdGuard::acquire_async().await;
     let dir = tempdir().unwrap();
     let state_path = dir.path().join(".alembic").join("state.json");
     let _env = EnvVarGuard::acquire_async(&[
@@ -1428,7 +1415,6 @@ async fn run_apply_resumes_with_the_ids_the_interrupted_run_created() {
     ])
     .await;
     let report_path = dir.path().join("report.json");
-    let cwd = std::env::current_dir().unwrap();
 
     // run 1 creates the site and dies on the device. no state is saved: apply only
     // saves on the success path.
@@ -1457,7 +1443,6 @@ async fn run_apply_resumes_with_the_ids_the_interrupted_run_created() {
         AppConfig::load().unwrap(),
     )
     .await;
-    std::env::set_current_dir(&cwd).unwrap();
     result.expect_err("the device create fails");
     assert!(!state_path.exists(), "a failed apply saves no state");
 
@@ -1490,7 +1475,6 @@ async fn run_apply_resumes_with_the_ids_the_interrupted_run_created() {
         AppConfig::load().unwrap(),
     )
     .await;
-    std::env::set_current_dir(cwd).unwrap();
     result.unwrap();
 
     sites.assert_calls(0);
@@ -1532,7 +1516,7 @@ async fn run_apply_resumes_with_the_ids_the_interrupted_run_created() {
 async fn run_apply_rejects_a_bad_output_path_before_touching_the_backend() {
     use httpmock::Method::POST;
 
-    let _guard = cwd_lock().lock().await;
+    let _cwd = CwdGuard::acquire_async().await;
     let server = httpmock::MockServer::start();
     let mock = server.mock(|when, then| {
         when.method(POST).path("/sites/");
@@ -1551,7 +1535,6 @@ async fn run_apply_rejects_a_bad_output_path_before_touching_the_backend() {
     let blocker = dir.path().join("blocker");
     std::fs::write(&blocker, "").unwrap();
 
-    let cwd = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
     let cli = Cli {
         command: Command::Apply {
@@ -1564,7 +1547,6 @@ async fn run_apply_rejects_a_bad_output_path_before_touching_the_backend() {
         },
     };
     let result = run(cli, AppConfig::load().unwrap()).await;
-    std::env::set_current_dir(cwd).unwrap();
 
     result.expect_err("a bad -o must fail the run");
     assert_eq!(
@@ -1579,7 +1561,7 @@ async fn run_apply_rejects_a_bad_output_path_before_touching_the_backend() {
 async fn run_apply_writes_no_report_when_the_apply_fails() {
     use httpmock::Method::POST;
 
-    let _guard = cwd_lock().lock().await;
+    let _cwd = CwdGuard::acquire_async().await;
     let server = httpmock::MockServer::start();
     server.mock(|when, then| {
         when.method(POST).path("/sites/");
@@ -1596,7 +1578,6 @@ async fn run_apply_writes_no_report_when_the_apply_fails() {
     let (plan_path, config_path) = generic_apply_fixture(dir.path(), &server.base_url());
     let report_path = dir.path().join("report.json");
 
-    let cwd = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
     let cli = Cli {
         command: Command::Apply {
@@ -1609,7 +1590,6 @@ async fn run_apply_writes_no_report_when_the_apply_fails() {
         },
     };
     let result = run(cli, AppConfig::load().unwrap()).await;
-    std::env::set_current_dir(cwd).unwrap();
 
     result.expect_err("a failing apply must not report success");
     assert!(
@@ -1682,7 +1662,7 @@ fn nautobot_plan_server(device_results: serde_json::Value) -> httpmock::MockServ
 async fn run_plan_nautobot_backend() {
     use serde_json::json;
 
-    let _guard = cwd_lock().lock().await;
+    let _cwd = CwdGuard::acquire_async().await;
     let server = nautobot_plan_server(json!([]));
     let dir = tempdir().unwrap();
     let state_path = dir.path().join(".alembic").join("state.json");
@@ -1725,7 +1705,6 @@ objects:
     )
     .unwrap();
 
-    let cwd = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
 
     let cli = Cli {
@@ -1745,15 +1724,13 @@ objects:
     let raw = std::fs::read_to_string(&out).unwrap();
     assert!(raw.contains("\"op\": \"create\""));
     assert!(raw.contains("\"type_name\": \"dcim.device\""));
-
-    std::env::set_current_dir(cwd).unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn run_plan_report_is_read_only() {
     use serde_json::json;
 
-    let _guard = cwd_lock().lock().await;
+    let _cwd = CwdGuard::acquire_async().await;
     let server = nautobot_plan_server(json!([]));
     let dir = tempdir().unwrap();
     let state_path = dir.path().join(".alembic").join("state.json");
@@ -1796,7 +1773,6 @@ objects:
     )
     .unwrap();
 
-    let cwd = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
 
     let cli = Cli {
@@ -1824,8 +1800,6 @@ objects:
         !dir.path().join(".alembic/state.json").exists(),
         "state must not be saved for --report"
     );
-
-    std::env::set_current_dir(cwd).unwrap();
 }
 
 #[test]
@@ -1845,7 +1819,7 @@ fn plan_takes_a_shared_lock_only_when_it_saves_nothing() {
 async fn two_concurrent_report_runs_both_succeed() {
     use serde_json::json;
 
-    let _guard = cwd_lock().lock().await;
+    let _cwd = CwdGuard::acquire_async().await;
     let server = nautobot_plan_server(json!([]));
     let dir = tempdir().unwrap();
     let state_path = dir.path().join(".alembic").join("state.json");
@@ -1866,7 +1840,6 @@ async fn two_concurrent_report_runs_both_succeed() {
     )
     .unwrap();
 
-    let cwd = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
 
     // a reader of the test's own, so the two runs overlap by construction rather
@@ -1881,7 +1854,6 @@ async fn two_concurrent_report_runs_both_succeed() {
     );
     drop(reader);
 
-    std::env::set_current_dir(cwd).unwrap();
     first.expect("first drift report");
     second.expect("a second drift report must not be refused by the first");
 }
@@ -1890,7 +1862,7 @@ async fn two_concurrent_report_runs_both_succeed() {
 async fn a_saving_plan_run_is_refused_while_a_report_runs() {
     use serde_json::json;
 
-    let _guard = cwd_lock().lock().await;
+    let _cwd = CwdGuard::acquire_async().await;
     let server = nautobot_plan_server(json!([]));
     let dir = tempdir().unwrap();
     let state_path = dir.path().join(".alembic").join("state.json");
@@ -1911,7 +1883,6 @@ async fn a_saving_plan_run_is_refused_while_a_report_runs() {
     )
     .unwrap();
 
-    let cwd = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
 
     // the reader stands in for a running drift report.
@@ -1937,7 +1908,6 @@ async fn a_saving_plan_run_is_refused_while_a_report_runs() {
     let refused_provision = run(provisioning, AppConfig::load().unwrap()).await;
     drop(reader);
 
-    std::env::set_current_dir(cwd).unwrap();
     for err in [
         refused.expect_err("a saving run must not start under a reader"),
         refused_provision.expect_err("--provision must not start under a reader"),
@@ -1993,7 +1963,7 @@ fn report_cli(file: PathBuf, config: PathBuf) -> Cli {
 async fn run_plan_report_writes_the_drift_report_to_output() {
     use serde_json::json;
 
-    let _guard = cwd_lock().lock().await;
+    let _cwd = CwdGuard::acquire_async().await;
     // the backend holds leaf01, intent declares leaf02: one extra, one missing.
     let server = nautobot_plan_server(json!([{ "id": "uuid-leaf01", "name": "leaf01" }]));
     let dir = tempdir().unwrap();
@@ -2037,7 +2007,6 @@ objects:
     )
     .unwrap();
 
-    let cwd = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
 
     let cli = Cli {
@@ -2053,7 +2022,6 @@ objects:
         },
     };
     let result = run(cli, AppConfig::load().unwrap()).await;
-    std::env::set_current_dir(cwd).unwrap();
     result.unwrap();
 
     let drift: DriftReport = serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
@@ -2074,7 +2042,7 @@ objects:
 async fn run_plan_report_carries_the_schema_preview_into_the_drift_report() {
     use serde_json::json;
 
-    let _guard = cwd_lock().lock().await;
+    let _cwd = CwdGuard::acquire_async().await;
     let server = nautobot_plan_server(json!([{ "id": "uuid-leaf01", "name": "leaf01" }]));
     // the native-field probe preview issues before deciding a declared field is
     // custom; without it the preview errors and never reaches the report.
@@ -2135,7 +2103,6 @@ objects:
     )
     .unwrap();
 
-    let cwd = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
     let cli = Cli {
         command: Command::Plan {
@@ -2150,7 +2117,6 @@ objects:
         },
     };
     let result = run(cli, AppConfig::load().unwrap()).await;
-    std::env::set_current_dir(cwd).unwrap();
     result.unwrap();
 
     let raw = std::fs::read_to_string(&out).unwrap();
@@ -2168,7 +2134,7 @@ objects:
 async fn run_plan_report_carries_an_empty_schema_preview_for_a_backend_that_provisions_nothing() {
     // an adapter overriding neither provisioning method reports nothing to
     // provision, the same document the generic backend writes.
-    let _guard = cwd_lock().lock().await;
+    let _cwd = CwdGuard::acquire_async().await;
     let dir = tempdir().unwrap();
     let state_path = dir.path().join(".alembic").join("state.json");
     let _env = EnvVarGuard::acquire_async(&[
@@ -2190,7 +2156,6 @@ async fn run_plan_report_carries_an_empty_schema_preview_for_a_backend_that_prov
     )
     .unwrap();
 
-    let cwd = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
     let cli = Cli {
         command: Command::Plan {
@@ -2205,7 +2170,6 @@ async fn run_plan_report_carries_an_empty_schema_preview_for_a_backend_that_prov
         },
     };
     let result = run(cli, AppConfig::load().unwrap()).await;
-    std::env::set_current_dir(cwd).unwrap();
     result.unwrap();
 
     let raw = std::fs::read_to_string(&out).unwrap();
@@ -2218,7 +2182,7 @@ async fn run_plan_report_carries_an_empty_schema_preview_for_a_backend_that_prov
 
 #[tokio::test(flavor = "multi_thread")]
 async fn run_plan_report_rejects_a_bad_output_path_before_observing() {
-    let _guard = cwd_lock().lock().await;
+    let _cwd = CwdGuard::acquire_async().await;
     let server = httpmock::MockServer::start();
     let mock = server.mock(|when, then| {
         when.any_request();
@@ -2247,7 +2211,6 @@ async fn run_plan_report_rejects_a_bad_output_path_before_observing() {
     let blocker = dir.path().join("blocker");
     std::fs::write(&blocker, "").unwrap();
 
-    let cwd = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
     let cli = Cli {
         command: Command::Plan {
@@ -2262,7 +2225,6 @@ async fn run_plan_report_rejects_a_bad_output_path_before_observing() {
         },
     };
     let result = run(cli, AppConfig::load().unwrap()).await;
-    std::env::set_current_dir(cwd).unwrap();
 
     let err = result.expect_err("a bad -o must fail the run");
     assert!(
@@ -2280,7 +2242,7 @@ async fn run_plan_report_rejects_a_bad_output_path_before_observing() {
 #[tokio::test(flavor = "multi_thread")]
 async fn run_plan_rejects_an_unwritable_existing_output_file_before_observing() {
     use std::os::unix::fs::PermissionsExt;
-    let _guard = cwd_lock().lock().await;
+    let _cwd = CwdGuard::acquire_async().await;
     let server = httpmock::MockServer::start();
     let mock = server.mock(|when, then| {
         when.any_request();
@@ -2315,7 +2277,6 @@ async fn run_plan_rejects_an_unwritable_existing_output_file_before_observing() 
     std::fs::set_permissions(&sentinel, std::fs::Permissions::from_mode(0o444)).unwrap();
     let denied = std::fs::write(&sentinel, b"y").is_err();
 
-    let cwd = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
     let cli = Cli {
         command: Command::Plan {
@@ -2330,7 +2291,6 @@ async fn run_plan_rejects_an_unwritable_existing_output_file_before_observing() 
         },
     };
     let result = run(cli, AppConfig::load().unwrap()).await;
-    std::env::set_current_dir(cwd).unwrap();
     std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644)).unwrap();
 
     if denied {
@@ -2358,7 +2318,7 @@ async fn run_plan_rejects_an_unwritable_existing_output_file_before_observing() 
 
 #[tokio::test(flavor = "multi_thread")]
 async fn run_plan_rejects_an_output_path_that_is_a_directory_before_observing() {
-    let _guard = cwd_lock().lock().await;
+    let _cwd = CwdGuard::acquire_async().await;
     let server = httpmock::MockServer::start();
     let mock = server.mock(|when, then| {
         when.any_request();
@@ -2387,7 +2347,6 @@ async fn run_plan_rejects_an_output_path_that_is_a_directory_before_observing() 
     let target = dir.path().join("outdir");
     std::fs::create_dir(&target).unwrap();
 
-    let cwd = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
     let cli = Cli {
         command: Command::Plan {
@@ -2402,7 +2361,6 @@ async fn run_plan_rejects_an_output_path_that_is_a_directory_before_observing() 
         },
     };
     let result = run(cli, AppConfig::load().unwrap()).await;
-    std::env::set_current_dir(cwd).unwrap();
 
     let err = result.expect_err("a bad -o must fail the run");
     assert!(
@@ -2418,7 +2376,7 @@ async fn run_plan_rejects_an_output_path_that_is_a_directory_before_observing() 
 
 #[tokio::test(flavor = "multi_thread")]
 async fn run_plan_leaves_no_output_directory_when_observing_fails() {
-    let _guard = cwd_lock().lock().await;
+    let _cwd = CwdGuard::acquire_async().await;
     let server = httpmock::MockServer::start();
     let _mock = server.mock(|when, then| {
         when.any_request();
@@ -2444,7 +2402,6 @@ async fn run_plan_leaves_no_output_directory_when_observing_fails() {
     .unwrap();
     let out_dir = dir.path().join("brand_new_dir");
 
-    let cwd = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
     let cli = Cli {
         command: Command::Plan {
@@ -2459,7 +2416,6 @@ async fn run_plan_leaves_no_output_directory_when_observing_fails() {
         },
     };
     let result = run(cli, AppConfig::load().unwrap()).await;
-    std::env::set_current_dir(cwd).unwrap();
 
     result.expect_err("observing a 500 backend must fail the run");
     assert!(
@@ -2470,7 +2426,7 @@ async fn run_plan_leaves_no_output_directory_when_observing_fails() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn run_plan_report_refuses_a_write_only_backend() {
-    let _guard = cwd_lock().lock().await;
+    let _cwd = CwdGuard::acquire_async().await;
     let dir = tempdir().unwrap();
     let state_path = dir.path().join(".alembic").join("state.json");
     let _env = EnvVarGuard::acquire_async(&[
@@ -2485,7 +2441,6 @@ async fn run_plan_report_refuses_a_write_only_backend() {
     // do first: the refusal below is the guard's, not the preflight's.
     let out = dir.path().join("nested/drift.json");
 
-    let cwd = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
     let cli = Cli {
         command: Command::Plan {
@@ -2500,7 +2455,6 @@ async fn run_plan_report_refuses_a_write_only_backend() {
         },
     };
     let result = run(cli, AppConfig::load().unwrap()).await;
-    std::env::set_current_dir(cwd).unwrap();
 
     let err = result.expect_err("a write-only backend has no drift to report");
     let err = format!("{err:#}");
@@ -2521,7 +2475,7 @@ async fn run_plan_report_reports_an_unwritable_output_ahead_of_the_refusal() {
     // both are wrong at once. the output preflight (#325) runs for every command
     // before a backend is built, so it answers first, and the refusal below never
     // gets to speak. docs/cli.md says so; this is what keeps that true.
-    let _guard = cwd_lock().lock().await;
+    let _cwd = CwdGuard::acquire_async().await;
     let dir = tempdir().unwrap();
     let state_path = dir.path().join(".alembic").join("state.json");
     let _env = EnvVarGuard::acquire_async(&[
@@ -2542,7 +2496,6 @@ async fn run_plan_report_reports_an_unwritable_output_ahead_of_the_refusal() {
         return;
     }
 
-    let cwd = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
     let cli = Cli {
         command: Command::Plan {
@@ -2557,7 +2510,6 @@ async fn run_plan_report_reports_an_unwritable_output_ahead_of_the_refusal() {
         },
     };
     let result = run(cli, AppConfig::load().unwrap()).await;
-    std::env::set_current_dir(cwd).unwrap();
 
     let err = format!("{:#}", result.expect_err("an unwritable -o must fail"));
     assert!(err.contains("write output:"), "{err}");
@@ -2570,7 +2522,7 @@ async fn run_plan_report_reports_an_unwritable_output_ahead_of_the_refusal() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn run_plan_report_refuses_an_external_adapter_declaring_emitter() {
-    let _guard = cwd_lock().lock().await;
+    let _cwd = CwdGuard::acquire_async().await;
     let dir = tempdir().unwrap();
     let state_path = dir.path().join(".alembic").join("state.json");
     let _env = EnvVarGuard::acquire_async(&[
@@ -2592,7 +2544,6 @@ async fn run_plan_report_refuses_an_external_adapter_declaring_emitter() {
     )
     .unwrap();
 
-    let cwd = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
     let cli = Cli {
         command: Command::Plan {
@@ -2607,7 +2558,6 @@ async fn run_plan_report_refuses_an_external_adapter_declaring_emitter() {
         },
     };
     let result = run(cli, AppConfig::load().unwrap()).await;
-    std::env::set_current_dir(cwd).unwrap();
 
     let err = result.expect_err("a declared emitter has no drift to report");
     assert!(format!("{err:#}").contains("write-only"), "{err:#}");
@@ -2648,7 +2598,7 @@ fn methods_without_provisioning(log: &Path) -> String {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn run_refuses_to_write_an_external_adapter_declaring_observer() {
-    let _guard = cwd_lock().lock().await;
+    let _cwd = CwdGuard::acquire_async().await;
     let dir = tempdir().unwrap();
     let state_path = dir.path().join(".alembic").join("state.json");
     let _env = EnvVarGuard::acquire_async(&[
@@ -2663,7 +2613,6 @@ async fn run_refuses_to_write_an_external_adapter_declaring_observer() {
     // as run_apply_read_only_backend_fails_before_prompting pins for a built-in
     let plan_path = dir.path().join("does-not-exist.json");
 
-    let cwd = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
     let provision = run(
         Cli {
@@ -2695,7 +2644,6 @@ async fn run_refuses_to_write_an_external_adapter_declaring_observer() {
         AppConfig::load().unwrap(),
     )
     .await;
-    std::env::set_current_dir(cwd).unwrap();
 
     for (command, result) in [("plan --provision", provision), ("apply", applied)] {
         let err = format!(
@@ -2714,7 +2662,7 @@ async fn run_refuses_to_write_an_external_adapter_declaring_observer() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn run_plan_and_import_an_external_adapter_declaring_observer() {
-    let _guard = cwd_lock().lock().await;
+    let _cwd = CwdGuard::acquire_async().await;
     let dir = tempdir().unwrap();
     let state_path = dir.path().join(".alembic").join("state.json");
     let _env = EnvVarGuard::acquire_async(&[
@@ -2724,7 +2672,6 @@ async fn run_plan_and_import_an_external_adapter_declaring_observer() {
     .await;
     let (inventory, config, log) = observer_role_fixture(dir.path());
 
-    let cwd = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
     let planned = run(
         Cli {
@@ -2754,7 +2701,6 @@ async fn run_plan_and_import_an_external_adapter_declaring_observer() {
         AppConfig::load().unwrap(),
     )
     .await;
-    std::env::set_current_dir(cwd).unwrap();
 
     planned.expect("a declared observer plans");
     imported.expect("a declared observer imports");
@@ -2764,7 +2710,7 @@ async fn run_plan_and_import_an_external_adapter_declaring_observer() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn run_plan_without_report_still_plans_a_write_only_backend() {
-    let _guard = cwd_lock().lock().await;
+    let _cwd = CwdGuard::acquire_async().await;
     let dir = tempdir().unwrap();
     let state_path = dir.path().join(".alembic").join("state.json");
     let _env = EnvVarGuard::acquire_async(&[
@@ -2775,7 +2721,6 @@ async fn run_plan_without_report_still_plans_a_write_only_backend() {
     let inventory = write_site_inventory(dir.path());
     let out = dir.path().join("plan.json");
 
-    let cwd = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
     let cli = Cli {
         command: Command::Plan {
@@ -2790,7 +2735,6 @@ async fn run_plan_without_report_still_plans_a_write_only_backend() {
         },
     };
     let result = run(cli, AppConfig::load().unwrap()).await;
-    std::env::set_current_dir(cwd).unwrap();
 
     // the all-creates plan is what apply will emit, so it stays: only the
     // report, which claims to have observed, is refused.
@@ -3043,7 +2987,7 @@ async fn run_plan_report_surfaces_extra() {
     // under --report even without --allow-delete.
     use serde_json::json;
 
-    let _guard = cwd_lock().lock().await;
+    let _cwd = CwdGuard::acquire_async().await;
     let server = nautobot_plan_server(json!([{ "id": "uuid-leaf01", "name": "leaf01" }]));
     let dir = tempdir().unwrap();
     let state_path = dir.path().join(".alembic").join("state.json");
@@ -3081,7 +3025,6 @@ objects: []
     )
     .unwrap();
 
-    let cwd = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
 
     let inventory = load_inventory(&inventory).unwrap();
@@ -3126,8 +3069,6 @@ objects: []
     assert_eq!(drift.extra[0].key, key_str("name=leaf01"));
     assert!(drift.missing.is_empty());
     assert!(drift.changed.is_empty());
-
-    std::env::set_current_dir(cwd).unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -3170,7 +3111,7 @@ async fn minimal_external_adapter() {
 // must propagate a preview Err and abort before ensure_schema.
 #[tokio::test(flavor = "multi_thread")]
 async fn run_plan_provision_fails_closed_on_preview_error() {
-    let _guard = cwd_lock().lock().await;
+    let _cwd = CwdGuard::acquire_async().await;
     let dir = tempdir().unwrap();
     let state_path = dir.path().join(".alembic").join("state.json");
     let _env = EnvVarGuard::acquire_async(&[
@@ -3192,7 +3133,6 @@ async fn run_plan_provision_fails_closed_on_preview_error() {
     )
     .unwrap();
 
-    let cwd = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
     let cli = Cli {
         command: Command::Plan {
@@ -3207,7 +3147,6 @@ async fn run_plan_provision_fails_closed_on_preview_error() {
         },
     };
     let result = run(cli, AppConfig::load().unwrap()).await;
-    std::env::set_current_dir(cwd).unwrap();
 
     let err = result.expect_err("a preview error must abort provisioning, not fall through");
     assert!(
@@ -3222,7 +3161,7 @@ async fn run_plan_provision_fails_closed_on_preview_error() {
 // than be refused up front.
 #[tokio::test(flavor = "multi_thread")]
 async fn run_plan_provision_over_a_write_only_backend() {
-    let _guard = cwd_lock().lock().await;
+    let _cwd = CwdGuard::acquire_async().await;
     let dir = tempdir().unwrap();
     let state_path = dir.path().join(".alembic").join("state.json");
     let _env = EnvVarGuard::acquire_async(&[
@@ -3244,7 +3183,6 @@ async fn run_plan_provision_over_a_write_only_backend() {
     )
     .unwrap();
 
-    let cwd = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
     let cli = Cli {
         command: Command::Plan {
@@ -3259,7 +3197,6 @@ async fn run_plan_provision_over_a_write_only_backend() {
         },
     };
     let result = run(cli, AppConfig::load().unwrap()).await;
-    std::env::set_current_dir(cwd).unwrap();
 
     result.expect("a declared emitter provisions rather than being refused");
 }
@@ -3268,7 +3205,7 @@ async fn run_plan_provision_over_a_write_only_backend() {
 // plan carries, so a write-only backend that can preview must fill it in.
 #[tokio::test(flavor = "multi_thread")]
 async fn run_plan_previews_schema_over_a_write_only_backend() {
-    let _guard = cwd_lock().lock().await;
+    let _cwd = CwdGuard::acquire_async().await;
     let dir = tempdir().unwrap();
     let state_path = dir.path().join(".alembic").join("state.json");
     let _env = EnvVarGuard::acquire_async(&[
@@ -3290,7 +3227,6 @@ async fn run_plan_previews_schema_over_a_write_only_backend() {
     )
     .unwrap();
 
-    let cwd = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
     let cli = Cli {
         command: Command::Plan {
@@ -3305,7 +3241,6 @@ async fn run_plan_previews_schema_over_a_write_only_backend() {
         },
     };
     let result = run(cli, AppConfig::load().unwrap()).await;
-    std::env::set_current_dir(cwd).unwrap();
     result.expect("plan over a write-only backend still plans");
 
     let plan: serde_json::Value =
@@ -3373,7 +3308,7 @@ esac
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn run_applies_a_converged_hand_written_adapter_that_omits_applied() {
-    let _guard = cwd_lock().lock().await;
+    let _cwd = CwdGuard::acquire_async().await;
     for (case, converged) in [
         ("omitted", r#"{"ok":true,"result":{}}"#),
         ("spelled out", r#"{"ok":true,"result":{"applied":[]}}"#),
@@ -3387,7 +3322,6 @@ async fn run_applies_a_converged_hand_written_adapter_that_omits_applied() {
         .await;
         let (inventory, config) = hand_written_adapter_fixture(dir.path(), converged);
 
-        let cwd = std::env::current_dir().unwrap();
         std::env::set_current_dir(dir.path()).unwrap();
         // two full cycles: the first creates the site, the second finds it there
         let mut rounds = Vec::new();
@@ -3425,7 +3359,6 @@ async fn run_applies_a_converged_hand_written_adapter_that_omits_applied() {
             .await;
             rounds.push((planned, applied, plan_path));
         }
-        std::env::set_current_dir(cwd).unwrap();
 
         let mut ops = Vec::new();
         for (round, (planned, applied, plan_path)) in rounds.into_iter().enumerate() {
