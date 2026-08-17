@@ -2,7 +2,8 @@
 
 ## Unreleased
 
--`apply` rejects a plan file carrying an unknown key rather than dropping it, `schema_preview` included
+- `alembic-adapter-test` fails a `--cases` directory whose subdirectories hold cases it does not load
+- `apply` rejects a plan file carrying an unknown key rather than dropping it, `schema_preview` included
 - external adapters: an unknown key in a provisioning report, an applied operation or the response envelope is rejected
 - provisioning is refused when the adapter cannot preview schema. the rust sdk default now previews an empty report
 - `alembic-adapter-test` writes only when asked. pass `--write-checks`, or a ci run stops certifying the two writing checks
