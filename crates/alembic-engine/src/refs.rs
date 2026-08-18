@@ -52,8 +52,7 @@ fn visit_key_ref_leaves(
     }
 }
 
-/// whether an observed object's own key still holds a backend id, so no uid
-/// derives for it either.
+/// whether an observed object's own key still holds a backend id.
 fn key_holds_backend_id(type_schema: &TypeSchema, key: &Key) -> bool {
     let mut held = false;
     visit_key_ref_leaves(type_schema, key, &mut |_, _, value| {
@@ -127,8 +126,7 @@ enum BackendIdCause {
     Unobserved,
     /// observed with a key already in uid space, so a uid derives for it.
     Rewritable,
-    /// observed, but its own key still holds a backend id, so no uid derives
-    /// for it either: the adapter's fixpoint left it a straggler.
+    /// observed, but its own key still holds a backend id.
     KeyUnresolved,
 }
 
@@ -148,7 +146,7 @@ impl fmt::Display for BackendIdRef {
             ),
             BackendIdCause::KeyUnresolved => write!(
                 f,
-                "the {} it names was observed, but its own key still holds a backend id, so no uid can be derived for it either",
+                "the {} it names was observed, but its own key still holds a backend id",
                 self.target
             ),
         }

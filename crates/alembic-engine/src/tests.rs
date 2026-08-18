@@ -2508,9 +2508,7 @@ fn build_plan_names_a_backend_id_ref_whose_target_is_keyed_on_a_cycle() {
     assert!(error.contains("net.a.key.b -> net.b 2"), "{error}");
     assert!(error.contains("net.b.key.a -> net.a 1"), "{error}");
     assert!(
-        error.contains(
-            "was observed, but its own key still holds a backend id, so no uid can be derived for it either"
-        ),
+        error.contains("was observed, but its own key still holds a backend id"),
         "{error}"
     );
     // asserted absent, not merely outnumbered: every one of the four lands on
@@ -2519,4 +2517,65 @@ fn build_plan_names_a_backend_id_ref_whose_target_is_keyed_on_a_cycle() {
         !error.contains("so the adapter can rewrite the id without reading again"),
         "{error}"
     );
+}
+
+#[test]
+fn build_plan_names_a_backend_id_ref_whose_target_is_keyed_on_a_chain() {
+    // every row is observed, so the site ref rewrites, the device key lands in
+    // uid space and the interface ref rewrites after it. the arm reports the one
+    // hop the guard looked at and promises nothing about the chain above it.
+    let inventory = ref_chain_inventory(2);
+    let mut observed = ObservedState::default();
+    observed
+        .insert(ObservedObject {
+            type_name: t("dcim.site"),
+            key: key_str("slug=fra1"),
+            attrs: attrs_map(json!({ "slug": "fra1", "name": "FRA1" })),
+            backend_id: Some(BackendId::Int(1)),
+        })
+        .unwrap();
+    observed
+        .insert(ObservedObject {
+            type_name: t("dcim.device"),
+            key: Key::from(BTreeMap::from([
+                ("site".to_string(), json!(1)),
+                ("name".to_string(), json!("leaf01")),
+            ])),
+            attrs: attrs_map(json!({ "site": 1, "name": "leaf01" })),
+            backend_id: Some(BackendId::Int(2)),
+        })
+        .unwrap();
+    observed
+        .insert(ObservedObject {
+            type_name: t("dcim.interface"),
+            key: Key::from(BTreeMap::from([
+                ("device".to_string(), json!(2)),
+                ("name".to_string(), json!("eth0")),
+            ])),
+            attrs: attrs_map(json!({ "device": 2, "name": "eth0" })),
+            backend_id: Some(BackendId::Int(3)),
+        })
+        .unwrap();
+    let adapter = TestAdapter {
+        observed,
+        report: ApplyReport::default(),
+    };
+    let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
+    let error = futures::executor::block_on(build_plan(&adapter, &inventory, &mut state, false))
+        .unwrap_err()
+        .to_string();
+
+    assert!(
+        error.contains(
+            "dcim.interface.key.device -> dcim.device 2: the dcim.device it names was observed, but its own key still holds a backend id"
+        ),
+        "{error}"
+    );
+    assert!(
+        error.contains("dcim.device.key.site -> dcim.site 1: the dcim.site it names was observed, so the adapter can rewrite the id without reading again"),
+        "{error}"
+    );
+    // the site ref above it rewrites, so a uid does derive for the device in one
+    // read: the message may not say otherwise.
+    assert!(!error.contains("no uid can be derived"), "{error}");
 }
