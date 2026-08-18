@@ -119,8 +119,8 @@ response:
 its report: a key-only object answers with `type_name` and `key` alone.
 
 a ref-typed field, in `key` as much as in `attrs`, names the target's uid rather
-than the backend's own id; `examples/ref_chain_adapter.rs` resolves a chain of
-them against the state the request carries.
+than the backend's own id; `crates/alembic-cli/examples/ref_chain_adapter.rs`
+resolves a chain of them against the state the request carries.
 
 ### write
 
