@@ -48,9 +48,10 @@ pub trait StateBackend: Send + Sync + std::fmt::Debug {
 pub struct StateStore {
     backend: Option<Arc<Mutex<dyn StateBackend>>>,
     data: StateData,
-    // inverse of `data.mappings`, per type. a backend object answers to one uid,
-    // so this stays a bijection with the forward map, and deciding which uid a
-    // backend id supersedes costs a lookup rather than a walk of the type.
+    // inverse of `data.mappings`, per type: the uid a backend object answers to.
+    // it is single-valued where the forward map need not be, so it is what every
+    // reader that inverts state goes through, and deciding which uid a backend id
+    // supersedes costs a lookup rather than a walk of the type.
     by_backend_id: BTreeMap<TypeName, BTreeMap<BackendId, Uid>>,
     journal_dir: Option<PathBuf>,
     // advisory lock held for a local-file store's whole lifetime, so two concurrent
@@ -153,6 +154,19 @@ impl StateStore {
             .and_then(|map| map.get(&uid).cloned())
     }
 
+    /// the uid a backend id answers to, if state maps one.
+    pub fn uid_for_backend_id(&self, type_name: &TypeName, backend_id: &BackendId) -> Option<Uid> {
+        self.by_backend_id
+            .get(type_name)
+            .and_then(|index| index.get(backend_id).copied())
+    }
+
+    /// the per-type `backend id -> uid` index. inverse of [`Self::all_mappings`],
+    /// and single-valued where that is not.
+    pub fn backend_ids(&self) -> &BTreeMap<TypeName, BTreeMap<BackendId, Uid>> {
+        &self.by_backend_id
+    }
+
     /// set a backend id mapping. a backend object answers to one uid, so any
     /// uid this one supersedes is dropped.
     pub fn set_backend_id(&mut self, type_name: TypeName, uid: Uid, backend_id: BackendId) {
@@ -181,32 +195,31 @@ impl StateStore {
         }
     }
 
-    // rebuild the inverse index, dropping every uid but the first a backend id
-    // answers to. which one survives is arbitrary: either it is the uid the
-    // model declares, or the next adoption supersedes it. every reader that
-    // inverts the forward map is unambiguous once this holds.
+    // rebuild the inverse index. a backend id a file maps to several uids answers
+    // to the first in uid order until the desired set claims one, which is the
+    // only place there is anything to choose by. the forward map is left whole:
+    // it is what a rename is matched through, and dropping a uid there costs the
+    // object that stability for good.
     fn reindex(&mut self) {
         self.by_backend_id.clear();
-        for (type_name, type_map) in &mut self.data.mappings {
+        for (type_name, type_map) in &self.data.mappings {
             let index: &mut BTreeMap<BackendId, Uid> =
                 self.by_backend_id.entry(type_name.clone()).or_default();
-            type_map.retain(|uid, backend_id| match index.get(&*backend_id) {
-                Some(kept) => {
-                    tracing::warn!(
-                        "state: {} backend id {} answered to both {} and {}; dropped {}",
+            for (uid, backend_id) in type_map {
+                match index.get(backend_id) {
+                    Some(kept) => tracing::warn!(
+                        "state: {} backend id {} answers to both {} and {}; using {} until the inventory claims one",
                         type_name.as_str(),
                         backend_id,
                         kept,
                         uid,
-                        uid
-                    );
-                    false
+                        kept
+                    ),
+                    None => {
+                        index.insert(backend_id.clone(), *uid);
+                    }
                 }
-                None => {
-                    index.insert(backend_id.clone(), *uid);
-                    true
-                }
-            });
+            }
         }
     }
 
@@ -558,19 +571,24 @@ mod tests {
     }
 
     #[test]
-    fn new_keeps_one_uid_per_backend_id() {
+    fn new_answers_a_doubled_backend_id_with_one_uid() {
         let mut data = StateData::default();
         data.mappings.insert(
             t("site"),
             BTreeMap::from([(uid(1), BackendId::Int(42)), (uid(2), BackendId::Int(42))]),
         );
         let store = StateStore::new(None, data);
-        assert_eq!(store.all_mappings()[&t("site")].len(), 1);
         assert_eq!(
-            store.backend_id(t("site"), uid(1)),
+            store.uid_for_backend_id(&t("site"), &BackendId::Int(42)),
+            Some(uid(1))
+        );
+        // both survive the load: the forward mapping is what a rename is matched
+        // through, and which uid the id answers to is not settled here.
+        assert_eq!(store.all_mappings()[&t("site")].len(), 2);
+        assert_eq!(
+            store.backend_id(t("site"), uid(2)),
             Some(BackendId::Int(42))
         );
-        assert_eq!(store.backend_id(t("site"), uid(2)), None);
     }
 
     #[test]
@@ -593,7 +611,7 @@ mod tests {
     }
 
     #[test]
-    fn new_names_the_uid_it_drops() {
+    fn new_names_a_backend_id_that_answers_to_two_uids() {
         let mut data = StateData::default();
         data.mappings.insert(
             t("site"),
@@ -608,7 +626,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn load_async_keeps_one_uid_per_backend_id() {
+    async fn load_async_answers_a_doubled_backend_id_with_one_uid() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("state.json");
         let mut store = StateStore::load(&path).unwrap();
@@ -618,11 +636,30 @@ mod tests {
         )
         .unwrap();
         store.load_async().await.unwrap();
-        assert_eq!(store.all_mappings()[&t("site")].len(), 1);
         assert_eq!(
-            store.backend_id(t("site"), uid(1)),
-            Some(BackendId::Int(42))
+            store.uid_for_backend_id(&t("site"), &BackendId::Int(42)),
+            Some(uid(1))
         );
+        assert_eq!(store.all_mappings()[&t("site")].len(), 2);
+    }
+
+    #[test]
+    fn set_backend_id_supersedes_the_uid_a_backend_id_answered_to() {
+        // control: the write path is where a superseded uid is dropped, and it
+        // drops it from both maps.
+        let mut data = StateData::default();
+        data.mappings.insert(
+            t("site"),
+            BTreeMap::from([(uid(1), BackendId::Int(42)), (uid(2), BackendId::Int(42))]),
+        );
+        let mut store = StateStore::new(None, data);
+        store.set_backend_id(t("site"), uid(2), BackendId::Int(42));
+        assert_eq!(
+            store.uid_for_backend_id(&t("site"), &BackendId::Int(42)),
+            Some(uid(2))
+        );
+        assert_eq!(store.backend_id(t("site"), uid(1)), None);
+        assert_eq!(store.all_mappings()[&t("site")].len(), 1);
     }
 
     #[test]

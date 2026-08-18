@@ -2340,12 +2340,15 @@ fn ref_backend_inventory(site_uid: Uid, device_uid: Uid) -> Inventory {
     }
 }
 
-/// every backend id in state answers to exactly one uid.
+/// every backend id state holds answers to one uid, and that uid maps back to it.
 fn backend_ids_are_unambiguous(state: &StateStore) -> bool {
-    state
-        .all_mappings()
-        .values()
-        .all(|mapping| mapping.values().collect::<BTreeSet<_>>().len() == mapping.len())
+    state.all_mappings().iter().all(|(type_name, mapping)| {
+        mapping.values().collect::<BTreeSet<_>>().iter().all(|id| {
+            state
+                .uid_for_backend_id(type_name, id)
+                .is_some_and(|uid| mapping.get(&uid) == Some(*id))
+        })
+    })
 }
 
 #[tokio::test]
@@ -2393,7 +2396,7 @@ async fn plan_only_runs_leave_the_mapping_count_flat() {
     assert_eq!(mappings, 2, "{:?}", state.all_mappings());
 }
 
-/// the state a run before this left behind: `dcim.site` answering to both the
+/// the state a run before this left behind: `dcim.site` mapped from both the
 /// uid the inventory declares and a stale one that sorts after it.
 fn write_doubled_state(path: &std::path::Path) {
     std::fs::write(
@@ -2425,22 +2428,272 @@ async fn plan_converges_on_a_state_file_that_already_doubled_a_backend_id() {
 }
 
 #[test]
-fn single_valued_state_inverts_without_losing_a_uid() {
-    // why the readers that invert the forward map need no guard of their own.
+fn a_doubled_state_file_inverts_to_one_uid_per_backend_id() {
+    // why the readers that invert state go through the index: the forward map
+    // they used to fold is not single-valued and the index is.
     let dir = tempdir().unwrap();
     let path = dir.path().join("state.json");
     write_doubled_state(&path);
     let state = StateStore::load(&path).unwrap();
+    assert_eq!(state.all_mappings()[&t("dcim.site")].len(), 2);
 
     let by_id = state_mappings_by_id(&state, |id| match id {
         BackendId::Int(n) => Some(*n),
         BackendId::String(_) => None,
     });
-    for (type_name, mapping) in state.all_mappings() {
-        assert_eq!(
-            by_id[type_name.as_str()].len(),
-            mapping.len(),
-            "{type_name}"
-        );
+    assert_eq!(by_id["dcim.site"], BTreeMap::from([(1, uid(10))]));
+    assert_eq!(by_id["dcim.device"], BTreeMap::from([(2, uid(11))]));
+}
+
+/// a backend holding a site with a non-key attr, and a device referencing it by
+/// backend id, so a rename shows up as an update rather than as nothing.
+struct RenameBackend;
+
+#[async_trait::async_trait]
+impl Observer for RenameBackend {
+    async fn read(
+        &self,
+        schema: &Schema,
+        _types: &[TypeName],
+        state: &StateStore,
+    ) -> anyhow::Result<ObservedState> {
+        let raw = vec![
+            RawNode {
+                type_name: t("dcim.site"),
+                backend_id: BackendId::Int(1),
+                attrs: attrs_map(json!({ "slug": "fra1", "status": "active" })),
+            },
+            RawNode {
+                type_name: t("dcim.device"),
+                backend_id: BackendId::Int(2),
+                attrs: attrs_map(json!({ "name": "leaf01", "site": 1 })),
+            },
+        ];
+        let mut mappings = StateMappings::from_state(state);
+        let resolved = resolve_ref_keyed_identity(
+            &raw,
+            schema,
+            &mut mappings,
+            |node, type_schema, mappings| normalize_attrs_refs(&node.attrs, type_schema, mappings),
+            |_, type_schema, attrs| build_key_from_schema(type_schema, attrs),
+        )?;
+        let mut observed = ObservedState::default();
+        for object in resolved {
+            observed.insert(object)?;
+        }
+        Ok(observed)
     }
+}
+
+fn rename_schema() -> Schema {
+    let field = |r#type: FieldType, required: bool| FieldSchema {
+        r#type,
+        required,
+        nullable: !required,
+        description: None,
+        format: None,
+        pattern: None,
+    };
+    let mut types = BTreeMap::new();
+    types.insert(
+        "dcim.site".to_string(),
+        TypeSchema {
+            key: BTreeMap::from([("slug".to_string(), field(FieldType::String, true))]),
+            fields: BTreeMap::from([("status".to_string(), field(FieldType::String, false))]),
+        },
+    );
+    types.insert(
+        "dcim.device".to_string(),
+        TypeSchema {
+            key: BTreeMap::from([("name".to_string(), field(FieldType::String, true))]),
+            fields: BTreeMap::from([(
+                "site".to_string(),
+                field(
+                    FieldType::Ref {
+                        target: "dcim.site".to_string(),
+                    },
+                    false,
+                ),
+            )]),
+        },
+    );
+    Schema { types }
+}
+
+/// the site renamed to `fra2` under `site_uid`, with a status the backend does
+/// not hold, plus the device pointing at it.
+fn renamed_inventory(site_uid: Uid) -> Inventory {
+    Inventory {
+        schema: rename_schema(),
+        objects: vec![
+            obj(
+                site_uid,
+                "dcim.site",
+                "slug=fra2",
+                json!({ "status": "planned" }),
+            ),
+            obj(
+                uid(11),
+                "dcim.device",
+                "name=leaf01",
+                json!({ "site": site_uid.to_string() }),
+            ),
+        ],
+    }
+}
+
+/// a state file mapping `dcim.site` backend id 1 from both uids, and the device
+/// from its own.
+fn write_doubled_site_state(path: &std::path::Path, first: Uid, second: Uid) {
+    std::fs::write(
+        path,
+        format!(
+            r#"{{"mappings":{{"dcim.device":{{"{}":2}},"dcim.site":{{"{first}":1,"{second}":1}}}}}}"#,
+            uid(11)
+        ),
+    )
+    .unwrap();
+}
+
+fn site_ops(plan: &Plan) -> Vec<&Op> {
+    plan.ops
+        .iter()
+        .filter(|op| op.type_name() == &t("dcim.site"))
+        .collect()
+}
+
+#[tokio::test]
+async fn a_rename_stays_an_update_when_the_stale_uid_sorts_first() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("state.json");
+    write_doubled_site_state(&path, uid(1), uid(900));
+    let mut state = StateStore::load(&path).unwrap();
+
+    let plan = build_plan(
+        &RenameBackend,
+        &renamed_inventory(uid(900)),
+        &mut state,
+        false,
+    )
+    .await
+    .unwrap();
+    let ops = site_ops(&plan);
+    assert_eq!(ops.len(), 1, "{:?}", plan.ops);
+    assert!(
+        matches!(ops[0], Op::Update { uid: u, .. } if *u == uid(900)),
+        "the rename must stay an update of the declared uid: {:?}",
+        plan.ops
+    );
+    assert_eq!(
+        state.uid_for_backend_id(&t("dcim.site"), &BackendId::Int(1)),
+        Some(uid(900))
+    );
+    assert_eq!(state.all_mappings()[&t("dcim.site")].len(), 1);
+}
+
+#[tokio::test]
+async fn a_rename_emits_no_delete_when_the_stale_uid_sorts_first() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("state.json");
+    write_doubled_site_state(&path, uid(1), uid(900));
+    let mut state = StateStore::load(&path).unwrap();
+
+    let plan = build_plan(
+        &RenameBackend,
+        &renamed_inventory(uid(900)),
+        &mut state,
+        true,
+    )
+    .await
+    .unwrap();
+    assert!(
+        !plan.ops.iter().any(|op| matches!(op, Op::Delete { .. })),
+        "a rename must not delete the object it renames: {:?}",
+        plan.ops
+    );
+}
+
+#[tokio::test]
+async fn a_rename_stays_an_update_when_the_stale_uid_sorts_last() {
+    // the other arm of the same tiebreak: which uid sorts first decides nothing.
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("state.json");
+    write_doubled_site_state(&path, uid(1), uid(900));
+    let mut state = StateStore::load(&path).unwrap();
+
+    let plan = build_plan(&RenameBackend, &renamed_inventory(uid(1)), &mut state, true)
+        .await
+        .unwrap();
+    let ops = site_ops(&plan);
+    assert_eq!(ops.len(), 1, "{:?}", plan.ops);
+    assert!(
+        matches!(ops[0], Op::Update { uid: u, .. } if *u == uid(1)),
+        "{:?}",
+        plan.ops
+    );
+}
+
+#[tokio::test]
+async fn plan_converges_when_the_stale_uid_sorts_before_the_declared_uid() {
+    // the arm `plan_converges_once_the_desired_set_claims_new_uids` cannot reach:
+    // the uid state answers with at load is not the one the inventory claims.
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("state.json");
+    write_doubled_site_state(&path, uid(1), uid(900));
+    let mut state = StateStore::load(&path).unwrap();
+
+    let inventory = ref_backend_inventory(uid(900), uid(11));
+    let first = build_plan(&RefBackend, &inventory, &mut state, false)
+        .await
+        .unwrap();
+    assert_eq!(first.ops.len(), 1, "{:?}", first.ops);
+    for round in 1..4 {
+        let plan = build_plan(&RefBackend, &inventory, &mut state, false)
+            .await
+            .unwrap();
+        assert!(plan.ops.is_empty(), "round {round}: {:?}", plan.ops);
+    }
+    assert!(backend_ids_are_unambiguous(&state));
+    assert_eq!(
+        state.uid_for_backend_id(&t("dcim.site"), &BackendId::Int(1)),
+        Some(uid(900))
+    );
+    assert_eq!(state.all_mappings()[&t("dcim.site")].len(), 1);
+}
+
+#[tokio::test]
+async fn the_inventory_decides_which_uid_answers_when_it_declares_both() {
+    // an inventory declaring both uids contradicts itself: one backend object
+    // cannot be two objects. the one declared last owns the backend id, the other
+    // is planned by key like any object state does not map.
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("state.json");
+    write_doubled_site_state(&path, uid(1), uid(900));
+    let mut state = StateStore::load(&path).unwrap();
+
+    let inventory = Inventory {
+        schema: rename_schema(),
+        objects: vec![
+            obj(
+                uid(1),
+                "dcim.site",
+                "slug=fra1",
+                json!({ "status": "active" }),
+            ),
+            obj(
+                uid(900),
+                "dcim.site",
+                "slug=fra2",
+                json!({ "status": "planned" }),
+            ),
+        ],
+    };
+    build_plan(&RenameBackend, &inventory, &mut state, false)
+        .await
+        .unwrap();
+    assert_eq!(
+        state.uid_for_backend_id(&t("dcim.site"), &BackendId::Int(1)),
+        Some(uid(900))
+    );
+    assert_eq!(state.all_mappings()[&t("dcim.site")].len(), 1);
 }
