@@ -2392,3 +2392,55 @@ async fn plan_only_runs_leave_the_mapping_count_flat() {
     let mappings: usize = state.all_mappings().values().map(|m| m.len()).sum();
     assert_eq!(mappings, 2, "{:?}", state.all_mappings());
 }
+
+/// the state a run before this left behind: `dcim.site` answering to both the
+/// uid the inventory declares and a stale one that sorts after it.
+fn write_doubled_state(path: &std::path::Path) {
+    std::fs::write(
+        path,
+        r#"{"mappings":{"dcim.device":{"00000000-0000-0000-0000-00000000000b":2},"dcim.site":{"00000000-0000-0000-0000-00000000000a":1,"00000000-0000-0000-0000-000000000384":1}}}"#,
+    )
+    .unwrap();
+}
+
+#[tokio::test]
+async fn plan_converges_on_a_state_file_that_already_doubled_a_backend_id() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("state.json");
+    write_doubled_state(&path);
+    let mut state = StateStore::load(&path).unwrap();
+
+    let inventory = ref_backend_inventory(uid(10), uid(11));
+    for round in 0..4 {
+        let plan = build_plan(&RefBackend, &inventory, &mut state, false)
+            .await
+            .unwrap();
+        assert!(plan.ops.is_empty(), "round {round}: {:?}", plan.ops);
+    }
+    assert!(backend_ids_are_unambiguous(&state));
+    assert_eq!(
+        state.backend_id(t("dcim.site"), uid(10)),
+        Some(BackendId::Int(1))
+    );
+}
+
+#[test]
+fn single_valued_state_inverts_without_losing_a_uid() {
+    // why the readers that invert the forward map need no guard of their own.
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("state.json");
+    write_doubled_state(&path);
+    let state = StateStore::load(&path).unwrap();
+
+    let by_id = state_mappings_by_id(&state, |id| match id {
+        BackendId::Int(n) => Some(*n),
+        BackendId::String(_) => None,
+    });
+    for (type_name, mapping) in state.all_mappings() {
+        assert_eq!(
+            by_id[type_name.as_str()].len(),
+            mapping.len(),
+            "{type_name}"
+        );
+    }
+}

@@ -48,6 +48,10 @@ pub trait StateBackend: Send + Sync + std::fmt::Debug {
 pub struct StateStore {
     backend: Option<Arc<Mutex<dyn StateBackend>>>,
     data: StateData,
+    // inverse of `data.mappings`, per type. a backend object answers to one uid,
+    // so this stays a bijection with the forward map, and deciding which uid a
+    // backend id supersedes costs a lookup rather than a walk of the type.
+    by_backend_id: BTreeMap<TypeName, BTreeMap<BackendId, Uid>>,
     journal_dir: Option<PathBuf>,
     // advisory lock held for a local-file store's whole lifetime, so two concurrent
     // runs against the same state file cannot both load-modify-save it and clobber
@@ -61,12 +65,15 @@ pub struct StateStore {
 impl StateStore {
     /// create a new state store with an optional backend.
     pub fn new(backend: Option<Arc<Mutex<dyn StateBackend>>>, data: StateData) -> Self {
-        Self {
+        let mut store = Self {
             backend,
             data,
+            by_backend_id: BTreeMap::new(),
             journal_dir: None,
             lock: None,
-        }
+        };
+        store.reindex();
+        store
     }
 
     /// set the directory used to persist apply journals for resumable applies.
@@ -125,6 +132,7 @@ impl StateStore {
     pub async fn load_async(&mut self) -> Result<()> {
         if let Some(backend) = &self.backend {
             self.data = backend.lock().await.load().await?;
+            self.reindex();
         }
         Ok(())
     }
@@ -148,15 +156,57 @@ impl StateStore {
     /// set a backend id mapping. a backend object answers to one uid, so any
     /// uid this one supersedes is dropped.
     pub fn set_backend_id(&mut self, type_name: TypeName, uid: Uid, backend_id: BackendId) {
-        let type_map = self.data.mappings.entry(type_name).or_default();
-        type_map.retain(|_, mapped| *mapped != backend_id);
-        type_map.insert(uid, backend_id);
+        let type_map = self.data.mappings.entry(type_name.clone()).or_default();
+        let index = self.by_backend_id.entry(type_name).or_default();
+        if let Some(superseded) = index.insert(backend_id.clone(), uid) {
+            if superseded != uid {
+                type_map.remove(&superseded);
+            }
+        }
+        if let Some(previous) = type_map.insert(uid, backend_id.clone()) {
+            if previous != backend_id {
+                index.remove(&previous);
+            }
+        }
     }
 
     /// remove a backend id mapping.
     pub fn remove_backend_id(&mut self, type_name: TypeName, uid: Uid) {
         if let Some(type_map) = self.data.mappings.get_mut(&type_name) {
-            type_map.remove(&uid);
+            if let Some(backend_id) = type_map.remove(&uid) {
+                if let Some(index) = self.by_backend_id.get_mut(&type_name) {
+                    index.remove(&backend_id);
+                }
+            }
+        }
+    }
+
+    // rebuild the inverse index, dropping every uid but the first a backend id
+    // answers to. which one survives is arbitrary: either it is the uid the
+    // model declares, or the next adoption supersedes it. every reader that
+    // inverts the forward map is unambiguous once this holds.
+    fn reindex(&mut self) {
+        self.by_backend_id.clear();
+        for (type_name, type_map) in &mut self.data.mappings {
+            let index: &mut BTreeMap<BackendId, Uid> =
+                self.by_backend_id.entry(type_name.clone()).or_default();
+            type_map.retain(|uid, backend_id| match index.get(&*backend_id) {
+                Some(kept) => {
+                    tracing::warn!(
+                        "state: {} backend id {} answered to both {} and {}; dropped {}",
+                        type_name.as_str(),
+                        backend_id,
+                        kept,
+                        uid,
+                        uid
+                    );
+                    false
+                }
+                None => {
+                    index.insert(backend_id.clone(), *uid);
+                    true
+                }
+            });
         }
     }
 
@@ -503,6 +553,110 @@ mod tests {
         );
         assert_eq!(
             store.backend_id(t("device"), uid(2)),
+            Some(BackendId::Int(42))
+        );
+    }
+
+    #[test]
+    fn new_keeps_one_uid_per_backend_id() {
+        let mut data = StateData::default();
+        data.mappings.insert(
+            t("site"),
+            BTreeMap::from([(uid(1), BackendId::Int(42)), (uid(2), BackendId::Int(42))]),
+        );
+        let store = StateStore::new(None, data);
+        assert_eq!(store.all_mappings()[&t("site")].len(), 1);
+        assert_eq!(
+            store.backend_id(t("site"), uid(1)),
+            Some(BackendId::Int(42))
+        );
+        assert_eq!(store.backend_id(t("site"), uid(2)), None);
+    }
+
+    #[test]
+    fn new_keeps_a_backend_id_that_two_types_share() {
+        // control: backend ids are only unique per type.
+        let mut data = StateData::default();
+        data.mappings
+            .insert(t("site"), BTreeMap::from([(uid(1), BackendId::Int(42))]));
+        data.mappings
+            .insert(t("device"), BTreeMap::from([(uid(2), BackendId::Int(42))]));
+        let store = StateStore::new(None, data);
+        assert_eq!(
+            store.backend_id(t("site"), uid(1)),
+            Some(BackendId::Int(42))
+        );
+        assert_eq!(
+            store.backend_id(t("device"), uid(2)),
+            Some(BackendId::Int(42))
+        );
+    }
+
+    #[test]
+    fn new_names_the_uid_it_drops() {
+        let mut data = StateData::default();
+        data.mappings.insert(
+            t("site"),
+            BTreeMap::from([(uid(1), BackendId::Int(42)), (uid(2), BackendId::Int(42))]),
+        );
+        let (_, logged) = crate::test_log::capture(|| StateStore::new(None, data));
+        assert!(logged.contains("WARN"), "{logged}");
+        assert!(logged.contains("site"), "{logged}");
+        assert!(logged.contains("42"), "{logged}");
+        assert!(logged.contains(&uid(1).to_string()), "{logged}");
+        assert!(logged.contains(&uid(2).to_string()), "{logged}");
+    }
+
+    #[tokio::test]
+    async fn load_async_keeps_one_uid_per_backend_id() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("state.json");
+        let mut store = StateStore::load(&path).unwrap();
+        fs::write(
+            &path,
+            r#"{"mappings":{"site":{"00000000-0000-0000-0000-000000000001":42,"00000000-0000-0000-0000-000000000002":42}}}"#,
+        )
+        .unwrap();
+        store.load_async().await.unwrap();
+        assert_eq!(store.all_mappings()[&t("site")].len(), 1);
+        assert_eq!(
+            store.backend_id(t("site"), uid(1)),
+            Some(BackendId::Int(42))
+        );
+    }
+
+    #[test]
+    fn set_backend_id_frees_the_backend_id_a_uid_moved_off() {
+        // control: a uid that moves must release the id it held, or the next uid
+        // claiming that id supersedes a live mapping.
+        let mut store = StateStore::new(None, StateData::default());
+        store.set_backend_id(t("site"), uid(1), BackendId::Int(42));
+        store.set_backend_id(t("site"), uid(1), BackendId::Int(43));
+        store.set_backend_id(t("site"), uid(2), BackendId::Int(42));
+        assert_eq!(
+            store.backend_id(t("site"), uid(1)),
+            Some(BackendId::Int(43))
+        );
+        assert_eq!(
+            store.backend_id(t("site"), uid(2)),
+            Some(BackendId::Int(42))
+        );
+    }
+
+    #[test]
+    fn remove_backend_id_frees_the_backend_id_it_held() {
+        // control: same hazard through the removal path.
+        let mut store = StateStore::new(None, StateData::default());
+        store.set_backend_id(t("site"), uid(1), BackendId::Int(42));
+        store.remove_backend_id(t("site"), uid(1));
+        store.set_backend_id(t("site"), uid(1), BackendId::Int(43));
+        store.set_backend_id(t("site"), uid(2), BackendId::Int(42));
+        assert_eq!(
+            store.backend_id(t("site"), uid(1)),
+            Some(BackendId::Int(43))
+        );
+        assert_eq!(
+            store.backend_id(t("site"), uid(2)),
             Some(BackendId::Int(42))
         );
     }
