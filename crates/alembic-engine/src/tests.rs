@@ -2437,3 +2437,86 @@ fn apply_plan_rejects_read_only_observer() {
         .to_string();
     assert!(err.contains("read-only"));
 }
+
+/// two types whose keys reference each other. the adapter's fixpoint settles
+/// neither, so both come back keyed on backend ids.
+fn ref_cycle_inventory() -> Inventory {
+    let cycle = |field: &str, target: &str| TypeSchema {
+        key: BTreeMap::from([
+            (field.to_string(), ref_to(target)),
+            ("name".to_string(), field_of(FieldType::String)),
+        ]),
+        fields: BTreeMap::from([
+            (field.to_string(), ref_to(target)),
+            ("name".to_string(), field_of(FieldType::String)),
+        ]),
+    };
+    Inventory {
+        schema: Schema {
+            types: BTreeMap::from([
+                ("net.a".to_string(), cycle("b", "net.b")),
+                ("net.b".to_string(), cycle("a", "net.a")),
+            ]),
+        },
+        objects: vec![
+            obj(
+                uid(1),
+                "net.a",
+                &format!("b={};name=a1", uid(2)),
+                json!({ "b": uid(2).to_string(), "name": "a1" }),
+            ),
+            obj(
+                uid(2),
+                "net.b",
+                &format!("a={};name=b1", uid(1)),
+                json!({ "a": uid(1).to_string(), "name": "b1" }),
+            ),
+        ],
+    }
+}
+
+#[test]
+fn build_plan_names_a_backend_id_ref_whose_target_is_keyed_on_a_cycle() {
+    // both targets are in the observation, so only their own keys separate
+    // this from a ref the adapter could still rewrite.
+    let adapter = RefChainAdapter::new(vec![
+        (
+            t("net.a"),
+            BackendId::Int(1),
+            json!({ "b": 2, "name": "a1" }),
+        ),
+        (
+            t("net.b"),
+            BackendId::Int(2),
+            json!({ "a": 1, "name": "b1" }),
+        ),
+    ]);
+    let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
+    let error = futures::executor::block_on(build_plan(
+        &adapter,
+        &ref_cycle_inventory(),
+        &mut state,
+        false,
+    ))
+    .unwrap_err()
+    .to_string();
+
+    assert!(
+        error.contains("reported 4 reference(s) as backend ids"),
+        "{error}"
+    );
+    assert!(error.contains("net.a.key.b -> net.b 2"), "{error}");
+    assert!(error.contains("net.b.key.a -> net.a 1"), "{error}");
+    assert!(
+        error.contains(
+            "was observed, but its own key still holds a backend id, so no uid can be derived for it either"
+        ),
+        "{error}"
+    );
+    // asserted absent, not merely outnumbered: every one of the four lands on
+    // the new arm, so the old wording surviving anywhere is the regression.
+    assert!(
+        !error.contains("so the adapter can rewrite the id without reading again"),
+        "{error}"
+    );
+}

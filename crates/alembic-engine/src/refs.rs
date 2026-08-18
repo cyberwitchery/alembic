@@ -30,16 +30,36 @@ pub(crate) fn visit_ref_leaves(
     attrs: &JsonMap,
     visit: &mut impl FnMut(String, &str, &Value),
 ) {
-    for (field, schema) in &type_schema.key {
-        if let Some(value) = key.get(field) {
-            scan(&format!("key.{field}"), &schema.r#type, value, visit);
-        }
-    }
+    visit_key_ref_leaves(type_schema, key, visit);
     for (field, schema) in &type_schema.fields {
         if let Some(value) = attrs.get(field) {
             scan(field, &schema.r#type, value, visit);
         }
     }
+}
+
+/// the key half of [`visit_ref_leaves`], for the question an object's own uid
+/// derives from its key alone.
+fn visit_key_ref_leaves(
+    type_schema: &TypeSchema,
+    key: &Key,
+    visit: &mut impl FnMut(String, &str, &Value),
+) {
+    for (field, schema) in &type_schema.key {
+        if let Some(value) = key.get(field) {
+            scan(&format!("key.{field}"), &schema.r#type, value, visit);
+        }
+    }
+}
+
+/// whether an observed object's own key still holds a backend id, so no uid
+/// derives for it either.
+fn key_holds_backend_id(type_schema: &TypeSchema, key: &Key) -> bool {
+    let mut held = false;
+    visit_key_ref_leaves(type_schema, key, &mut |_, _, value| {
+        held |= unrewritten_backend_id(value).is_some();
+    });
+    held
 }
 
 fn scan(
@@ -98,24 +118,39 @@ struct BackendIdRef {
     field: String,
     target: String,
     value: Value,
-    observed: bool,
+    cause: BackendIdCause,
+}
+
+/// what the observation holds for the target of a ref reported as a backend id.
+enum BackendIdCause {
+    /// no object with that backend id was observed.
+    Unobserved,
+    /// observed with a key already in uid space, so a uid derives for it.
+    Rewritable,
+    /// observed, but its own key still holds a backend id, so no uid derives
+    /// for it either: the adapter's fixpoint left it a straggler.
+    KeyUnresolved,
 }
 
 impl fmt::Display for BackendIdRef {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{} -> {} {}: ", self.field, self.target, self.value)?;
-        if self.observed {
-            write!(
-                f,
-                "the {} it names was observed, so the adapter can rewrite the id without reading again",
-                self.target
-            )
-        } else {
-            write!(
+        match self.cause {
+            BackendIdCause::Unobserved => write!(
                 f,
                 "no {} with that backend id was observed, so there is no uid to point at",
                 self.target
-            )
+            ),
+            BackendIdCause::Rewritable => write!(
+                f,
+                "the {} it names was observed, so the adapter can rewrite the id without reading again",
+                self.target
+            ),
+            BackendIdCause::KeyUnresolved => write!(
+                f,
+                "the {} it names was observed, but its own key still holds a backend id, so no uid can be derived for it either",
+                self.target
+            ),
         }
     }
 }
@@ -140,9 +175,7 @@ pub(crate) fn refuse_backend_id_refs(observed: &ObservedState, schema: &Schema) 
                     field: format!("{}.{field}", object.type_name),
                     target: target.to_string(),
                     value: value.clone(),
-                    observed: observed
-                        .by_backend_id
-                        .contains_key(&(TypeName::new(target), backend_id)),
+                    cause: classify(observed, schema, target, backend_id),
                 });
             },
         );
@@ -155,4 +188,26 @@ pub(crate) fn refuse_backend_id_refs(observed: &ObservedState, schema: &Schema) 
         found.len(),
         bullet_list(&found)
     ))
+}
+
+/// classify one ref by what the observation says about its target. a target
+/// whose type the schema does not declare has no key to walk, as above.
+fn classify(
+    observed: &ObservedState,
+    schema: &Schema,
+    target: &str,
+    backend_id: BackendId,
+) -> BackendIdCause {
+    let Some(object) = observed
+        .by_backend_id
+        .get(&(TypeName::new(target), backend_id))
+    else {
+        return BackendIdCause::Unobserved;
+    };
+    match schema.types.get(target) {
+        Some(type_schema) if key_holds_backend_id(type_schema, &object.key) => {
+            BackendIdCause::KeyUnresolved
+        }
+        _ => BackendIdCause::Rewritable,
+    }
 }
