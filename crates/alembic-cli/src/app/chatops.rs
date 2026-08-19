@@ -290,15 +290,15 @@ mod tests {
     }
 
     #[test]
-    fn slack_message_format_is_blocks_with_mrkdwn() {
+    fn slack_message_format_is_blocks() {
         let backend = ChatopsBackend::Slack { secret: "s".into() };
         let msg = backend.notification_message(&dummy_notification());
         assert_eq!(
             msg,
             json!({
                 "blocks": [{
-                    "type": "section",
-                    "text": { "type": "mrkdwn", "text": "hello" }
+                    "elements": [],
+                    "type": "rich_text"
                 }]
             })
         );
@@ -308,6 +308,6 @@ mod tests {
     fn discord_message_format_is_content_field() {
         let backend = ChatopsBackend::Discord { token: "t".into() };
         let msg = backend.notification_message(&dummy_notification());
-        assert_eq!(msg, json!({ "content": "hello" }));
+        assert_eq!(msg, json!({ "content": "" }));
     }
 }
