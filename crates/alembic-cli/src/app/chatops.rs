@@ -59,6 +59,35 @@ impl ChatopsBackend {
         })
     }
 
+    fn slack_action_buttons(session_data: Value) -> Value {
+        json!({
+            "type": "actions",
+            "block_id": "approval_actions",
+            "elements": [
+            {
+                "type": "button",
+                "text": {
+                "type": "plain_text",
+                "text": "Approve"
+            },
+                "style": "primary",
+                "action_id": "approve_button",
+                "value": "approve", //session_data,
+            },
+            {
+                "type": "button",
+                "text": {
+                "type": "plain_text",
+                "text": "Deny"
+            },
+                "style": "danger",
+                "action_id": "deny_button",
+                "value": "deny", // session_data,
+            }
+            ]
+        })
+    }
+
     fn notification_message(&self, notification: &Notification) -> serde_json::Value {
         match self {
             ChatopsBackend::Slack { .. } => {
@@ -78,12 +107,16 @@ impl ChatopsBackend {
                     })
                     .collect::<Vec<_>>();
                 json!({
-                  "blocks": [
-                    {
-                      "type": "rich_text",
-                      "elements": elements,
-                    }
-                  ]
+                    "blocks": [
+                        {
+                            "type": "rich_text",
+                            "elements": elements,
+                        },
+                        Self::slack_action_buttons(json!({
+                            "command": "apply",
+                            "backend": "netbox",
+                        }))
+                    ]
                 })
             }
             ChatopsBackend::Discord { .. } => {
@@ -158,34 +191,48 @@ impl Notification {
 }
 
 pub async fn notify(
-    backend: &ChatopsBackend,
+    chatops_backend: &ChatopsBackend,
     notification: &Notification,
 ) -> Result<(), anyhow::Error> {
-    notify_with_base_url(backend, notification, backend.default_base_url()).await
+    notify_with_base_url(
+        chatops_backend,
+        notification,
+        chatops_backend.default_base_url(),
+    )
+    .await
 }
 
 async fn notify_with_base_url(
-    backend: &ChatopsBackend,
+    chatops_backend: &ChatopsBackend,
     notification: &Notification,
     base_url: &str,
 ) -> Result<(), anyhow::Error> {
     let client = reqwest::Client::new();
 
+    // println!(
+    //     "Notification json: {}",
+    //     backend.notification_message(notification).to_string()
+    // );
+
     let res = client
-        .post(backend.notification_url(base_url))
+        .post(chatops_backend.notification_url(base_url))
         .header("Content-Type", "application/json")
-        .body(backend.notification_message(notification).to_string())
+        .body(
+            chatops_backend
+                .notification_message(notification)
+                .to_string(),
+        )
         .send()
         .await?;
 
     match res.error_for_status() {
         Ok(_) => {
-            println!("chatops notification sent ({})", backend.name());
+            println!("chatops notification sent ({})", chatops_backend.name());
             Ok(())
         }
         Err(e) => Err(anyhow::anyhow!(
-            "chatops notification response error ({}): {}",
-            backend.name(),
+            "chatops notification response error ({}): {:?}",
+            chatops_backend.name(),
             e
         )),
     }
