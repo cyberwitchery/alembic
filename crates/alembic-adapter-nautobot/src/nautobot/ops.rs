@@ -299,13 +299,20 @@ impl Emitter for NautobotAdapter {
             }
         }
 
-        // existing custom fields: converge only the properties the schema declares.
+        // existing custom fields: converge only the properties the schema declares
+        // and the declared choices the field does not offer yet.
         let mut updated_fields = Vec::new();
         // untyped: the patch response is not read, so it need not deserialize
         // into the vendor's custom field model.
         let custom_fields: Resource<Value> = self.client.resource("extras/custom-fields/".into());
         for update in &plan.updates {
-            custom_fields.patch(&update.field_id, &update.patch).await?;
+            if let Some(patch) = &update.patch {
+                custom_fields.patch(&update.field_id, patch).await?;
+            }
+            if !update.missing_choices.is_empty() {
+                self.create_custom_field_choices(&update.field_id, &update.missing_choices)
+                    .await?;
+            }
             updated_fields.extend(update.declarations.iter().cloned());
         }
 
@@ -343,13 +350,15 @@ struct CustomFieldPlan<'a> {
     updates: Vec<PlannedFieldUpdate>,
 }
 
-/// an existing custom field to converge, with the patch that does it: only the
-/// properties the schema declares and the backend disagrees on.
+/// an existing custom field to converge: the properties the schema declares and
+/// the backend disagrees on, and the declared choices it does not offer yet.
 struct PlannedFieldUpdate {
     /// every `type.field` declaration this one backend field answers.
     declarations: Vec<String>,
     field_id: String,
-    patch: Value,
+    /// `None` when only the choices move.
+    patch: Option<Value>,
+    missing_choices: Vec<(String, usize)>,
 }
 
 /// the declarations landing on one backend custom field, accumulated so they can
@@ -423,12 +432,15 @@ impl NautobotAdapter {
                     let declared = format!("{type_name}.{field_name}");
                     let Some(field_id) = def.id.clone() else {
                         // nautobot listed the field without an id, so it can be
-                        // detected but not patched. saying so beats exiting 0 with
-                        // the divergence unreported.
-                        if custom_field_update_payload(&def.current, &payload).is_some() {
+                        // detected but neither patched nor keyed on to read its
+                        // choices. saying so beats exiting 0 with the divergence
+                        // unreported.
+                        if custom_field_update_payload(&def.current, &payload).is_some()
+                            || !declared_choices(field_schema).is_empty()
+                        {
                             tracing::warn!(
                                 field = %declared,
-                                "existing custom field diverges from the schema, but nautobot reported no id to patch it by"
+                                "existing custom field diverges from the schema or declares choices, but nautobot reported no id to write either by"
                             );
                         }
                         continue;
@@ -463,19 +475,39 @@ impl NautobotAdapter {
             }
         }
 
+        // one read for every field's choices, and only when a declaration that
+        // landed on an existing field carries any: a model without enums must not
+        // cost a request.
+        let current_choices = if shared_fields
+            .values()
+            .any(|shared| !shared.choices.is_empty())
+        {
+            self.client.fetch_custom_field_choices().await?
+        } else {
+            BTreeMap::new()
+        };
+
         // one patch per backend field, computed once every declaration on it has
         // been merged: a property another type already agrees with the backend on
         // must not be planned away by this one.
         let mut updates = Vec::new();
         for (field_id, shared) in shared_fields {
-            let Some(patch) =
-                custom_field_update_payload(&shared.current, &Value::Object(shared.desired))
-            else {
+            let patch =
+                custom_field_update_payload(&shared.current, &Value::Object(shared.desired));
+            let choices = missing_choices(&shared.choices, current_choices.get(&field_id));
+            if patch.is_none() && choices.is_empty() {
                 continue;
-            };
-            // each declaration carries what the patch would write, so the
-            // preview names the change rather than only the field.
-            let changes = describe_custom_field_update(&shared.current, &patch).join(", ");
+            }
+            // each declaration carries what the write would do, so the preview
+            // names the change rather than only the field.
+            let mut changes = patch
+                .as_ref()
+                .map(|patch| describe_custom_field_update(&shared.current, patch))
+                .unwrap_or_default();
+            if !choices.is_empty() {
+                changes.push(describe_added_choices(&choices));
+            }
+            let changes = changes.join(", ");
             updates.push(PlannedFieldUpdate {
                 declarations: shared
                     .declarations
@@ -484,6 +516,7 @@ impl NautobotAdapter {
                     .collect(),
                 field_id,
                 patch,
+                missing_choices: choices,
             });
         }
 
@@ -678,12 +711,12 @@ impl NautobotAdapter {
         let resource = self.client.extras().custom_fields();
         match resource.create(&payload).await {
             Ok(created) => {
-                let choices = declared_choices(field_schema);
+                let choices = missing_choices(declared_choices(field_schema), None);
                 if !choices.is_empty() {
                     let id = created
                         .id
                         .ok_or_else(|| anyhow!("custom field create returned no id"))?;
-                    self.create_custom_field_choices(&id.to_string(), choices)
+                    self.create_custom_field_choices(&id.to_string(), &choices)
                         .await?;
                 }
                 Ok(true)
@@ -694,10 +727,9 @@ impl NautobotAdapter {
                     .get(type_name.as_str())
                     .is_some_and(|fields| fields.contains(field_name))
                 {
-                    // choices belong to the create, so an existing field keeps the
-                    // ones it was created with: this adapter never updates a field
-                    // it did not create (the same rule `validation_regex` follows),
-                    // and re-posting them would duplicate whoever won the race.
+                    // the plan saw no field to converge, so posting choices here
+                    // would duplicate whoever won the race. the next run finds the
+                    // field and posts the ones it lacks.
                     tracing::warn!(
                         type_name = %type_name,
                         field = %field_name,
@@ -711,22 +743,26 @@ impl NautobotAdapter {
         }
     }
 
-    /// one choice per declared value, weighted in declaration order so nautobot
-    /// lists them the way the model declares them. nautobot's writable custom
-    /// field carries no inline `choices`, so they can only follow the create.
+    /// post each choice at the weight the caller computed. nautobot's writable
+    /// custom field carries no inline `choices`, so they follow the create or a
+    /// later converge.
     ///
     /// posts through a json resource, not `extras().custom_field_choices()`:
     /// that one decodes into the generated `CustomFieldChoice`, whose nested
     /// `custom_field.id` generates as an empty struct, so a create nautobot
     /// accepted would still fail to decode.
-    async fn create_custom_field_choices(&self, field_id: &str, values: &[String]) -> Result<()> {
+    async fn create_custom_field_choices(
+        &self,
+        field_id: &str,
+        values: &[(String, usize)],
+    ) -> Result<()> {
         let resource: Resource<Value> = self
             .client
             .resource("extras/custom-field-choices/".to_string());
-        for (index, value) in values.iter().enumerate() {
+        for (value, weight) in values {
             let payload = serde_json::json!({
                 "value": value,
-                "weight": (index + 1) * 100,
+                "weight": weight,
                 "custom_field": field_id,
             });
             resource
@@ -762,6 +798,33 @@ fn declared_choices(field_schema: &FieldSchema) -> &[String] {
         },
         _ => &[],
     }
+}
+
+/// the declared choices a field does not offer yet, each at the weight its
+/// declared position implies, so a field created and later extended ends up with
+/// the weights a create of the whole list would have written. a value declared
+/// between two the backend already has can therefore tie one of their weights,
+/// which nautobot allows and orders itself.
+fn missing_choices(
+    declared: &[String],
+    current: Option<&BTreeSet<String>>,
+) -> Vec<(String, usize)> {
+    declared
+        .iter()
+        .enumerate()
+        .filter(|(_, value)| !current.is_some_and(|current| current.contains(*value)))
+        .map(|(index, value)| (value.clone(), (index + 1) * 100))
+        .collect()
+}
+
+/// what posting them would add, worded the way `describe_custom_field_update`
+/// words a property. additive, so only the values the field gains.
+fn describe_added_choices(choices: &[(String, usize)]) -> String {
+    let values: Vec<Value> = choices
+        .iter()
+        .map(|(value, _)| Value::String(value.clone()))
+        .collect();
+    format!("choices + {}", Value::Array(values))
 }
 
 /// the create payload for a custom field on a nautobot model.
@@ -1783,9 +1846,9 @@ mod tests {
         assert!(payload.get("validation_regex").is_none());
     }
 
-    // a field that already exists keeps the choices it was created with: the
-    // create is the only thing that writes them, so a converged apply (and a
-    // lost race) posts none and duplicates nothing.
+    // the create's race fallback posts no choices: the plan that converges them
+    // ran before this field existed, so posting here would duplicate whoever won
+    // the race rather than converge anything.
     #[tokio::test]
     async fn test_existing_custom_field_posts_no_choices() {
         use httpmock::Method::{GET, POST};
@@ -1898,6 +1961,33 @@ mod tests {
         );
         assert_eq!(payload.get("type").unwrap(), &json!("select"));
         assert!(payload.get("validation_regex").is_none());
+    }
+
+    #[test]
+    fn test_missing_choices_weights_by_declared_position() {
+        let declared = ["core", "agg", "edge"].map(str::to_string);
+
+        // nothing offered yet is the create: the whole list, in order.
+        assert_eq!(
+            missing_choices(&declared, None),
+            vec![
+                ("core".to_string(), 100),
+                ("agg".to_string(), 200),
+                ("edge".to_string(), 300),
+            ],
+        );
+
+        // one already offered is left alone, and the rest keep the weight their
+        // declared position implies rather than being renumbered around it.
+        let current = BTreeSet::from(["core".to_string(), "edge".to_string()]);
+        assert_eq!(
+            missing_choices(&declared, Some(&current)),
+            vec![("agg".to_string(), 200)],
+        );
+
+        assert!(
+            missing_choices(&declared, Some(&BTreeSet::from_iter(declared.clone()))).is_empty()
+        );
     }
 
     #[test]

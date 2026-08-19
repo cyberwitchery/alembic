@@ -1,6 +1,7 @@
 use anyhow::Result;
 use nautobot::{Client, ClientConfig, QueryBuilder};
 use serde::de::DeserializeOwned;
+use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Mutex;
 
@@ -115,6 +116,35 @@ impl NautobotClient {
             }
         }
         Ok(by_type)
+    }
+
+    /// the choices each `select`/`multi-select` custom field currently offers,
+    /// keyed by backend field id. read untyped for the reason the create posts
+    /// untyped: the generated `CustomFieldChoice` mis-decodes its nested
+    /// `custom_field`.
+    pub(super) async fn fetch_custom_field_choices(
+        &self,
+    ) -> Result<BTreeMap<String, BTreeSet<String>>> {
+        let resource: nautobot::Resource<Value> =
+            self.resource("extras/custom-field-choices/".to_string());
+        let mut by_field: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        for choice in self.list_all(&resource, None).await? {
+            // a read nests `custom_field`; a create posts it as a bare id.
+            let field = choice.get("custom_field");
+            let id = field.and_then(Value::as_str).or_else(|| {
+                field
+                    .and_then(|field| field.get("id"))
+                    .and_then(Value::as_str)
+            });
+            let (Some(id), Some(value)) = (id, choice.get("value").and_then(Value::as_str)) else {
+                continue;
+            };
+            by_field
+                .entry(id.to_string())
+                .or_default()
+                .insert(value.to_string());
+        }
+        Ok(by_field)
     }
 
     pub(super) async fn fetch_tags(&self) -> Result<BTreeSet<String>> {

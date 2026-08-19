@@ -88,12 +88,13 @@ nautobot has no decimal custom field type, so a `float` is stored as `json` to k
 number: a text field reads back quoted, which fails validation on `import`.
 
 a `select` is created with one choice per declared value, weighted in declaration order.
-choices are written by the create alone, so a field the backend already has keeps the
-choices it was created with: unlike `required`, `description` and `validation_regex`,
-they are not converged. not converged is not unchecked, though: two types sharing one
-field must declare the same values in the same order, or the run fails naming both. a
-run that fails partway through the choices leaves the field created and its remaining
-choices unwritten; the next run finds the field present and does not resume them.
+choices converge additively on a field the backend already has: a declared value the
+field lacks is posted at the weight its declared position implies, which can tie an
+existing choice's weight, and nautobot orders those itself. a choice the backend has and
+the model does not declare is left alone, because core rejects an undeclared enum value
+before a write reaches nautobot: an extra one is inert, a missing one is fatal. two types
+sharing one field must declare the same values in the same order, or the run fails naming
+both. a run that failed partway through the choices posts the rest on the next run.
 
 a declared `pattern:` or `format:` is not provisioned on a `select`: nautobot enforces
 `validation_regex` on text fields only, and the choices are the constraint.
