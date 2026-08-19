@@ -1,7 +1,10 @@
 //! integration with various chat services
 
+use alembic_core::key_string;
+use alembic_engine::{Op, Plan};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
+use tracing::debug;
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub enum ChatopsBackend {
@@ -35,17 +38,54 @@ impl ChatopsBackend {
         }
     }
 
+    fn slack_heading(text: &str) -> Value {
+        json!({
+            "type": "rich_text_section",
+            "elements": [{ "type": "text", "text": text }]
+        })
+    }
+
+    fn slack_bullet_point(text: &str) -> Value {
+        json!({
+            "type": "rich_text_section",
+            "elements": [{ "type": "text", "text": text }]
+        })
+    }
+
+    fn slack_bullet_point_list(elements: Vec<Value>) -> Value {
+        json!({
+            "type": "rich_text_list",
+            "style": "bullet",
+            "elements": elements,
+        })
+    }
+
     fn notification_message(&self, notification: &Notification) -> serde_json::Value {
         match self {
             ChatopsBackend::Slack { .. } => {
-                json!({"blocks": [
+                let elements = notification
+                    .sections
+                    .iter()
+                    .flat_map(|s| {
+                        vec![
+                            Self::slack_heading(&s.title),
+                            Self::slack_bullet_point_list(
+                                s.bullet_points
+                                    .iter()
+                                    .map(|p| Self::slack_bullet_point(p))
+                                    .collect(),
+                            ),
+                        ]
+                    })
+                    .collect::<Vec<_>>();
+                json!({
+                  "blocks": [
                     {
-                        "type": "section",
-                        "text": {
-                        "type": "mrkdwn",
-                        "text": notification.text(),
+                      "type": "rich_text",
+                      "elements": elements,
                     }
-                }]})
+                  ]
+                })
             }
             ChatopsBackend::Discord { .. } => {
                 json!({"content":
@@ -56,15 +96,65 @@ impl ChatopsBackend {
     }
 }
 
-pub enum Notification {
-    Plan(String),
+pub struct Notification {
+    pub sections: Vec<NotificationSection>,
 }
 
+pub struct NotificationSection {
+    pub title: String,
+    pub bullet_points: Vec<String>,
+}
+
+// general purpose container for notification data, not tied to a particular chat service
 impl Notification {
+    pub fn from_plan(plan: &Plan) -> Self {
+        let sections = vec![
+            NotificationSection {
+                title: "Create".to_string(),
+                bullet_points: plan
+                    .ops
+                    .iter()
+                    .filter_map(|op| match op {
+                        Op::Create {
+                            type_name, desired, ..
+                        } => Some(format!("{} {}", type_name, key_string(&desired.key))),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>(),
+            },
+            NotificationSection {
+                title: "Update".to_string(),
+                bullet_points: plan
+                    .ops
+                    .iter()
+                    .filter_map(|op| match op {
+                        Op::Update {
+                            type_name, desired, ..
+                        } => Some(format!("{} {}", type_name, key_string(&desired.key))),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>(),
+            },
+            NotificationSection {
+                title: "Delete".to_string(),
+                bullet_points: plan
+                    .ops
+                    .iter()
+                    .filter_map(|op| match op {
+                        Op::Delete { type_name, key, .. } => {
+                            Some(format!("{} {}", type_name, key_string(key)))
+                        }
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>(),
+            },
+        ];
+
+        Notification { sections }
+    }
+
     fn text(&self) -> String {
-        match self {
-            Notification::Plan(plan) => plan.clone(),
-        }
+        self.sections.iter().map(|s| s.title.clone()).collect()
     }
 }
 
@@ -81,6 +171,8 @@ async fn notify_with_base_url(
     base_url: &str,
 ) -> Result<(), anyhow::Error> {
     let client = reqwest::Client::new();
+
+    debug!("{}", backend.notification_message(notification).to_string());
 
     let res = client
         .post(backend.notification_url(base_url))
@@ -109,12 +201,16 @@ mod tests {
     use httpmock::MockServer;
     use serde_json::json;
 
+    fn dummy_notification() -> Notification {
+        Notification { sections: vec![] }
+    }
+
     #[tokio::test]
     async fn test_chatops_slack_notification() {
         let backend = ChatopsBackend::Slack {
             secret: "very_secret".to_string(),
         };
-        let notification = Notification::Plan("test".to_string());
+        let notification = dummy_notification();
 
         let server = MockServer::start_async().await;
         let notified = server.mock(|when, then| {
@@ -134,7 +230,7 @@ mod tests {
         let backend = ChatopsBackend::Discord {
             token: "very_token".to_string(),
         };
-        let notification = Notification::Plan("test".to_string());
+        let notification = dummy_notification();
 
         let server = MockServer::start_async().await;
         let notified = server.mock(|when, then| {
@@ -155,7 +251,7 @@ mod tests {
         let backend = ChatopsBackend::Slack {
             secret: "bad_secret".into(),
         };
-        let notification = Notification::Plan("test".into());
+        let notification = dummy_notification();
 
         server
             .mock_async(|when, then| {
@@ -196,7 +292,7 @@ mod tests {
     #[test]
     fn slack_message_format_is_blocks_with_mrkdwn() {
         let backend = ChatopsBackend::Slack { secret: "s".into() };
-        let msg = backend.notification_message(&Notification::Plan("hello".into()));
+        let msg = backend.notification_message(&dummy_notification());
         assert_eq!(
             msg,
             json!({
@@ -211,7 +307,7 @@ mod tests {
     #[test]
     fn discord_message_format_is_content_field() {
         let backend = ChatopsBackend::Discord { token: "t".into() };
-        let msg = backend.notification_message(&Notification::Plan("hello".into()));
+        let msg = backend.notification_message(&dummy_notification());
         assert_eq!(msg, json!({ "content": "hello" }));
     }
 }
