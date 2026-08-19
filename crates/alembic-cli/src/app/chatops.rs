@@ -4,7 +4,6 @@ use alembic_core::key_string;
 use alembic_engine::{Op, Plan};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tracing::debug;
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub enum ChatopsBackend {
@@ -171,8 +170,6 @@ async fn notify_with_base_url(
     base_url: &str,
 ) -> Result<(), anyhow::Error> {
     let client = reqwest::Client::new();
-
-    debug!("{}", backend.notification_message(notification).to_string());
 
     let res = client
         .post(backend.notification_url(base_url))
