@@ -161,8 +161,8 @@ impl StateStore {
             .and_then(|index| index.get(backend_id).copied())
     }
 
-    /// the per-type `backend id -> uid` index. inverse of [`Self::all_mappings`],
-    /// and single-valued where that is not.
+    /// the per-type `backend id -> uid` index. inverse of [`Self::all_mappings`] and
+    /// single-valued where that is not, less what [`Self::remove_backend_id`] frees.
     pub fn backend_ids(&self) -> &BTreeMap<TypeName, BTreeMap<BackendId, Uid>> {
         &self.by_backend_id
     }
@@ -177,19 +177,26 @@ impl StateStore {
                 type_map.remove(&superseded);
             }
         }
+        // the index is single-valued where the forward map is not, so the id this
+        // uid moves off may be indexed to another one. only free what we named.
         if let Some(previous) = type_map.insert(uid, backend_id.clone()) {
-            if previous != backend_id {
+            if previous != backend_id && index.get(&previous) == Some(&uid) {
                 index.remove(&previous);
             }
         }
     }
 
-    /// remove a backend id mapping.
+    /// remove a backend id mapping. an id another uid still maps to goes
+    /// unanswered until the next load rebuilds the index.
     pub fn remove_backend_id(&mut self, type_name: TypeName, uid: Uid) {
         if let Some(type_map) = self.data.mappings.get_mut(&type_name) {
             if let Some(backend_id) = type_map.remove(&uid) {
                 if let Some(index) = self.by_backend_id.get_mut(&type_name) {
-                    index.remove(&backend_id);
+                    // same reason as above. freeing only the id we named is a
+                    // lookup; repointing it would walk the type on every delete.
+                    if index.get(&backend_id) == Some(&uid) {
+                        index.remove(&backend_id);
+                    }
                 }
             }
         }
@@ -846,6 +853,76 @@ mod tests {
         assert!(
             err.to_string().contains("state lock"),
             "expected a state-lock error, got: {err}"
+        );
+    }
+
+    // a doubled backend id: the forward map holds both uids, the index names the
+    // first in uid order. writing or removing the other one must leave the entry
+    // that names the survivor alone.
+    fn doubled() -> StateStore {
+        let mut data = StateData::default();
+        data.mappings.insert(
+            t("site"),
+            BTreeMap::from([(uid(1), BackendId::Int(42)), (uid(2), BackendId::Int(42))]),
+        );
+        let store = StateStore::new(None, data);
+        assert_eq!(
+            store.uid_for_backend_id(&t("site"), &BackendId::Int(42)),
+            Some(uid(1))
+        );
+        store
+    }
+
+    #[test]
+    fn set_backend_id_keeps_the_index_entry_of_a_uid_it_does_not_write() {
+        let mut store = doubled();
+        store.set_backend_id(t("site"), uid(2), BackendId::Int(43));
+        assert_eq!(
+            store.uid_for_backend_id(&t("site"), &BackendId::Int(42)),
+            Some(uid(1)),
+            "42 still answers to 1 in the forward map"
+        );
+        assert_eq!(
+            store.uid_for_backend_id(&t("site"), &BackendId::Int(43)),
+            Some(uid(2))
+        );
+        assert_eq!(
+            store.backend_id(t("site"), uid(1)),
+            Some(BackendId::Int(42))
+        );
+    }
+
+    #[test]
+    fn remove_backend_id_keeps_the_index_entry_of_a_uid_it_does_not_remove() {
+        let mut store = doubled();
+        store.remove_backend_id(t("site"), uid(2));
+        assert_eq!(
+            store.uid_for_backend_id(&t("site"), &BackendId::Int(42)),
+            Some(uid(1)),
+            "the only mapping left is 1 -> 42"
+        );
+        assert_eq!(store.all_mappings()[&t("site")].len(), 1);
+    }
+
+    #[test]
+    fn remove_backend_id_leaves_a_doubled_id_unanswered_until_the_next_load() {
+        // the arm this takes: removing the indexed uid frees the id rather than
+        // repointing it at the survivor, which would walk the type on every delete.
+        let mut store = doubled();
+        store.remove_backend_id(t("site"), uid(1));
+        assert_eq!(
+            store.uid_for_backend_id(&t("site"), &BackendId::Int(42)),
+            None
+        );
+        assert_eq!(
+            store.backend_id(t("site"), uid(2)),
+            Some(BackendId::Int(42)),
+            "the survivor keeps its mapping, so the next load answers with it"
+        );
+        let reloaded = StateStore::new(None, StateData::from(&store));
+        assert_eq!(
+            reloaded.uid_for_backend_id(&t("site"), &BackendId::Int(42)),
+            Some(uid(2))
         );
     }
 }
