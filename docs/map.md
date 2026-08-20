@@ -68,8 +68,11 @@ rules:
 predicates address the same dotted namespace as templates (see vars below), so
 `[attrs.role=leaf]` tests the object's `role` attr and `[key.slug=fra1]` tests
 its key. the operators are `=`, `!=`, existence `[field]`, and absence
-`[!field]`; `=`/`!=` compare a field's scalar rendering, while `[field]` is true
-when the field is present and non-null. chained predicates are ANDed.
+`[!field]`; chained predicates are ANDed.
+
+`=`/`!=` compare a field's scalar rendering, so an absent or non-scalar field
+matches neither; select on presence with `[field]`, true when the field is
+present and non-null, or its complement `[!field]`.
 
 ## passthrough
 
