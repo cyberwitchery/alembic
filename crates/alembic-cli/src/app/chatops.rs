@@ -4,6 +4,7 @@ use alembic_core::key_string;
 use alembic_engine::{Op, Plan};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use tracing;
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub enum ChatopsBackend {
@@ -59,7 +60,8 @@ impl ChatopsBackend {
         })
     }
 
-    fn slack_action_buttons(session_data: Value) -> Value {
+    fn slack_action_buttons(session_data: String) -> Value {
+        // note that the data stored under the `value` key must be a String
         json!({
             "type": "actions",
             "block_id": "approval_actions",
@@ -72,7 +74,7 @@ impl ChatopsBackend {
             },
                 "style": "primary",
                 "action_id": "approve_button",
-                "value": "approve", //session_data,
+                "value": session_data,
             },
             {
                 "type": "button",
@@ -82,13 +84,14 @@ impl ChatopsBackend {
             },
                 "style": "danger",
                 "action_id": "deny_button",
-                "value": "deny", // session_data,
+                "value": session_data,
             }
             ]
         })
     }
 
     fn notification_message(&self, notification: &Notification) -> serde_json::Value {
+        let command_data_json = serde_json::to_string(&notification.command).unwrap();
         match self {
             ChatopsBackend::Slack { .. } => {
                 let elements = notification
@@ -112,10 +115,7 @@ impl ChatopsBackend {
                             "type": "rich_text",
                             "elements": elements,
                         },
-                        Self::slack_action_buttons(json!({
-                            "command": "apply",
-                            "backend": "netbox",
-                        }))
+                        Self::slack_action_buttons(command_data_json),
                     ]
                 })
             }
@@ -130,6 +130,12 @@ impl ChatopsBackend {
 
 pub struct Notification {
     pub sections: Vec<NotificationSection>,
+    pub command: CommandData,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum CommandData {
+    Plan { file: String, backend: String },
 }
 
 pub struct NotificationSection {
@@ -139,7 +145,7 @@ pub struct NotificationSection {
 
 // general purpose container for notification data, not tied to a particular chat service
 impl Notification {
-    pub fn from_plan(plan: &Plan) -> Self {
+    pub fn from_plan(plan: &Plan, plan_path: &str, backend: &str) -> Self {
         let sections = vec![
             NotificationSection {
                 title: "Create".to_string(),
@@ -182,7 +188,13 @@ impl Notification {
             },
         ];
 
-        Notification { sections }
+        Notification {
+            sections,
+            command: CommandData::Plan {
+                file: plan_path.to_string(),
+                backend: backend.to_string(),
+            },
+        }
     }
 
     fn text(&self) -> String {
@@ -209,10 +221,12 @@ async fn notify_with_base_url(
 ) -> Result<(), anyhow::Error> {
     let client = reqwest::Client::new();
 
-    // println!(
-    //     "Notification json: {}",
-    //     backend.notification_message(notification).to_string()
-    // );
+    tracing::debug!(
+        "Notification json: {}",
+        chatops_backend
+            .notification_message(notification)
+            .to_string()
+    );
 
     let res = client
         .post(chatops_backend.notification_url(base_url))
@@ -240,13 +254,19 @@ async fn notify_with_base_url(
 
 #[cfg(test)]
 mod tests {
-    use crate::app::chatops::{notify_with_base_url, ChatopsBackend, Notification};
+    use crate::app::chatops::{notify_with_base_url, ChatopsBackend, CommandData, Notification};
     use httpmock::Method::POST;
     use httpmock::MockServer;
     use serde_json::json;
 
     fn dummy_notification() -> Notification {
-        Notification { sections: vec![] }
+        Notification {
+            sections: vec![],
+            command: CommandData::Plan {
+                file: "plan.json".to_string(),
+                backend: "test".to_string(),
+            },
+        }
     }
 
     #[tokio::test]

@@ -283,6 +283,7 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             let inventory = load_inventory(&file)?;
             let mut state = load_state(state_lock_for_plan(report, dry_run, provision)).await?;
             let plugins = search_for_plugins(&config)?;
+            let backend_name = backend.clone();
             let backend = create_backend(&plugins, backend.as_deref(), backend_config)?;
             // a drift report asserts what the backend holds; one that observes
             // nothing would report every declared object absent, so refuse it
@@ -371,7 +372,12 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                 println!("\nplan written to {}", output.display());
 
                 if let Some(chatops_backend) = &config.chatops_backend {
-                    chatops::notify(chatops_backend, &Notification::from_plan(&plan)).await?;
+                    let notification = Notification::from_plan(
+                        &plan,
+                        file.to_str().unwrap(),
+                        &backend_name.unwrap(), // Fall back to backend config here
+                    );
+                    chatops::notify(chatops_backend, &notification).await?;
                 }
             }
         }
