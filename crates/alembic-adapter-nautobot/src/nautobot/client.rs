@@ -8,13 +8,26 @@ use std::sync::Mutex;
 use super::mapping::{slugify, ExistingCustomField};
 use super::registry::ObjectTypeRegistry;
 
-/// an existing custom field, reduced to what a provision needs: its backend id
-/// and the properties convergence compares.
+/// an existing custom field, reduced to what a provision needs: its backend id,
+/// its type and the properties convergence compares.
 #[derive(Debug, Clone)]
 pub(super) struct CustomFieldDef {
     /// `None` for a field nautobot listed without one: it can be detected, not patched.
     pub(super) id: Option<String>,
+    /// the wire spelling a create writes (`text`, `select`, ...), `None` for a
+    /// field nautobot listed without one. read, never patched: a live field is
+    /// not retyped.
+    pub(super) field_type: Option<String>,
     pub(super) current: ExistingCustomField,
+}
+
+/// the wire spelling of a field type. the generated enum carries it in its serde
+/// renames and nowhere else.
+fn field_type_name(field_type: &nautobot::models::CustomFieldType) -> Option<String> {
+    match serde_json::to_value(field_type.value?).ok()? {
+        Value::String(name) => Some(name),
+        _ => None,
+    }
 }
 
 pub(super) struct NautobotClient {
@@ -102,6 +115,7 @@ impl NautobotClient {
             let key = field.key.clone().unwrap_or_else(|| slugify(&field.label));
             let def = CustomFieldDef {
                 id: field.id.map(|id| id.to_string()),
+                field_type: field_type_name(&field.r#type),
                 current: ExistingCustomField {
                     required: field.required.unwrap_or(false),
                     description: field.description.clone().unwrap_or_default(),

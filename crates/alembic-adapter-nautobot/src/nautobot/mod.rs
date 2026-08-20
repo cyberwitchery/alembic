@@ -101,15 +101,25 @@ mod tests {
 
     const EXISTING_FIELD_ID: &str = "44444444-4444-4444-4444-444444444444";
 
-    /// the custom-fields list, holding an `asset_tag` on `dcim.site` whose
-    /// converged properties are `current`.
-    fn mock_existing_custom_field(server: &MockServer, current: serde_json::Value) {
+    /// how nautobot reports a field type, or the empty object a backend that
+    /// names none would send.
+    fn field_type(field_type: Option<&str>) -> serde_json::Value {
+        field_type.map_or_else(|| json!({}), |value| json!({ "value": value }))
+    }
+
+    /// the custom-fields list, holding an `asset_tag` on `dcim.site` of
+    /// `field_type` whose converged properties are `current`.
+    fn mock_typed_custom_field(
+        server: &MockServer,
+        field_type: Option<&str>,
+        current: serde_json::Value,
+    ) {
         let mut field = json!({
             "id": EXISTING_FIELD_ID,
             "key": "asset_tag",
             "label": "asset_tag",
             "content_types": ["dcim.site"],
-            "type": {},
+            "type": self::field_type(field_type),
         });
         let (Some(field), Some(current)) = (field.as_object_mut(), current.as_object()) else {
             unreachable!("both are json objects")
@@ -120,6 +130,12 @@ mod tests {
             when.method(GET).path("/api/extras/custom-fields/");
             then.status(200).json_body(body);
         });
+    }
+
+    /// the same on a `text` field, which is what every non-enum declaration here
+    /// means.
+    fn mock_existing_custom_field(server: &MockServer, current: serde_json::Value) {
+        mock_typed_custom_field(server, Some("text"), current);
     }
 
     // content-types for both dcim.site and dcim.device, plus the sample-object
@@ -140,15 +156,19 @@ mod tests {
         });
     }
 
-    /// one `asset_tag` field carrying *both* content types, which is how both
-    /// vendors model a field attached to more than one type.
-    fn mock_shared_custom_field(server: &MockServer, current: serde_json::Value) {
+    /// one `asset_tag` field of `field_type` carrying *both* content types,
+    /// which is how both vendors model a field attached to more than one type.
+    fn mock_typed_shared_custom_field(
+        server: &MockServer,
+        field_type: Option<&str>,
+        current: serde_json::Value,
+    ) {
         let mut field = json!({
             "id": EXISTING_FIELD_ID,
             "key": "asset_tag",
             "label": "asset_tag",
             "content_types": ["dcim.site", "dcim.device"],
-            "type": {},
+            "type": self::field_type(field_type),
         });
         let (Some(field), Some(current)) = (field.as_object_mut(), current.as_object()) else {
             unreachable!("both are json objects")
@@ -159,6 +179,10 @@ mod tests {
             when.method(GET).path("/api/extras/custom-fields/");
             then.status(200).json_body(body);
         });
+    }
+
+    fn mock_shared_custom_field(server: &MockServer, current: serde_json::Value) {
+        mock_typed_shared_custom_field(server, Some("text"), current);
     }
 
     /// `asset_tag` declared on both types, each with its own pattern.
@@ -253,16 +277,23 @@ mod tests {
         schema
     }
 
-    /// the site type, its native-field probe, an `asset_tag` field holding
-    /// `description`, and the choices that field already offers.
-    fn mock_select_backend(server: &MockServer, description: &str, offering: &[&str]) {
+    /// the site type, its native-field probe, an `asset_tag` field of
+    /// `field_type` holding `description`, and the choices that field already
+    /// offers.
+    fn mock_select_backend(
+        server: &MockServer,
+        field_type: Option<&str>,
+        description: &str,
+        offering: &[&str],
+    ) {
         mock_content_types(server);
         let _probe = server.mock(|when, then| {
             when.method(GET).path("/api/dcim/sites/");
             then.status(200).json_body(page(json!([])));
         });
-        mock_existing_custom_field(
+        mock_typed_custom_field(
             server,
+            field_type,
             json!({"required": true, "description": description, "validation_regex": ""}),
         );
         mock_custom_field_choices(server, offering);
@@ -424,8 +455,9 @@ mod tests {
         let server = MockServer::start();
         let adapter = NautobotAdapter::new(&server.base_url(), "token").unwrap();
         mock_two_content_types(&server);
-        mock_shared_custom_field(
+        mock_typed_shared_custom_field(
             &server,
+            Some("select"),
             json!({"required": true, "description": "asset tag", "validation_regex": ""}),
         );
         let cf_patch = server.mock(|when, then| {
@@ -457,8 +489,9 @@ mod tests {
         let server = MockServer::start();
         let adapter = NautobotAdapter::new(&server.base_url(), "token").unwrap();
         mock_two_content_types(&server);
-        mock_shared_custom_field(
+        mock_typed_shared_custom_field(
             &server,
+            Some("multi-select"),
             json!({"required": true, "description": "asset tag", "validation_regex": ""}),
         );
         let list_of = |values: &[&str]| FieldType::List {
@@ -487,8 +520,9 @@ mod tests {
         let server = MockServer::start();
         let adapter = NautobotAdapter::new(&server.base_url(), "token").unwrap();
         mock_two_content_types(&server);
-        mock_shared_custom_field(
+        mock_typed_shared_custom_field(
             &server,
+            Some("select"),
             json!({"required": true, "description": "asset tag", "validation_regex": ""}),
         );
         let cf_patch = server.mock(|when, then| {
@@ -523,7 +557,7 @@ mod tests {
     async fn ensure_schema_posts_only_the_choices_a_select_lacks() {
         let server = MockServer::start();
         let adapter = NautobotAdapter::new(&server.base_url(), "token").unwrap();
-        mock_select_backend(&server, "asset tag", &["gold", "silver"]);
+        mock_select_backend(&server, Some("select"), "asset tag", &["gold", "silver"]);
         let cf_patch = server.mock(|when, then| {
             when.method(PATCH)
                 .path(format!("/api/extras/custom-fields/{EXISTING_FIELD_ID}/"));
@@ -549,7 +583,7 @@ mod tests {
     async fn preview_schema_names_the_choices_a_select_lacks() {
         let server = MockServer::start();
         let adapter = NautobotAdapter::new(&server.base_url(), "token").unwrap();
-        mock_select_backend(&server, "asset tag", &["gold", "silver"]);
+        mock_select_backend(&server, Some("select"), "asset tag", &["gold", "silver"]);
         let posts = server.mock(|when, then| {
             when.method(POST).path("/api/extras/custom-field-choices/");
             then.status(201).json_body(json!({}));
@@ -571,7 +605,12 @@ mod tests {
     async fn ensure_schema_posts_only_the_choices_a_multi_select_lacks() {
         let server = MockServer::start();
         let adapter = NautobotAdapter::new(&server.base_url(), "token").unwrap();
-        mock_select_backend(&server, "asset tag", &["gold", "silver"]);
+        mock_select_backend(
+            &server,
+            Some("multi-select"),
+            "asset tag",
+            &["gold", "silver"],
+        );
         let bronze = expect_choice_post(&server, EXISTING_FIELD_ID, "bronze", 300);
 
         let schema = schema_declaring_choices(FieldType::List {
@@ -592,7 +631,7 @@ mod tests {
     async fn ensure_schema_patches_and_posts_choices_in_one_entry() {
         let server = MockServer::start();
         let adapter = NautobotAdapter::new(&server.base_url(), "token").unwrap();
-        mock_select_backend(&server, "", &["gold"]);
+        mock_select_backend(&server, Some("select"), "", &["gold"]);
         let cf_patch = server.mock(|when, then| {
             when.method(PATCH)
                 .path(format!("/api/extras/custom-fields/{EXISTING_FIELD_ID}/"))
@@ -622,8 +661,9 @@ mod tests {
         let server = MockServer::start();
         let adapter = NautobotAdapter::new(&server.base_url(), "token").unwrap();
         mock_two_content_types(&server);
-        mock_shared_custom_field(
+        mock_typed_shared_custom_field(
             &server,
+            Some("select"),
             json!({"required": true, "description": "asset tag", "validation_regex": ""}),
         );
         mock_custom_field_choices(&server, &["gold"]);
@@ -655,8 +695,9 @@ mod tests {
         let adapter = NautobotAdapter::new(&server.base_url(), "token").unwrap();
         mock_two_content_types(&server);
         // the field exists on dcim.site only, so dcim.device's is created.
-        mock_existing_custom_field(
+        mock_typed_custom_field(
             &server,
+            Some("select"),
             json!({"required": true, "description": "asset tag", "validation_regex": ""}),
         );
         mock_custom_field_choices(&server, &["gold"]);
@@ -667,7 +708,7 @@ mod tests {
                 "key": "asset_tag",
                 "label": "asset_tag",
                 "content_types": ["dcim.device"],
-                "type": {},
+                "type": { "value": "select" },
             }));
         });
         let created_gold = expect_choice_post(&server, CREATED_FIELD_ID, "gold", 100);
@@ -694,6 +735,76 @@ mod tests {
         created_silver.assert_calls(1);
         existing_silver.assert_calls(1);
         existing_gold.assert_calls(0);
+    }
+
+    // a field declared `str` and now declared an `enum`. nautobot still holds it
+    // as `text`, which carries no choices, so the run posts nothing and reports
+    // nothing rather than writing into a field no later run retypes.
+    #[tokio::test]
+    async fn an_enum_declared_on_a_text_field_posts_no_choices() {
+        let server = MockServer::start();
+        let adapter = NautobotAdapter::new(&server.base_url(), "token").unwrap();
+        mock_select_backend(&server, Some("text"), "asset tag", &[]);
+        let posts = server.mock(|when, then| {
+            when.method(POST).path("/api/extras/custom-field-choices/");
+            then.status(201).json_body(json!({}));
+        });
+
+        let schema = schema_declaring_choices(enum_of(&["gold", "silver"]));
+        let preview = adapter.preview_schema(&schema).await.unwrap().unwrap();
+        let report = adapter.ensure_schema(&schema).await.unwrap();
+
+        assert!(preview.updated_fields.is_empty());
+        assert!(report.updated_fields.is_empty());
+        posts.assert_calls(0);
+    }
+
+    // a field nautobot reports no type for is not taken as a select: the type has
+    // to be read to post to it, as the id has to be read to patch by it.
+    #[tokio::test]
+    async fn a_field_nautobot_gives_no_type_for_posts_no_choices() {
+        let server = MockServer::start();
+        let adapter = NautobotAdapter::new(&server.base_url(), "token").unwrap();
+        mock_select_backend(&server, None, "asset tag", &[]);
+        let posts = server.mock(|when, then| {
+            when.method(POST).path("/api/extras/custom-field-choices/");
+            then.status(201).json_body(json!({}));
+        });
+
+        let schema = schema_declaring_choices(enum_of(&["gold", "silver"]));
+        let report = adapter.ensure_schema(&schema).await.unwrap();
+
+        assert!(report.updated_fields.is_empty());
+        posts.assert_calls(0);
+    }
+
+    // skipping the choices is not refusing the field: one mistyped declaration
+    // must not stall the properties a patch does converge.
+    #[tokio::test]
+    async fn a_text_field_still_patches_while_its_choices_are_skipped() {
+        let server = MockServer::start();
+        let adapter = NautobotAdapter::new(&server.base_url(), "token").unwrap();
+        mock_select_backend(&server, Some("text"), "", &[]);
+        let cf_patch = server.mock(|when, then| {
+            when.method(PATCH)
+                .path(format!("/api/extras/custom-fields/{EXISTING_FIELD_ID}/"))
+                .json_body(json!({"description": "asset tag"}));
+            then.status(200).json_body(json!({}));
+        });
+        let posts = server.mock(|when, then| {
+            when.method(POST).path("/api/extras/custom-field-choices/");
+            then.status(201).json_body(json!({}));
+        });
+
+        let schema = schema_declaring_choices(enum_of(&["gold", "silver"]));
+        let report = adapter.ensure_schema(&schema).await.unwrap();
+
+        assert_eq!(
+            report.updated_fields,
+            vec!["dcim.site.asset_tag: description \"\" -> \"asset tag\"".to_string()],
+        );
+        cf_patch.assert_calls(1);
+        posts.assert_calls(0);
     }
 
     // a model declaring no enum must not cost the extra request.
@@ -1157,7 +1268,7 @@ mod tests {
                 "id": "44444444-4444-4444-4444-444444444444",
                 "label": "asset_tag",
                 "content_types": ["dcim.site"],
-                "type": {},
+                "type": { "value": "text" },
             }));
         });
 
@@ -1207,7 +1318,7 @@ mod tests {
                 "key": "assetTag",
                 "label": "assetTag",
                 "content_types": ["dcim.site"],
-                "type": {},
+                "type": { "value": "text" },
             }));
         });
 
@@ -1252,7 +1363,7 @@ mod tests {
                 "key": "tier",
                 "label": "tier",
                 "content_types": ["dcim.site"],
-                "type": {},
+                "type": { "value": "select" },
             }));
         });
         // one mock per declared value: each matches only its own value, so the
@@ -1375,7 +1486,7 @@ mod tests {
                 "id": "44444444-4444-4444-4444-444444444444",
                 "label": "asset_tag",
                 "content_types": ["dcim.site"],
-                "type": {},
+                "type": { "value": "text" },
             }));
         });
 

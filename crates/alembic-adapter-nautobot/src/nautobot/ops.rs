@@ -366,6 +366,8 @@ struct PlannedFieldUpdate {
 struct SharedCustomField {
     field_name: String,
     current: ExistingCustomField,
+    /// what nautobot reports the field is, which decides whether it takes choices.
+    backend_type: Option<String>,
     desired: Map<String, Value>,
     choices: Vec<String>,
     declarations: Vec<String>,
@@ -449,6 +451,7 @@ impl NautobotAdapter {
                         SharedCustomField {
                             field_name: field_name.clone(),
                             current: def.current.clone(),
+                            backend_type: def.field_type.clone(),
                             desired: Map::new(),
                             choices: Vec::new(),
                             declarations: Vec::new(),
@@ -473,6 +476,28 @@ impl NautobotAdapter {
                 }
                 missing.push((type_name.clone(), field_name, field_schema));
             }
+        }
+
+        // a field the model declares as an enum but nautobot holds as another type
+        // takes no choices, and a live field is never retyped, so no run clears
+        // it: warn rather than post into it and report it converged. its other
+        // properties still converge, so one mistyped field does not stall a run.
+        for shared in shared_fields.values_mut() {
+            if shared.choices.is_empty() || takes_choices(shared.backend_type.as_deref()) {
+                continue;
+            }
+            let declared = shared
+                .desired
+                .get("type")
+                .and_then(|declared| declared.as_str())
+                .unwrap_or_default();
+            tracing::warn!(
+                fields = %shared.declarations.join(", "),
+                declared = %declared,
+                backend = %shared.backend_type.as_deref().unwrap_or("none"),
+                "declared choices not posted: nautobot holds this custom field as another type"
+            );
+            shared.choices.clear();
         }
 
         // one read for every field's choices, and only when a declaration that
@@ -787,6 +812,12 @@ fn nautobot_custom_field_type(field_schema: &FieldSchema) -> String {
     }
 }
 
+/// whether a live field of this type carries choices at all. `None` is nautobot
+/// naming no type, which a real one does not do: unknown is not a select.
+fn takes_choices(backend_type: Option<&str>) -> bool {
+    matches!(backend_type, Some("select" | "multi-select"))
+}
+
 /// the values a `select`/`multi-select` field offers, in declaration order.
 /// empty for every other type.
 fn declared_choices(field_schema: &FieldSchema) -> &[String] {
@@ -801,10 +832,9 @@ fn declared_choices(field_schema: &FieldSchema) -> &[String] {
 }
 
 /// the declared choices a field does not offer yet, each at the weight its
-/// declared position implies, so a field created and later extended ends up with
-/// the weights a create of the whole list would have written. a value declared
-/// between two the backend already has can therefore tie one of their weights,
-/// which nautobot allows and orders itself.
+/// declared position implies. a value declared between two the backend already
+/// has can therefore tie one of their weights, which nautobot allows and orders
+/// itself.
 fn missing_choices(
     declared: &[String],
     current: Option<&BTreeSet<String>>,
@@ -1988,6 +2018,29 @@ mod tests {
         assert!(
             missing_choices(&declared, Some(&BTreeSet::from_iter(declared.clone()))).is_empty()
         );
+    }
+
+    // the create needs no gate of its own: the field types that declare choices
+    // are exactly the ones it writes as a select.
+    #[test]
+    fn test_a_declaration_carrying_choices_creates_a_field_that_takes_them() {
+        let values = vec!["core".to_string(), "edge".to_string()];
+        let enum_type = FieldType::Enum {
+            values: values.clone(),
+        };
+        for r#type in [
+            enum_type.clone(),
+            FieldType::List {
+                item: Box::new(enum_type),
+            },
+        ] {
+            let schema = field_schema(r#type, None);
+            assert!(!declared_choices(&schema).is_empty());
+            assert!(takes_choices(Some(&nautobot_custom_field_type(&schema))));
+        }
+        assert!(!takes_choices(Some(&nautobot_custom_field_type(
+            &field_schema(FieldType::String, None)
+        ))));
     }
 
     #[test]
