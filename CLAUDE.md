@@ -51,9 +51,10 @@ files: <comma-separated paths>
 what changed, and the issue if there is one. the mechanism, what the old code
 did, the worked example and what to do about it go in the pr description.
 
-an entry is earned by what someone running the cli notices, or by what changes
-in a file it reads. a test, refactor, cleanup or perf change gets none,
-however much code it moves; the pr description carries that work instead.
+what someone running the cli notices, or what changes in a file it reads,
+earns an entry. a test, refactor, cleanup or perf change gets none, however
+much code it moves; the pr description carries that work instead. nothing
+here settles whether a dependency bump earns one.
 
 mark `**breaking**` only when a command someone runs, or a file someone wrote,
 now behaves differently. a changed rust signature is not breaking: every
