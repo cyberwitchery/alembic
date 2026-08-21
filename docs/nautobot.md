@@ -99,7 +99,8 @@ both. a run that failed partway through the choices posts the rest on the next r
 choices are posted only to a field nautobot holds as a `select` or `multi-select`. a
 field declared an `enum` after it was created as another type is left alone and the run
 warns naming both types: a live field is never retyped, so nothing would read the choices
-back. its `required`, `description` and `validation_regex` still converge.
+back. its `required` and `description` still converge, and nothing else does: a declared
+`pattern:` reaches nautobot as `validation_regex` on a text-typed field only.
 
 a declared `pattern:` or `format:` is not provisioned on a `select`: nautobot enforces
 `validation_regex` on text fields only, and the choices are the constraint.
