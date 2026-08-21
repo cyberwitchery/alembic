@@ -127,10 +127,13 @@ pub(crate) fn bootstrap_state_from_observed(
     observed: &ObservedState,
 ) {
     for object in desired {
-        if state
-            .backend_id(object.type_name.clone(), object.uid)
-            .is_some()
-        {
+        if let Some(backend_id) = state.backend_id(object.type_name.clone(), object.uid) {
+            // the desired set is the only place a superseded uid can be settled
+            // with information rather than by uid ordering: it says which uid the
+            // object answers to now.
+            if state.uid_for_backend_id(&object.type_name, &backend_id) != Some(object.uid) {
+                state.set_backend_id(object.type_name.clone(), object.uid, backend_id);
+            }
             continue;
         }
         if let Some(obs) = observed

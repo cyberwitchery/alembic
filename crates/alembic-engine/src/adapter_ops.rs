@@ -291,15 +291,16 @@ fn value_to_query_value(value: &Value) -> Result<String> {
 }
 
 /// project the state store into a per-type `backend-id -> uid` map, keeping only
-/// the backend ids `extract` accepts (the variant a given adapter retains).
+/// the backend ids `extract` accepts (the variant a given adapter retains). reads
+/// the inverse index, so a backend id resolves to the uid the inventory claims.
 pub fn state_mappings_by_id<I: Ord>(
     state: &StateStore,
     extract: impl Fn(&BackendId) -> Option<I>,
 ) -> BTreeMap<String, BTreeMap<I, Uid>> {
     let mut by_type = BTreeMap::new();
-    for (type_name, mapping) in state.all_mappings() {
+    for (type_name, index) in state.backend_ids() {
         let mut id_to_uid = BTreeMap::new();
-        for (uid, backend_id) in mapping {
+        for (backend_id, uid) in index {
             if let Some(id) = extract(backend_id) {
                 id_to_uid.insert(id, *uid);
             }
@@ -310,7 +311,8 @@ pub fn state_mappings_by_id<I: Ord>(
 }
 
 /// project the state store into a flat `uid -> backend-id` map, keeping only the
-/// backend ids `extract` accepts. companion to [`state_mappings_by_id`].
+/// backend ids `extract` accepts. companion to [`state_mappings_by_id`]. this
+/// direction is single-valued in state itself, so it reads the forward map.
 pub fn resolved_ids_from_state<I>(
     state: &StateStore,
     extract: impl Fn(&BackendId) -> Option<I>,
