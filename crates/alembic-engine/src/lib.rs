@@ -16,6 +16,7 @@ mod plan_view;
 mod planner;
 mod predicate;
 mod pretty_printing;
+mod refs;
 mod render;
 #[cfg(feature = "starlark")]
 mod starlark_transforms;

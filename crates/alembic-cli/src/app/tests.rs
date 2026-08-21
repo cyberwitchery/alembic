@@ -2840,6 +2840,67 @@ async fn run_plan_adopts_a_backend_whose_keys_hold_refs() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn run_plan_refuses_an_adapter_that_reports_refs_as_backend_ids() {
+    let _cwd = CwdGuard::acquire_async().await;
+    let dir = tempdir().unwrap();
+    let state_path = dir.path().join(".alembic").join("state.json");
+    let _env = EnvVarGuard::acquire_async(&[
+        ("ALEMBIC_STATE_BACKEND", Some("local")),
+        ("ALEMBIC_STATE_PATH", Some(state_path.to_str().unwrap())),
+    ])
+    .await;
+
+    let config = dir.path().join("backend.yaml");
+    std::fs::write(
+        &config,
+        format!(
+            "backend: external\ncommand: \"{}\"\ntimeout_seconds: 5\n",
+            example_binary("raw_ref_adapter").display()
+        ),
+    )
+    .unwrap();
+    let inventory = write_ref_chain_inventory(dir.path());
+    let out = dir.path().join("plan.json");
+
+    std::env::set_current_dir(dir.path()).unwrap();
+    let planned = run(
+        Cli {
+            command: Command::Plan {
+                file: inventory,
+                output: Some(out.clone()),
+                backend: Some("external".to_string()),
+                backend_config: Some(config),
+                provision: false,
+                dry_run: false,
+                report: false,
+                allow_delete: false,
+            },
+        },
+        AppConfig::load().unwrap(),
+    )
+    .await;
+
+    let error = match planned {
+        // the backend holds all three objects, so a plan here is a plan of
+        // creates that duplicate them.
+        Ok(()) => panic!(
+            "the plan was taken: {}",
+            std::fs::read_to_string(&out).unwrap_or_default()
+        ),
+        Err(err) => format!("{err:#}"),
+    };
+    assert!(
+        error.contains("dcim.device.key.site -> dcim.site 1"),
+        "{error}"
+    );
+    assert!(
+        error.contains("dcim.interface.key.device -> dcim.device 2"),
+        "{error}"
+    );
+    assert!(error.contains("docs/external-adapters.md"), "{error}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn run_plan_without_report_still_plans_a_write_only_backend() {
     let _cwd = CwdGuard::acquire_async().await;
     let dir = tempdir().unwrap();

@@ -1332,6 +1332,197 @@ fn build_plan_bootstraps_a_chain_already_in_uid_space() {
 }
 
 #[test]
+fn build_plan_refuses_a_key_ref_left_in_backend_id_space() {
+    // the device row is absent from the read, so the interface keeps `device: 2`
+    // and its key never matches the desired one, which names a uid.
+    let inventory = ref_chain_inventory(2);
+    let adapter = RefChainAdapter::new(vec![
+        (
+            t("dcim.site"),
+            BackendId::Int(1),
+            json!({ "slug": "fra1", "name": "FRA1" }),
+        ),
+        (
+            t("dcim.interface"),
+            BackendId::Int(3),
+            json!({ "device": 2, "name": "eth0" }),
+        ),
+    ]);
+    let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
+    let error = futures::executor::block_on(build_plan(&adapter, &inventory, &mut state, false))
+        .unwrap_err()
+        .to_string();
+
+    assert!(
+        error.contains("reported 2 reference(s) as backend ids"),
+        "{error}"
+    );
+    assert!(
+        error.contains("dcim.interface.key.device -> dcim.device 2"),
+        "{error}"
+    );
+    assert!(
+        error.contains("dcim.interface.device -> dcim.device 2"),
+        "{error}"
+    );
+    assert!(
+        error.contains("no dcim.device with that backend id was observed"),
+        "{error}"
+    );
+}
+
+#[test]
+fn build_plan_names_a_backend_id_ref_whose_target_the_read_holds() {
+    // the site is in the same observation, so the adapter had the uid it needed
+    // without reading again.
+    let inventory = ref_chain_inventory(1);
+    let mut observed = ObservedState::default();
+    observed
+        .insert(ObservedObject {
+            type_name: t("dcim.site"),
+            key: key_str("slug=fra1"),
+            attrs: attrs_map(json!({ "slug": "fra1", "name": "FRA1" })),
+            backend_id: Some(BackendId::Int(1)),
+        })
+        .unwrap();
+    observed
+        .insert(ObservedObject {
+            type_name: t("dcim.device"),
+            key: Key::from(BTreeMap::from([
+                ("site".to_string(), json!(1)),
+                ("name".to_string(), json!("leaf01")),
+            ])),
+            attrs: attrs_map(json!({ "site": 1, "name": "leaf01" })),
+            backend_id: Some(BackendId::Int(2)),
+        })
+        .unwrap();
+    let adapter = TestAdapter {
+        observed,
+        report: ApplyReport::default(),
+    };
+    let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
+    let error = futures::executor::block_on(build_plan(&adapter, &inventory, &mut state, false))
+        .unwrap_err()
+        .to_string();
+
+    assert!(
+        error.contains("dcim.device.key.site -> dcim.site 1"),
+        "{error}"
+    );
+    assert!(
+        error.contains("the dcim.site it names was observed, so the adapter can rewrite the id without reading again"),
+        "{error}"
+    );
+}
+
+/// a type whose only ref sits outside the key: the key matches either way, so an
+/// unrewritten ref reads as a field diff rather than a missed adoption.
+fn attr_ref_inventory() -> Inventory {
+    let types = BTreeMap::from([
+        (
+            "dcim.site".to_string(),
+            TypeSchema {
+                key: BTreeMap::from([("slug".to_string(), field_of(FieldType::Slug))]),
+                fields: BTreeMap::from([("slug".to_string(), field_of(FieldType::Slug))]),
+            },
+        ),
+        (
+            "circuits.termination".to_string(),
+            TypeSchema {
+                key: BTreeMap::from([("cid".to_string(), field_of(FieldType::String))]),
+                fields: BTreeMap::from([
+                    ("cid".to_string(), field_of(FieldType::String)),
+                    ("site".to_string(), ref_to("dcim.site")),
+                ]),
+            },
+        ),
+    ]);
+    Inventory {
+        schema: Schema { types },
+        objects: vec![
+            obj(uid(1), "dcim.site", "slug=fra1", json!({ "slug": "fra1" })),
+            obj(
+                uid(2),
+                "circuits.termination",
+                "cid=c1",
+                json!({ "cid": "c1", "site": uid(1).to_string() }),
+            ),
+        ],
+    }
+}
+
+fn attr_ref_observation(site: serde_json::Value) -> ObservedState {
+    let mut observed = ObservedState::default();
+    observed
+        .insert(ObservedObject {
+            type_name: t("dcim.site"),
+            key: key_str("slug=fra1"),
+            attrs: attrs_map(json!({ "slug": "fra1" })),
+            backend_id: Some(BackendId::Int(1)),
+        })
+        .unwrap();
+    observed
+        .insert(ObservedObject {
+            type_name: t("circuits.termination"),
+            key: key_str("cid=c1"),
+            attrs: attrs_map(json!({ "cid": "c1", "site": site })),
+            backend_id: Some(BackendId::Int(7)),
+        })
+        .unwrap();
+    observed
+}
+
+#[test]
+fn build_plan_refuses_a_backend_id_ref_outside_the_key() {
+    let adapter = TestAdapter {
+        observed: attr_ref_observation(json!(1)),
+        report: ApplyReport::default(),
+    };
+    let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
+    let error = futures::executor::block_on(build_plan(
+        &adapter,
+        &attr_ref_inventory(),
+        &mut state,
+        false,
+    ))
+    .unwrap_err()
+    .to_string();
+
+    assert!(
+        error.contains("reported 1 reference(s) as backend ids"),
+        "{error}"
+    );
+    assert!(
+        error.contains("circuits.termination.site -> dcim.site 1"),
+        "{error}"
+    );
+}
+
+#[test]
+fn build_plan_takes_the_same_observation_in_uid_space() {
+    // the control for the two refusals above: the same rows with the ref
+    // rewritten adopt both objects and plan nothing.
+    let adapter = TestAdapter {
+        observed: attr_ref_observation(json!(uid(1).to_string())),
+        report: ApplyReport::default(),
+    };
+    let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
+    let plan = futures::executor::block_on(build_plan(
+        &adapter,
+        &attr_ref_inventory(),
+        &mut state,
+        false,
+    ))
+    .unwrap();
+
+    assert!(plan.ops.is_empty(), "unexpected ops: {:?}", plan.ops);
+    assert_eq!(
+        state.backend_id(t("circuits.termination"), uid(2)),
+        Some(BackendId::Int(7))
+    );
+}
+
+#[test]
 fn build_plan_keeps_a_declared_uid_state_already_maps() {
     // a hand-authored inventory naming its own uids, the shape docs/ir.md writes
     // and `alembic map` emits: once state maps one, derivation must not take it
@@ -2245,6 +2436,148 @@ fn apply_plan_rejects_read_only_observer() {
         .unwrap_err()
         .to_string();
     assert!(err.contains("read-only"));
+}
+
+/// two types whose keys reference each other. the adapter's fixpoint settles
+/// neither, so both come back keyed on backend ids.
+fn ref_cycle_inventory() -> Inventory {
+    let cycle = |field: &str, target: &str| TypeSchema {
+        key: BTreeMap::from([
+            (field.to_string(), ref_to(target)),
+            ("name".to_string(), field_of(FieldType::String)),
+        ]),
+        fields: BTreeMap::from([
+            (field.to_string(), ref_to(target)),
+            ("name".to_string(), field_of(FieldType::String)),
+        ]),
+    };
+    Inventory {
+        schema: Schema {
+            types: BTreeMap::from([
+                ("net.a".to_string(), cycle("b", "net.b")),
+                ("net.b".to_string(), cycle("a", "net.a")),
+            ]),
+        },
+        objects: vec![
+            obj(
+                uid(1),
+                "net.a",
+                &format!("b={};name=a1", uid(2)),
+                json!({ "b": uid(2).to_string(), "name": "a1" }),
+            ),
+            obj(
+                uid(2),
+                "net.b",
+                &format!("a={};name=b1", uid(1)),
+                json!({ "a": uid(1).to_string(), "name": "b1" }),
+            ),
+        ],
+    }
+}
+
+#[test]
+fn build_plan_names_a_backend_id_ref_whose_target_is_keyed_on_a_cycle() {
+    // both targets are in the observation, so only their own keys separate
+    // this from a ref the adapter could still rewrite.
+    let adapter = RefChainAdapter::new(vec![
+        (
+            t("net.a"),
+            BackendId::Int(1),
+            json!({ "b": 2, "name": "a1" }),
+        ),
+        (
+            t("net.b"),
+            BackendId::Int(2),
+            json!({ "a": 1, "name": "b1" }),
+        ),
+    ]);
+    let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
+    let error = futures::executor::block_on(build_plan(
+        &adapter,
+        &ref_cycle_inventory(),
+        &mut state,
+        false,
+    ))
+    .unwrap_err()
+    .to_string();
+
+    assert!(
+        error.contains("reported 4 reference(s) as backend ids"),
+        "{error}"
+    );
+    assert!(error.contains("net.a.key.b -> net.b 2"), "{error}");
+    assert!(error.contains("net.b.key.a -> net.a 1"), "{error}");
+    assert!(
+        error.contains("was observed, but its own key still holds a backend id"),
+        "{error}"
+    );
+    // asserted absent, not merely outnumbered: every one of the four lands on
+    // the new arm, so the old wording surviving anywhere is the regression.
+    assert!(
+        !error.contains("so the adapter can rewrite the id without reading again"),
+        "{error}"
+    );
+}
+
+#[test]
+fn build_plan_names_a_backend_id_ref_whose_target_is_keyed_on_a_chain() {
+    // every row is observed, so the site ref rewrites, the device key lands in
+    // uid space and the interface ref rewrites after it. the arm reports the one
+    // hop the guard looked at and promises nothing about the chain above it.
+    let inventory = ref_chain_inventory(2);
+    let mut observed = ObservedState::default();
+    observed
+        .insert(ObservedObject {
+            type_name: t("dcim.site"),
+            key: key_str("slug=fra1"),
+            attrs: attrs_map(json!({ "slug": "fra1", "name": "FRA1" })),
+            backend_id: Some(BackendId::Int(1)),
+        })
+        .unwrap();
+    observed
+        .insert(ObservedObject {
+            type_name: t("dcim.device"),
+            key: Key::from(BTreeMap::from([
+                ("site".to_string(), json!(1)),
+                ("name".to_string(), json!("leaf01")),
+            ])),
+            attrs: attrs_map(json!({ "site": 1, "name": "leaf01" })),
+            backend_id: Some(BackendId::Int(2)),
+        })
+        .unwrap();
+    observed
+        .insert(ObservedObject {
+            type_name: t("dcim.interface"),
+            key: Key::from(BTreeMap::from([
+                ("device".to_string(), json!(2)),
+                ("name".to_string(), json!("eth0")),
+            ])),
+            attrs: attrs_map(json!({ "device": 2, "name": "eth0" })),
+            backend_id: Some(BackendId::Int(3)),
+        })
+        .unwrap();
+    let adapter = TestAdapter {
+        observed,
+        report: ApplyReport::default(),
+    };
+    let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
+    let error = futures::executor::block_on(build_plan(&adapter, &inventory, &mut state, false))
+        .unwrap_err()
+        .to_string();
+
+    assert!(
+        error.contains(
+            "dcim.interface.key.device -> dcim.device 2: the dcim.device it names was observed, but its own key still holds a backend id"
+        ),
+        "{error}"
+    );
+    assert!(
+        error.contains("dcim.device.key.site -> dcim.site 1: the dcim.site it names was observed, so the adapter can rewrite the id without reading again"),
+        "{error}"
+    );
+    // the site ref above it rewrites, so a uid does derive for the device in one
+    // read: the message may not say otherwise.
+    assert!(!error.contains("no uid can be derived"), "{error}");
 }
 
 /// a backend holding a site and a device whose `site` attr is the site's backend

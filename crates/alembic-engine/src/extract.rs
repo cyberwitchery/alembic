@@ -319,88 +319,25 @@ fn unresolved_refs(
         let Some(type_schema) = inventory.schema.types.get(object.type_name.as_str()) else {
             continue;
         };
-        let mut scan = |field: String, schema: &alembic_core::FieldSchema, value: &Value| {
-            scan_refs(
-                &object.type_name,
-                &field,
-                &schema.r#type,
-                value,
-                mappings,
-                observed_ids,
-                &mut found,
-            );
-        };
-        for (field, schema) in &type_schema.key {
-            if let Some(value) = object.key.get(field) {
-                scan(format!("key.{field}"), schema, value);
-            }
-        }
-        for (field, schema) in &type_schema.fields {
-            if let Some(value) = object.attrs.get(field) {
-                scan(field.clone(), schema, value);
-            }
-        }
+        crate::refs::visit_ref_leaves(
+            type_schema,
+            &object.key,
+            &object.attrs,
+            &mut |field, target, value| {
+                if let Some(entry) = classify_ref(
+                    &object.type_name,
+                    &field,
+                    target,
+                    value,
+                    mappings,
+                    observed_ids,
+                ) {
+                    found.push(entry);
+                }
+            },
+        );
     }
     found
-}
-
-fn scan_refs(
-    type_name: &TypeName,
-    field: &str,
-    field_type: &FieldType,
-    value: &Value,
-    mappings: &StateMappings,
-    observed_ids: &BTreeMap<String, BTreeSet<BackendId>>,
-    found: &mut Vec<UnresolvedRef>,
-) {
-    match field_type {
-        FieldType::Ref { target } => {
-            if let Some(entry) =
-                classify_ref(type_name, field, target, value, mappings, observed_ids)
-            {
-                found.push(entry);
-            }
-        }
-        FieldType::ListRef { target } => {
-            if let Value::Array(items) = value {
-                found.extend(items.iter().filter_map(|item| {
-                    classify_ref(type_name, field, target, item, mappings, observed_ids)
-                }));
-            }
-        }
-        FieldType::List { item } => {
-            if let Value::Array(items) = value {
-                for elem in items {
-                    scan_refs(type_name, field, item, elem, mappings, observed_ids, found);
-                }
-            }
-        }
-        FieldType::Map { value: inner } => {
-            if let Value::Object(map) = value {
-                for elem in map.values() {
-                    scan_refs(type_name, field, inner, elem, mappings, observed_ids, found);
-                }
-            }
-        }
-        // enumerated as in `normalize_value_for_type`, so a new ref-bearing
-        // variant has to answer in both places.
-        FieldType::String
-        | FieldType::Text
-        | FieldType::Int
-        | FieldType::Float
-        | FieldType::Bool
-        | FieldType::Uuid
-        | FieldType::Date
-        | FieldType::Datetime
-        | FieldType::Time
-        | FieldType::Json
-        | FieldType::IpAddress
-        | FieldType::Cidr
-        | FieldType::Prefix
-        | FieldType::Mac
-        | FieldType::Slug
-        | FieldType::Enum { .. } => {}
-    }
 }
 
 fn classify_ref(
@@ -411,18 +348,9 @@ fn classify_ref(
     mappings: &StateMappings,
     observed_ids: &BTreeMap<String, BTreeSet<BackendId>>,
 ) -> Option<UnresolvedRef> {
-    // a value that already is a uid is resolved; `backend_id_from_value` would
-    // otherwise read it back as a string id.
-    if value.is_null()
-        || value
-            .as_str()
-            .is_some_and(|raw| Uid::parse_str(raw).is_ok())
-    {
-        return None;
-    }
-    // not a ref shape at all: nothing to say about the observation, and
-    // validation names the value.
-    let backend_id = backend_id_from_value(value)?;
+    // a resolved ref, or a value that is not a ref shape at all: nothing to say
+    // about the observation, and validation names the value.
+    let backend_id = crate::refs::unrewritten_backend_id(value)?;
     let cause = match mappings.uid_for(target, &backend_id) {
         Some(uid) => UnresolvedCause::NotRewritten(uid),
         None if observed_ids
@@ -1013,7 +941,7 @@ mod tests {
 
     #[test]
     fn import_reports_every_unresolved_ref_of_a_list_ref() {
-        // `scan_refs` has an arm per ref-bearing field type and the other tests
+        // the shared walk has an arm per ref-bearing field type and the other tests
         // only drive the plain `Ref`. a list of refs reports every element, not
         // just the first.
         let error = unresolved_in(
