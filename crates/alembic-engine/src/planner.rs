@@ -59,8 +59,8 @@ pub fn plan(
 
     if allow_delete {
         let mut backend_to_uid = BTreeMap::new();
-        for (type_name, mapping) in state.all_mappings() {
-            for (uid, backend_id) in mapping {
+        for (type_name, index) in state.backend_ids() {
+            for (backend_id, uid) in index {
                 backend_to_uid.insert((type_name.clone(), backend_id.clone()), *uid);
             }
         }
