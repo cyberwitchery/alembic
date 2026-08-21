@@ -1,12 +1,12 @@
-use crate::pretty_printing::{bullet_list, comma_separated};
+use crate::pretty_printing::bullet_list;
+use crate::sort_ops_for_apply;
 use crate::types::{
     ApplyReport, Backend, ObservedState, Observer, Plan, ProvisionReport, CANNOT_OBSERVE,
 };
 use crate::StateStore;
-use crate::{sort_ops_for_apply, BackendId};
-use alembic_core::{key_string, Inventory, TypeName};
+use alembic_core::{Inventory, TypeName};
 use anyhow::{anyhow, Result};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 pub(crate) async fn observe(
     adapter: &(dyn Observer + '_),
@@ -26,40 +26,9 @@ pub(crate) async fn observe(
     let types_vec: Vec<_> = types.into_iter().collect();
 
     let observed = adapter.read(&inventory.schema, &types_vec, state).await?;
-    detect_key_collisions(&observed)?;
 
     crate::bootstrap_state_from_observed(state, &inventory.objects, &observed);
     Ok(observed)
-}
-
-/// checks if any of the observed objects share the same keys
-fn detect_key_collisions(observed: &ObservedState) -> Result<()> {
-    let mut keys = BTreeMap::<_, Vec<BackendId>>::new();
-    for ((type_name, backend_id), object) in &observed.by_backend_id {
-        let key = (type_name.clone(), key_string(&object.key));
-        keys.entry(key)
-            .and_modify(|ids| ids.push(backend_id.clone()))
-            .or_insert(vec![backend_id.clone()]);
-    }
-
-    let collisions = keys
-        .iter()
-        .filter(|(_, ids)| ids.len() > 1)
-        .map(|((key_typename, key_string), ids)| {
-            format!(
-                "objects with ids {} all share the key ('{}, {}')",
-                comma_separated(ids),
-                key_typename,
-                key_string
-            )
-        })
-        .collect::<Vec<_>>();
-
-    if !collisions.is_empty() {
-        return Err(anyhow!("colliding keys:\n{}", bullet_list(&collisions)));
-    }
-
-    Ok(())
 }
 
 /// gate provisioning on the adapter's schema preview, for both `plan --provision`

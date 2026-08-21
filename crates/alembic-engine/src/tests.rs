@@ -1428,9 +1428,74 @@ fn insert_with_duplicate_natural_key() {
         backend_id: None,
     };
     observed.insert(mk("FRA1")).unwrap();
-    observed
+    let err = observed
         .insert(mk("FRA1-dup"))
         .expect_err("duplicate natural key not detected");
+    assert_eq!(
+        err.to_string(),
+        "two dcim.site objects share the key {\"site\":\"fra1\"}: \
+         backend ids unknown and unknown"
+    );
+}
+
+#[test]
+fn insert_with_duplicate_natural_key_names_both_backend_ids() {
+    let mut observed = ObservedState::default();
+    let mk = |id: u64| ObservedObject {
+        type_name: t("dcim.site"),
+        key: key_str("site=fra1"),
+        attrs: attrs_map(json!({ "name": "FRA1", "slug": "fra1" })),
+        backend_id: Some(BackendId::Int(id)),
+    };
+    observed.insert(mk(7)).unwrap();
+    let err = observed
+        .insert(mk(9))
+        .expect_err("duplicate natural key not detected");
+    assert_eq!(
+        err.to_string(),
+        "two dcim.site objects share the key {\"site\":\"fra1\"}: backend ids 7 and 9"
+    );
+}
+
+#[test]
+fn build_plan_names_both_backend_ids_for_a_colliding_key() {
+    struct CollidingAdapter;
+
+    #[async_trait::async_trait]
+    impl Observer for CollidingAdapter {
+        async fn read(
+            &self,
+            _schema: &alembic_core::Schema,
+            _types: &[TypeName],
+            _state: &StateStore,
+        ) -> anyhow::Result<ObservedState> {
+            let mut observed = ObservedState::default();
+            for id in [7u64, 9] {
+                observed.insert(ObservedObject {
+                    type_name: t("dcim.site"),
+                    key: key_str("site=fra1"),
+                    attrs: attrs_map(json!({ "name": "FRA1", "slug": "fra1" })),
+                    backend_id: Some(BackendId::Int(id)),
+                })?;
+            }
+            Ok(observed)
+        }
+    }
+
+    let inventory = inv(vec![obj(
+        uid(1),
+        "dcim.site",
+        "site=fra1",
+        json!({ "name": "FRA1", "slug": "fra1" }),
+    )]);
+    let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
+    let err =
+        futures::executor::block_on(build_plan(&CollidingAdapter, &inventory, &mut state, false))
+            .expect_err("colliding keys not detected");
+    assert_eq!(
+        err.to_string(),
+        "two dcim.site objects share the key {\"site\":\"fra1\"}: backend ids 7 and 9"
+    );
 }
 
 #[test]
