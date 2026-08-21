@@ -72,6 +72,7 @@
 - generic adapter: an endpoint config takes `next_path`, the json path to the next-page url, and observe follows that chain
 - generic adapter: a redirect that leaves `base_url`'s origin is refused rather than followed
 - django: a datetime whose rfc 3339 separator is lowercase loads instead of failing at apply (#401)
+- nautobot: a declared enum value the existing `select` field lacks is provisioned as a choice, so a widened enum converges
 
 ## [0.8.0] - 2026-07-29
 
