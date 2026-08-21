@@ -2167,7 +2167,9 @@ rules:
             { "uid": Uuid::from_u128(2).to_string(), "type": "dcim.device",
               "key": { "device": "spine01" }, "attrs": { "role": "spine", "tags": ["a"] } },
             { "uid": Uuid::from_u128(3).to_string(), "type": "dcim.device",
-              "key": { "device": "norole" }, "attrs": { "tags": ["a"] } }
+              "key": { "device": "norole" }, "attrs": { "tags": ["a"] } },
+            { "uid": Uuid::from_u128(4).to_string(), "type": "dcim.device",
+              "key": { "device": "nullrole" }, "attrs": { "role": null, "tags": ["a"] } }
         ]));
         let template = r#"
 schema:
@@ -2192,17 +2194,23 @@ rules:
                 .collect()
         };
         // `=` and `!=` both need a present, scalar field, so they do not partition
-        // the way `[field]`/`[!field]` does: `norole` falls out of both.
+        // the way `[field]`/`[!field]` does: `norole` and `nullrole` fall out of both.
         assert_eq!(names("dcim.device[attrs.role=leaf]"), vec!["leaf01"]);
         assert_eq!(names("dcim.device[attrs.role!=leaf]"), vec!["spine01"]);
-        assert_eq!(names("dcim.device[!attrs.role]"), vec!["norole"]);
+        assert_eq!(
+            names("dcim.device[!attrs.role]"),
+            vec!["norole", "nullrole"]
+        );
+        // a null under `nullable: true` validates and reaches the predicate, but
+        // renders no scalar either, so `=null` matches nothing.
+        assert!(names("dcim.device[attrs.role=null]").is_empty());
         // a list has no scalar rendering, so it matches neither operator, while
         // existence still sees it.
         assert!(names("dcim.device[attrs.tags=a]").is_empty());
         assert!(names("dcim.device[attrs.tags!=a]").is_empty());
         assert_eq!(
             names("dcim.device[attrs.tags]"),
-            vec!["leaf01", "norole", "spine01"]
+            vec!["leaf01", "norole", "nullrole", "spine01"]
         );
     }
 

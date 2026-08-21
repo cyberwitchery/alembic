@@ -61,18 +61,17 @@ rules:
 - an exact type name matches that type (`dcim.site`).
 - a trailing `*` is a prefix glob (`dcim.*` matches every `dcim.` type); a bare
   `*` matches every type.
-- predicates filter the matched objects using mapping's predicate syntax, e.g.
-  `dcim.device[attrs.role=leaf]`. quote the selector in yaml when it contains
-  brackets.
+- predicates filter the matched objects, e.g. `dcim.device[attrs.role=leaf]`.
+  quote the selector in yaml when it contains brackets.
 
 predicates address the same dotted namespace as templates (see vars below), so
 `[attrs.role=leaf]` tests the object's `role` attr and `[key.slug=fra1]` tests
 its key. the operators are `=`, `!=`, existence `[field]`, and absence
 `[!field]`; chained predicates are ANDed.
 
-`=`/`!=` compare a field's scalar rendering, so an absent or non-scalar field
-matches neither; select on presence with `[field]`, true when the field is
-present and non-null, or its complement `[!field]`.
+`=`/`!=` compare a field's scalar rendering, so an absent, null or non-scalar
+field matches neither; select on presence with `[field]`, true when present
+and non-null, or its complement `[!field]`.
 
 ## passthrough
 
