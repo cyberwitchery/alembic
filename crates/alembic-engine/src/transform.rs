@@ -2160,41 +2160,58 @@ rules:
     }
 
     #[test]
-    fn ne_predicate_excludes_matching_objects() {
+    fn value_predicates_need_a_present_scalar() {
         let input = input_inventory(json!([
             { "uid": Uuid::from_u128(1).to_string(), "type": "dcim.device",
-              "key": { "device": "leaf01" }, "attrs": { "role": "leaf" } },
+              "key": { "device": "leaf01" }, "attrs": { "role": "leaf", "tags": ["a"] } },
             { "uid": Uuid::from_u128(2).to_string(), "type": "dcim.device",
-              "key": { "device": "spine01" }, "attrs": { "role": "spine" } },
+              "key": { "device": "spine01" }, "attrs": { "role": "spine", "tags": ["a"] } },
             { "uid": Uuid::from_u128(3).to_string(), "type": "dcim.device",
-              "key": { "device": "leaf02" }, "attrs": { "role": "leaf" } }
+              "key": { "device": "norole" }, "attrs": { "tags": ["a"] } },
+            { "uid": Uuid::from_u128(4).to_string(), "type": "dcim.device",
+              "key": { "device": "nullrole" }, "attrs": { "role": null, "tags": ["a"] } }
         ]));
-        let out = compile_map(
-            &input,
-            &spec(
-                r#"
+        let template = r#"
 schema:
   types:
     fabric.node:
       key:
         name: { type: slug }
 rules:
-  - name: non-leaves
-    match: "dcim.device[attrs.role!=leaf]"
+  - name: nodes
+    match: "SELECTOR"
     emit:
       type: fabric.node
       key:
         name: "${key.device}"
-"#,
-            ),
-        )
-        .unwrap();
-        let names: Vec<&str> = out
-            .objects
-            .iter()
-            .map(|o| o.key.get("name").unwrap().as_str().unwrap())
-            .collect();
-        assert_eq!(names, vec!["spine01"]);
+"#;
+        let names = |selector: &str| -> Vec<String> {
+            compile_map(&input, &spec(&template.replace("SELECTOR", selector)))
+                .unwrap()
+                .objects
+                .iter()
+                .map(|o| o.key.get("name").unwrap().as_str().unwrap().to_string())
+                .collect()
+        };
+        // `=` and `!=` both need a present, scalar field, so they do not partition
+        // the way `[field]`/`[!field]` does: `norole` and `nullrole` fall out of both.
+        assert_eq!(names("dcim.device[attrs.role=leaf]"), vec!["leaf01"]);
+        assert_eq!(names("dcim.device[attrs.role!=leaf]"), vec!["spine01"]);
+        assert_eq!(
+            names("dcim.device[!attrs.role]"),
+            vec!["norole", "nullrole"]
+        );
+        // a null under `nullable: true` validates and reaches the predicate, but
+        // renders no scalar either, so `=null` matches nothing.
+        assert!(names("dcim.device[attrs.role=null]").is_empty());
+        // a list has no scalar rendering, so it matches neither operator, while
+        // existence still sees it.
+        assert!(names("dcim.device[attrs.tags=a]").is_empty());
+        assert!(names("dcim.device[attrs.tags!=a]").is_empty());
+        assert_eq!(
+            names("dcim.device[attrs.tags]"),
+            vec!["leaf01", "norole", "nullrole", "spine01"]
+        );
     }
 
     #[test]
