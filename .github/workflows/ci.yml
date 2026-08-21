@@ -50,7 +50,9 @@ jobs:
   coverage:
     name: coverage
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # a stable-toolchain bump misses the cargo cache, and a job the budget
+    # cancels never saves one, so the budget has to cover a cold build.
+    timeout-minutes: 30
     env:
       RUSTFLAGS: "-C debuginfo=0"
       CARGO_TARGET_DIR: target/ci
