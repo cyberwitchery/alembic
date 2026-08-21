@@ -154,7 +154,7 @@ impl StateStore {
             .and_then(|map| map.get(&uid).cloned())
     }
 
-    /// the uid a backend id answers to, if state maps one.
+    /// the uid a backend id answers to, if the index answers.
     pub fn uid_for_backend_id(&self, type_name: &TypeName, backend_id: &BackendId) -> Option<Uid> {
         self.by_backend_id
             .get(type_name)
