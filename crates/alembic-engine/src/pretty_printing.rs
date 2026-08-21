@@ -1,9 +1,5 @@
 use std::fmt::Display;
 
-pub(crate) fn comma_separated(elems: &[impl Display]) -> String {
-    separated(elems, ", ")
-}
-
 pub fn bullet_list(elems: &[impl Display]) -> String {
     format!("- {}", separated(elems, "\n- "))
 }
@@ -19,11 +15,6 @@ pub(crate) fn separated(elems: &[impl Display], separator: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_comma_separated() {
-        assert_eq!(comma_separated(&[1, 2, 3]), "1, 2, 3");
-    }
 
     #[test]
     fn test_bullet_list() {

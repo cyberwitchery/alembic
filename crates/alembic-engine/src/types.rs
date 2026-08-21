@@ -182,7 +182,7 @@ pub struct ObservedState {
 
 impl ObservedState {
     /// insert an observed object into both indexes.
-    /// disallows duplicate backend ids.
+    /// refuses a duplicate backend id or natural key.
     pub fn insert(&mut self, object: ObservedObject) -> Result<()> {
         if let Some(id) = &object.backend_id {
             let key = (object.type_name.clone(), id.clone());
@@ -197,15 +197,26 @@ impl ObservedState {
         }
 
         let key = (object.type_name.clone(), key_string(&object.key));
-        if self.by_key.contains_key(&key) {
+        if let Some(existing) = self.by_key.get(&key) {
             return Err(anyhow!(
-                "ObservedState already contains an object with natural key {:?}",
-                key
+                "two {} objects share the key {}: backend ids {} and {}",
+                key.0,
+                key.1,
+                describe_backend_id(&existing.backend_id),
+                describe_backend_id(&object.backend_id),
             ));
         }
         self.by_key.insert(key, object);
 
         Ok(())
+    }
+}
+
+/// an object the backend returned without an id still has to be nameable in an error.
+fn describe_backend_id(id: &Option<BackendId>) -> String {
+    match id {
+        Some(id) => id.to_string(),
+        None => "unknown".to_string(),
     }
 }
 
