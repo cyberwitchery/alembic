@@ -960,33 +960,6 @@ fn normalize_attrs(
             attrs.insert(key, normalized);
         }
     }
-    if let (Some(Value::String(kind)), Some(id_value)) = (
-        attrs.remove("assigned_object_type"),
-        attrs.remove("assigned_object_id"),
-    ) {
-        if kind == "dcim.interface" {
-            // Nautobot: assigned_object_id is UUID string
-            if let Some(str_val) = as_string(&id_value) {
-                if let Some(uid) = mappings.uid_for("dcim.interface", &str_val) {
-                    attrs.insert(
-                        "assigned_interface".to_string(),
-                        Value::String(uid.to_string()),
-                    );
-                }
-            }
-        }
-    }
-    if let (Some(Value::String(scope)), Some(id_value)) =
-        (attrs.remove("scope_type"), attrs.remove("scope_id"))
-    {
-        if scope == "dcim.site" {
-            if let Some(str_val) = as_string(&id_value) {
-                if let Some(uid) = mappings.uid_for("dcim.site", &str_val) {
-                    attrs.insert("site".to_string(), Value::String(uid.to_string()));
-                }
-            }
-        }
-    }
 }
 
 fn normalize_value(
@@ -1033,13 +1006,6 @@ fn normalize_value(
             Value::Object(normalized)
         }
         other => other,
-    }
-}
-
-fn as_string(value: &Value) -> Option<String> {
-    match value {
-        Value::String(s) => Some(s.clone()),
-        _ => None,
     }
 }
 

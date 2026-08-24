@@ -190,8 +190,7 @@ fn case_study_01_stands_one_model_up_into_two_backends() {
     let nautobot_device = object(&nautobot, "dcim.device", "name", "leaf01");
     assert_eq!(nautobot_device["attrs"]["location"], uid(location));
     assert!(nautobot_device["attrs"].get("site").is_none());
-    // "the interface and ip pass through because nautobot already uses their
-    // neutral names".
+    // "the interface and ip pass through under their neutral names".
     let nautobot_ip = object(&nautobot, "ipam.ip_address", "address", "10.0.0.10/24");
     let nautobot_eth0 = object(&nautobot, "dcim.interface", "name", "eth0");
     assert_eq!(
