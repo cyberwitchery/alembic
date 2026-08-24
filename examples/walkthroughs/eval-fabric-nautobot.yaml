@@ -10,7 +10,7 @@ schema:
     dcim.device:
       key: {name: {type: slug}}
       fields:
-        name: {type: string}
+        name: {type: slug}
         location: {type: ref, target: dcim.location}
         role: {type: string}
 rules:

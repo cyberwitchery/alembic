@@ -9,7 +9,7 @@ schema:
     dcim.device:
       key: {name: {type: slug}}
       fields:
-        name: {type: string}
+        name: {type: slug}
         site: {type: ref, target: dcim.site}
         role: {type: string}
     dcim.interface:
@@ -18,7 +18,7 @@ schema:
         device: {type: ref, target: dcim.device}
         name: {type: slug}
       fields:
-        name: {type: string}
+        name: {type: slug}
         device: {type: ref, target: dcim.device}
         type: {type: string}
     ipam.ip_address:

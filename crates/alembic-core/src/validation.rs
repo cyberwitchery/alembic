@@ -97,6 +97,10 @@ pub enum ValidationError {
         "nullable key field {type_name}.{field}: a null identity component has no stable identity (docs/ir.md)"
     )]
     NullableKeyField { type_name: String, field: String },
+    #[error(
+        "key field {type_name}.{field} is declared again in fields with a different schema; one name carries one schema (docs/ir.md)"
+    )]
+    KeyFieldDisagreement { type_name: String, field: String },
 }
 
 impl ValidationError {
@@ -123,7 +127,8 @@ impl ValidationError {
             | ValidationError::ConflictingFormat { .. }
             | ValidationError::EmptyEnum { .. }
             | ValidationError::NonScalarKeyField { .. }
-            | ValidationError::NullableKeyField { .. } => None,
+            | ValidationError::NullableKeyField { .. }
+            | ValidationError::KeyFieldDisagreement { .. } => None,
         }
     }
 
@@ -155,7 +160,8 @@ impl ValidationError {
             | ValidationError::ConflictingFormat { .. }
             | ValidationError::EmptyEnum { .. }
             | ValidationError::NonScalarKeyField { .. }
-            | ValidationError::NullableKeyField { .. } => None,
+            | ValidationError::NullableKeyField { .. }
+            | ValidationError::KeyFieldDisagreement { .. } => None,
         }
     }
 
@@ -173,7 +179,8 @@ impl ValidationError {
             | ValidationError::ConflictingFormat { type_name, .. }
             | ValidationError::EmptyEnum { type_name, .. }
             | ValidationError::NonScalarKeyField { type_name, .. }
-            | ValidationError::NullableKeyField { type_name, .. } => Some(type_name.clone()),
+            | ValidationError::NullableKeyField { type_name, .. }
+            | ValidationError::KeyFieldDisagreement { type_name, .. } => Some(type_name.clone()),
             ValidationError::InvalidValue { field, .. } => {
                 field.split('.').next().map(|s| s.to_string())
             }
@@ -211,7 +218,8 @@ impl ValidationError {
             | ValidationError::ConflictingFormat { .. }
             | ValidationError::EmptyEnum { .. }
             | ValidationError::NonScalarKeyField { .. }
-            | ValidationError::NullableKeyField { .. } => None,
+            | ValidationError::NullableKeyField { .. }
+            | ValidationError::KeyFieldDisagreement { .. } => None,
         }
     }
 }
@@ -377,6 +385,7 @@ pub fn validate_inventory(inventory: &Inventory) -> ValidationReport {
     validate_schema_enums(&inventory.schema, &mut report);
     validate_schema_key_scalar(&inventory.schema, &mut report);
     validate_schema_key_nullable(&inventory.schema, &mut report);
+    validate_schema_key_field_agreement(&inventory.schema, &mut report);
     validate_schema_types(&inventory.schema, &inventory.objects, &mut report);
     for object in &inventory.objects {
         validate_object(
@@ -712,6 +721,27 @@ fn validate_schema_key_nullable(schema: &Schema, report: &mut ValidationReport) 
                     type_name: type_name.to_string(),
                     field: format!("key.{field}"),
                 });
+            }
+        }
+    }
+}
+
+/// reject a field declared in both `key:` and `fields:` with a different
+/// schema. every consumer of such a type has to pick a winner, and each picks
+/// its own — the django generator reads the key entry, adapter normalization
+/// reads the fields entry — so the disagreement is a schema bug, not a
+/// precedence question. an identical duplicate declares one schema twice and
+/// stays legal.
+fn validate_schema_key_field_agreement(schema: &Schema, report: &mut ValidationReport) {
+    for (type_name, type_schema) in &schema.types {
+        for (field, key_schema) in &type_schema.key {
+            if let Some(field_schema) = type_schema.fields.get(field) {
+                if key_schema != field_schema {
+                    report.errors.push(ValidationError::KeyFieldDisagreement {
+                        type_name: type_name.to_string(),
+                        field: field.to_string(),
+                    });
+                }
             }
         }
     }
@@ -2024,6 +2054,37 @@ mod tests {
             ValidationError::NullableKeyField { type_name, field }
                 if type_name == "device" && field == "key.slug"
         )));
+    }
+
+    #[test]
+    fn detects_key_field_redeclared_with_a_different_schema() {
+        // a field in both `key:` and `fields:` must carry one schema (see
+        // validate_schema_key_field_agreement)
+        let device = TypeSchema {
+            key: BTreeMap::from([("name".to_string(), schema_field(FieldType::Slug))]),
+            fields: BTreeMap::from([("name".to_string(), schema_field(FieldType::String))]),
+        };
+        let report = validate_schema(BTreeMap::from([("device".to_string(), device)]));
+        assert!(report.errors.iter().any(|e| matches!(
+            e,
+            ValidationError::KeyFieldDisagreement { type_name, field }
+                if type_name == "device" && field == "name"
+        )));
+    }
+
+    #[test]
+    fn accepts_a_key_field_redeclared_identically() {
+        // an identical duplicate declares one schema twice; only a disagreement
+        // is a bug.
+        let device = TypeSchema {
+            key: BTreeMap::from([("slug".to_string(), schema_field(FieldType::Slug))]),
+            fields: BTreeMap::from([("slug".to_string(), schema_field(FieldType::Slug))]),
+        };
+        let report = validate_schema(BTreeMap::from([("device".to_string(), device)]));
+        assert!(!report
+            .errors
+            .iter()
+            .any(|e| matches!(e, ValidationError::KeyFieldDisagreement { .. })));
     }
 
     #[test]
@@ -3800,6 +3861,7 @@ mod tests {
             ValidationError::EmptyEnum { .. } => "empty_enum",
             ValidationError::NonScalarKeyField { .. } => "non_scalar_key_field",
             ValidationError::NullableKeyField { .. } => "nullable_key_field",
+            ValidationError::KeyFieldDisagreement { .. } => "key_field_disagreement",
         }
     }
 
@@ -3809,7 +3871,7 @@ mod tests {
         // a breaking change to the wire format rather than a refactor. the table
         // is hand-maintained: a twentieth variant gets its wire_kind arm from the
         // compiler, but is neither serialized nor compared until it is added here.
-        let all: [ValidationError; 19] = [
+        let all: [ValidationError; 20] = [
             ValidationError::DuplicateUid(uid(1)),
             ValidationError::DuplicateKey("dcim.site::fra1".into()),
             ValidationError::MissingType,
@@ -3882,6 +3944,10 @@ mod tests {
             ValidationError::NullableKeyField {
                 type_name: "dcim.site".into(),
                 field: "site".into(),
+            },
+            ValidationError::KeyFieldDisagreement {
+                type_name: "dcim.site".into(),
+                field: "name".into(),
             },
         ];
 

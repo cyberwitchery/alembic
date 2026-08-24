@@ -291,7 +291,7 @@ types:
           type: slug
       fields:
         name:
-          type: string
+          type: slug
         site:
           type: ref
           target: dcim.site
