@@ -124,15 +124,18 @@ fn adoption_is_reported_and_persisted_to_scoped_state() {
 
     let output = plan(dir.path(), &inventory, &config, &[]);
     assert!(output.status.success(), "{}", stderr(&output));
+    // adoption is run commentary, so it rides stderr like the schema preview
+    // and leaves machine stdouts (--dry-run json, --report summary) clean.
+    let err = stderr(&output);
+    assert!(
+        err.contains("adopted 1 existing object(s) by key:"),
+        "{err}"
+    );
+    assert!(
+        err.contains("dcim.site {\"slug\":\"fra1\"} -> backend id 7"),
+        "{err}"
+    );
     let out = stdout(&output);
-    assert!(
-        out.contains("adopted 1 existing object(s) by key:"),
-        "{out}"
-    );
-    assert!(
-        out.contains("dcim.site {\"slug\":\"fra1\"} -> backend id 7"),
-        "{out}"
-    );
     assert!(
         out.contains("plan: 0 to create, 0 to update, 0 to delete"),
         "{out}"
@@ -165,6 +168,7 @@ fn no_adopt_binds_nothing_and_plans_a_create() {
 
     let output = plan(dir.path(), &inventory, &config, &["--no-adopt"]);
     assert!(output.status.success(), "{}", stderr(&output));
+    assert!(!stderr(&output).contains("adopted"), "{}", stderr(&output));
     let out = stdout(&output);
     assert!(!out.contains("adopted"), "{out}");
     assert!(
@@ -350,4 +354,34 @@ fn import_keeps_state_known_identity_across_a_backend_rename() {
     let imported: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(&observed).unwrap()).unwrap();
     assert_ne!(imported["objects"][0]["uid"], SITE_UID);
+}
+
+/// --dry-run promises raw plan json on stdout; adoption commentary rides
+/// stderr, so an adopting dry run still parses.
+#[test]
+fn dry_run_stdout_stays_json_when_the_run_adopts() {
+    let dir = tempdir().unwrap();
+    let script = write_observer(dir.path(), OBSERVED_FRA1);
+    let config = write_backend_config(dir.path(), &script, "site-a");
+    let inventory = write_site_inventory(dir.path(), "dcim.site", "fra1");
+
+    let mut command = Command::new(bin_path());
+    command
+        .current_dir(dir.path())
+        .arg("plan")
+        .arg("-f")
+        .arg(&inventory)
+        .arg("--dry-run")
+        .arg("--backend-config")
+        .arg(&config);
+    let output = command.output().unwrap();
+    assert!(output.status.success(), "{}", stderr(&output));
+    let err = stderr(&output);
+    assert!(
+        err.contains("adopted 1 existing object(s) by key:"),
+        "{err}"
+    );
+    let plan: serde_json::Value = serde_json::from_str(&stdout(&output))
+        .expect("dry-run stdout must be the raw plan json, nothing else");
+    assert_eq!(plan["ops"], serde_json::json!([]));
 }

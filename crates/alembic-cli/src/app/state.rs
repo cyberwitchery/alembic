@@ -54,7 +54,12 @@ pub(super) fn resolve_state_backend_config(
         "postgres" | "postgresql" => {
             let url = std::env::var("ALEMBIC_STATE_POSTGRES_URL")
                 .map_err(|_| anyhow!("missing ALEMBIC_STATE_POSTGRES_URL"))?;
-            let key = std::env::var("ALEMBIC_STATE_KEY").unwrap_or_else(|_| "default".to_string());
+            // the row key is backend-scoped like the local path, so several
+            // backends share one database without sharing a row. the env var is
+            // the workspace namespace, not the final key.
+            let workspace =
+                std::env::var("ALEMBIC_STATE_KEY").unwrap_or_else(|_| "default".to_string());
+            let key = format!("{workspace}/{}-{}", identity.adapter, identity.scope_hash());
             let tls_mode = resolve_postgres_tls_mode()?;
             Ok(StateBackendConfig::Postgres { url, key, tls_mode })
         }

@@ -47,6 +47,10 @@ endpoint rename; without one, a moved endpoint reads as a different backend.
   whatever file it names.
 - apply journals are scoped the same way, so two instances of one backend
   applied from one directory cannot resume into each other's runs.
+- postgres rows are backend-scoped too: the row key is
+  `<workspace>/<adapter>-<hash>`, with `ALEMBIC_STATE_KEY` as the workspace
+  namespace (default `default`), so several backends share one database
+  without sharing a row.
 
 ## behavior
 
@@ -92,7 +96,7 @@ use environment variables to select a state backend:
 - `ALEMBIC_STATE_PATH=/path/to/state.json` (optional override for local backend)
 - `ALEMBIC_STATE_BACKEND=postgres`
 - `ALEMBIC_STATE_POSTGRES_URL=postgres://user:pass@host:5432/dbname`
-- `ALEMBIC_STATE_KEY=my-workspace` (optional logical key, default `default`)
+- `ALEMBIC_STATE_KEY=my-workspace` (optional workspace namespace; the row key is `<workspace>/<adapter>-<hash>`, default workspace `default`)
 - `ALEMBIC_STATE_POSTGRES_TLS=disable|require` (optional, default `disable`)
 - postgres connection warnings are emitted through `tracing` (visible in cli by default at `warn` level)
 

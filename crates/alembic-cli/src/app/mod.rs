@@ -546,15 +546,18 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
 /// say what bootstrapping wrote into identity memory: adoptions bind a
 /// declared uid to an existing backend object, supersedes move a backend id
 /// off the uid it answered to. a plan may persist both, so neither is silent.
+/// all of it goes to stderr, like the schema preview: `--dry-run` promises raw
+/// plan json on stdout and `--report` a drift summary, and the machine-readable
+/// copy rides in the drift report's `adopted`/`superseded`.
 fn print_bootstrap(report: &alembic_engine::BootstrapReport) {
     const MAX_LISTED: usize = 50;
     if !report.adoptions.is_empty() {
-        println!(
+        eprintln!(
             "adopted {} existing object(s) by key:",
             report.adoptions.len()
         );
         for adoption in report.adoptions.iter().take(MAX_LISTED) {
-            println!(
+            eprintln!(
                 "  {} {} -> backend id {}",
                 adoption.type_name,
                 alembic_core::key_string(&adoption.key),
@@ -562,11 +565,11 @@ fn print_bootstrap(report: &alembic_engine::BootstrapReport) {
             );
         }
         if report.adoptions.len() > MAX_LISTED {
-            println!("  ... and {} more", report.adoptions.len() - MAX_LISTED);
+            eprintln!("  ... and {} more", report.adoptions.len() - MAX_LISTED);
         }
     }
     for superseded in &report.superseded {
-        println!(
+        eprintln!(
             "superseded: {} backend id {} now answers to {} (was {})",
             superseded.type_name, superseded.backend_id, superseded.by, superseded.superseded
         );

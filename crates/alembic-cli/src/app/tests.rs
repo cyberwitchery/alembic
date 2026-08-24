@@ -104,7 +104,8 @@ fn resolve_state_backend_postgres_with_default_key() {
         config,
         StateBackendConfig::Postgres {
             url: "postgres://user:pass@localhost:5432/alembic".to_string(),
-            key: "default".to_string(),
+            // backend-scoped like the local path: workspace/adapter-hash.
+            key: format!("default/netbox-{}", test_identity().scope_hash()),
             tls_mode: PostgresTlsMode::Disable,
         }
     );
@@ -127,7 +128,7 @@ fn resolve_state_backend_postgres_with_tls_require() {
         config,
         StateBackendConfig::Postgres {
             url: "postgres://user:pass@localhost:5432/alembic".to_string(),
-            key: "workspace-a".to_string(),
+            key: format!("workspace-a/netbox-{}", test_identity().scope_hash()),
             tls_mode: PostgresTlsMode::Require,
         }
     );
