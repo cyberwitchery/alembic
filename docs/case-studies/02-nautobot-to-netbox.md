@@ -159,12 +159,12 @@ alembic apply -p /tmp/plan.json \
 
 ## notes
 
-- uids are recomputed from the target identity (`dcim.site` + slug), so they are
-  stable across runs without carrying nautobot's identity over. for a fresh
-  netbox this is what you want; netbox assigns its own backend ids on apply.
-- the slug derivation changes the key, and therefore the uid, of every site. the
-  device ref still lands correctly because map rewrites references in a second
-  pass after every object's new identity is known.
+- uids are inherited, so the migrated objects carry their identity across the
+  translation: the netbox site *is* the nautobot location under one uid, and a
+  later rename in either vocabulary stays an update. netbox assigns its own
+  backend ids on apply, remembered in netbox's own state file.
+- the slug derivation changes the key alone; identity does not move, so the
+  device ref is already correct without any rewiring.
 - nautobot models `status` as a reference to a status object, while netbox wants
   a status string. the `lookups` block follows that reference, reads the status
   object's name, and the `lower` transform normalizes it (`Active` -> `active`),

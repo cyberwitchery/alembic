@@ -112,9 +112,10 @@ alembic apply -p /tmp/plan.json --backend-config backend-nautobot.yaml
 - the same source of truth reached both systems; the only per-backend artefact is
   a small map naming its differences. add a third candidate by writing a third
   map, not a third inventory.
-- `map` re-derives uids from the target identity, so netbox's `dcim.site` and
-  nautobot's `dcim.location` each get their own stable ids; every backend assigns
-  its own backend ids on apply.
+- `map` inherits identity, so netbox's `dcim.site` and nautobot's
+  `dcim.location` are the same logical object under one uid, materialized in
+  two vocabularies; each backend still assigns its own backend ids on apply,
+  and each backend's state file remembers its own.
 - these maps reshape only what the two systems name differently. a richer model
   (device types, statuses) grows the maps, not the source model; the
   nautobot-to-netbox case study shows a status modelled as a reference on one side

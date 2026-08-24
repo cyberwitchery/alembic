@@ -54,8 +54,8 @@ foreign key, not `assigned_interface`. one `map` step reshapes the neutral model
 to netbox's names: a rule that renames the field on `ipam.ip_address`, and a
 `match: "*"` passthrough that carries every other type through unchanged. because
 passthrough carries each source type's schema too, the target `schema` only
-declares the one type you reshape. refs are rewired automatically, so the ip
-still points at its interface even though `map` re-derives uids. the spec is
+declares the one type you reshape. identity is inherited, so the ip still
+points at its interface under the uids you authored. the spec is
 [`examples/walkthroughs/01-netbox-map.yaml`](../../examples/walkthroughs/01-netbox-map.yaml):
 
 ```yaml
@@ -107,6 +107,6 @@ alembic apply -p /tmp/plan.json \
 
 ## notes
 
-- reference other objects by their uid string; keys are used only for bootstrap or when state is missing.
+- reference other objects by their uid string; keys are used only for adoption or when state is missing.
 - only the fields netbox names differently need a rule; the `match: "*"` passthrough carries everything else, including the interface's `type` (already netbox's name), through untouched.
-- because `map` re-derives each uid from its `(type, key)`, that identity stays stable across runs even though the mapped uids differ from the ones you authored.
+- `map` inherits every object's identity: the mapped inventory carries the uids you authored, so renaming a key later stays an update (see `docs/identity.md`).

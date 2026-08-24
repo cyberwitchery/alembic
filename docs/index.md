@@ -5,6 +5,7 @@ this directory contains the reference documentation for alembic.
 ## contents
 
 - `docs/ir.md` - the data model: schema, types, and objects
+- `docs/identity.md` - the identity law: uids, keys, state, adoption, retype
 - `docs/inventory.md` - inventory file format (yaml/json) and includes
 - `docs/map.md` - transforming the data model between vocabularies
 - `docs/engine.md` - loader, validation, planning, apply

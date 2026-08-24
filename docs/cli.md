@@ -62,6 +62,11 @@ backend adapters are configured via a yaml file passed with `--backend-config`.
 unknown keys are rejected: a typo'd option is a parse error naming the field,
 not a silently ignored key that leaves the default in place.
 
+every backend config also takes an optional `instance:`, a stable name for the
+backend instance the state file answers to (see `docs/state.md`); without it
+the identity derives from the config (the normalized url, the output
+directory, or a config fingerprint for external adapters).
+
 netbox:
 
 ```yaml
@@ -138,6 +143,8 @@ NETBOX_URL=https://netbox.example.com NETBOX_TOKEN=$NETBOX_TOKEN \
 - against a write-only (emitter) backend such as `django`, which cannot report existing state, plain `plan` produces an all-creates plan against an empty observation, while `--report` is rejected up front (see below)
 - writes json plan to the `-o`/`--output` path (required only for this default write path), and prints a human-readable per-op summary of that plan (create/update/delete, with per-field `from -> to` for updates; long categories are truncated) so you can read what apply would do before applying
 - honors `--allow-delete` if you want delete ops
+- reports what bootstrapping wrote into identity memory: `adopted N existing object(s) by key` names each backend object the run bound to a declared uid, and `superseded:` names any binding an adoption displaced. adoption persists with the plan's state save, so it is never silent; `--no-adopt` disables key adoption (state-known objects still match, everything else plans as a create)
+- a uid planned as one create and one delete under two types renders as a `retype`: one logical object re-materialized (see `docs/identity.md`), created under the new type before the old one is deleted
 - without `--provision`, plan asks the backend for a read-only schema preview (what `apply`'s `ensure_schema` would create/delete, writing nothing) and prints it to stderr as `schema preview: ...`; the machine-readable copy rides in the plan's `schema_preview`, and under `--report` (which writes no plan) in the drift report's. backends that cannot preview report `schema preview: unavailable for this backend`
 - `--provision` runs adapter provisioning (`ensure_schema`) before observing backend state; provisioning that would delete custom object types/fields the inventory no longer declares is blocked unless `--allow-delete` is also given (such deletes cascade to their objects on the backend)
 - `--dry-run` prints the raw plan json instead of writing it; it writes no file, so `-o`/`--output` is rejected with it at parse time rather than accepted and ignored
@@ -210,7 +217,10 @@ truncated. the json shape:
 }
 ```
 
-every category is always present, so an empty one reads as "no drift here"
+the report also carries `adopted` and `superseded` when the run bound identity
+(see plan above), omitted when empty; they describe identity memory, not
+divergence, so they count towards no category. every category is always
+present, so an empty one reads as "no drift here"
 rather than a missing key, and a report with three empty lists is the json form
 of `no drift: observed backend state matches declared intent`. `schema_preview`
 is not a category and so does not follow that rule: it is the same preview the
@@ -392,7 +402,8 @@ alembic import -f examples/inventory.yaml -o observed.json \
 - `-f` is your inventory; its `schema` selects which types to observe.
 - `-o` receives the observed inventory (ir).
 - output is validated against the inventory's schema before it is written; see `docs/engine.md`.
-- import neither reads nor locks the state store; it observes in the canonical uid space.
+- identity is assigned state-first: a backend object state already binds keeps its uid across backend-side renames, and only never-met objects are minted from their `(type, key)`. import takes the state lock shared and never saves
+- `--stateless` drops the identity memory: every uid is minted from the observed `(type, key)`, so a rename reads as a new object. the mode for one-shot audits and reproducible snapshots
 - `peeringdb` uses `PEERINGDB_API_KEY` for authentication
 
 ## environment variables

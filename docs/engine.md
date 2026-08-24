@@ -58,10 +58,11 @@ comparison is type-aware: for a field declared `int` or `float`, values are comp
 
 ## import
 
-import reads backend state via the adapter and emits a canonical inventory:
+import reads backend state via the adapter and emits an inventory in the
+identity space state defines (see `docs/identity.md`):
 
-- `uid` is re-derived as `uid_v5(type, key)` to keep identities stable
-- import observes in the canonical uid space: it ignores the state store, so refs come back as canonical uids rather than the state-mapped ones `plan` observes. a ref the adapter can only report as a backend id is resolved against a `backend id -> canonical uid` index built from the observation itself, to a fixpoint since a key field can itself be a ref
+- identity is assigned state-first: a backend object state already binds keeps its uid, whatever its key says now, and only an object state has never met is minted as `uid_v5(type, key)` from its first-sight identity. `--stateless` drops the memory and mints every uid
+- the read runs with the same state, so refs resolve through the same rule (state authoritative, derivation fills the gaps) and objects and refs land in one uid space. a ref the adapter can only report as a backend id is resolved against a `backend id -> uid` index seeded from state and filled from the observation, to a fixpoint since a key field can itself be a ref
 - **import validates the inventory before writing it**, as `map` validates what it builds: every consumer validates on load, so a file that does not validate has no use. a ref that came out of the index still holding a backend id fails the import naming the cause rather than the symptom -- `no b.interface with that backend id was observed`, not `expected uuid, got number` -- and says which of the three causes it is: the target was not in the observation, the target is keyed on a reference cycle so no uid can be derived for it, or the target has a uid and the adapter reported this key field only in `key` and not in `attrs`, where only `attrs` is normalized. everything else the inventory gets wrong is reported by `validate` in its own words
 - `attrs` are pulled from observed records (including backend custom fields/tags where supported)
 - observed attrs are **projected onto the schema**: any attr whose key is not declared in the type's `fields` is dropped, with a `warn` log naming `<type>.<field>`. server-computed fields (e.g. `last_updated`) are not in the schema and could never be managed, so keeping them would only make the imported inventory fail validation. a type absent from the schema keeps its attrs untouched and then fails the import, naming the types import asked for: the schema you import against is also that list, so a type outside it came back from the adapter unasked rather than being missing from your `-f` (unless the schema declares no types, when the `-f` is the cause and the message says so).

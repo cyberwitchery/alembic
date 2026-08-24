@@ -64,8 +64,10 @@ json is supported when the file extension is `.json`.
 
 ## guidelines
 
-- use stable uuids for `uid`.
-- keep `key` human-readable and stable across renames where possible.
+- `uid` is the object's identity, assigned once (see `docs/identity.md`).
+- keep `key` human-readable; renaming a key is an ordinary update, since
+  identity lives in the uid. key *design* still matters: mirror how the
+  backend scopes uniqueness (an interface is `(device, name)`, not `name`).
 - keys are canonicalized as JSON for matching and sorting.
 - never include backend ids in `attrs`.
 - `import` writes only schema-declared attrs; undeclared, server-computed fields (e.g. `last_updated`) are dropped with a warning.
