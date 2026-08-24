@@ -3007,6 +3007,38 @@ fn report_and_dry_run_conflict() {
 }
 
 #[test]
+fn no_adopt_and_allow_delete_conflict() {
+    use clap::Parser;
+    // --no-adopt refuses to identify backend objects by key; --allow-delete
+    // would then plan the unidentified twin of every declared object as a
+    // delete beside its create, replacing objects the run refused to know.
+    // rejected at parse time rather than composed into a footgun.
+    let result = Cli::try_parse_from([
+        "alembic",
+        "plan",
+        "-f",
+        "inventory.yaml",
+        "-o",
+        "plan.json",
+        "--no-adopt",
+        "--allow-delete",
+    ]);
+    // `Cli` is not `Debug`, so unwrap the error via `Option` rather than `expect_err`.
+    let err = result
+        .err()
+        .expect("--no-adopt and --allow-delete must conflict");
+    assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+
+    // each flag alone still parses.
+    for flag in ["--no-adopt", "--allow-delete"] {
+        assert!(
+            Cli::try_parse_from(["alembic", "plan", "-f", "i.yaml", "-o", "p.json", flag]).is_ok(),
+            "{flag} alone must parse"
+        );
+    }
+}
+
+#[test]
 fn output_and_dry_run_conflict() {
     use clap::Parser;
     // --dry-run prints the plan and writes no file, so a passed -o was accepted

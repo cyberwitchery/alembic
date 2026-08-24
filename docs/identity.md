@@ -93,6 +93,8 @@ never silent: every run reports `adopted N existing object(s) by key` with the
 bindings, and a binding that displaces another uid is reported as superseded.
 `plan --no-adopt` disables key adoption for first contact with a populated
 backend: state-known objects still match, everything else plans as a create.
+it conflicts with `--allow-delete`: refusing to identify a backend object by
+key is refusing to know enough to replace it.
 
 ## retype
 

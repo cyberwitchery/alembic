@@ -109,8 +109,9 @@ enum Command {
         /// do not adopt backend objects by key match: state-known objects still
         /// match, everything else plans as a create. adoption binds identity,
         /// so this is the cautious mode for first contact with a populated
-        /// backend.
-        #[arg(long, default_value_t = false)]
+        /// backend. conflicts with --allow-delete: refusing to identify a
+        /// backend object by key is refusing to know enough to replace it.
+        #[arg(long, default_value_t = false, conflicts_with = "allow_delete")]
         no_adopt: bool,
     },
     /// apply a json plan to a backend (the only command that writes).

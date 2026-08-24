@@ -7,7 +7,7 @@
 - `map` emits take `uid: target`, the explicit spelling for minting value identity from the rendered target `(type, key)`
 - **breaking** state is scoped to one backend instance: the file carries a `backend:` stamp, lives at `.alembic/state/<adapter>-<hash>.json`, refuses any other backend, and an unstamped file with mappings is refused rather than claimed; backend configs take `instance:` to pin the identity
 - **breaking** `import` assigns identity state-first, so a backend rename round-trips as the same object; `--stateless` restores value-identity minting
-- `plan` reports every key adoption and superseded binding, and `--no-adopt` disables key adoption for first contact with a populated backend
+- `plan` reports every key adoption and superseded binding, and `--no-adopt` (mutually exclusive with `--allow-delete`) disables key adoption for first contact with a populated backend
 - a same-uid create+delete across two types renders as a `retype`: one logical object re-materialized
 - apply journals are scoped by backend instance, so an interrupted apply resumes only against the same backend; older journals are orphaned once
 - the shipped examples key interfaces by `(device, name)`, the shape backend uniqueness actually has
