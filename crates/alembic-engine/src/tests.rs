@@ -1,4 +1,18 @@
 use super::*;
+
+/// test-side plumbing: most plan tests care about the plan alone, so this
+/// keeps the call sites on the plan while `build_plan` also reports what
+/// bootstrap wrote. adoption reporting has its own tests.
+async fn build_plan(
+    adapter: &(dyn Observer + '_),
+    inventory: &alembic_core::Inventory,
+    state: &mut StateStore,
+    allow_delete: bool,
+) -> anyhow::Result<Plan> {
+    crate::build_plan(adapter, inventory, state, allow_delete, true)
+        .await
+        .map(|(plan, _)| plan)
+}
 use alembic_core::{
     FieldSchema, FieldType, Inventory, JsonMap, Key, Object, Schema, TypeName, TypeSchema, Uid,
 };
@@ -466,6 +480,7 @@ fn plans_in_stable_order() {
         &state,
         &inventory.schema,
         false,
+        true,
     );
 
     assert_eq!(plan.ops.len(), 2);
@@ -502,7 +517,14 @@ fn detects_attribute_diff() {
         .unwrap();
 
     let state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
-    let plan = plan(&desired.objects, &observed, &state, &desired.schema, false);
+    let plan = plan(
+        &desired.objects,
+        &observed,
+        &state,
+        &desired.schema,
+        false,
+        true,
+    );
 
     assert_eq!(plan.ops.len(), 1);
     match &plan.ops[0] {
@@ -541,7 +563,14 @@ fn detects_generic_payload_diff() {
         .unwrap();
 
     let state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
-    let plan = plan(&desired.objects, &observed, &state, &desired.schema, false);
+    let plan = plan(
+        &desired.objects,
+        &observed,
+        &state,
+        &desired.schema,
+        false,
+        true,
+    );
 
     assert_eq!(plan.ops.len(), 1);
     match &plan.ops[0] {
@@ -588,6 +617,7 @@ fn planner_ignores_optional_nulls() {
         &state,
         &schema,
         false,
+        true,
     );
     assert!(plan.ops.is_empty());
 }
@@ -636,6 +666,7 @@ fn planner_matches_backend_id_by_kind() {
         &state,
         &schema,
         false,
+        true,
     );
     assert!(plan.ops.is_empty());
 }
@@ -670,6 +701,7 @@ fn planner_includes_prefix_site_diff() {
         &state,
         &schema,
         false,
+        true,
     );
     assert_eq!(plan.ops.len(), 1);
     match &plan.ops[0] {
@@ -922,7 +954,14 @@ fn plan_generates_deletes_when_enabled() {
         .unwrap();
 
     let state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
-    let plan = plan(&desired.objects, &observed, &state, &desired.schema, true);
+    let plan = plan(
+        &desired.objects,
+        &observed,
+        &state,
+        &desired.schema,
+        true,
+        true,
+    );
     assert!(plan.ops.iter().any(|op| matches!(op, Op::Delete { .. })));
 }
 
@@ -3029,4 +3068,151 @@ async fn the_inventory_decides_which_uid_answers_when_it_declares_both() {
         Some(uid(900))
     );
     assert_eq!(state.all_mappings()[&t("dcim.site")].len(), 1);
+}
+
+/// a single-site observer for the adoption-visibility tests: one dcim.site,
+/// key slug=fra1, backend id 5, attrs matching `adoption_inventory`.
+struct AdoptionBackend;
+
+#[async_trait::async_trait]
+impl Observer for AdoptionBackend {
+    async fn read(
+        &self,
+        _schema: &Schema,
+        _types: &[TypeName],
+        _state: &StateStore,
+    ) -> anyhow::Result<ObservedState> {
+        let mut observed = ObservedState::default();
+        observed.insert(ObservedObject {
+            type_name: t("dcim.site"),
+            key: key_str("slug=fra1"),
+            attrs: attrs_map(json!({ "status": "active" })),
+            backend_id: Some(BackendId::Int(5)),
+        })?;
+        Ok(observed)
+    }
+}
+
+fn adoption_inventory(site_uid: Uid) -> Inventory {
+    Inventory {
+        schema: rename_schema(),
+        objects: vec![obj(
+            site_uid,
+            "dcim.site",
+            "slug=fra1",
+            json!({ "status": "active" }),
+        )],
+    }
+}
+
+/// brownfield adoption is a semantic event: the run binds identity and says so,
+/// and the binding it persists is the one it reported.
+#[tokio::test]
+async fn a_key_adoption_is_reported_alongside_the_binding_it_writes() {
+    let mut state = StateStore::new(None, StateData::default());
+    let inventory = adoption_inventory(uid(1));
+    let (plan, bootstrap) =
+        crate::build_plan(&AdoptionBackend, &inventory, &mut state, false, true)
+            .await
+            .unwrap();
+    assert!(plan.ops.is_empty(), "converged adoption plans nothing");
+    assert_eq!(bootstrap.adoptions.len(), 1);
+    let adoption = &bootstrap.adoptions[0];
+    assert_eq!(adoption.type_name, t("dcim.site"));
+    assert_eq!(adoption.uid, uid(1));
+    assert_eq!(adoption.backend_id, BackendId::Int(5));
+    assert_eq!(
+        state.backend_id(t("dcim.site"), uid(1)),
+        Some(BackendId::Int(5)),
+        "the reported adoption is the binding that was written"
+    );
+}
+
+/// --no-adopt: state-known objects still match; nothing new is adopted, so an
+/// unknown declared object plans as a create and identity memory stays empty.
+#[tokio::test]
+async fn no_adopt_plans_unknown_objects_as_creates() {
+    let mut state = StateStore::new(None, StateData::default());
+    let inventory = adoption_inventory(uid(1));
+    let (plan, bootstrap) =
+        crate::build_plan(&AdoptionBackend, &inventory, &mut state, false, false)
+            .await
+            .unwrap();
+    assert!(bootstrap.is_empty());
+    assert_eq!(plan.ops.len(), 1);
+    assert!(matches!(plan.ops[0], Op::Create { .. }));
+    assert_eq!(state.backend_id(t("dcim.site"), uid(1)), None);
+
+    // a state-known object still matches without adoption.
+    let mut warm = StateStore::new(None, StateData::default());
+    warm.set_backend_id(t("dcim.site"), uid(1), BackendId::Int(5));
+    let (plan, bootstrap) =
+        crate::build_plan(&AdoptionBackend, &inventory, &mut warm, false, false)
+            .await
+            .unwrap();
+    assert!(bootstrap.is_empty());
+    assert!(plan.ops.is_empty(), "state-known objects still converge");
+}
+
+/// adopting an object another uid used to answer for supersedes that binding,
+/// and the supersede is reported next to the adoption.
+#[tokio::test]
+async fn a_superseding_adoption_reports_the_displaced_uid() {
+    let mut state = StateStore::new(None, StateData::default());
+    state.set_backend_id(t("dcim.site"), uid(9), BackendId::Int(5));
+    let inventory = adoption_inventory(uid(1));
+    let (_, bootstrap) = crate::build_plan(&AdoptionBackend, &inventory, &mut state, false, true)
+        .await
+        .unwrap();
+    assert_eq!(bootstrap.adoptions.len(), 1);
+    assert_eq!(bootstrap.superseded.len(), 1);
+    let superseded = &bootstrap.superseded[0];
+    assert_eq!(superseded.superseded, uid(9));
+    assert_eq!(superseded.by, uid(1));
+    assert_eq!(
+        state.backend_id(t("dcim.site"), uid(9)),
+        None,
+        "the displaced uid lost its binding"
+    );
+}
+
+/// identity is the uid alone: declaring an object under a new type keeps its
+/// uid and re-materializes it, so the plan is a create and a delete carrying
+/// one uid, with the create ordered first by `sort_ops_for_apply`.
+#[tokio::test]
+async fn a_retype_plans_create_and_delete_under_one_uid() {
+    let mut state = StateStore::new(None, StateData::default());
+    state.set_backend_id(t("dcim.site"), uid(1), BackendId::Int(5));
+    let mut inventory = adoption_inventory(uid(1));
+    // rename_schema declares dcim.site only; add the target vocabulary.
+    let site_schema = inventory.schema.types["dcim.site"].clone();
+    inventory
+        .schema
+        .types
+        .insert("location.site".to_string(), site_schema);
+    inventory.objects = vec![obj(
+        uid(1),
+        "location.site",
+        "slug=fra1",
+        json!({ "status": "active" }),
+    )];
+
+    let (plan, _) = crate::build_plan(&AdoptionBackend, &inventory, &mut state, true, true)
+        .await
+        .unwrap();
+    let mut kinds: Vec<_> = plan
+        .ops
+        .iter()
+        .map(|op| (op.uid(), op.type_name().as_str().to_string()))
+        .collect();
+    kinds.sort();
+    assert_eq!(plan.ops.len(), 2, "{:?}", plan.ops);
+    assert!(
+        plan.ops.iter().all(|op| op.uid() == uid(1)),
+        "one logical object: {kinds:?}"
+    );
+
+    let ordered = sort_ops_for_apply(&plan.ops, &plan.schema);
+    assert!(matches!(ordered[0], Op::Create { .. }));
+    assert!(matches!(ordered[1], Op::Delete { .. }));
 }

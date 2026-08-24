@@ -1,19 +1,66 @@
-//! local uid -> backend id state store.
+//! uid -> backend id state store: identity memory, scoped to one backend
+//! instance.
 
 use crate::types::BackendId;
-use alembic_core::{TypeName, Uid};
+use alembic_core::{uid_v5, TypeName, Uid};
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::fmt;
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio_postgres::Client;
 
-/// on-disk state schema.
+/// the uid -> backend id mappings. this is also the shape external adapters
+/// receive in read/write requests, so the backend stamp lives in [`StateFile`],
+/// never here.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct StateData {
+    #[serde(default)]
+    pub mappings: BTreeMap<TypeName, BTreeMap<Uid, BackendId>>,
+}
+
+/// the backend instance a state store binds identities to: the adapter kind
+/// plus a stable instance identifier (a normalized endpoint, an output path,
+/// or a configured `instance:`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BackendIdentity {
+    pub adapter: String,
+    pub instance: String,
+}
+
+impl BackendIdentity {
+    pub fn new(adapter: impl Into<String>, instance: impl Into<String>) -> Self {
+        Self {
+            adapter: adapter.into(),
+            instance: instance.into(),
+        }
+    }
+
+    /// a short stable hash naming this backend in file names: state paths and
+    /// journal scopes.
+    pub fn scope_hash(&self) -> String {
+        let name = format!("{}\n{}", self.adapter, self.instance);
+        uid_v5("alembic.backend", &name).simple().to_string()[..8].to_string()
+    }
+}
+
+impl fmt::Display for BackendIdentity {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} ({})", self.adapter, self.instance)
+    }
+}
+
+/// the stored state document: the backend the mappings belong to, plus the
+/// mappings. `backend` is absent only in a fresh, empty store; a stamped store
+/// answers to exactly one backend instance.
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct StateFile {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend: Option<BackendIdentity>,
     #[serde(default)]
     pub mappings: BTreeMap<TypeName, BTreeMap<Uid, BackendId>>,
 }
@@ -39,8 +86,8 @@ pub enum PostgresTlsMode {
 /// trait for pluggable state backends.
 #[async_trait::async_trait]
 pub trait StateBackend: Send + Sync + std::fmt::Debug {
-    async fn load(&mut self) -> Result<StateData>;
-    async fn save(&mut self, data: &StateData) -> Result<()>;
+    async fn load(&mut self) -> Result<StateFile>;
+    async fn save(&mut self, file: &StateFile) -> Result<()>;
 }
 
 /// state store wrapper with load/save helpers.
@@ -48,6 +95,9 @@ pub trait StateBackend: Send + Sync + std::fmt::Debug {
 pub struct StateStore {
     backend: Option<Arc<Mutex<dyn StateBackend>>>,
     data: StateData,
+    // the backend instance this store's mappings bind to. `None` only for a
+    // fresh, empty store; `ensure_backend` stamps it before anything binds.
+    backend_identity: Option<BackendIdentity>,
     // inverse of `data.mappings`, per type: the uid a backend object answers to.
     // it is single-valued where the forward map need not be, so it is what every
     // reader that inverts state goes through, and deciding which uid a backend id
@@ -69,6 +119,7 @@ impl StateStore {
         let mut store = Self {
             backend,
             data,
+            backend_identity: None,
             by_backend_id: BTreeMap::new(),
             journal_dir: None,
             lock: None,
@@ -105,8 +156,14 @@ impl StateStore {
         let backend: Option<Arc<Mutex<dyn StateBackend>>> =
             Some(Arc::new(Mutex::new(LocalBackend { path: path.clone() }))
                 as Arc<Mutex<dyn StateBackend>>);
-        let data = read_state_file(&path)?;
-        let mut store = Self::new(backend, data);
+        let file = read_state_file(&path)?;
+        let mut store = Self::new(
+            backend,
+            StateData {
+                mappings: file.mappings,
+            },
+        );
+        store.backend_identity = file.backend;
         store.lock = Some(lock);
         Ok(store)
     }
@@ -124,26 +181,80 @@ impl StateStore {
             loaded_version: None,
             table_ensured: false,
         };
-        let data = postgres_backend.load().await?;
+        let file = postgres_backend.load().await?;
         let backend: Arc<Mutex<dyn StateBackend>> = Arc::new(Mutex::new(postgres_backend));
-        Ok(Self::new(Some(backend), data))
+        let mut store = Self::new(
+            Some(backend),
+            StateData {
+                mappings: file.mappings,
+            },
+        );
+        store.backend_identity = file.backend;
+        Ok(store)
     }
 
     /// load state from the configured backend.
     pub async fn load_async(&mut self) -> Result<()> {
         if let Some(backend) = &self.backend {
-            self.data = backend.lock().await.load().await?;
+            let file = backend.lock().await.load().await?;
+            self.data = StateData {
+                mappings: file.mappings,
+            };
+            self.backend_identity = file.backend;
             self.reindex();
         }
         Ok(())
     }
 
-    /// persist state to the configured backend.
+    /// persist state to the configured backend, stamp included.
     pub async fn save_async(&self) -> Result<()> {
         if let Some(backend) = &self.backend {
-            backend.lock().await.save(&self.data).await?;
+            let file = StateFile {
+                backend: self.backend_identity.clone(),
+                mappings: self.data.mappings.clone(),
+            };
+            backend.lock().await.save(&file).await?;
         }
         Ok(())
+    }
+
+    /// the backend instance this store binds identities to, once stamped.
+    pub fn backend_identity(&self) -> Option<&BackendIdentity> {
+        self.backend_identity.as_ref()
+    }
+
+    /// hold this store to one backend instance. a fresh, empty store takes the
+    /// stamp; a stamped store refuses any other backend; a store carrying
+    /// mappings without a stamp predates backend-scoped state and is refused
+    /// rather than claimed.
+    pub fn ensure_backend(&mut self, expected: &BackendIdentity) -> Result<()> {
+        match &self.backend_identity {
+            Some(found) if found == expected => Ok(()),
+            Some(found) => Err(anyhow!(
+                "this state belongs to {found}, but the run targets {expected}; state is \
+                 identity memory for exactly one backend instance. point ALEMBIC_STATE_PATH \
+                 at that backend's state, or set `instance:` in the backend config if the \
+                 same backend moved"
+            )),
+            None if self.data.mappings.values().all(|m| m.is_empty()) => {
+                self.backend_identity = Some(expected.clone());
+                Ok(())
+            }
+            None => Err(anyhow!(
+                "this state carries mappings but no backend stamp, so it predates \
+                 backend-scoped state; delete it and re-plan (key adoption rebinds the \
+                 mappings), or point ALEMBIC_STATE_PATH at a fresh path"
+            )),
+        }
+    }
+
+    /// the scope apply journals are named under: the adapter kind, qualified
+    /// by the backend instance once the store is stamped.
+    pub fn journal_scope(&self, adapter_name: &str) -> String {
+        match &self.backend_identity {
+            Some(identity) => format!("{adapter_name}-{}", identity.scope_hash()),
+            None => adapter_name.to_string(),
+        }
     }
 
     /// lookup a backend id by type + uid.
@@ -277,17 +388,17 @@ fn acquire_state_lock(path: &Path, mode: StateLock) -> Result<Arc<File>> {
 }
 
 /// read a local state file at `path`, returning defaults when it does not exist.
-fn read_state_file(path: &Path) -> Result<StateData> {
+fn read_state_file(path: &Path) -> Result<StateFile> {
     if path
         .try_exists()
         .with_context(|| format!("check state: {}", path.display()))?
     {
         let raw =
             fs::read_to_string(path).with_context(|| format!("read state: {}", path.display()))?;
-        serde_json::from_str::<StateData>(&raw)
+        serde_json::from_str::<StateFile>(&raw)
             .with_context(|| format!("parse state: {}", path.display()))
     } else {
-        Ok(StateData::default())
+        Ok(StateFile::default())
     }
 }
 
@@ -306,16 +417,16 @@ struct LocalBackend {
 
 #[async_trait::async_trait]
 impl StateBackend for LocalBackend {
-    async fn load(&mut self) -> Result<StateData> {
+    async fn load(&mut self) -> Result<StateFile> {
         read_state_file(&self.path)
     }
 
-    async fn save(&mut self, data: &StateData) -> Result<()> {
+    async fn save(&mut self, file: &StateFile) -> Result<()> {
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent)
                 .with_context(|| format!("create state dir: {}", parent.display()))?;
         }
-        let raw = serde_json::to_string_pretty(data)?;
+        let raw = serde_json::to_string_pretty(file)?;
         let tmp = self.path.with_extension("json.tmp");
         fs::write(&tmp, &raw).with_context(|| format!("write state tmp: {}", tmp.display()))?;
         fs::rename(&tmp, &self.path)
@@ -335,7 +446,7 @@ struct PostgresBackend {
 
 #[async_trait::async_trait]
 impl StateBackend for PostgresBackend {
-    async fn load(&mut self) -> Result<StateData> {
+    async fn load(&mut self) -> Result<StateFile> {
         let client = self.connect().await?;
 
         let row = client
@@ -348,7 +459,7 @@ impl StateBackend for PostgresBackend {
 
         let Some(row) = row else {
             self.loaded_version = Some(0);
-            return Ok(StateData::default());
+            return Ok(StateFile::default());
         };
 
         self.loaded_version = Some(row.try_get::<_, i32>("loaded_version")?);
@@ -356,16 +467,16 @@ impl StateBackend for PostgresBackend {
         let raw: String = row
             .try_get(0)
             .with_context(|| "decode postgres state payload")?;
-        serde_json::from_str::<StateData>(&raw).with_context(|| "parse postgres state payload")
+        serde_json::from_str::<StateFile>(&raw).with_context(|| "parse postgres state payload")
     }
 
-    async fn save(&mut self, data: &StateData) -> Result<()> {
+    async fn save(&mut self, file: &StateFile) -> Result<()> {
         let client = self.connect().await?;
         let Some(loaded_version) = self.loaded_version else {
             return Err(anyhow!("must load state before saving"));
         };
 
-        let payload = serde_json::to_string(data)?;
+        let payload = serde_json::to_string(file)?;
         let rows_modified = client
             .execute(
                 "INSERT INTO alembic_state (state_key, payload, updated_at)
@@ -768,7 +879,7 @@ mod tests {
         let path = dir.path().join("sub").join("state.json");
         let mut backend = LocalBackend { path: path.clone() };
 
-        let mut data = StateData::default();
+        let mut data = StateFile::default();
         data.mappings
             .entry(t("site"))
             .or_default()
@@ -952,5 +1063,64 @@ mod tests {
             reloaded.uid_for_backend_id(&t("site"), &BackendId::Int(42)),
             Some(uid(2))
         );
+    }
+
+    #[test]
+    fn ensure_backend_stamps_a_fresh_store_and_holds_it() {
+        let netbox = BackendIdentity::new("netbox", "https://netbox.example.com");
+        let other = BackendIdentity::new("nautobot", "https://nautobot.example.com");
+        let mut store = StateStore::new(None, StateData::default());
+        store.ensure_backend(&netbox).unwrap();
+        assert_eq!(store.backend_identity(), Some(&netbox));
+        // the same backend keeps working; any other is refused by name.
+        store.ensure_backend(&netbox).unwrap();
+        let err = store.ensure_backend(&other).unwrap_err();
+        assert!(format!("{err:#}").contains("netbox (https://netbox.example.com)"));
+        assert!(format!("{err:#}").contains("nautobot (https://nautobot.example.com)"));
+    }
+
+    #[test]
+    fn unstamped_state_with_mappings_is_refused_not_claimed() {
+        let mut data = StateData::default();
+        data.mappings
+            .entry(t("site"))
+            .or_default()
+            .insert(uid(1), BackendId::Int(7));
+        let mut store = StateStore::new(None, data);
+        let err = store
+            .ensure_backend(&BackendIdentity::new("netbox", "https://nb"))
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("no backend stamp"), "{err:#}");
+        assert!(store.backend_identity().is_none());
+    }
+
+    #[tokio::test]
+    async fn the_stamp_survives_a_save_load_round_trip() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("state.json");
+        let identity = BackendIdentity::new("netbox", "https://netbox.example.com");
+        {
+            let mut store = StateStore::load(&path).unwrap();
+            store.ensure_backend(&identity).unwrap();
+            store.set_backend_id(t("site"), uid(1), BackendId::Int(7));
+            store.save_async().await.unwrap();
+        }
+        let store = StateStore::load(&path).unwrap();
+        assert_eq!(store.backend_identity(), Some(&identity));
+        assert_eq!(store.backend_id(t("site"), uid(1)), Some(BackendId::Int(7)));
+    }
+
+    #[test]
+    fn journal_scope_is_instance_qualified_once_stamped() {
+        let mut store = StateStore::new(None, StateData::default());
+        assert_eq!(store.journal_scope("netbox"), "netbox");
+        let identity = BackendIdentity::new("netbox", "https://netbox.example.com");
+        store.ensure_backend(&identity).unwrap();
+        let scope = store.journal_scope("netbox");
+        assert_eq!(scope, format!("netbox-{}", identity.scope_hash()));
+        // the hash is stable and instance-sensitive.
+        let other = BackendIdentity::new("netbox", "https://other.example.com");
+        assert_ne!(identity.scope_hash(), other.scope_hash());
+        assert_eq!(identity.scope_hash(), identity.scope_hash());
     }
 }

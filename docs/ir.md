@@ -14,7 +14,7 @@ key:
 attrs: { ... }
 ```
 
-- `uid`: stable identifier (uuid). never use backend ids in input files.
+- `uid`: the object's identity (uuid), assigned once and never recomputed; see `docs/identity.md`. never use backend ids in input files.
 - `type`: canonical type id for the object (any string).
 - `key`: structured key used for matching when no state mapping exists.
 - `attrs`: payload for the object. alembic validates structure and references against the schema.

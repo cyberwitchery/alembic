@@ -1,9 +1,10 @@
 //! adapter registry and config loading for alembic.
 
 use alembic_engine::{
-    Adapter, ApplyReport, Backend, Emitter, ExternalCapabilities, ExternalEnvelopeRef,
-    ExternalObject, ExternalRequestRef, ExternalResponse, ExternalRole, ObservedObject,
-    ObservedState, Observer, Op, ProvisionReport, StateData, StateStore, EXTERNAL_PROTOCOL_VERSION,
+    Adapter, ApplyReport, Backend, BackendIdentity, Emitter, ExternalCapabilities,
+    ExternalEnvelopeRef, ExternalObject, ExternalRequestRef, ExternalResponse, ExternalRole,
+    ObservedObject, ObservedState, Observer, Op, ProvisionReport, StateData, StateStore,
+    EXTERNAL_PROTOCOL_VERSION,
 };
 use anyhow::{anyhow, Context, Result};
 use serde::{de::DeserializeOwned, Deserialize};
@@ -60,6 +61,8 @@ pub enum AdapterConfig {
 pub struct NetboxConfig {
     pub url: Option<String>,
     pub token: Option<String>,
+    /// stable backend-instance identity override; defaults to the normalized url.
+    pub instance: Option<String>,
 }
 
 #[cfg(feature = "nautobot")]
@@ -68,6 +71,8 @@ pub struct NetboxConfig {
 pub struct NautobotConfig {
     pub url: Option<String>,
     pub token: Option<String>,
+    /// stable backend-instance identity override; defaults to the normalized url.
+    pub instance: Option<String>,
 }
 
 #[cfg(feature = "infrahub")]
@@ -77,6 +82,8 @@ pub struct InfrahubConfig {
     pub url: Option<String>,
     pub token: Option<String>,
     pub branch: Option<String>,
+    /// stable backend-instance identity override; defaults to the normalized url.
+    pub instance: Option<String>,
     #[serde(default)]
     pub schema: Option<InfrahubSchemaConfig>,
 }
@@ -87,6 +94,8 @@ pub struct InfrahubConfig {
 pub struct GenericConfig {
     pub config: Option<alembic_adapter_generic::GenericConfig>,
     pub config_path: Option<PathBuf>,
+    /// stable backend-instance identity override; defaults to the normalized base_url.
+    pub instance: Option<String>,
 }
 
 /// takes no keys; the credential is `PEERINGDB_API_KEY`. it exists so a stray
@@ -108,6 +117,10 @@ pub struct ExternalConfig {
     pub timeout_seconds: Option<u64>,
     #[serde(default)]
     pub setup: serde_yaml::Value,
+    /// stable backend-instance identity. an external adapter's config carries
+    /// no endpoint the host can read, so without this the identity falls back
+    /// to a fingerprint of the whole config, which changes when the config does.
+    pub instance: Option<String>,
 }
 
 #[cfg(feature = "infrahub")]
@@ -159,23 +172,27 @@ impl AdapterConfig {
             "netbox" => Ok(AdapterConfig::Netbox(NetboxConfig {
                 url: None,
                 token: None,
+                instance: None,
             })),
             #[cfg(feature = "nautobot")]
             "nautobot" => Ok(AdapterConfig::Nautobot(NautobotConfig {
                 url: None,
                 token: None,
+                instance: None,
             })),
             #[cfg(feature = "infrahub")]
             "infrahub" => Ok(AdapterConfig::Infrahub(InfrahubConfig {
                 url: None,
                 token: None,
                 branch: None,
+                instance: None,
                 schema: None,
             })),
             #[cfg(feature = "generic")]
             "generic" => Ok(AdapterConfig::Generic(GenericConfig {
                 config: None,
                 config_path: None,
+                instance: None,
             })),
             #[cfg(feature = "peeringdb")]
             "peeringdb" => Ok(AdapterConfig::Peeringdb(PeeringdbConfig {})),
@@ -190,6 +207,7 @@ impl AdapterConfig {
                 env: BTreeMap::new(),
                 timeout_seconds: None,
                 setup: serde_yaml::Value::default(),
+                instance: None,
             })),
             other => Err(anyhow!(
                 "unsupported backend {other} (expected one of: {}{})",
@@ -210,25 +228,46 @@ impl AdapterConfig {
         }
     }
 
-    pub fn build(self) -> Result<Backend> {
+    /// build the backend plus the identity of the instance it talks to. state
+    /// is identity memory scoped to one backend instance, and the config layer
+    /// is where the instance is known, so both come out of one call.
+    pub fn build(self) -> Result<(Backend, BackendIdentity)> {
         match self {
             #[cfg(feature = "netbox")]
             AdapterConfig::Netbox(cfg) => {
                 let (url, token) = resolve_credentials("NETBOX", cfg.url, cfg.token)?;
-                Ok(Backend::Adapter(Box::new(
-                    alembic_adapter_netbox::NetBoxAdapter::new(&url, &token)?,
-                )))
+                let identity = BackendIdentity::new(
+                    "netbox",
+                    cfg.instance.unwrap_or_else(|| normalize_instance_url(&url)),
+                );
+                Ok((
+                    Backend::Adapter(Box::new(alembic_adapter_netbox::NetBoxAdapter::new(
+                        &url, &token,
+                    )?)),
+                    identity,
+                ))
             }
             #[cfg(feature = "nautobot")]
             AdapterConfig::Nautobot(cfg) => {
                 let (url, token) = resolve_credentials("NAUTOBOT", cfg.url, cfg.token)?;
-                Ok(Backend::Adapter(Box::new(
-                    alembic_adapter_nautobot::NautobotAdapter::new(&url, &token)?,
-                )))
+                let identity = BackendIdentity::new(
+                    "nautobot",
+                    cfg.instance.unwrap_or_else(|| normalize_instance_url(&url)),
+                );
+                Ok((
+                    Backend::Adapter(Box::new(alembic_adapter_nautobot::NautobotAdapter::new(
+                        &url, &token,
+                    )?)),
+                    identity,
+                ))
             }
             #[cfg(feature = "infrahub")]
             AdapterConfig::Infrahub(cfg) => {
                 let (url, token) = resolve_credentials("INFRAHUB", cfg.url, cfg.token)?;
+                let identity = BackendIdentity::new(
+                    "infrahub",
+                    cfg.instance.unwrap_or_else(|| normalize_instance_url(&url)),
+                );
                 let mut adapter = alembic_adapter_infrahub::InfrahubAdapter::new(
                     &url,
                     &token,
@@ -239,7 +278,7 @@ impl AdapterConfig {
                         adapter = adapter.with_schema_push(schema_push);
                     }
                 }
-                Ok(Backend::Adapter(Box::new(adapter)))
+                Ok((Backend::Adapter(Box::new(adapter)), identity))
             }
             #[cfg(feature = "generic")]
             AdapterConfig::Generic(cfg) => {
@@ -261,31 +300,94 @@ impl AdapterConfig {
                     serde_yaml::from_str(&content)
                         .with_context(|| format!("parse generic config: {}", path.display()))?
                 };
-                Ok(Backend::Adapter(Box::new(
-                    alembic_adapter_generic::GenericAdapter::new(config)?,
-                )))
+                let identity = BackendIdentity::new(
+                    "generic",
+                    cfg.instance
+                        .unwrap_or_else(|| normalize_instance_url(&config.base_url)),
+                );
+                Ok((
+                    Backend::Adapter(Box::new(alembic_adapter_generic::GenericAdapter::new(
+                        config,
+                    )?)),
+                    identity,
+                ))
             }
             #[cfg(feature = "peeringdb")]
-            AdapterConfig::Peeringdb(_) => Ok(Backend::Observer(Box::new(
-                alembic_adapter_peeringdb::PeeringDBAdapter::new(),
-            ))),
+            AdapterConfig::Peeringdb(_) => Ok((
+                Backend::Observer(Box::new(alembic_adapter_peeringdb::PeeringDBAdapter::new())),
+                // one public instance; there is nothing else to identify.
+                BackendIdentity::new("peeringdb", "public"),
+            )),
             #[cfg(feature = "django")]
-            AdapterConfig::Django(cfg) => Ok(Backend::Emitter(Box::new(
-                alembic_adapter_django::DjangoAdapter::new(cfg),
-            ))),
+            AdapterConfig::Django(cfg) => {
+                // an emitter assigns no backend ids, but the stamp still holds a
+                // state file to the one output it describes.
+                let identity = BackendIdentity::new("django", cfg.output.display().to_string());
+                Ok((
+                    Backend::Emitter(Box::new(alembic_adapter_django::DjangoAdapter::new(cfg))),
+                    identity,
+                ))
+            }
             AdapterConfig::External(cfg) => {
+                let instance = cfg.instance.clone().unwrap_or_else(|| {
+                    // no endpoint the host can read: fall back to a fingerprint
+                    // of the config, which changes when the config does. set
+                    // `instance:` for an identity that survives config edits.
+                    let fingerprint = format!(
+                        "{:?}\n{:?}\n{:?}\n{:?}\n{}",
+                        cfg.command,
+                        cfg.args,
+                        cfg.working_dir,
+                        cfg.env,
+                        serde_yaml::to_string(&cfg.setup).unwrap_or_default(),
+                    );
+                    format!(
+                        "config-{}",
+                        &alembic_core::uid_v5("alembic.external", &fingerprint)
+                            .simple()
+                            .to_string()[..12]
+                    )
+                });
+                let identity = BackendIdentity::new("external", instance);
                 let adapter = ProcessAdapter::new(cfg)?;
                 // box the adapter into the backend variant matching its declared
                 // role, so an emit-only external adapter gets the same handling a
                 // built-in emitter like django gets (all-creates plan, up-front
                 // import error) instead of silently observing nothing.
-                Ok(match adapter.probe_role() {
+                let backend = match adapter.probe_role() {
                     ExternalRole::Observer => Backend::Observer(Box::new(adapter)),
                     ExternalRole::Emitter => Backend::Emitter(Box::new(adapter)),
                     ExternalRole::Adapter => Backend::Adapter(Box::new(adapter)),
-                })
+                };
+                Ok((backend, identity))
             }
         }
+    }
+}
+
+/// normalize an endpoint url into a stable instance identity: lowercase the
+/// scheme and host, trim trailing slashes, keep port and path as given (two
+/// instances behind one host stay distinct).
+fn normalize_instance_url(url: &str) -> String {
+    let url = url.trim().trim_end_matches('/');
+    match url.split_once("://") {
+        Some((scheme, rest)) => {
+            let (authority, path) = match rest.split_once('/') {
+                Some((authority, path)) => (authority, Some(path)),
+                None => (rest, None),
+            };
+            let mut out = format!(
+                "{}://{}",
+                scheme.to_ascii_lowercase(),
+                authority.to_ascii_lowercase()
+            );
+            if let Some(path) = path {
+                out.push('/');
+                out.push_str(path);
+            }
+            out
+        }
+        None => url.to_string(),
     }
 }
 
@@ -564,7 +666,7 @@ pub fn create_backend(
     plugins: &[Plugin],
     backend: Option<&str>,
     config_path: Option<PathBuf>,
-) -> Result<Backend> {
+) -> Result<(Backend, BackendIdentity)> {
     let config = if let Some(path) = config_path {
         let config = load_config(&path)?;
         if let Some(backend) = backend {
@@ -858,8 +960,9 @@ fi
             env: BTreeMap::new(),
             timeout_seconds: Some(5),
             setup: serde_yaml::Value::default(),
+            instance: None,
         });
-        let backend = config.build().unwrap();
+        let (backend, _) = config.build().unwrap();
         let schema = Schema {
             types: BTreeMap::new(),
         };
@@ -923,9 +1026,11 @@ fi
             env: BTreeMap::new(),
             timeout_seconds: Some(5),
             setup: serde_yaml::Value::default(),
+            instance: None,
         })
         .build()
         .unwrap()
+        .0
     }
 
     /// a script that answers capabilities with `response` and errors on all else.

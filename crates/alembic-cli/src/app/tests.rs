@@ -21,11 +21,24 @@ fn key_str(raw: &str) -> alembic_core::Key {
     alembic_core::Key::from(map)
 }
 
+/// the backend identity CLI state tests scope paths by.
+fn test_identity() -> alembic_engine::BackendIdentity {
+    alembic_engine::BackendIdentity::new("netbox", "https://netbox.example.com")
+}
 #[test]
-fn state_path_uses_dot_alembic() {
+fn state_path_is_scoped_per_backend_under_dot_alembic() {
     let root = Path::new("/tmp/example");
-    let path = state_path(root);
-    assert!(path.ends_with(".alembic/state.json"));
+    let identity = test_identity();
+    let path = state_path(root, &identity);
+    assert!(path.starts_with("/tmp/example/.alembic/state"));
+    assert!(path
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .starts_with("netbox-"));
+    // a different instance gets a different file.
+    let other = alembic_engine::BackendIdentity::new("netbox", "https://other.example.com");
+    assert_ne!(path, state_path(root, &other));
 }
 
 #[test]
@@ -36,11 +49,11 @@ fn resolve_state_backend_defaults_to_local() {
     ]);
 
     let root = Path::new("/tmp/example");
-    let config = resolve_state_backend_config(root).unwrap();
+    let config = resolve_state_backend_config(root, &test_identity()).unwrap();
     assert_eq!(
         config,
         StateBackendConfig::Local {
-            path: root.join(".alembic/state.json")
+            path: state_path(root, &test_identity())
         }
     );
 }
@@ -52,7 +65,7 @@ fn resolve_state_backend_uses_custom_local_path() {
         ("ALEMBIC_STATE_PATH", Some("/tmp/custom-state.json")),
     ]);
 
-    let config = resolve_state_backend_config(Path::new("/tmp/ignored")).unwrap();
+    let config = resolve_state_backend_config(Path::new("/tmp/ignored"), &test_identity()).unwrap();
     assert_eq!(
         config,
         StateBackendConfig::Local {
@@ -69,7 +82,8 @@ fn resolve_state_backend_postgres_requires_url() {
         ("ALEMBIC_STATE_POSTGRES_TLS", None),
     ]);
 
-    let err = resolve_state_backend_config(Path::new("/tmp/ignored")).unwrap_err();
+    let err =
+        resolve_state_backend_config(Path::new("/tmp/ignored"), &test_identity()).unwrap_err();
     assert!(err.to_string().contains("ALEMBIC_STATE_POSTGRES_URL"));
 }
 
@@ -85,12 +99,13 @@ fn resolve_state_backend_postgres_with_default_key() {
         ("ALEMBIC_STATE_POSTGRES_TLS", None),
     ]);
 
-    let config = resolve_state_backend_config(Path::new("/tmp/ignored")).unwrap();
+    let config = resolve_state_backend_config(Path::new("/tmp/ignored"), &test_identity()).unwrap();
     assert_eq!(
         config,
         StateBackendConfig::Postgres {
             url: "postgres://user:pass@localhost:5432/alembic".to_string(),
-            key: "default".to_string(),
+            // backend-scoped like the local path: workspace/adapter-hash.
+            key: format!("default/netbox-{}", test_identity().scope_hash()),
             tls_mode: PostgresTlsMode::Disable,
         }
     );
@@ -108,12 +123,12 @@ fn resolve_state_backend_postgres_with_tls_require() {
         ("ALEMBIC_STATE_POSTGRES_TLS", Some("require")),
     ]);
 
-    let config = resolve_state_backend_config(Path::new("/tmp/ignored")).unwrap();
+    let config = resolve_state_backend_config(Path::new("/tmp/ignored"), &test_identity()).unwrap();
     assert_eq!(
         config,
         StateBackendConfig::Postgres {
             url: "postgres://user:pass@localhost:5432/alembic".to_string(),
-            key: "workspace-a".to_string(),
+            key: format!("workspace-a/netbox-{}", test_identity().scope_hash()),
             tls_mode: PostgresTlsMode::Require,
         }
     );
@@ -130,7 +145,8 @@ fn resolve_state_backend_postgres_with_invalid_tls_mode_errors() {
         ("ALEMBIC_STATE_POSTGRES_TLS", Some("weird")),
     ]);
 
-    let err = resolve_state_backend_config(Path::new("/tmp/ignored")).unwrap_err();
+    let err =
+        resolve_state_backend_config(Path::new("/tmp/ignored"), &test_identity()).unwrap_err();
     assert!(err.to_string().contains("ALEMBIC_STATE_POSTGRES_TLS"));
 }
 
@@ -664,6 +680,7 @@ fn output_path_is_the_one_place_every_write_site_is_named() {
             dry_run: false,
             report: false,
             allow_delete: false,
+            no_adopt: false,
         }),
         Some(out.as_path())
     );
@@ -684,6 +701,7 @@ fn output_path_is_the_one_place_every_write_site_is_named() {
             file: PathBuf::from("i.yaml"),
             backend: None,
             backend_config: None,
+            stateless: false,
         }),
         Some(out.as_path())
     );
@@ -1108,6 +1126,7 @@ objects:
             dry_run: false,
             report: false,
             allow_delete: false,
+            no_adopt: false,
         },
     };
     let err = run(cli, AppConfig::load().unwrap()).await.unwrap_err();
@@ -1395,7 +1414,9 @@ types:
     std::fs::write(
         &config_path,
         format!(
-            "backend: generic\nconfig:\n  base_url: {base_url}\n  types:\n    dcim.site:\n      path: /sites/\n    dcim.device:\n      path: /devices/\n"
+            // the two runs talk to two mock servers standing in for one backend, so
+            // the config pins the instance: identity does not move with the port.
+            "backend: generic\ninstance: resume-test\nconfig:\n  base_url: {base_url}\n  types:\n    dcim.site:\n      path: /sites/\n    dcim.device:\n      path: /devices/\n"
         ),
     )
     .unwrap();
@@ -1717,6 +1738,7 @@ objects:
             dry_run: false,
             report: false,
             allow_delete: false,
+            no_adopt: false,
         },
     };
     run(cli, AppConfig::load().unwrap()).await.unwrap();
@@ -1785,6 +1807,7 @@ objects:
             dry_run: false,
             report: true,
             allow_delete: false,
+            no_adopt: false,
         },
     };
     run(cli, AppConfig::load().unwrap()).await.unwrap();
@@ -1897,6 +1920,7 @@ async fn a_saving_plan_run_is_refused_while_a_report_runs() {
             dry_run: false,
             report: false,
             allow_delete: false,
+            no_adopt: false,
         },
     };
     let refused = run(saving, AppConfig::load().unwrap()).await;
@@ -1955,6 +1979,7 @@ fn report_cli(file: PathBuf, config: PathBuf) -> Cli {
             dry_run: false,
             report: true,
             allow_delete: false,
+            no_adopt: false,
         },
     }
 }
@@ -2019,6 +2044,7 @@ objects:
             dry_run: false,
             report: true,
             allow_delete: false,
+            no_adopt: false,
         },
     };
     let result = run(cli, AppConfig::load().unwrap()).await;
@@ -2114,6 +2140,7 @@ objects:
             dry_run: false,
             report: true,
             allow_delete: false,
+            no_adopt: false,
         },
     };
     let result = run(cli, AppConfig::load().unwrap()).await;
@@ -2167,6 +2194,7 @@ async fn run_plan_report_carries_an_empty_schema_preview_for_a_backend_that_prov
             dry_run: false,
             report: true,
             allow_delete: false,
+            no_adopt: false,
         },
     };
     let result = run(cli, AppConfig::load().unwrap()).await;
@@ -2222,6 +2250,7 @@ async fn run_plan_report_rejects_a_bad_output_path_before_observing() {
             dry_run: false,
             report: true,
             allow_delete: false,
+            no_adopt: false,
         },
     };
     let result = run(cli, AppConfig::load().unwrap()).await;
@@ -2288,6 +2317,7 @@ async fn run_plan_rejects_an_unwritable_existing_output_file_before_observing() 
             dry_run: false,
             report: false,
             allow_delete: false,
+            no_adopt: false,
         },
     };
     let result = run(cli, AppConfig::load().unwrap()).await;
@@ -2358,6 +2388,7 @@ async fn run_plan_rejects_an_output_path_that_is_a_directory_before_observing() 
             dry_run: false,
             report: false,
             allow_delete: false,
+            no_adopt: false,
         },
     };
     let result = run(cli, AppConfig::load().unwrap()).await;
@@ -2413,6 +2444,7 @@ async fn run_plan_leaves_no_output_directory_when_observing_fails() {
             dry_run: false,
             report: false,
             allow_delete: false,
+            no_adopt: false,
         },
     };
     let result = run(cli, AppConfig::load().unwrap()).await;
@@ -2452,6 +2484,7 @@ async fn run_plan_report_refuses_a_write_only_backend() {
             dry_run: false,
             report: true,
             allow_delete: false,
+            no_adopt: false,
         },
     };
     let result = run(cli, AppConfig::load().unwrap()).await;
@@ -2507,6 +2540,7 @@ async fn run_plan_report_reports_an_unwritable_output_ahead_of_the_refusal() {
             dry_run: false,
             report: true,
             allow_delete: false,
+            no_adopt: false,
         },
     };
     let result = run(cli, AppConfig::load().unwrap()).await;
@@ -2555,6 +2589,7 @@ async fn run_plan_report_refuses_an_external_adapter_declaring_emitter() {
             dry_run: false,
             report: true,
             allow_delete: false,
+            no_adopt: false,
         },
     };
     let result = run(cli, AppConfig::load().unwrap()).await;
@@ -2625,6 +2660,7 @@ async fn run_refuses_to_write_an_external_adapter_declaring_observer() {
                 dry_run: false,
                 report: false,
                 allow_delete: false,
+                no_adopt: false,
             },
         },
         AppConfig::load().unwrap(),
@@ -2684,6 +2720,7 @@ async fn run_plan_and_import_an_external_adapter_declaring_observer() {
                 dry_run: false,
                 report: false,
                 allow_delete: false,
+                no_adopt: false,
             },
         },
         AppConfig::load().unwrap(),
@@ -2696,6 +2733,7 @@ async fn run_plan_and_import_an_external_adapter_declaring_observer() {
                 file: inventory,
                 backend: Some("external".to_string()),
                 backend_config: Some(config),
+                stateless: false,
             },
         },
         AppConfig::load().unwrap(),
@@ -2820,6 +2858,7 @@ async fn run_plan_adopts_a_backend_whose_keys_hold_refs() {
                 dry_run: false,
                 report: false,
                 allow_delete: false,
+                no_adopt: false,
             },
         },
         AppConfig::load().unwrap(),
@@ -2874,6 +2913,7 @@ async fn run_plan_refuses_an_adapter_that_reports_refs_as_backend_ids() {
                 dry_run: false,
                 report: false,
                 allow_delete: false,
+                no_adopt: false,
             },
         },
         AppConfig::load().unwrap(),
@@ -2924,6 +2964,7 @@ async fn run_plan_without_report_still_plans_a_write_only_backend() {
             dry_run: false,
             report: false,
             allow_delete: false,
+            no_adopt: false,
         },
     };
     let result = run(cli, AppConfig::load().unwrap()).await;
@@ -2964,6 +3005,38 @@ fn report_and_dry_run_conflict() {
     // `Cli` is not `Debug`, so unwrap the error via `Option` rather than `expect_err`.
     let err = result.err().expect("--report and --dry-run must conflict");
     assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+}
+
+#[test]
+fn no_adopt_and_allow_delete_conflict() {
+    use clap::Parser;
+    // --no-adopt refuses to identify backend objects by key; --allow-delete
+    // would then plan the unidentified twin of every declared object as a
+    // delete beside its create, replacing objects the run refused to know.
+    // rejected at parse time rather than composed into a footgun.
+    let result = Cli::try_parse_from([
+        "alembic",
+        "plan",
+        "-f",
+        "inventory.yaml",
+        "-o",
+        "plan.json",
+        "--no-adopt",
+        "--allow-delete",
+    ]);
+    // `Cli` is not `Debug`, so unwrap the error via `Option` rather than `expect_err`.
+    let err = result
+        .err()
+        .expect("--no-adopt and --allow-delete must conflict");
+    assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+
+    // each flag alone still parses.
+    for flag in ["--no-adopt", "--allow-delete"] {
+        assert!(
+            Cli::try_parse_from(["alembic", "plan", "-f", "i.yaml", "-o", "p.json", flag]).is_ok(),
+            "{flag} alone must parse"
+        );
+    }
 }
 
 #[test]
@@ -3220,16 +3293,17 @@ objects: []
     std::env::set_current_dir(dir.path()).unwrap();
 
     let inventory = load_inventory(&inventory).unwrap();
-    let mut state = load_state(StateLock::Exclusive).await.unwrap();
-    let backend = create_backend(&[], None, Some(config)).unwrap();
+    let (backend, identity) = create_backend(&[], None, Some(config)).unwrap();
+    let mut state = load_state(StateLock::Exclusive, &identity).await.unwrap();
 
     // without report-forced delete-detection, allow_delete=false emits no
     // deletes and the `extra` category stays empty.
-    let buggy = build_plan(
+    let (buggy, _) = build_plan(
         backend.observer().unwrap(),
         &inventory,
         &mut state,
         should_detect_deletes(false, false),
+        true,
     )
     .await
     .unwrap();
@@ -3240,11 +3314,12 @@ objects: []
 
     // report mode forces delete-detection, so the unmanaged backend object
     // surfaces as an `extra` even though --allow-delete was not passed.
-    let plan = build_plan(
+    let (plan, _) = build_plan(
         backend.observer().unwrap(),
         &inventory,
         &mut state,
         should_detect_deletes(false, true),
+        true,
     )
     .await
     .unwrap();
@@ -3277,9 +3352,10 @@ async fn minimal_external_adapter() {
         env: BTreeMap::new(),
         timeout_seconds: Some(5),
         setup: serde_yaml::Value::default(),
+        instance: None,
     });
 
-    let backend = config.build().unwrap();
+    let (backend, _) = config.build().unwrap();
 
     let response = backend
         .emitter()
@@ -3336,6 +3412,7 @@ async fn run_plan_provision_fails_closed_on_preview_error() {
             dry_run: false,
             report: false,
             allow_delete: false,
+            no_adopt: false,
         },
     };
     let result = run(cli, AppConfig::load().unwrap()).await;
@@ -3386,6 +3463,7 @@ async fn run_plan_provision_over_a_write_only_backend() {
             dry_run: false,
             report: false,
             allow_delete: false,
+            no_adopt: false,
         },
     };
     let result = run(cli, AppConfig::load().unwrap()).await;
@@ -3430,6 +3508,7 @@ async fn run_plan_previews_schema_over_a_write_only_backend() {
             dry_run: false,
             report: false,
             allow_delete: false,
+            no_adopt: false,
         },
     };
     let result = run(cli, AppConfig::load().unwrap()).await;
@@ -3530,6 +3609,7 @@ async fn run_applies_a_converged_hand_written_adapter_that_omits_applied() {
                         dry_run: false,
                         report: false,
                         allow_delete: false,
+                        no_adopt: false,
                     },
                 },
                 AppConfig::load().unwrap(),

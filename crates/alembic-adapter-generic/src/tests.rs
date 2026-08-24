@@ -773,7 +773,8 @@ async fn test_import_resolves_bare_ref_ids_from_the_observation() {
     let adapter = GenericAdapter::new(test_config(&server.base_url())).unwrap();
     let schema = test_schema();
 
-    let report = alembic_engine::import_inventory(&adapter, &schema, &[])
+    let stateless = StateStore::new(None, StateData::default());
+    let report = alembic_engine::import_inventory(&adapter, &schema, &[], &stateless)
         .await
         .unwrap();
 

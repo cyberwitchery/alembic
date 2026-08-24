@@ -61,7 +61,11 @@ schema:
         status:
           type: string
     dcim.interface:
+      # an interface is unique per device, so the key is (device, name).
       key:
+        device:
+          type: ref
+          target: dcim.device
         name:
           type: slug
       fields:
@@ -146,6 +150,7 @@ objects:
   - uid: "5a1c43a4-4f52-4d07-8a2f-88ad1fbdf8c0"
     type: dcim.interface
     key:
+      device: "7b8f7a92-8fd0-4667-9a4b-9f3b5c9a4b1a"
       name: "eth0"
     attrs:
       name: "eth0"
@@ -156,6 +161,7 @@ objects:
   - uid: "4b8a93d3-6a6d-4ef5-9b04-1de2b8f5b8f2"
     type: dcim.interface
     key:
+      device: "7b8f7a92-8fd0-4667-9a4b-9f3b5c9a4b1a"
       name: "eth1"
     attrs:
       name: "eth1"

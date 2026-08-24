@@ -6,7 +6,9 @@
 //! from intent and never writes observed state back into the inventory or state
 //! store. there is deliberately no "adopt observed" mode.
 
-use crate::types::{FieldChange, Op, Plan, ProvisionReport};
+use crate::types::{
+    Adoption, BootstrapReport, FieldChange, Op, Plan, ProvisionReport, SupersededBinding,
+};
 use alembic_core::{key_string, Key, TypeName};
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -56,6 +58,14 @@ pub struct DriftReport {
     /// `is_empty`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schema_preview: Option<ProvisionReport>,
+    /// backend objects this run bound to declared uids by key match. identity
+    /// memory changed, so the machine-readable report carries it too. not a
+    /// drift category: adoption describes identity, not divergence.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub adopted: Vec<Adoption>,
+    /// identity bindings the run's adoptions superseded.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub superseded: Vec<SupersededBinding>,
 }
 
 impl DriftReport {
@@ -107,6 +117,16 @@ impl DriftReport {
 impl From<&Plan> for DriftReport {
     fn from(plan: &Plan) -> Self {
         DriftReport::from_plan(plan)
+    }
+}
+
+impl DriftReport {
+    /// carry the bootstrap report's identity events into the machine-readable
+    /// document, so a written report names what the run adopted.
+    pub fn with_bootstrap(mut self, bootstrap: &BootstrapReport) -> Self {
+        self.adopted = bootstrap.adoptions.clone();
+        self.superseded = bootstrap.superseded.clone();
+        self
     }
 }
 

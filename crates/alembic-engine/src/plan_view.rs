@@ -15,17 +15,38 @@ const MAX_LISTED: usize = 50;
 
 /// render a plan's operations as a human-readable summary: a one-line count
 /// header, then each op grouped under create / update / delete with its type and
-/// human key (and per-field `from -> to` for updates). long categories are
-/// truncated with an `... and N more` line so a large plan stays readable.
+/// human key (and per-field `from -> to` for updates). a uid planned as one
+/// create and one delete under different types is one logical object changing
+/// its materialization, so the pair is rendered as a retype rather than as two
+/// unrelated operations. long categories are truncated with an `... and N more`
+/// line so a large plan stays readable.
 pub fn render_plan(plan: &Plan) -> String {
+    let retyped = retype_pairs(&plan.ops);
+    let mut retype = Vec::new();
     let mut create = Vec::new();
     let mut update = Vec::new();
     let mut delete = Vec::new();
+    let mut create_count = 0usize;
+    let mut delete_count = 0usize;
     for op in &plan.ops {
         match op {
             Op::Create {
-                type_name, desired, ..
-            } => create.push(format!("  {} {}", type_name, key_string(&desired.key))),
+                uid,
+                type_name,
+                desired,
+                ..
+            } => {
+                create_count += 1;
+                match retyped.get(uid) {
+                    Some(old_type) => retype.push(format!(
+                        "  {} -> {} {}",
+                        old_type,
+                        type_name,
+                        key_string(&desired.key)
+                    )),
+                    None => create.push(format!("  {} {}", type_name, key_string(&desired.key))),
+                }
+            }
             Op::Update {
                 type_name,
                 desired,
@@ -42,19 +63,33 @@ pub fn render_plan(plan: &Plan) -> String {
                 }
                 update.push(line);
             }
-            Op::Delete { type_name, key, .. } => {
-                delete.push(format!("  {} {}", type_name, key_string(key)))
+            Op::Delete {
+                uid,
+                type_name,
+                key,
+                ..
+            } => {
+                delete_count += 1;
+                if !retyped.contains_key(uid) {
+                    delete.push(format!("  {} {}", type_name, key_string(key)));
+                }
             }
         }
     }
 
     let mut out = format!(
         "plan: {} to create, {} to update, {} to delete",
-        create.len(),
+        create_count,
         update.len(),
-        delete.len()
+        delete_count
     );
     for (label, lines) in [
+        // apply is not atomic: the create lands first, then the delete, and a
+        // run interrupted between the two resumes by re-issuing the delete.
+        (
+            "retype (create the new materialization, then delete the old)",
+            &retype,
+        ),
         ("create", &create),
         ("update", &update),
         ("delete", &delete),
@@ -71,6 +106,36 @@ pub fn render_plan(plan: &Plan) -> String {
         }
     }
     out
+}
+
+/// the uids planned as exactly one create and one delete under two different
+/// types, mapped to the type being left behind. identity is the uid alone, so
+/// such a pair is one logical object re-materialized, not two objects.
+fn retype_pairs(
+    ops: &[Op],
+) -> std::collections::BTreeMap<alembic_core::Uid, alembic_core::TypeName> {
+    use std::collections::BTreeMap;
+    let mut creates: BTreeMap<alembic_core::Uid, Vec<&alembic_core::TypeName>> = BTreeMap::new();
+    let mut deletes: BTreeMap<alembic_core::Uid, Vec<&alembic_core::TypeName>> = BTreeMap::new();
+    for op in ops {
+        match op {
+            Op::Create { uid, type_name, .. } => creates.entry(*uid).or_default().push(type_name),
+            Op::Delete { uid, type_name, .. } => deletes.entry(*uid).or_default().push(type_name),
+            Op::Update { .. } => {}
+        }
+    }
+    creates
+        .into_iter()
+        .filter_map(
+            |(uid, created)| match (created.as_slice(), deletes.get(&uid)) {
+                ([created], Some(deleted)) => match deleted.as_slice() {
+                    [deleted] if **deleted != **created => Some((uid, (*deleted).clone())),
+                    _ => None,
+                },
+                _ => None,
+            },
+        )
+        .collect()
 }
 
 #[cfg(test)]
@@ -151,5 +216,57 @@ mod tests {
             .collect();
         let out = render_plan(&plan_of(ops));
         assert!(out.contains("... and 5 more"), "{out}");
+    }
+
+    /// one uid planned as a create under a new type and a delete under the old
+    /// is one logical object re-materialized: rendered as a retype, not as two
+    /// unrelated operations.
+    #[test]
+    fn renders_a_same_uid_cross_type_pair_as_a_retype() {
+        let plan = plan_of(vec![
+            Op::Delete {
+                uid: Uid::from_u128(1),
+                type_name: TypeName::new("dcim.site"),
+                key: key("fra1"),
+                backend_id: None,
+            },
+            Op::Create {
+                uid: Uid::from_u128(1),
+                type_name: TypeName::new("location.site"),
+                desired: object(1, "location.site", "fra1"),
+            },
+        ]);
+        let out = render_plan(&plan);
+        // the header still counts the ops apply will perform.
+        assert!(
+            out.starts_with("plan: 1 to create, 0 to update, 1 to delete"),
+            "{out}"
+        );
+        assert!(out.contains("retype"), "{out}");
+        assert!(out.contains("dcim.site -> location.site"), "{out}");
+        // the pair is one event: it does not repeat under create:/delete:.
+        assert!(!out.contains("\ncreate:"), "{out}");
+        assert!(!out.contains("\ndelete:"), "{out}");
+    }
+
+    /// a delete and a create sharing a uid under the *same* type is not a
+    /// retype (it can only come from a malformed plan) and renders plainly.
+    #[test]
+    fn a_same_type_pair_is_not_a_retype() {
+        let plan = plan_of(vec![
+            Op::Delete {
+                uid: Uid::from_u128(1),
+                type_name: TypeName::new("dcim.site"),
+                key: key("fra1"),
+                backend_id: None,
+            },
+            Op::Create {
+                uid: Uid::from_u128(1),
+                type_name: TypeName::new("dcim.site"),
+                desired: object(1, "dcim.site", "fra2"),
+            },
+        ]);
+        let out = render_plan(&plan);
+        assert!(!out.contains("retype"), "{out}");
     }
 }

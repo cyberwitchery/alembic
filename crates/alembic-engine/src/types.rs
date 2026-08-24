@@ -513,6 +513,47 @@ impl Backend {
     }
 }
 
+/// one key-match adoption: the run bound a declared uid to an existing
+/// backend object because no state mapping answered for it. adoption writes
+/// identity memory, so every adoption is reported.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Adoption {
+    pub type_name: TypeName,
+    pub uid: Uid,
+    pub key: Key,
+    pub backend_id: BackendId,
+}
+
+/// a backend id moving from one uid to another: the inventory claimed an
+/// object another uid used to answer for.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SupersededBinding {
+    pub type_name: TypeName,
+    pub backend_id: BackendId,
+    pub superseded: Uid,
+    pub by: Uid,
+}
+
+/// what bootstrapping state against an observation did to identity memory:
+/// the adoptions it made and the bindings those superseded. a plan run may
+/// persist these, so the cli surfaces them; silence would let a plan bind
+/// identity that later authorizes an update or delete.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct BootstrapReport {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub adoptions: Vec<Adoption>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub superseded: Vec<SupersededBinding>,
+}
+
+impl BootstrapReport {
+    pub fn is_empty(&self) -> bool {
+        self.adoptions.is_empty() && self.superseded.is_empty()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
