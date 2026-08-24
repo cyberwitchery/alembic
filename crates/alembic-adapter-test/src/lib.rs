@@ -1,6 +1,6 @@
 //! conformance checks for external adapter executables.
 
-use alembic_core::TypeName;
+use alembic_core::{key_string, uid_v5, validate_inventory, Inventory, Object, Schema, TypeName};
 use alembic_engine::{
     AppliedOp, ApplyReport, BackendId, ExternalCapabilities, ExternalObject, ExternalResponse,
     ExternalRole, ProvisionReport, EXTERNAL_PROTOCOL_VERSION,
@@ -299,7 +299,10 @@ pub fn run_cases(adapter: &[String], timeout: Duration, cases: &[Case]) -> Vec<O
                 &format!("case/{}", case.name),
                 &request_bytes(&case.request),
                 method,
-                Expectation::Case(&case.expect),
+                Expectation::Case {
+                    expect: &case.expect,
+                    request: &case.request,
+                },
             )
         })
         .collect()
@@ -344,8 +347,11 @@ enum Expectation<'a> {
     MustError,
     /// a valid request the adapter must answer with ok=true and a right-shaped payload.
     MustSucceed,
-    /// an adapter-specific expectation.
-    Case(&'a Expect),
+    /// an adapter-specific expectation, judged against the request it answers.
+    Case {
+        expect: &'a Expect,
+        request: &'a Value,
+    },
 }
 
 /// run one request and turn any violation into an `Outcome`.
@@ -445,13 +451,16 @@ fn validate(run: &RunResult, method: &str, expectation: &Expectation) -> Result<
                 check_payload(method, result)?;
             }
         }
-        Expectation::Case(expect) => {
+        Expectation::Case { expect, request } => {
             if response.ok != expect.ok {
                 return Err(format!("expected ok={}, got ok={}", expect.ok, response.ok));
             }
             match (&response.result, &response.error) {
                 (Some(result), _) => {
                     check_payload(method, result)?;
+                    if method == "read" {
+                        check_read_values(request, result)?;
+                    }
                     if let Some(want) = &expect.result {
                         if result != want {
                             return Err(format!(
@@ -508,6 +517,49 @@ fn check_payload(method: &str, result: &Value) -> Result<(), String> {
     };
     reject_unknown_keys(&template, result, "").map_err(|e| format!("bad {method} result: {e}"))?;
     parse(result.clone()).map_err(|e| format!("bad {method} result: {e}"))
+}
+
+/// the read half of the value-space contract (`docs/external-adapters.md`): the
+/// objects a read answers must validate against the schema the request carried,
+/// under the same rules `plan` and `import` will hold them to. uids are minted
+/// the way the engine mints first-sight identity, so a ref that names its target
+/// by `(type, key)`-derived uid resolves and a backend id in a ref field fails.
+/// objects of types the schema does not declare are the tolerated superset an
+/// adapter may answer with, so they are not held to a schema they were not sent.
+fn check_read_values(request: &Value, result: &Value) -> Result<(), String> {
+    let schema = request
+        .get("schema")
+        .cloned()
+        .ok_or_else(|| "read case request carries no schema".to_string())?;
+    let schema: Schema = serde_json::from_value(schema)
+        .map_err(|e| format!("read case request schema does not parse: {e}"))?;
+    let objects: Vec<ExternalObject> =
+        serde_json::from_value(result.clone()).map_err(|e| format!("bad read result: {e}"))?;
+    let objects: Vec<Object> = objects
+        .into_iter()
+        .filter(|object| schema.types.contains_key(object.type_name.as_str()))
+        .map(|object| Object {
+            uid: uid_v5(object.type_name.as_str(), &key_string(&object.key)),
+            type_name: object.type_name,
+            key: object.key,
+            attrs: object.attrs,
+            source: None,
+        })
+        .collect();
+    let inventory = Inventory { schema, objects };
+    let report = validate_inventory(&inventory);
+    if report.is_err() {
+        let rendered: Vec<String> = report
+            .with_sources(&inventory.objects)
+            .into_iter()
+            .map(|error| error.to_string())
+            .collect();
+        return Err(format!(
+            "read result leaves alembic's value space: {}",
+            rendered.join("; ")
+        ));
+    }
+    Ok(())
 }
 
 /// serialize a payload into the template [`reject_unknown_keys`] walks. strict
