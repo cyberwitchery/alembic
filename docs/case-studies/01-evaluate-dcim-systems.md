@@ -38,8 +38,8 @@ the model is close to both systems but identical to neither:
 - **netbox** keeps `dcim.site` (keyed by slug) but names an ip's interface
   assignment `assigned_object`, a generic foreign key.
 - **nautobot** models a site as `dcim.location`, keyed by its human name with no
-  slug, and a device points at `location`, not `site`. it does call the assignment
-  `assigned_interface`.
+  slug, and a device points at `location`, not `site`. the interface and ip keep
+  their neutral names through the map.
 
 so each candidate gets its own `map`: reshape the handful of fields it names
 differently, and `match: "*" emit: passthrough` carries the rest.
@@ -96,8 +96,8 @@ rules:
 ```
 
 `dcim.site` becomes `dcim.location` keyed by the human name, the device's `site`
-relation becomes `location`, and the interface and ip pass through because
-nautobot already uses their neutral names. the site rule is 1:1, so map rewires
+relation becomes `location`, and the interface and ip pass through under their
+neutral names. the site rule is 1:1, so map rewires
 the device's relation from the old site uid to the new location uid.
 
 ```bash

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **breaking** nautobot observations carry `assigned_object_type`/`assigned_object_id` and `scope_type`/`scope_id` as ordinary attrs; the read-only `assigned_interface` and `site` collapses are gone (#420)
 - **breaking** key ambiguity among observed objects is data, not a read failure: unmanaged backend objects sharing a key no longer deny unrelated plans, and only adopting, key-matching, or importing an ambiguous key fails, naming every candidate
 - `import` refuses an observation whose keys name more than one backend object, listing every ambiguous key and its holders at once
 - an adapter's conflict-recovery lookup refuses a key matching several backend objects instead of adopting the first (netbox, nautobot, infrahub, generic)
