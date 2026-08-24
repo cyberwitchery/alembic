@@ -1,11 +1,13 @@
 //! map: ir -> ir transformation.
 //!
-//! map takes a canonical inventory and re-emits it under a different vocabulary --
+//! map takes an inventory and re-emits it under a different vocabulary --
 //! renaming types and fields, dropping or deriving values, rewiring references --
 //! using the shared render/emit half (`render_key`, `render_attrs`, templates +
-//! transforms). a `uid` is a derived projection of `(type, key)`, so references
-//! between objects are resolved internally and the emitted `uid`s (and the ref
-//! values that point at them) are re-derived at the boundary in a second pass.
+//! transforms). identity is the uid alone: a one-to-one emit and a passthrough
+//! carry the source object's uid unchanged, a multi-emit declares each emitted
+//! object's uid explicitly, and a group emit keeps value identity, minted from
+//! the rendered target `(type, key)`. only explicitly re-identified objects and
+//! group emits move refs, so the rewrite passes are quiet for the common case.
 //!
 //! a rule selects source objects by a type-name pattern with optional field
 //! predicates and emits one or more target objects per match (fan-out), or -- with
@@ -30,12 +32,16 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
-/// uid override for an emit: a deterministic `v5: { type, stable }` or an
-/// explicit uuid-string template.
+/// uid override for an emit: a deterministic `v5: { type, stable }`, an
+/// explicit uuid-string template, or the keyword `target`, which mints value
+/// identity from the rendered target `(type, key)` -- the one spelling that can
+/// reproduce the canonical mint, since `key_string` is not reachable from a
+/// template.
 #[derive(Debug)]
 pub enum EmitUid {
     V5 { v5: UidV5Spec },
     Template(String),
+    Target,
 }
 
 #[derive(Debug, Deserialize)]
@@ -55,10 +61,13 @@ impl<'de> Deserialize<'de> for EmitUid {
             type Value = EmitUid;
 
             fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.write_str("a uuid template string or a `v5:` mapping")
+                f.write_str("a uuid template string, the keyword `target`, or a `v5:` mapping")
             }
 
             fn visit_str<E: de::Error>(self, value: &str) -> Result<EmitUid, E> {
+                if value == "target" {
+                    return Ok(EmitUid::Target);
+                }
                 Ok(EmitUid::Template(value.to_string()))
             }
 
@@ -205,7 +214,9 @@ pub struct MapEmit {
     #[serde(rename = "type", alias = "kind")]
     pub type_name: String,
     pub key: BTreeMap<String, YamlValue>,
-    /// optional uid override; defaults to `uid_v5(target_type, target_key)`.
+    /// optional uid override. absent, a one-to-one emit inherits the source
+    /// uid and a group emit mints from the rendered target `(type, key)`; a
+    /// multi-emit must set it on every emitted object.
     #[serde(default)]
     pub uid: Option<EmitUid>,
     #[serde(default)]
@@ -371,8 +382,33 @@ struct Emitted {
     uid_from_key: bool,
 }
 
+/// a multi-emit assigns identity explicitly: fan-out has no single source
+/// identity to inherit, and a one-element list stays in the explicit regime so
+/// reshaping `emit:` into a list cannot silently change identity.
+fn validate_emit_identity(spec: &MapSpec) -> Result<()> {
+    for rule in &spec.rules {
+        let EmitSpec::Multi(emits) = &rule.emit else {
+            continue;
+        };
+        for (index, emit) in emits.iter().enumerate() {
+            if emit.uid.is_none() {
+                return Err(anyhow!(
+                    "rule {}: a multi-emit assigns identity explicitly, and emit {} ({}) has no uid:; \
+                     write `uid: \"${{uid}}\"` on the continuing object and an explicit expression \
+                     (or `uid: target`) on the others",
+                    rule.name,
+                    index + 1,
+                    emit.type_name
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// transform an ir inventory into another ir inventory under the target schema.
 pub fn compile_map(input: &Inventory, spec: &MapSpec) -> Result<Inventory> {
+    validate_emit_identity(spec)?;
     let run = MapRun {
         transforms: transform_registry(spec)?,
         // source uid -> object, for resolving reference lookups.
@@ -381,9 +417,12 @@ pub fn compile_map(input: &Inventory, spec: &MapSpec) -> Result<Inventory> {
     let mut emitted: Vec<Emitted> = Vec::new();
     // source uid -> emitted uid, used to re-derive ref values in pass 2.
     let mut remap: BTreeMap<Uid, Uid> = BTreeMap::new();
-    // source objects a non-passthrough rule matched; passthrough only covers the
-    // rest, so a `match: "*"` catch-all cannot collide with a specific rule.
-    let mut claimed: BTreeSet<Uid> = BTreeSet::new();
+    // source objects a non-passthrough rule matched, each with the rule's name
+    // and whether it was a single emit. passthrough only covers the rest, so a
+    // `match: "*"` catch-all cannot collide with a specific rule; a source
+    // reshaped by two single-emit rules would carry one identity into two
+    // objects, so that is refused naming both rules.
+    let mut claimed: BTreeMap<Uid, (String, bool)> = BTreeMap::new();
     // types emitted by passthrough, whose source schema is carried into the output.
     let mut passthrough_types: BTreeSet<String> = BTreeSet::new();
 
@@ -413,7 +452,20 @@ pub fn compile_map(input: &Inventory, spec: &MapSpec) -> Result<Inventory> {
                     if !matcher.predicates_match(&vars) {
                         continue;
                     }
-                    claimed.insert(src.uid);
+                    if let Some((first_rule, first_single)) = claimed.get(&src.uid) {
+                        if *first_single || remap_each {
+                            return Err(anyhow!(
+                                "source object {} is reshaped by both rule {} and rule {}; \
+                                 a source has one identity, so reshape it in one rule \
+                                 (fan out with a multi-emit if it becomes several objects)",
+                                src.uid,
+                                first_rule,
+                                rule.name
+                            ));
+                        }
+                    } else {
+                        claimed.insert(src.uid, (rule.name.clone(), remap_each));
+                    }
                     let remap_source = remap_each.then_some(src.uid);
                     emit_objects(
                         rule,
@@ -440,7 +492,9 @@ pub fn compile_map(input: &Inventory, spec: &MapSpec) -> Result<Inventory> {
                     if !matcher.predicates_match(&vars) {
                         continue;
                     }
-                    claimed.insert(src.uid);
+                    claimed
+                        .entry(src.uid)
+                        .or_insert_with(|| (rule.name.clone(), false));
                     let group_key = render_template(
                         group_expr,
                         &RenderCtx {
@@ -461,7 +515,8 @@ pub fn compile_map(input: &Inventory, spec: &MapSpec) -> Result<Inventory> {
     }
 
     // pass 2: passthrough rules copy every matched source no other rule claimed,
-    // unchanged, deriving the same uid a 1:1 identity rule would.
+    // unchanged -- key, attrs, and uid alike, so a passed-through object keeps
+    // its identity and nothing pointing at it moves.
     for rule in &spec.rules {
         if !matches!(rule.emit, EmitSpec::Keyword(EmitKeyword::Passthrough)) {
             continue;
@@ -475,24 +530,22 @@ pub fn compile_map(input: &Inventory, spec: &MapSpec) -> Result<Inventory> {
         let matcher = Matcher::parse(&rule.r#match)
             .with_context(|| format!("rule {}: invalid match selector", rule.name))?;
         for src in input.objects.iter() {
-            if claimed.contains(&src.uid) || !matcher.type_matches(src.type_name.as_str()) {
+            if claimed.contains_key(&src.uid) || !matcher.type_matches(src.type_name.as_str()) {
                 continue;
             }
             if !matcher.predicates_match(&object_vars(src)) {
                 continue;
             }
-            claimed.insert(src.uid);
-            let uid = uid_v5(src.type_name.as_str(), &key_string(&src.key));
-            remap.insert(src.uid, uid);
+            claimed.insert(src.uid, (rule.name.clone(), false));
             passthrough_types.insert(src.type_name.as_str().to_string());
             emitted.push(Emitted {
                 object: Object::new(
-                    uid,
+                    src.uid,
                     src.type_name.clone(),
                     src.key.clone(),
                     src.attrs.clone(),
                 )?,
-                uid_from_key: true,
+                uid_from_key: false,
             });
         }
     }
@@ -568,22 +621,25 @@ fn emit_objects(
     for emit in emits {
         let key = render_key(&emit.key, &ctx)?;
         let type_name = TypeName::new(render_template(&emit.type_name, &ctx, "type")?);
-        let uid = resolve_emit_uid(&emit.uid, &ctx, type_name.as_str(), &key)?;
+        let uid = resolve_emit_uid(&emit.uid, &ctx, type_name.as_str(), &key, remap_source)?;
         let attrs = render_attrs(&emit.attrs, &ctx, "attrs")?;
         let attrs = JsonMap::from(attrs.into_iter().collect::<BTreeMap<_, _>>());
 
         if let Some(source) = remap_source {
-            if let Some(prev) = remap.insert(source, uid) {
-                if prev != uid {
-                    return Err(anyhow!(
-                        "source object {source} is matched by multiple rules emitting different uids"
-                    ));
-                }
+            if source != uid {
+                remap.insert(source, uid);
             }
         }
+        // only a value-identified uid tracks its key through the rewrite pass:
+        // the group-emit default and the explicit `uid: target`.
+        let uid_from_key = match &emit.uid {
+            None => remap_source.is_none(),
+            Some(EmitUid::Target) => true,
+            Some(_) => false,
+        };
         objects.push(Emitted {
             object: Object::new(uid, type_name, key, attrs)?,
-            uid_from_key: emit.uid.is_none(),
+            uid_from_key,
         });
     }
     Ok(())
@@ -677,16 +733,21 @@ fn flatten(prefix: &str, value: &JsonValue, out: &mut BTreeMap<String, JsonValue
     }
 }
 
-/// resolve an emit's uid: the default derives `uid_v5(target_type, target_key)`;
-/// an explicit override defers to `resolve_uid_spec`.
+/// resolve an emit's uid. absent, a one-to-one emit inherits the source uid
+/// (the emitted object is the same logical object in another vocabulary) and a
+/// group emit keeps value identity, minted from the rendered target `(type,
+/// key)`. `uid: target` spells that mint explicitly; any other override defers
+/// to `resolve_uid_spec`.
 fn resolve_emit_uid(
     uid: &Option<EmitUid>,
     ctx: &RenderCtx,
     type_name: &str,
     key: &Key,
+    inherit: Option<Uid>,
 ) -> Result<Uid> {
     match uid {
-        None => Ok(uid_v5(type_name, &key_string(key))),
+        None => Ok(inherit.unwrap_or_else(|| uid_v5(type_name, &key_string(key)))),
+        Some(EmitUid::Target) => Ok(uid_v5(type_name, &key_string(key))),
         Some(spec) => resolve_uid_spec(spec, ctx, "uid"),
     }
 }
@@ -696,6 +757,11 @@ fn resolve_emit_uid(
 fn resolve_uid_spec(spec: &EmitUid, ctx: &RenderCtx, context: &str) -> Result<Uid> {
     let rule = ctx.rule;
     match spec {
+        // `target` mints from an emit's own rendered (type, key), which named
+        // uids do not have.
+        EmitUid::Target => Err(anyhow!(
+            "rule {rule}: `target` is only meaningful as an emit's uid:, not in {context}"
+        )),
         EmitUid::Template(template) => {
             let rendered = render_template(template, ctx, context)?;
             Uuid::parse_str(&rendered).with_context(|| {
@@ -1165,8 +1231,9 @@ rules:
         assert_eq!(obj.type_name.as_str(), "location.site");
         assert_eq!(obj.key.get("slug").unwrap(), &json!("fra1"));
         assert_eq!(obj.attrs.get("label").unwrap(), &json!("FRA1"));
-        // default uid is derived from the *target* identity, deterministically.
-        assert_eq!(obj.uid, uid_v5("location.site", &key_string(&obj.key)));
+        // a one-to-one emit is the same logical object in another vocabulary,
+        // so it inherits the source uid, type change included.
+        assert_eq!(obj.uid, Uuid::from_u128(1));
     }
 
     #[test]
@@ -1206,7 +1273,7 @@ rules:
     }
 
     #[test]
-    fn rewires_refs_across_a_rename() {
+    fn refs_stay_valid_across_a_rename() {
         let site_src = Uuid::from_u128(1).to_string();
         let input = input_inventory(json!([
             { "uid": site_src, "type": "dcim.site",
@@ -1264,12 +1331,13 @@ rules:
             .iter()
             .find(|o| o.type_name.as_str() == "dcim.device")
             .unwrap();
-        // the device's ref now points at the *new* site uid, not the source one.
+        // the renamed site inherits its identity, so the device's ref is valid
+        // without any rewiring: it still names the same logical object.
+        assert_eq!(site.uid.to_string(), site_src);
         assert_eq!(
             device.attrs.get("site").unwrap(),
             &json!(site.uid.to_string())
         );
-        assert_ne!(device.attrs.get("site").unwrap(), &json!(site_src));
     }
 
     #[test]
@@ -1466,6 +1534,7 @@ rules:
       type: net.node
       key:
         name: "${key.name}"
+      uid: target
   - name: ports
     match: "src.port"
     emit:
@@ -1473,6 +1542,7 @@ rules:
       key:
         device: "${key.device}"
         name: "${key.name}"
+      uid: target
 "#,
             ),
         )
@@ -1488,7 +1558,7 @@ rules:
             .iter()
             .find(|o| o.type_name.as_str() == "net.port")
             .unwrap();
-        // the key ref follows the node's new uid, not the source one.
+        // under `uid: target` the key ref follows the node's minted uid.
         assert_eq!(
             port.key.get("device").unwrap(),
             &json!(node.uid.to_string())
@@ -1499,7 +1569,8 @@ rules:
     }
 
     /// the two-hop chain spec used by the rule-order test: iface keyed by
-    /// port keyed by node, with the three rules in the given order.
+    /// port keyed by node, all under `uid: target` (value identity is what
+    /// makes a key rewire cascade), with the three rules in the given order.
     fn chain_spec(rule_order: [&str; 3]) -> String {
         let rule = |name: &str| match name {
             "nodes" => {
@@ -1510,6 +1581,7 @@ rules:
       type: net.node
       key:
         name: "${key.name}"
+      uid: target
 "#
             }
             "ports" => {
@@ -1521,6 +1593,7 @@ rules:
       key:
         device: "${key.device}"
         name: "${key.name}"
+      uid: target
 "#
             }
             _ => {
@@ -1532,6 +1605,7 @@ rules:
       key:
         port: "${key.port}"
         name: "${key.name}"
+      uid: target
 "#
             }
         };
@@ -1629,6 +1703,7 @@ rules:
       type: net.node
       key:
         name: "${{key.name}}"
+      uid: target
   - name: ports
     match: "src.port"
     emit:
@@ -1698,6 +1773,7 @@ rules:
       type: net.node
       key:
         name: "${key.name}"
+      uid: target
   - name: ports
     match: "src.port"
     emit:
@@ -1705,6 +1781,7 @@ rules:
       key:
         device: "${key.device}"
         name: "${key.name}"
+      uid: target
   - name: links
     match: "src.link"
     emit:
@@ -1829,6 +1906,7 @@ rules:
       key:
         peer: "${key.peer}"
         name: "${key.name}"
+      uid: target
 "#,
             ),
         )
@@ -1910,7 +1988,7 @@ rules:
     }
 
     #[test]
-    fn passthrough_carries_unmatched_types_and_rewires_refs() {
+    fn passthrough_preserves_identity_and_carries_unmatched_types() {
         let input: Inventory = serde_json::from_value(json!({
             "schema": { "types": {
                 "dcim.interface": { "key": { "name": {"type":"slug"} },
@@ -1960,9 +2038,9 @@ rules:
             .iter()
             .find(|o| o.type_name.as_str() == "dcim.interface")
             .unwrap();
-        // passthrough uid = uid_v5(type, key), identical to a 1:1 identity rule.
-        assert_eq!(iface.uid, uid_v5("dcim.interface", &key_string(&iface.key)));
-        // the ip's ref was renamed to assigned_object and rewired to the new uid.
+        // passthrough is genuinely unchanged: the authored uid survives.
+        assert_eq!(iface.uid, Uuid::from_u128(1));
+        // the ip's ref was renamed to assigned_object and still names it.
         let ip = out
             .objects
             .iter()
@@ -2289,6 +2367,10 @@ rules:
       - type: net.vrf
         key:
           name: "${attrs.vrf}"
+        uid:
+          v5:
+            type: "net.vrf"
+            stable: "${uid}#vrf"
         attrs:
           site: "${uids.site}"
 "#,
@@ -2521,8 +2603,8 @@ rules:
 
     #[test]
     fn conflicting_one_to_one_rules_on_one_source_error() {
-        // two 1:1 rules match the same source but emit different target
-        // identities, so the recorded source->target uid remap conflicts.
+        // two 1:1 rules match the same source; a source has one identity, so
+        // reshaping it twice is refused naming both rules.
         let input = input_inventory(json!([
             { "uid": Uuid::from_u128(1).to_string(), "type": "dcim.device",
               "key": { "name": "leaf01" }, "attrs": {} }
@@ -2558,7 +2640,7 @@ rules:
         .unwrap_err();
         assert!(
             err.to_string()
-                .contains("matched by multiple rules emitting different uids"),
+                .contains("is reshaped by both rule as and rule bs"),
             "{err:#}"
         );
     }
@@ -2913,5 +2995,417 @@ transforms:
                 "{err:#}"
             );
         }
+    }
+
+    /// identity law: a one-to-one emit inherits the source uid, so renaming a
+    /// key changes the key alone. the same source under two keys keeps one uid.
+    #[test]
+    fn one_to_one_emit_inherits_the_source_uid_across_a_key_rename() {
+        let yaml = r#"
+schema:
+  types:
+    dcim.site:
+      key:
+        slug: { type: slug }
+      fields:
+        slug: { type: slug }
+rules:
+  - name: sites
+    match: "src.site"
+    emit:
+      type: dcim.site
+      key:
+        slug: "${key.slug}"
+      attrs:
+        slug: "${key.slug}"
+"#;
+        let object = |slug: &str| {
+            input_inventory(json!([
+                { "uid": Uuid::from_u128(9).to_string(), "type": "src.site",
+                  "key": { "slug": slug }, "attrs": {} }
+            ]))
+        };
+        let before = compile_map(&object("fra1"), &spec(yaml)).unwrap();
+        let after = compile_map(&object("fra2"), &spec(yaml)).unwrap();
+        assert_eq!(before.objects[0].uid, Uuid::from_u128(9));
+        assert_eq!(after.objects[0].uid, Uuid::from_u128(9));
+        assert_eq!(after.objects[0].key.get("slug").unwrap(), &json!("fra2"));
+    }
+
+    /// identity law: renaming a ref-keyed parent re-mints nothing; the
+    /// dependent's key still names the parent's (unchanged) uid.
+    #[test]
+    fn ref_keyed_parent_rename_leaves_dependent_identity_untouched() {
+        let yaml = r#"
+schema:
+  types:
+    net.node:
+      key:
+        name: { type: slug }
+    net.port:
+      key:
+        device: { type: ref, target: net.node }
+        name: { type: slug }
+rules:
+  - name: nodes
+    match: "src.node"
+    emit:
+      type: net.node
+      key:
+        name: "${key.name}"
+  - name: ports
+    match: "src.port"
+    emit:
+      type: net.port
+      key:
+        device: "${key.device}"
+        name: "${key.name}"
+"#;
+        let node_src = Uuid::from_u128(1).to_string();
+        let chain = |node_name: &str| {
+            input_inventory(json!([
+                { "uid": node_src, "type": "src.node",
+                  "key": { "name": node_name }, "attrs": {} },
+                { "uid": Uuid::from_u128(2).to_string(), "type": "src.port",
+                  "key": { "device": node_src, "name": "eth0" }, "attrs": {} }
+            ]))
+        };
+        let before = compile_map(&chain("leaf01"), &spec(yaml)).unwrap();
+        let after = compile_map(&chain("leaf09"), &spec(yaml)).unwrap();
+        let uids = |inv: &Inventory| {
+            inv.objects
+                .iter()
+                .map(|o| (o.type_name.as_str().to_string(), o.uid))
+                .collect::<BTreeMap<_, _>>()
+        };
+        assert_eq!(uids(&before), uids(&after));
+        let port = after
+            .objects
+            .iter()
+            .find(|o| o.type_name.as_str() == "net.port")
+            .unwrap();
+        assert_eq!(port.key.get("device").unwrap(), &json!(node_src));
+    }
+
+    /// `uid: target` is the explicit spelling of the value-identity mint.
+    #[test]
+    fn uid_target_mints_from_the_rendered_target() {
+        let input = input_inventory(json!([
+            { "uid": Uuid::from_u128(7).to_string(), "type": "src.site",
+              "key": { "slug": "fra1" }, "attrs": {} }
+        ]));
+        let out = compile_map(
+            &input,
+            &spec(
+                r#"
+schema:
+  types:
+    dcim.site:
+      key:
+        slug: { type: slug }
+rules:
+  - name: sites
+    match: "src.site"
+    emit:
+      type: dcim.site
+      key:
+        slug: "${key.slug}"
+      uid: target
+"#,
+            ),
+        )
+        .unwrap();
+        let obj = &out.objects[0];
+        assert_eq!(obj.uid, uid_v5("dcim.site", &key_string(&obj.key)));
+        assert_ne!(obj.uid, Uuid::from_u128(7));
+    }
+
+    /// a multi-emit assigns identity explicitly, a one-element list included,
+    /// so reshaping `emit:` into a list cannot silently change identity.
+    #[test]
+    fn multi_emit_without_a_uid_is_a_spec_error() {
+        let input = input_inventory(json!([
+            { "uid": Uuid::from_u128(1).to_string(), "type": "src.site",
+              "key": { "slug": "fra1" }, "attrs": {} }
+        ]));
+        let multi = r#"
+schema:
+  types:
+    dcim.site:
+      key:
+        slug: { type: slug }
+    net.zone:
+      key:
+        name: { type: slug }
+rules:
+  - name: sites
+    match: "src.site"
+    emit:
+      - type: dcim.site
+        key:
+          slug: "${key.slug}"
+        uid: "${uid}"
+      - type: net.zone
+        key:
+          name: "z-${key.slug}"
+"#;
+        let err = compile_map(&input, &spec(multi)).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("rule sites: a multi-emit assigns identity explicitly"),
+            "{err:#}"
+        );
+        assert!(err.to_string().contains("emit 2 (net.zone)"), "{err:#}");
+
+        let one_element = r#"
+schema:
+  types:
+    dcim.site:
+      key:
+        slug: { type: slug }
+rules:
+  - name: sites
+    match: "src.site"
+    emit:
+      - type: dcim.site
+        key:
+          slug: "${key.slug}"
+"#;
+        let err = compile_map(&input, &spec(one_element)).unwrap_err();
+        assert!(err.to_string().contains("emit 1 (dcim.site)"), "{err:#}");
+    }
+
+    /// `uid: "${uid}"` marks the continuing object of a fan-out; siblings use
+    /// explicit expressions, and reordering or inserting emits moves nothing.
+    #[test]
+    fn explicit_multi_identities_survive_reorder_and_insertion() {
+        let input = input_inventory(json!([
+            { "uid": Uuid::from_u128(5).to_string(), "type": "net.fabric",
+              "key": { "name": "fab1" }, "attrs": { "site": "fra1" } }
+        ]));
+        let schema = r#"
+schema:
+  types:
+    net.fabric:
+      key:
+        name: { type: slug }
+    location.site:
+      key:
+        slug: { type: slug }
+    net.zone:
+      key:
+        name: { type: slug }
+"#;
+        let fabric = r#"      - type: net.fabric
+        key:
+          name: "${key.name}"
+        uid: "${uid}"
+"#;
+        let site = r#"      - type: location.site
+        key:
+          slug: "${attrs.site}"
+        uid:
+          v5:
+            type: "location.site"
+            stable: "${uid}#site"
+"#;
+        let zone = r#"      - type: net.zone
+        key:
+          name: "z-${attrs.site}"
+        uid:
+          v5:
+            type: "net.zone"
+            stable: "${uid}#zone"
+"#;
+        let build = |emits: &[&str]| {
+            format!(
+                "{schema}rules:\n  - name: fabric\n    match: \"net.fabric\"\n    emit:\n{}",
+                emits.concat()
+            )
+        };
+        let uids = |inv: &Inventory| {
+            inv.objects
+                .iter()
+                .map(|o| (o.type_name.as_str().to_string(), o.uid))
+                .collect::<BTreeMap<_, _>>()
+        };
+        let ab = compile_map(&input, &spec(&build(&[fabric, site]))).unwrap();
+        let ba = compile_map(&input, &spec(&build(&[site, fabric]))).unwrap();
+        let abc = compile_map(&input, &spec(&build(&[zone, fabric, site]))).unwrap();
+        assert_eq!(uids(&ab), uids(&ba));
+        for (type_name, uid) in uids(&ab) {
+            assert_eq!(uids(&abc).get(&type_name), Some(&uid));
+        }
+        assert_eq!(
+            uids(&ab).get("net.fabric").copied(),
+            Some(Uuid::from_u128(5))
+        );
+    }
+
+    /// identity flows through composed one-to-one maps unchanged, so a
+    /// pipeline refactored into stages keeps every uid.
+    #[test]
+    fn composed_one_to_one_maps_preserve_identity() {
+        let input = input_inventory(json!([
+            { "uid": Uuid::from_u128(3).to_string(), "type": "src.site",
+              "key": { "slug": "fra1" }, "attrs": {} }
+        ]));
+        let stage = |from: &str, to: &str| {
+            format!(
+                r#"
+schema:
+  types:
+    {to}:
+      key:
+        slug: {{ type: slug }}
+rules:
+  - name: s
+    match: "{from}"
+    emit:
+      type: {to}
+      key:
+        slug: "${{key.slug}}"
+"#
+            )
+        };
+        let mid = compile_map(&input, &spec(&stage("src.site", "mid.site"))).unwrap();
+        let via = compile_map(&mid, &spec(&stage("mid.site", "dcim.site"))).unwrap();
+        let direct = compile_map(&input, &spec(&stage("src.site", "dcim.site"))).unwrap();
+        assert_eq!(via.objects[0].uid, direct.objects[0].uid);
+        assert_eq!(via.objects[0].uid, Uuid::from_u128(3));
+    }
+
+    /// a group keeps value identity: membership changes leave the aggregate's
+    /// uid alone, and only the group value names it.
+    #[test]
+    fn group_by_membership_changes_keep_the_aggregate_uid() {
+        let yaml = r#"
+schema:
+  types:
+    ipam.vrf:
+      key:
+        name: { type: slug }
+      fields:
+        vlans: { type: int }
+rules:
+  - name: vrfs
+    match: "ipam.vlan"
+    group_by: "${attrs.vrf}"
+    emit:
+      type: ipam.vrf
+      key:
+        name: "${group.key}"
+      attrs:
+        vlans: "${group.count}"
+"#;
+        let vlans = |third_vrf: &str| {
+            input_inventory(json!([
+                { "uid": Uuid::from_u128(1).to_string(), "type": "ipam.vlan",
+                  "key": { "vid": 10 }, "attrs": { "vrf": "blue" } },
+                { "uid": Uuid::from_u128(2).to_string(), "type": "ipam.vlan",
+                  "key": { "vid": 20 }, "attrs": { "vrf": "blue" } },
+                { "uid": Uuid::from_u128(3).to_string(), "type": "ipam.vlan",
+                  "key": { "vid": 30 }, "attrs": { "vrf": third_vrf } }
+            ]))
+        };
+        let uid_of = |inv: &Inventory, name: &str| {
+            inv.objects
+                .iter()
+                .find(|o| o.key.get("name").unwrap() == &json!(name))
+                .map(|o| o.uid)
+        };
+        let before = compile_map(&vlans("red"), &spec(yaml)).unwrap();
+        let moved = compile_map(&vlans("blue"), &spec(yaml)).unwrap();
+        assert_eq!(uid_of(&before, "blue"), uid_of(&moved, "blue"));
+    }
+
+    /// grouping by a ref anchors the aggregate on the referenced object's uid,
+    /// so renaming the referent moves nothing.
+    #[test]
+    fn group_by_a_ref_survives_the_referent_rename() {
+        let vrf_src = Uuid::from_u128(4).to_string();
+        let yaml = r#"
+schema:
+  types:
+    src.vrf:
+      key:
+        name: { type: slug }
+    ipam.vrf:
+      key:
+        anchor: { type: string }
+      fields:
+        vlans: { type: int }
+rules:
+  - name: vrfs-through
+    match: "src.vrf"
+    emit:
+      type: src.vrf
+      key:
+        name: "${key.name}"
+  - name: vrfs
+    match: "ipam.vlan"
+    group_by: "${attrs.vrf}"
+    emit:
+      type: ipam.vrf
+      key:
+        anchor: "${group.key}"
+      attrs:
+        vlans: "${group.count}"
+"#;
+        let world = |vrf_name: &str| {
+            input_inventory(json!([
+                { "uid": vrf_src, "type": "src.vrf",
+                  "key": { "name": vrf_name }, "attrs": {} },
+                { "uid": Uuid::from_u128(1).to_string(), "type": "ipam.vlan",
+                  "key": { "vid": 10 }, "attrs": { "vrf": vrf_src } }
+            ]))
+        };
+        let aggregate = |inv: &Inventory| {
+            inv.objects
+                .iter()
+                .find(|o| o.type_name.as_str() == "ipam.vrf")
+                .map(|o| o.uid)
+                .unwrap()
+        };
+        let before = compile_map(&world("blue"), &spec(yaml)).unwrap();
+        let after = compile_map(&world("azure"), &spec(yaml)).unwrap();
+        assert_eq!(aggregate(&before), aggregate(&after));
+    }
+
+    /// `target` names an emit's own rendered (type, key); a named uid has
+    /// neither, so it is refused there.
+    #[test]
+    fn uid_target_in_a_named_uid_is_an_error() {
+        let input = input_inventory(json!([
+            { "uid": Uuid::from_u128(1).to_string(), "type": "src.site",
+              "key": { "slug": "fra1" }, "attrs": {} }
+        ]));
+        let err = compile_map(
+            &input,
+            &spec(
+                r#"
+schema:
+  types:
+    dcim.site:
+      key:
+        slug: { type: slug }
+rules:
+  - name: sites
+    match: "src.site"
+    uids:
+      pin: target
+    emit:
+      type: dcim.site
+      key:
+        slug: "${key.slug}"
+"#,
+            ),
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("`target` is only meaningful as an emit's uid:"),
+            "{err:#}"
+        );
     }
 }

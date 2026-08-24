@@ -151,14 +151,14 @@ fn example_01_maps_the_neutral_model_to_netbox_names() {
         "{mapped_fields:?}"
     );
 
-    // "refs are rewired automatically, so the ip still points at its interface
-    // even though `map` re-derives uids": eth0, not eth1, and not the authored uid.
+    // "the ip still points at its interface, and every object keeps the
+    // identity you authored": eth0, not eth1, under the authored uid.
     let eth0 = object(&ir, "dcim.interface", "name", "eth0");
     let ip = object(&ir, "ipam.ip_address", "address", "10.0.0.10/24");
     assert_eq!(ip["attrs"]["assigned_object"], uid(eth0));
     assert!(ip["attrs"].get("assigned_interface").is_none());
     let authored = object(&source, "dcim.interface", "name", "eth0");
-    assert_ne!(uid(eth0), uid(authored), "map should re-derive the uid");
+    assert_eq!(uid(eth0), uid(authored), "a 1:1 map inherits identity");
 }
 
 // (c) docs/case-studies/01-evaluate-dcim-systems.md: one source of truth, one
@@ -199,12 +199,16 @@ fn case_study_01_stands_one_model_up_into_two_backends() {
         uid(nautobot_eth0)
     );
 
-    // one source of truth: what neither map reshapes is the same object in both.
+    // one source of truth, one identity: every object is the same logical
+    // object in both backend-shaped irs, the reshaped site/location included.
     let netbox_device = object(&netbox, "dcim.device", "name", "leaf01");
     assert_eq!(uid(netbox_device), uid(nautobot_device));
     assert_eq!(uid(netbox_eth0), uid(nautobot_eth0));
-    // "each get their own stable ids": the site and the location do not.
-    assert_ne!(uid(site), uid(location));
+    assert_eq!(
+        uid(site),
+        uid(location),
+        "one logical site, two vocabularies"
+    );
 }
 
 // (d) docs/case-studies/02-nautobot-to-netbox.md: the migration the page walks
@@ -227,14 +231,15 @@ fn case_study_02_migrates_nautobot_shaped_ir_into_netbox() {
     assert_eq!(device["attrs"]["status"], "active");
     assert_eq!(device["attrs"]["role"], "leaf");
 
-    // "the device's `site` ref points at that new site", not at nautobot's location.
+    // "the device's `site` ref points at the site" -- which is the migrated
+    // location itself: the translation keeps its identity, slug change and all.
     assert_eq!(device["attrs"]["site"], uid(site));
     assert!(device["attrs"].get("location").is_none());
     let location = object(&source, "dcim.location", "name", "Frankfurt DC1");
-    assert_ne!(
+    assert_eq!(
         uid(site),
         uid(location),
-        "the slug changes the site's identity"
+        "the migrated site is the same logical object"
     );
 
     // netbox has no status objects: with no passthrough rule, nothing else lands.
