@@ -1031,8 +1031,8 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(observed.by_key.len(), 1);
-        let object = observed.by_key.values().next().unwrap();
+        assert_eq!(observed.len(), 1);
+        let object = observed.objects().next().unwrap();
         assert_eq!(object.attrs.get("name"), Some(&json!("FRA1")));
         // nautobot backend ids are uuid strings, not ints.
         assert_eq!(
@@ -1063,7 +1063,7 @@ mod tests {
             .read(&site_schema(), &[], &state(dir.path()))
             .await
             .unwrap();
-        assert!(observed.by_key.is_empty());
+        assert!(observed.is_empty());
     }
 
     #[tokio::test]
@@ -1149,6 +1149,53 @@ mod tests {
             !chain.contains("already exists"),
             "the conflict must not mask the lookup failure, got: {chain}"
         );
+    }
+
+    #[tokio::test]
+    async fn create_conflict_with_two_key_matches_is_refused() {
+        // a conflict-recovery lookup finding two backend objects under the key
+        // must refuse, never adopt one of them: alembic cannot tell which twin
+        // the conflict was about.
+        let server = MockServer::start();
+        let dir = tempdir().unwrap();
+        mock_content_types(&server);
+        mock_empty_custom_fields(&server);
+        let _create = server.mock(|when, then| {
+            when.method(POST).path("/api/dcim/sites/");
+            then.status(409)
+                .json_body(json!({ "detail": "site with this name already exists." }));
+        });
+        let _lookup = server.mock(|when, then| {
+            when.method(GET).path("/api/dcim/sites/");
+            then.status(200).json_body(page(json!([
+                { "id": "11111111-0000-0000-0000-000000000001", "name": "FRA1" },
+                { "id": "11111111-0000-0000-0000-000000000002", "name": "FRA1" }
+            ])));
+        });
+
+        let ops = vec![Op::Create {
+            uid: uid(1),
+            type_name: TypeName::new("dcim.site"),
+            desired: Object::new(
+                uid(1),
+                TypeName::new("dcim.site"),
+                key("name", json!("FRA1")),
+                attrs(json!({ "name": "FRA1", "slug": "fra1" })),
+            )
+            .unwrap(),
+        }];
+
+        let adapter = NautobotAdapter::new(&server.base_url(), "token").unwrap();
+        let err = adapter
+            .write(&site_schema(), &ops, &state(dir.path()))
+            .await
+            .unwrap_err();
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("2 backend objects match the dcim.site key"),
+            "{chain}"
+        );
+        assert!(chain.contains("cannot pick one"), "{chain}");
     }
 
     #[tokio::test]
@@ -1450,7 +1497,7 @@ mod tests {
             .await
             .unwrap();
 
-        let object = observed.by_key.values().next().unwrap();
+        let object = observed.objects().next().unwrap();
         assert_eq!(object.attrs.get("tier"), Some(&json!("core")));
         assert_eq!(object.attrs.get("roles"), Some(&json!(["core", "edge"])));
 

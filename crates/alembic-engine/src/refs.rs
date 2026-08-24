@@ -157,7 +157,7 @@ impl fmt::Display for BackendIdRef {
 /// against observed by key and diffs the rest, and both sides are uids.
 pub(crate) fn refuse_backend_id_refs(observed: &ObservedState, schema: &Schema) -> Result<()> {
     let mut found = Vec::new();
-    for object in observed.by_key.values() {
+    for object in observed.objects() {
         let Some(type_schema) = schema.types.get(object.type_name.as_str()) else {
             continue;
         };
@@ -196,10 +196,7 @@ fn classify(
     target: &str,
     backend_id: BackendId,
 ) -> BackendIdCause {
-    let Some(object) = observed
-        .by_backend_id
-        .get(&(TypeName::new(target), backend_id))
-    else {
+    let Some(object) = observed.by_backend_id(&TypeName::new(target), &backend_id) else {
         return BackendIdCause::Unobserved;
     };
     match schema.types.get(target) {

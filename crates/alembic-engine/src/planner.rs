@@ -5,6 +5,7 @@ use crate::types::{FieldChange, ObservedState, Op, Plan};
 use alembic_core::{
     key_string, uid_v5, FieldType, JsonMap, Key, Object, Schema, TypeName, TypeSchema, Uid,
 };
+use anyhow::{Context, Result};
 use serde_json::Value;
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
@@ -12,7 +13,10 @@ use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 /// build a deterministic plan from desired and observed state. `match_by_key`
 /// gates the key fallback: off (--no-adopt), only state-known objects match,
 /// so an unbound declared object plans as a create rather than converging
-/// against a backend object the run refused to identify with.
+/// against a backend object the run refused to identify with. dereferencing an
+/// ambiguous key is the one failure: alembic never picks among same-key
+/// backend objects, so a desired object whose key several of them share is an
+/// error naming every candidate.
 pub fn plan(
     desired: &[Object],
     observed: &ObservedState,
@@ -20,7 +24,7 @@ pub fn plan(
     schema: &alembic_core::Schema,
     allow_delete: bool,
     match_by_key: bool,
-) -> Plan {
+) -> Result<Plan> {
     let mut ops = Vec::new();
     let mut matched = BTreeSet::new();
 
@@ -28,18 +32,22 @@ pub fn plan(
     desired_sorted.sort_by_cached_key(|a| op_sort_key(&a.type_name, &a.key));
 
     for object in desired_sorted {
-        let observed_object = state
+        let state_match = state
             .backend_id(object.type_name.clone(), object.uid)
-            .and_then(|id| observed.by_backend_id.get(&(object.type_name.clone(), id)))
-            .or_else(|| {
-                match_by_key
-                    .then(|| {
-                        observed
-                            .by_key
-                            .get(&(object.type_name.clone(), key_string(&object.key)))
-                    })
-                    .flatten()
-            });
+            .and_then(|id| observed.by_backend_id(&object.type_name, &id));
+        let observed_object = match state_match {
+            Some(found) => Some(found),
+            None if match_by_key => observed
+                .unique_by_key(&object.type_name, &key_string(&object.key))
+                .with_context(|| {
+                    format!(
+                        "cannot match {} {} by key",
+                        object.type_name,
+                        key_string(&object.key)
+                    )
+                })?,
+            None => None,
+        };
 
         if let Some(obs) = observed_object {
             let type_schema = schema.types.get(object.type_name.as_str());
@@ -72,7 +80,7 @@ pub fn plan(
                 backend_to_uid.insert((type_name.clone(), backend_id.clone()), *uid);
             }
         }
-        for ((type_name, backend_id), obs) in &observed.by_backend_id {
+        for (type_name, backend_id, obs) in observed.backend_indexed() {
             if matched.contains(&(type_name.clone(), backend_id.clone())) {
                 continue;
             }
@@ -98,7 +106,7 @@ pub fn plan(
         schema_preview: None,
     };
     plan.summary = Some(plan.summary());
-    plan
+    Ok(plan)
 }
 
 /// compute field-level diffs for attrs. `type_schema` drives type-aware value
@@ -685,7 +693,8 @@ mod tests {
             &empty_schema(),
             false,
             true,
-        );
+        )
+        .unwrap();
         assert_eq!(result.ops.len(), 1);
         assert!(matches!(&result.ops[0], Op::Create { uid, type_name, .. }
             if *uid == Uid::from_u128(1) && type_name.as_str() == "dcim.site"));
@@ -719,7 +728,8 @@ mod tests {
             &empty_schema(),
             false,
             true,
-        );
+        )
+        .unwrap();
         assert_eq!(result.ops.len(), 1);
         match &result.ops[0] {
             Op::Update {
@@ -759,7 +769,8 @@ mod tests {
             &empty_schema(),
             false,
             true,
-        );
+        )
+        .unwrap();
         assert!(result.ops.is_empty());
     }
 
@@ -782,7 +793,8 @@ mod tests {
             &empty_schema(),
             true,
             true,
-        );
+        )
+        .unwrap();
         assert_eq!(result.ops.len(), 1);
         assert!(matches!(
             &result.ops[0],
@@ -812,7 +824,8 @@ mod tests {
             &empty_schema(),
             false,
             true,
-        );
+        )
+        .unwrap();
         assert!(result.ops.is_empty());
     }
 
@@ -840,7 +853,8 @@ mod tests {
             &empty_schema(),
             true,
             true,
-        );
+        )
+        .unwrap();
         assert!(result.ops.is_empty());
     }
 
@@ -878,7 +892,8 @@ mod tests {
             &empty_schema(),
             true,
             true,
-        );
+        )
+        .unwrap();
         let deletes: Vec<&Op> = result
             .ops
             .iter()
@@ -931,7 +946,8 @@ mod tests {
             &empty_schema(),
             true,
             true,
-        );
+        )
+        .unwrap();
 
         let creates: Vec<_> = result
             .ops
@@ -983,7 +999,7 @@ mod tests {
                 backend_id: Some(BackendId::Int(100)),
             })
             .unwrap();
-        let result = plan(&desired, &observed, &state, &empty_schema(), false, true);
+        let result = plan(&desired, &observed, &state, &empty_schema(), false, true).unwrap();
         assert_eq!(result.ops.len(), 1);
         assert!(matches!(&result.ops[0], Op::Update { .. }));
     }
@@ -1013,7 +1029,7 @@ mod tests {
                 backend_id: Some(BackendId::Int(100)),
             })
             .unwrap();
-        let result = plan(&desired, &observed, &state, &empty_schema(), true, true);
+        let result = plan(&desired, &observed, &state, &empty_schema(), true, true).unwrap();
         assert_eq!(result.ops.len(), 1);
         assert!(matches!(
             &result.ops[0],
@@ -1044,7 +1060,7 @@ mod tests {
             })
             .unwrap();
 
-        let result = plan(&[], &observed, &state, &empty_schema(), true, true);
+        let result = plan(&[], &observed, &state, &empty_schema(), true, true).unwrap();
         assert_eq!(result.ops.len(), 1);
         match &result.ops[0] {
             Op::Delete { uid, .. } => {
@@ -1070,7 +1086,7 @@ mod tests {
             })
             .unwrap();
 
-        let result = plan(&[], &observed, &empty_state(), &empty_schema(), true, true);
+        let result = plan(&[], &observed, &empty_state(), &empty_schema(), true, true).unwrap();
         assert_eq!(result.ops.len(), 1);
         match &result.ops[0] {
             Op::Delete { uid, .. } => {

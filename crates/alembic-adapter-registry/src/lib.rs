@@ -974,7 +974,7 @@ fi
             .read(&schema, &[], &state)
             .await
             .unwrap();
-        assert_eq!(observed.by_key.len(), 1);
+        assert_eq!(observed.len(), 1);
 
         let uid = Uid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
         let key = Key::from(BTreeMap::from([("name".to_string(), json!("site-a"))]));

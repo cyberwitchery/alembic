@@ -403,6 +403,7 @@ alembic import -f examples/inventory.yaml -o observed.json \
 - `-o` receives the observed inventory (ir).
 - output is validated against the inventory's schema before it is written; see `docs/engine.md`.
 - identity is assigned state-first: a backend object state already binds keeps its uid across backend-side renames, and only never-met objects are minted from their `(type, key)`. import takes the state lock shared and never saves
+- an inventory cannot hold two objects under one `(type, key)`, so a key named by several backend objects fails the import, every ambiguous key and its holders named at once
 - `--stateless` drops the identity memory: every uid is minted from the observed `(type, key)`, so a rename reads as a new object. the mode for one-shot audits and reproducible snapshots
 - `peeringdb` uses `PEERINGDB_API_KEY` for authentication
 

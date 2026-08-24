@@ -763,6 +763,8 @@ impl NetBoxAdapter {
 
     /// list the endpoint and return the backend id of the object whose key matches,
     /// or `None` when no such object exists. used to recover from a create conflict.
+    /// a key matching several backend objects is an error naming the count:
+    /// alembic never picks among same-key objects.
     async fn lookup_backend_id(
         &self,
         type_name: &TypeName,
@@ -774,6 +776,15 @@ impl NetBoxAdapter {
         let query = query_from_key(type_schema, key, resolved)?;
         let resource: Resource<Value> = self.client.resource(info.endpoint.clone());
         let page = resource.list(Some(query)).await?;
+        if page.count > 1 {
+            return Err(anyhow!(
+                "{} backend objects match the {} key {}; alembic cannot pick one, so \
+                 resolve the collision or key the type the way the backend scopes uniqueness",
+                page.count,
+                type_name,
+                alembic_core::key_string(key)
+            ));
+        }
         let Some(item) = page.results.into_iter().next() else {
             return Ok(None);
         };
