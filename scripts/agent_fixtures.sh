@@ -59,9 +59,20 @@ plan_ops_sorted() {
   "$PYTHON" -c 'import json,sys; print(" ".join(sorted(op["op"] for op in json.load(open(sys.argv[1]))["ops"])).strip())' "$1"
 }
 
+# the op kinds the plan holds for one type, sorted: what happened to the site,
+# with whatever the device did left out of it.
+plan_ops_for() {
+  "$PYTHON" -c 'import json,sys; print(" ".join(sorted(op["op"] for op in json.load(open(sys.argv[2]))["ops"] if op["type_name"]==sys.argv[1])).strip())' "$1" "$2"
+}
+
 # the uids the plan names, in plan order.
 plan_uids() {
   "$PYTHON" -c 'import json,sys; print(" ".join(op["uid"] for op in json.load(open(sys.argv[1]))["ops"]).strip())' "$1"
+}
+
+# the uids the plan names for one type, in plan order.
+plan_uids_for() {
+  "$PYTHON" -c 'import json,sys; print(" ".join(op["uid"] for op in json.load(open(sys.argv[2]))["ops"] if op["type_name"]==sys.argv[1]).strip())' "$1" "$2"
 }
 
 # a python expression over the backend store, printed. `store` is the document.
@@ -109,17 +120,21 @@ expect "the site answers to its new key" \
   "fra01" \
   "$(store_query '[o for o in store["objects"] if o["type_name"]=="dcim.site"][0]["key"]["slug"]')"
 
+# the same edit as above with the uid recomputed from the new key. the device's
+# ref has to follow the new uid, which is the first sign the edit is not a
+# rename: the object the rest of the inventory pointed at is gone.
 exercise "the same rename with a recomputed uid is a different object"
 seed
 converge_base
 $ALEMBIC plan -f recomputed-uid.yaml -o recomputed-plan.json --backend-config backend.yaml >/dev/null
-expect "the plan creates a second object rather than renaming the first" \
-  "create" "$(plan_ops recomputed-plan.json)"
-expect "the create names the recomputed uid" "$OTHER_UID" "$(plan_uids recomputed-plan.json)"
+expect "the plan creates a second site rather than renaming the first" \
+  "create" "$(plan_ops_for dcim.site recomputed-plan.json)"
+expect "the create names the recomputed uid" \
+  "$OTHER_UID" "$(plan_uids_for dcim.site recomputed-plan.json)"
 $ALEMBIC plan -f recomputed-uid.yaml -o recomputed-delete-plan.json \
   --backend-config backend.yaml --allow-delete >/dev/null
 expect "under --allow-delete the original is planned for deletion beside it" \
-  "create delete" "$(plan_ops_sorted recomputed-delete-plan.json)"
+  "create delete" "$(plan_ops_for dcim.site recomputed-delete-plan.json)"
 
 # validate reads no backend, so this one needs none: the ref is wrong before
 # anything is observed.

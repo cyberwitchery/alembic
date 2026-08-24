@@ -19,4 +19,6 @@ objects:
       name: "leaf01"
     attrs:
       name: "leaf01"
-      site: "11111111-1111-1111-1111-111111111111"
+      # the ref has to move too: the uid it named is not in this inventory any
+      # more, and a dangling ref does not validate.
+      site: "33333333-3333-3333-3333-333333333333"
