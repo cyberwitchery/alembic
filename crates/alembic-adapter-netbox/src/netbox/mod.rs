@@ -248,7 +248,8 @@ mod tests {
                         )]),
                         fields: std::collections::BTreeMap::from([
                             ("name".to_string(), string_field(true)),
-                            ("slug".to_string(), string_field(false)),
+                            // the key field's `fields:` twin must carry the same schema.
+                            ("slug".to_string(), string_field(site_key == "slug")),
                         ]),
                     },
                 ),

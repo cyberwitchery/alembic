@@ -1362,7 +1362,7 @@ schema:
       key:
         name: { type: slug }
       fields:
-        name: { type: string }
+        name: { type: slug }
         peers: { type: list, item: { type: ref, target: net.node } }
 rules:
   - name: nodes
@@ -1414,7 +1414,7 @@ schema:
       key:
         name: { type: slug }
       fields:
-        name: { type: string }
+        name: { type: slug }
         peers: { type: list_ref, target: net.node }
 rules:
   - name: nodes
@@ -1466,7 +1466,7 @@ schema:
       key:
         name: { type: slug }
       fields:
-        name: { type: string }
+        name: { type: slug }
         peers: { type: map, value: { type: ref, target: net.node } }
 rules:
   - name: nodes
@@ -1992,7 +1992,7 @@ rules:
         let input: Inventory = serde_json::from_value(json!({
             "schema": { "types": {
                 "dcim.interface": { "key": { "name": {"type":"slug"} },
-                                    "fields": { "name": {"type":"string"} } },
+                                    "fields": { "name": {"type":"slug"} } },
                 "ipam.ip_address": { "key": { "address": {"type":"string"} },
                                      "fields": { "address": {"type":"string"},
                                                  "assigned_interface": {"type":"ref","target":"dcim.interface"} } }

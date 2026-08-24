@@ -47,7 +47,7 @@ schema:
           type: slug
       fields:
         name:
-          type: string
+          type: slug
         site:
           type: ref
           target: dcim.site
@@ -71,7 +71,7 @@ schema:
           type: slug
       fields:
         name:
-          type: string
+          type: slug
         device:
           type: ref
           target: dcim.device
@@ -109,7 +109,7 @@ schema:
           type: slug
       fields:
         name:
-          type: string
+          type: slug
         environment:
           type: enum
           values:
@@ -125,7 +125,7 @@ schema:
           type: slug
       fields:
         name:
-          type: string
+          type: slug
         service:
           type: ref
           target: ops.service
@@ -151,7 +151,7 @@ schema:
           type: slug
       fields:
         name:
-          type: string
+          type: slug
         service:
           type: ref
           target: ops.service

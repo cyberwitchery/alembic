@@ -39,35 +39,35 @@ utc = datetime.timezone.utc
 
 # the year bounds are stored as written, not clamped.
 check(
-    rows["lower bound"].starts_on == datetime.date(1, 1, 1),
-    f"lower bound date is 0001-01-01 (got {rows['lower bound'].starts_on})",
+    rows["lower-bound"].starts_on == datetime.date(1, 1, 1),
+    f"lower bound date is 0001-01-01 (got {rows['lower-bound'].starts_on})",
 )
 check(
-    rows["upper bound"].starts_on == datetime.date(9999, 12, 31),
-    f"upper bound date is 9999-12-31 (got {rows['upper bound'].starts_on})",
+    rows["upper-bound"].starts_on == datetime.date(9999, 12, 31),
+    f"upper bound date is 9999-12-31 (got {rows['upper-bound'].starts_on})",
 )
 
 # a +02:00 offset is a real offset, so the stored instant is two hours earlier.
 check(
-    rows["leap day"].starts_at == datetime.datetime(2024, 2, 29, 10, 0, tzinfo=utc),
-    f"leap day datetime carries its +02:00 offset (got {rows['leap day'].starts_at})",
+    rows["leap-day"].starts_at == datetime.datetime(2024, 2, 29, 10, 0, tzinfo=utc),
+    f"leap day datetime carries its +02:00 offset (got {rows['leap-day'].starts_at})",
 )
 check(
-    rows["leap day"].opens_at == datetime.time(12, 0, 0, 123456),
-    f"fractional seconds survive to microseconds (got {rows['leap day'].opens_at})",
+    rows["leap-day"].opens_at == datetime.time(12, 0, 0, 123456),
+    f"fractional seconds survive to microseconds (got {rows['leap-day'].opens_at})",
 )
 
 # a lowercase `t` separator parses to the same instant an uppercase one would.
 check(
-    rows["lowercase separator"].starts_at
+    rows["lowercase-separator"].starts_at
     == datetime.datetime(2026, 8, 1, 22, 0, tzinfo=utc),
     "a lowercase separator parses as the same instant "
-    f"(got {rows['lowercase separator'].starts_at})",
+    f"(got {rows['lowercase-separator'].starts_at})",
 )
 check(
-    rows["negative offset"].starts_at
+    rows["negative-offset"].starts_at
     == datetime.datetime(2026, 8, 2, 3, 30, tzinfo=utc),
-    f"a -05:30 offset shifts forward (got {rows['negative offset'].starts_at})",
+    f"a -05:30 offset shifts forward (got {rows['negative-offset'].starts_at})",
 )
 
 # the naive value is the one the ir deliberately still accepts; django reads it

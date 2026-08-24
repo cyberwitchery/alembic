@@ -1473,10 +1473,14 @@ mod tests {
         let values = vec!["core".to_string(), "agg".to_string(), "edge".to_string()];
         let mut schema = site_schema();
         let site = schema.types.get_mut("dcim.site").unwrap();
-        // the shared `field()` helper is nullable; a key field may not be.
+        // the shared `field()` helper is nullable; a key field may not be, and
+        // its `fields:` twin must carry the same schema.
         let name_key = site.key.get_mut("name").unwrap();
         name_key.nullable = false;
         name_key.required = true;
+        let name_field = site.fields.get_mut("name").unwrap();
+        name_field.nullable = false;
+        name_field.required = true;
         let fields = &mut site.fields;
         fields.insert(
             "tier".to_string(),

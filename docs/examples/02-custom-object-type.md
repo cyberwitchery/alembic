@@ -17,7 +17,7 @@ not ship:
     ops.maintenance_window:
       key: {name: {type: slug}}
       fields:
-        name: {type: string}
+        name: {type: slug}
         starts_at: {type: datetime}
         ends_at: {type: datetime}
         device: {type: ref, target: dcim.device}   # references a native device

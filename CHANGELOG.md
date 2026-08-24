@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **breaking** a field declared in both `key:` and `fields:` with a different schema fails validation; the shipped examples align the disagreeing `name` fields to their key's `slug` (#311)
 - `alembic-adapter-test` validates a `--cases` read result against the request's schema, so a value outside alembic's value space or a backend id in a ref field fails conformance; types the schema does not declare stay a tolerated superset (#415)
 - **breaking** nautobot observations carry `assigned_object_type`/`assigned_object_id` and `scope_type`/`scope_id` as ordinary attrs; the read-only `assigned_interface` and `site` collapses are gone (#420)
 - **breaking** key ambiguity among observed objects is data, not a read failure: unmanaged backend objects sharing a key no longer deny unrelated plans, and only adopting, key-matching, or importing an ambiguous key fails, naming every candidate
