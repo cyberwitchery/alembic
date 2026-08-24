@@ -56,6 +56,8 @@ diffing is **additive-only**: only fields declared in your desired inventory are
 
 comparison is type-aware: for a field declared `int` or `float`, values are compared by numeric value (and `list`/`map` fields elementwise), so a backend that returns `1.0` or `"1"` for an int you wrote as `1` does not produce a perpetual update. every other type compares exactly.
 
+an update writes the full declared projection: apply sends every declared field of the object, not only the fields the plan's `changes` listed. `changes` is the plan-time diff against the observation, recorded for review; a plan applied after the backend drifted re-asserts declared fields the plan never mentioned. undeclared fields stay untouched either way.
+
 ## import
 
 import reads backend state via the adapter and emits an inventory in the
