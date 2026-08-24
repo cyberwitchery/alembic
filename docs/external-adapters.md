@@ -320,6 +320,31 @@ failure through the envelope, not the exit code:
 }
 ```
 
+## value-space contract
+
+the protocol above is the shape of the conversation; this is the contract on the
+values in it. alembic's own validation is the authority in both directions, and
+the backend never contradicts it:
+
+- a value alembic accepted must be writable. constraints an adapter provisions
+  from a declared schema are at most as strict as alembic's own checks: a
+  provisioned regex is at least as wide as the format it mirrors (`format_regex`
+  in core), an extra enum choice on the backend is inert while a missing one is
+  fatal, and `required` only ever tightens toward the declaration. core
+  validation is the gate; the backend's is a mirror that must never reject what
+  core passed.
+- a value a read answers must land back in alembic's value space. a field the
+  request's schema declares validates under the same rules `plan` and `import`
+  apply, so a `date` answers as an rfc3339 date, not whatever the backend
+  stores, and a ref names the target's uid, never a backend id (`plan` refuses
+  an observation that violates this).
+- objects of types the request's schema does not declare are a tolerated
+  superset: an adapter may answer with more than was asked, and the engine
+  ignores what it did not ask for.
+
+the conformance runner enforces the read half on every `--cases` read, so an
+adapter learns before its first user does.
+
 ## conformance testing
 
 `alembic-adapter-test` is a standalone runner that checks an adapter executable
@@ -390,7 +415,9 @@ an expectation:
 
 `expect` takes `ok` plus `result` or `error`, both optional. `result` omitted, the
 runner only checks the payload shape; present, it compares the returned json
-structurally. `error` pins the exact message an `ok: false` case must come back with.
+structurally. a read case's result is additionally validated against the
+request's schema (the value-space contract above), so an out-of-space value or a
+backend id in a ref field fails the case even when `expect.result` is omitted. `error` pins the exact message an `ok: false` case must come back with.
 a key that is none of those three is a parse error naming it, and so is a
 stray key beside `name`/`request`/`expect`: `result` and `error` are the assertions, so
 a typo in one would drop it and report the case as passing. the runner exits `0` when
