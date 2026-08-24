@@ -466,16 +466,31 @@ impl InfrahubAdapter {
         let objects = self
             .read_type_objects(&schema_info, type_name, type_schema)
             .await?;
+        // collect every key match: several backend objects sharing the key is
+        // an error naming them all, never a pick among candidates.
+        let mut matches: Vec<String> = Vec::new();
         for (backend_id, attrs) in objects {
             let obj_key = build_key_from_schema(type_schema, &attrs)
                 .with_context(|| format!("build key for {}", type_name))?;
             if obj_key == target_key {
                 if let BackendId::String(id) = backend_id {
-                    return Ok(Some(id));
+                    matches.push(id);
                 }
             }
         }
-        Ok(None)
+        match matches.as_slice() {
+            [] => Ok(None),
+            [_] => Ok(Some(matches.remove(0))),
+            many => Err(anyhow!(
+                "{} backend objects match the {} key {}: backend ids {}; alembic cannot \
+                 pick one, so resolve the collision or key the type the way the backend \
+                 scopes uniqueness",
+                many.len(),
+                type_name,
+                alembic_core::key_string(key),
+                many.join(", ")
+            )),
+        }
     }
 
     async fn lookup_backend_id(
@@ -3089,11 +3104,11 @@ schema { query: Query }
         )]);
         let state = StateStore::new(None, StateData::default());
         let observed = adapter.read(&schema, &[], &state).await.unwrap();
-        assert_eq!(observed.by_key.len(), 1);
+        assert_eq!(observed.len(), 1);
         let key = Key::from(BTreeMap::from([("name".to_string(), json!("Site One"))]));
         let object = observed
-            .by_key
-            .get(&(TypeName::new("dcim.site"), key_string(&key)))
+            .unique_by_key(&TypeName::new("dcim.site"), &key_string(&key))
+            .unwrap()
             .unwrap();
         assert_eq!(object.attrs.get("name"), Some(&json!("Site One")));
     }
@@ -4098,7 +4113,7 @@ schema { query: Query }
             .await
             .unwrap();
 
-        assert_eq!(observed.by_key.len(), 2);
+        assert_eq!(observed.len(), 2);
         sites.assert_calls(1);
         groups.assert_calls(1);
     }
@@ -4139,7 +4154,7 @@ schema { query: Query }
         )]);
         let observed = adapter.read(&schema, &[], &state).await.unwrap();
 
-        assert_eq!(observed.by_key.len(), 1);
+        assert_eq!(observed.len(), 1);
         rows.assert_calls(1);
     }
 }

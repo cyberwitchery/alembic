@@ -26,7 +26,7 @@ mod test_log;
 mod transform;
 mod types;
 use alembic_core::{key_string, validate_inventory, Inventory, Object, ValidationReport};
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 
 #[cfg(test)]
 mod tests;
@@ -108,7 +108,7 @@ pub async fn build_plan(
         &inventory.schema,
         allow_delete,
         adopt_by_key,
-    );
+    )?;
     Ok((plan, bootstrap))
 }
 
@@ -117,26 +117,28 @@ pub async fn build_plan(
 /// every declared object becomes a create (and nothing is updated or deleted).
 pub fn plan_write_only(inventory: &Inventory, state: &StateStore) -> Result<Plan> {
     report_to_result(validate(inventory))?;
-    Ok(plan(
+    plan(
         &inventory.objects,
         &ObservedState::default(),
         state,
         &inventory.schema,
         false,
         true,
-    ))
+    )
 }
 
 /// adopt existing backend objects by matching declared keys against an
 /// observation, reporting every binding written into identity memory. with
 /// `adopt_by_key` off, state-known objects still settle but nothing new is
-/// adopted, so unmatched declared objects plan as creates.
+/// adopted, so unmatched declared objects plan as creates. adoption binds
+/// identity, so a key several backend objects share is an error naming every
+/// candidate, never a choice among them.
 pub(crate) fn bootstrap_state_from_observed(
     state: &mut StateStore,
     desired: &[Object],
     observed: &ObservedState,
     adopt_by_key: bool,
-) -> types::BootstrapReport {
+) -> Result<types::BootstrapReport> {
     let mut report = types::BootstrapReport::default();
     for object in desired {
         if let Some(backend_id) = state.backend_id(object.type_name.clone(), object.uid) {
@@ -162,10 +164,16 @@ pub(crate) fn bootstrap_state_from_observed(
         if !adopt_by_key {
             continue;
         }
-        if let Some(obs) = observed
-            .by_key
-            .get(&(object.type_name.clone(), key_string(&object.key)))
-        {
+        let candidate = observed
+            .unique_by_key(&object.type_name, &key_string(&object.key))
+            .with_context(|| {
+                format!(
+                    "cannot adopt {} {}",
+                    object.type_name,
+                    key_string(&object.key)
+                )
+            })?;
+        if let Some(obs) = candidate {
             if let Some(backend_id) = &obs.backend_id {
                 if let Some(displaced) = state
                     .uid_for_backend_id(&object.type_name, backend_id)
@@ -188,7 +196,7 @@ pub(crate) fn bootstrap_state_from_observed(
             }
         }
     }
-    report
+    Ok(report)
 }
 
 /// apply a plan and update the state store. full adapters provision schema

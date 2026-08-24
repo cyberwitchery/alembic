@@ -481,7 +481,8 @@ fn plans_in_stable_order() {
         &inventory.schema,
         false,
         true,
-    );
+    )
+    .unwrap();
 
     assert_eq!(plan.ops.len(), 2);
     let kinds: Vec<TypeName> = plan
@@ -524,7 +525,8 @@ fn detects_attribute_diff() {
         &desired.schema,
         false,
         true,
-    );
+    )
+    .unwrap();
 
     assert_eq!(plan.ops.len(), 1);
     match &plan.ops[0] {
@@ -570,7 +572,8 @@ fn detects_generic_payload_diff() {
         &desired.schema,
         false,
         true,
-    );
+    )
+    .unwrap();
 
     assert_eq!(plan.ops.len(), 1);
     match &plan.ops[0] {
@@ -618,7 +621,8 @@ fn planner_ignores_optional_nulls() {
         &schema,
         false,
         true,
-    );
+    )
+    .unwrap();
     assert!(plan.ops.is_empty());
 }
 
@@ -667,7 +671,8 @@ fn planner_matches_backend_id_by_kind() {
         &schema,
         false,
         true,
-    );
+    )
+    .unwrap();
     assert!(plan.ops.is_empty());
 }
 
@@ -702,7 +707,8 @@ fn planner_includes_prefix_site_diff() {
         &schema,
         false,
         true,
-    );
+    )
+    .unwrap();
     assert_eq!(plan.ops.len(), 1);
     match &plan.ops[0] {
         Op::Update { changes, .. } => {
@@ -961,7 +967,8 @@ fn plan_generates_deletes_when_enabled() {
         &desired.schema,
         true,
         true,
-    );
+    )
+    .unwrap();
     assert!(plan.ops.iter().any(|op| matches!(op, Op::Delete { .. })));
 }
 
@@ -1646,45 +1653,51 @@ fn insert_with_duplicate_backend_id() {
 }
 
 #[test]
-fn insert_with_duplicate_natural_key() {
-    // same (type, key) with no backend id: the by_key guard must reject the
-    // second insert. insert_with_duplicate_backend_id (different keys) returns
-    // at the backend-id branch and never reaches this guard.
+fn insert_records_a_duplicate_natural_key_as_data() {
+    // key ambiguity is data in the raw observation: both twins are held, and
+    // only dereferencing the key fails, naming every candidate. an id-less
+    // twin is named as `unknown`.
     let mut observed = ObservedState::default();
-    let mk = |name: &str| ObservedObject {
-        type_name: t("dcim.site"),
-        key: key_str("site=fra1"),
-        attrs: attrs_map(json!({ "name": name, "slug": "fra1" })),
-        backend_id: None,
-    };
-    observed.insert(mk("FRA1")).unwrap();
-    let err = observed
-        .insert(mk("FRA1-dup"))
-        .expect_err("duplicate natural key not detected");
-    assert_eq!(
-        err.to_string(),
-        "two dcim.site objects share the key {\"site\":\"fra1\"}: \
-         backend ids unknown and unknown"
-    );
-}
-
-#[test]
-fn insert_with_duplicate_natural_key_names_both_backend_ids() {
-    let mut observed = ObservedState::default();
-    let mk = |id: u64| ObservedObject {
+    let mk = |id: Option<u64>| ObservedObject {
         type_name: t("dcim.site"),
         key: key_str("site=fra1"),
         attrs: attrs_map(json!({ "name": "FRA1", "slug": "fra1" })),
-        backend_id: Some(BackendId::Int(id)),
+        backend_id: id.map(BackendId::Int),
     };
-    observed.insert(mk(7)).unwrap();
+    observed.insert(mk(Some(7))).unwrap();
+    observed.insert(mk(None)).unwrap();
+    assert_eq!(observed.len(), 2);
     let err = observed
-        .insert(mk(9))
-        .expect_err("duplicate natural key not detected");
-    assert_eq!(
-        err.to_string(),
-        "two dcim.site objects share the key {\"site\":\"fra1\"}: backend ids 7 and 9"
+        .unique_by_key(&t("dcim.site"), &key_string(&key_str("site=fra1")))
+        .expect_err("dereferencing an ambiguous key must fail");
+    let message = err.to_string();
+    assert!(
+        message.contains("2 dcim.site objects share the key"),
+        "{message}"
     );
+    assert!(message.contains("7, unknown"), "{message}");
+
+    // ids stay unique and dereference cleanly beside the ambiguity.
+    assert!(observed
+        .by_backend_id(&t("dcim.site"), &BackendId::Int(7))
+        .is_some());
+    // an unambiguous key still answers.
+    observed
+        .insert(ObservedObject {
+            type_name: t("dcim.site"),
+            key: key_str("site=ams1"),
+            attrs: attrs_map(json!({ "name": "AMS1", "slug": "ams1" })),
+            backend_id: Some(BackendId::Int(8)),
+        })
+        .unwrap();
+    assert!(observed
+        .unique_by_key(&t("dcim.site"), &key_string(&key_str("site=ams1")))
+        .unwrap()
+        .is_some());
+    // and the ambiguity listing names the one contested key with its holders.
+    let ambiguous: Vec<_> = observed.ambiguities().collect();
+    assert_eq!(ambiguous.len(), 1);
+    assert_eq!(ambiguous[0].2.len(), 2);
 }
 
 #[test]
@@ -1712,6 +1725,7 @@ fn build_plan_names_both_backend_ids_for_a_colliding_key() {
         }
     }
 
+    // adopting the contested key is the failure: never a choice among twins.
     let inventory = inv(vec![obj(
         uid(1),
         "dcim.site",
@@ -1721,11 +1735,33 @@ fn build_plan_names_both_backend_ids_for_a_colliding_key() {
     let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
     let err =
         futures::executor::block_on(build_plan(&CollidingAdapter, &inventory, &mut state, false))
-            .expect_err("colliding keys not detected");
-    assert_eq!(
-        err.to_string(),
-        "two dcim.site objects share the key {\"site\":\"fra1\"}: backend ids 7 and 9"
+            .expect_err("adopting an ambiguous key must fail");
+    let message = format!("{err:#}");
+    assert!(
+        message.contains("cannot adopt dcim.site {\"site\":\"fra1\"}"),
+        "{message}"
     );
+    assert!(message.contains("backend ids 7, 9"), "{message}");
+
+    // an unrelated desired object is not denied by the neighbors' collision.
+    let unrelated = inv(vec![obj(
+        uid(2),
+        "dcim.site",
+        "site=ams1",
+        json!({ "name": "AMS1", "slug": "ams1" }),
+    )]);
+    let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
+    let (plan, bootstrap) = futures::executor::block_on(crate::build_plan(
+        &CollidingAdapter,
+        &unrelated,
+        &mut state,
+        false,
+        true,
+    ))
+    .expect("unmanaged duplicate keys must not deny an unrelated plan");
+    assert_eq!(plan.ops.len(), 1);
+    assert!(matches!(plan.ops[0], Op::Create { .. }));
+    assert!(bootstrap.is_empty());
 }
 
 #[test]
@@ -3215,4 +3251,58 @@ async fn a_retype_plans_create_and_delete_under_one_uid() {
     let ordered = sort_ops_for_apply(&plan.ops, &plan.schema);
     assert!(matches!(ordered[0], Op::Create { .. }));
     assert!(matches!(ordered[1], Op::Delete { .. }));
+}
+
+/// deletion addresses objects by backend id, so unmanaged same-key twins are
+/// deletable without ever being told apart by key: both plan as deletes, each
+/// carrying its own id, and drift lists both as extra.
+#[tokio::test]
+async fn unmanaged_twins_both_plan_as_deletes_by_id() {
+    struct TwinAdapter;
+
+    #[async_trait::async_trait]
+    impl Observer for TwinAdapter {
+        async fn read(
+            &self,
+            _schema: &alembic_core::Schema,
+            _types: &[TypeName],
+            _state: &StateStore,
+        ) -> anyhow::Result<ObservedState> {
+            let mut observed = ObservedState::default();
+            for id in [7u64, 9] {
+                observed.insert(ObservedObject {
+                    type_name: t("dcim.site"),
+                    key: key_str("site=dup"),
+                    attrs: attrs_map(json!({ "name": "Ghost", "slug": "dup" })),
+                    backend_id: Some(BackendId::Int(id)),
+                })?;
+            }
+            Ok(observed)
+        }
+    }
+
+    let desired = inv(vec![obj(
+        uid(1),
+        "dcim.site",
+        "site=ams1",
+        json!({ "name": "AMS1", "slug": "ams1" }),
+    )]);
+    let mut state = StateStore::new(None, StateData::default());
+    let (plan, _) = crate::build_plan(&TwinAdapter, &desired, &mut state, true, true)
+        .await
+        .unwrap();
+
+    let mut delete_ids: Vec<_> = plan
+        .ops
+        .iter()
+        .filter_map(|op| match op {
+            Op::Delete { backend_id, .. } => backend_id.clone(),
+            _ => None,
+        })
+        .collect();
+    delete_ids.sort_by_key(|id| id.to_string());
+    assert_eq!(delete_ids, vec![BackendId::Int(7), BackendId::Int(9)]);
+
+    let drift = crate::DriftReport::from_plan(&plan);
+    assert_eq!(drift.extra.len(), 2, "both twins surface as extra");
 }

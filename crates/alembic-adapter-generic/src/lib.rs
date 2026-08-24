@@ -194,6 +194,9 @@ impl GenericAdapter {
         let results =
             list_endpoint_results(&self.client, &self.config.base_url, endpoint, type_name).await?;
 
+        // collect every key match: several backend objects sharing the key is
+        // an error naming them all, never a pick among candidates.
+        let mut matches: Vec<BackendId> = Vec::new();
         for item in results {
             let attrs: JsonMap = match &item {
                 serde_json::Value::Object(map) => {
@@ -210,8 +213,25 @@ impl GenericAdapter {
             )?;
             if listed == *key {
                 let id_val = resolve_path(&item, &endpoint.id_path)?;
-                let backend_id = parse_backend_id(id_val)?;
-                return Ok(Some(backend_id));
+                matches.push(parse_backend_id(id_val)?);
+            }
+        }
+        match matches.as_slice() {
+            [] => {}
+            [_] => return Ok(Some(matches.remove(0))),
+            many => {
+                return Err(anyhow!(
+                    "{} backend objects match the {} key {}: backend ids {}; alembic cannot \
+                     pick one, so resolve the collision or key the type the way the backend \
+                     scopes uniqueness",
+                    many.len(),
+                    type_name,
+                    alembic_core::key_string(key),
+                    many.iter()
+                        .map(|id| id.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ))
             }
         }
         Ok(None)

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **breaking** key ambiguity among observed objects is data, not a read failure: unmanaged backend objects sharing a key no longer deny unrelated plans, and only adopting, key-matching, or importing an ambiguous key fails, naming every candidate
+- `import` refuses an observation whose keys name more than one backend object, listing every ambiguous key and its holders at once
+- an adapter's conflict-recovery lookup refuses a key matching several backend objects instead of adopting the first (netbox, nautobot, infrahub, generic)
 - **breaking** identity is the uid alone: a 1:1 `map` emit and `passthrough` inherit the source uid, so a key rename through a map plans as an update, not create+delete (`docs/identity.md`)
 - **breaking** a multi-emit assigns identity explicitly: every emit needs a `uid:`, a one-element list included
 - `map` emits take `uid: target`, the explicit spelling for minting value identity from the rendered target `(type, key)`

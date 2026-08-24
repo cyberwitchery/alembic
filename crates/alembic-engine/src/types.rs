@@ -171,44 +171,126 @@ pub struct ObservedObject {
     pub backend_id: Option<BackendId>,
 }
 
-/// observed backend state indexed by id and key.
+/// the raw observation: everything an adapter's read returned. objects are
+/// held once and indexed uniquely by backend id (a read returning one id twice
+/// is broken) and non-uniquely by natural key. key ambiguity is data here --
+/// real backends hold legitimate same-key objects (netbox ships with duplicate
+/// ips allowed) -- and only dereferencing an ambiguous key fails, at the site
+/// that needs it: adoption, key matching, or import.
 #[derive(Debug, Default, Clone)]
 pub struct ObservedState {
-    /// observed objects keyed by backend id.
-    pub by_backend_id: BTreeMap<(TypeName, BackendId), ObservedObject>,
-    /// observed objects keyed by natural key.
-    pub by_key: BTreeMap<(TypeName, String), ObservedObject>,
+    objects: Vec<ObservedObject>,
+    by_backend_id: BTreeMap<(TypeName, BackendId), usize>,
+    by_key: BTreeMap<(TypeName, String), Vec<usize>>,
 }
 
 impl ObservedState {
-    /// insert an observed object into both indexes.
-    /// refuses a duplicate backend id or natural key.
+    /// insert an observed object. refuses a duplicate backend id; a duplicate
+    /// key is recorded, not refused.
     pub fn insert(&mut self, object: ObservedObject) -> Result<()> {
         if let Some(id) = &object.backend_id {
-            let key = (object.type_name.clone(), id.clone());
-            if self.by_backend_id.contains_key(&key) {
+            let slot = (object.type_name.clone(), id.clone());
+            if self.by_backend_id.contains_key(&slot) {
                 return Err(anyhow!(
                     "ObservedState already contains an object with backend id {} for type {}",
                     id,
                     object.type_name
                 ));
             }
-            self.by_backend_id.insert(key, object.clone());
         }
-
-        let key = (object.type_name.clone(), key_string(&object.key));
-        if let Some(existing) = self.by_key.get(&key) {
-            return Err(anyhow!(
-                "two {} objects share the key {}: backend ids {} and {}",
-                key.0,
-                key.1,
-                describe_backend_id(&existing.backend_id),
-                describe_backend_id(&object.backend_id),
-            ));
+        let index = self.objects.len();
+        if let Some(id) = &object.backend_id {
+            self.by_backend_id
+                .insert((object.type_name.clone(), id.clone()), index);
         }
-        self.by_key.insert(key, object);
-
+        self.by_key
+            .entry((object.type_name.clone(), key_string(&object.key)))
+            .or_default()
+            .push(index);
+        self.objects.push(object);
         Ok(())
+    }
+
+    /// every observed object, in insertion order.
+    pub fn objects(&self) -> impl Iterator<Item = &ObservedObject> {
+        self.objects.iter()
+    }
+
+    /// consume the observation into its objects.
+    pub fn into_objects(self) -> Vec<ObservedObject> {
+        self.objects
+    }
+
+    pub fn len(&self) -> usize {
+        self.objects.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.objects.is_empty()
+    }
+
+    /// the object a backend id names, if observed. ids are unique, so this
+    /// needs no ambiguity handling.
+    pub fn by_backend_id(&self, type_name: &TypeName, id: &BackendId) -> Option<&ObservedObject> {
+        self.by_backend_id
+            .get(&(type_name.clone(), id.clone()))
+            .map(|&index| &self.objects[index])
+    }
+
+    /// every id-bearing observed object with its id, in id order. the
+    /// iteration deletion detection addresses objects through: an object
+    /// without a backend id cannot be deleted.
+    pub fn backend_indexed(
+        &self,
+    ) -> impl Iterator<Item = (&TypeName, &BackendId, &ObservedObject)> {
+        self.by_backend_id
+            .iter()
+            .map(|((type_name, id), &index)| (type_name, id, &self.objects[index]))
+    }
+
+    /// dereference a key: `Ok(None)` when unobserved, the object when unique,
+    /// and an error naming every candidate's backend id when ambiguous --
+    /// alembic never picks among same-key objects.
+    pub fn unique_by_key(
+        &self,
+        type_name: &TypeName,
+        key: &str,
+    ) -> Result<Option<&ObservedObject>> {
+        let Some(indexes) = self.by_key.get(&(type_name.clone(), key.to_string())) else {
+            return Ok(None);
+        };
+        match indexes.as_slice() {
+            [] => Ok(None),
+            [index] => Ok(Some(&self.objects[*index])),
+            many => Err(anyhow!(
+                "{} {} objects share the key {}: backend ids {}; alembic cannot tell them \
+                 apart, so bind the intended one in state or key the type the way the \
+                 backend scopes uniqueness",
+                many.len(),
+                type_name,
+                key,
+                many.iter()
+                    .map(|&index| describe_backend_id(&self.objects[index].backend_id))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+        }
+    }
+
+    /// every key held by more than one observed object, with its holders.
+    /// import fails on these: an inventory cannot represent two objects under
+    /// one (type, key).
+    pub fn ambiguities(&self) -> impl Iterator<Item = (&TypeName, &str, Vec<&ObservedObject>)> {
+        self.by_key
+            .iter()
+            .filter(|(_, indexes)| indexes.len() > 1)
+            .map(|((type_name, key), indexes)| {
+                (
+                    type_name,
+                    key.as_str(),
+                    indexes.iter().map(|&index| &self.objects[index]).collect(),
+                )
+            })
     }
 }
 

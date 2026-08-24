@@ -40,7 +40,12 @@ pub async fn import_inventory(
 ) -> Result<ImportReport> {
     let observed = adapter.read(schema, types, state).await?;
 
-    let objects: Vec<ObservedObject> = observed.by_key.into_values().collect();
+    // an inventory cannot hold two objects under one (type, key), so a key
+    // named by several backend objects has no representation here. every
+    // ambiguous key is reported at once, with its holders.
+    ambiguities_to_result(&observed)?;
+
+    let objects: Vec<ObservedObject> = observed.into_objects();
     let observed_ids = observed_backend_ids(&objects);
     let mut mappings = StateMappings::from_state(state);
     bootstrap_mappings(schema, &objects, &observed_ids, &mut mappings);
@@ -306,6 +311,36 @@ fn undeclared_types_to_result(
     Err(anyhow!(message))
 }
 
+/// refuse an observation whose keys cannot survive the inventory conversion:
+/// a key held by more than one backend object. named in full so the operator
+/// sees every collision, not the first.
+fn ambiguities_to_result(observed: &crate::types::ObservedState) -> Result<()> {
+    let ambiguous: Vec<String> = observed
+        .ambiguities()
+        .map(|(type_name, key, holders)| {
+            format!(
+                "- {type_name} {key}: backend ids {}",
+                holders
+                    .iter()
+                    .map(|object| match &object.backend_id {
+                        Some(id) => id.to_string(),
+                        None => "unknown".to_string(),
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        })
+        .collect();
+    if ambiguous.is_empty() {
+        return Ok(());
+    }
+    Err(anyhow!(
+        "import failed: {} key(s) name more than one backend object, so the inventory cannot represent them:\n{}\nkey the type the way the backend scopes uniqueness (docs/identity.md)",
+        ambiguous.len(),
+        ambiguous.join("\n")
+    ))
+}
+
 fn unresolved_refs_to_result(unresolved: Vec<UnresolvedRef>) -> Result<()> {
     if unresolved.is_empty() {
         return Ok(());
@@ -532,7 +567,7 @@ mod tests {
 
     fn schema_for_observed(state: &ObservedState) -> Schema {
         let mut types: BTreeMap<String, TypeSchema> = BTreeMap::new();
-        for object in state.by_key.values() {
+        for object in state.objects() {
             let entry = types
                 .entry(object.type_name.as_str().to_string())
                 .or_insert_with(|| TypeSchema {

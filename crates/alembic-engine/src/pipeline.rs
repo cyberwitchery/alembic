@@ -30,7 +30,7 @@ pub(crate) async fn observe(
     crate::refs::refuse_backend_id_refs(&observed, &inventory.schema)?;
 
     let bootstrap =
-        crate::bootstrap_state_from_observed(state, &inventory.objects, &observed, adopt_by_key);
+        crate::bootstrap_state_from_observed(state, &inventory.objects, &observed, adopt_by_key)?;
     Ok((observed, bootstrap))
 }
 

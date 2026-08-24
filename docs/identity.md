@@ -96,6 +96,19 @@ backend: state-known objects still match, everything else plans as a create.
 it conflicts with `--allow-delete`: refusing to identify a backend object by
 key is refusing to know enough to replace it.
 
+## key ambiguity
+
+real backends hold legitimate same-key objects (netbox ships with duplicate
+ips allowed), so the observation treats key ambiguity as data: any number of
+backend objects may share a key, and a run fails only at the moment it must
+*dereference* an ambiguous key -- adopting it, key-matching a desired object
+against it, or importing it -- naming every candidate's backend id. alembic
+never picks among same-key objects, at plan time or during an adapter's
+conflict-recovery lookup. everything addressed by backend id is untouched by
+ambiguity: state-bound objects match, update, and delete normally, and two
+unmanaged twins both plan as deletes under `--allow-delete`, each by its own
+id.
+
 ## retype
 
 declaring an object under a new type with the same uid re-materializes it: the
