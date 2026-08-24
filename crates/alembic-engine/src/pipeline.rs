@@ -12,7 +12,8 @@ pub(crate) async fn observe(
     adapter: &(dyn Observer + '_),
     inventory: &Inventory,
     state: &mut StateStore,
-) -> Result<ObservedState> {
+    adopt_by_key: bool,
+) -> Result<(ObservedState, crate::types::BootstrapReport)> {
     crate::report_to_result(crate::validate(inventory))?;
 
     let mut types: BTreeSet<TypeName> = inventory
@@ -28,8 +29,9 @@ pub(crate) async fn observe(
     let observed = adapter.read(&inventory.schema, &types_vec, state).await?;
     crate::refs::refuse_backend_id_refs(&observed, &inventory.schema)?;
 
-    crate::bootstrap_state_from_observed(state, &inventory.objects, &observed);
-    Ok(observed)
+    let bootstrap =
+        crate::bootstrap_state_from_observed(state, &inventory.objects, &observed, adopt_by_key);
+    Ok((observed, bootstrap))
 }
 
 /// gate provisioning on the adapter's schema preview, for both `plan --provision`

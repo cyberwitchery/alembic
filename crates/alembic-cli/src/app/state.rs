@@ -1,4 +1,4 @@
-use alembic_engine::{PostgresTlsMode, StateLock, StateStore};
+use alembic_engine::{BackendIdentity, PostgresTlsMode, StateLock, StateStore};
 use anyhow::{anyhow, Result};
 use std::path::{Path, PathBuf};
 
@@ -14,30 +14,41 @@ pub(super) enum StateBackendConfig {
     },
 }
 
-pub(super) async fn load_state(lock: StateLock) -> Result<StateStore> {
+/// load the state store for one backend instance and hold it to that identity:
+/// the default path is scoped per backend, an explicit ALEMBIC_STATE_PATH still
+/// answers to the stamp inside the file, and a mismatch is a hard error.
+pub(super) async fn load_state(lock: StateLock, identity: &BackendIdentity) -> Result<StateStore> {
     let root = Path::new(".");
-    let store = match resolve_state_backend_config(root)? {
+    let mut store = match resolve_state_backend_config(root, identity)? {
         StateBackendConfig::Local { path } => StateStore::load_with(path, lock)?,
         StateBackendConfig::Postgres { url, key, tls_mode } => {
             StateStore::load_postgres(url, key, tls_mode).await?
         }
     };
+    store.ensure_backend(identity)?;
     // apply journals are local scratch; keep them alongside state under `.alembic/`
     // even when the state backend is postgres.
     Ok(store.with_journal_dir(root.join(".alembic")))
 }
 
-pub(super) fn state_path(root: &Path) -> PathBuf {
-    root.join(".alembic").join("state.json")
+pub(super) fn state_path(root: &Path, identity: &BackendIdentity) -> PathBuf {
+    root.join(".alembic").join("state").join(format!(
+        "{}-{}.json",
+        identity.adapter,
+        identity.scope_hash()
+    ))
 }
 
-pub(super) fn resolve_state_backend_config(root: &Path) -> Result<StateBackendConfig> {
+pub(super) fn resolve_state_backend_config(
+    root: &Path,
+    identity: &BackendIdentity,
+) -> Result<StateBackendConfig> {
     let backend = std::env::var("ALEMBIC_STATE_BACKEND").unwrap_or_else(|_| "local".to_string());
     match backend.to_lowercase().as_str() {
         "local" | "file" => {
             let path = std::env::var("ALEMBIC_STATE_PATH")
                 .map(PathBuf::from)
-                .unwrap_or_else(|_| state_path(root));
+                .unwrap_or_else(|_| state_path(root, identity));
             Ok(StateBackendConfig::Local { path })
         }
         "postgres" | "postgresql" => {

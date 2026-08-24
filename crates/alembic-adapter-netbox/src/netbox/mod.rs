@@ -311,7 +311,8 @@ mod tests {
         schema: &alembic_core::Schema,
         site_key: Key,
     ) {
-        let report = alembic_engine::import_inventory(adapter, schema, &[])
+        let stateless = alembic_engine::StateStore::new(None, alembic_engine::StateData::default());
+        let report = alembic_engine::import_inventory(adapter, schema, &[], &stateless)
             .await
             .unwrap();
 

@@ -8,7 +8,7 @@ use alembic_adapter_registry::{create_backend, Plugin};
 use alembic_engine::{
     apply_plan, build_plan, guard_drift_report, guard_schema_provisioning, load_inventory,
     load_inventory_unvalidated, plan_write_only, render_plan, ApplyReport, Backend, DriftReport,
-    Plan, StateLock, Tense,
+    Plan, StateData, StateLock, StateStore, Tense,
 };
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
@@ -106,6 +106,12 @@ enum Command {
         /// provisioning) for objects present on the backend but not declared.
         #[arg(long, default_value_t = false)]
         allow_delete: bool,
+        /// do not adopt backend objects by key match: state-known objects still
+        /// match, everything else plans as a create. adoption binds identity,
+        /// so this is the cautious mode for first contact with a populated
+        /// backend.
+        #[arg(long, default_value_t = false)]
+        no_adopt: bool,
     },
     /// apply a json plan to a backend (the only command that writes).
     Apply {
@@ -161,6 +167,10 @@ enum Command {
         /// path to a backend config file instead of --backend plus env vars.
         #[arg(long)]
         backend_config: Option<PathBuf>,
+        /// observe without identity memory: every uid is minted from its
+        /// (type, key), so a backend-side rename reads as a new object.
+        #[arg(long)]
+        stateless: bool,
     },
 }
 
@@ -277,11 +287,17 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             dry_run,
             report,
             allow_delete,
+            no_adopt,
         } => {
             let inventory = load_inventory(&file)?;
-            let mut state = load_state(state_lock_for_plan(report, dry_run, provision)).await?;
             let plugins = search_for_plugins(&config)?;
-            let backend = create_backend(&plugins, backend.as_deref(), backend_config)?;
+            let (backend, backend_identity) =
+                create_backend(&plugins, backend.as_deref(), backend_config)?;
+            let mut state = load_state(
+                state_lock_for_plan(report, dry_run, provision),
+                &backend_identity,
+            )
+            .await?;
             // a drift report asserts what the backend holds; one that observes
             // nothing would report every declared object absent, so refuse it
             // before provisioning or a backend read or write.
@@ -329,24 +345,27 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                 }
             }
 
-            let mut plan = if matches!(&backend, Backend::Emitter(_)) {
+            let (mut plan, bootstrap) = if matches!(&backend, Backend::Emitter(_)) {
                 // write-only backend: it cannot observe existing state, so plan
                 // every declared object as a create rather than failing to observe.
-                plan_write_only(&inventory, &state)?
+                (plan_write_only(&inventory, &state)?, Default::default())
             } else {
                 build_plan(
                     backend.observer()?,
                     &inventory,
                     &mut state,
                     should_detect_deletes(allow_delete, report),
+                    !no_adopt,
                 )
                 .await?
             };
             plan.schema_preview = schema_preview;
+            // identity memory changed: say so before anything persists it.
+            print_bootstrap(&bootstrap);
             if report {
                 // read-only: describe desired-vs-observed and exit without
                 // writing a plan file or saving state.
-                let drift = DriftReport::from_plan(&plan);
+                let drift = DriftReport::from_plan(&plan).with_bootstrap(&bootstrap);
                 println!("{drift}");
                 // the machine-readable half of the same report: a drift document,
                 // never a plan, and still no state save
@@ -377,9 +396,10 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             allow_delete,
             interactive,
         } => {
-            let mut state = load_state(StateLock::Exclusive).await?;
             let plugins = search_for_plugins(&config)?;
-            let backend = create_backend(&plugins, backend.as_deref(), backend_config)?;
+            let (backend, backend_identity) =
+                create_backend(&plugins, backend.as_deref(), backend_config)?;
+            let mut state = load_state(StateLock::Exclusive, &backend_identity).await?;
             // reject a backend that cannot apply before reading the plan or prompting
             backend.emitter()?;
             let plan = read_plan(&plan)?;
@@ -490,22 +510,66 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             file,
             backend,
             backend_config,
+            stateless,
         } => {
             // observe live backend state into ir; the inventory's schema selects
             // which types to observe.
             let inventory = load_inventory(&file)?;
             let plugins = search_for_plugins(&config)?;
-            let backend = create_backend(&plugins, backend.as_deref(), backend_config)?;
+            let (backend, backend_identity) =
+                create_backend(&plugins, backend.as_deref(), backend_config)?;
+            // state-first import: objects the state already binds keep their
+            // uids, so identity survives backend-side renames. --stateless
+            // drops the memory and mints value identity from each (type, key).
+            let state = if stateless {
+                StateStore::new(None, StateData::default())
+            } else {
+                load_state(StateLock::Shared, &backend_identity).await?
+            };
             let types: Vec<TypeName> = inventory.schema.types.keys().map(TypeName::new).collect();
-            let report =
-                alembic_engine::import_inventory(backend.observer()?, &inventory.schema, &types)
-                    .await?;
+            let report = alembic_engine::import_inventory(
+                backend.observer()?,
+                &inventory.schema,
+                &types,
+                &state,
+            )
+            .await?;
             write_inventory(&output, &report.inventory)?;
             println!("inventory written to {}", output.display());
         }
     }
 
     Ok(())
+}
+
+/// say what bootstrapping wrote into identity memory: adoptions bind a
+/// declared uid to an existing backend object, supersedes move a backend id
+/// off the uid it answered to. a plan may persist both, so neither is silent.
+fn print_bootstrap(report: &alembic_engine::BootstrapReport) {
+    const MAX_LISTED: usize = 50;
+    if !report.adoptions.is_empty() {
+        println!(
+            "adopted {} existing object(s) by key:",
+            report.adoptions.len()
+        );
+        for adoption in report.adoptions.iter().take(MAX_LISTED) {
+            println!(
+                "  {} {} -> backend id {}",
+                adoption.type_name,
+                alembic_core::key_string(&adoption.key),
+                adoption.backend_id
+            );
+        }
+        if report.adoptions.len() > MAX_LISTED {
+            println!("  ... and {} more", report.adoptions.len() - MAX_LISTED);
+        }
+    }
+    for superseded in &report.superseded {
+        println!(
+            "superseded: {} backend id {} now answers to {} (was {})",
+            superseded.type_name, superseded.backend_id, superseded.by, superseded.superseded
+        );
+    }
 }
 
 fn print_apply_report(report: &ApplyReport) {
