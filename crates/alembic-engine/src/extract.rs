@@ -3,7 +3,7 @@
 use crate::adapter_ops::{
     backend_id_from_value, build_key_from_schema, normalize_attrs_refs, StateMappings,
 };
-use crate::state::{StateData, StateStore};
+use crate::state::StateStore;
 use crate::types::{BackendId, ObservedObject, Observer};
 use alembic_core::{
     key_string, uid_v5, FieldType, Inventory, JsonMap, Key, Object, Schema, TypeName, TypeSchema,
@@ -19,13 +19,15 @@ pub struct ImportReport {
     pub inventory: Inventory,
 }
 
-/// observe a backend into a canonical inventory.
+/// observe a backend into an inventory, in the identity space state defines.
 ///
-/// import derives canonical uids, so it reads against an empty state store: that
-/// leaves every state-first ref resolver on its canonical fallback, and objects
-/// and their refs land in the same uid space. the fallback needs key material an
-/// adapter may not have (generic refs are bare ids; a netbox brief can omit a key
-/// field), so identity is bootstrapped from the observation itself first.
+/// import assigns identity state-first: a backend object state already binds
+/// keeps its uid, whatever its key says now, and only an object state has never
+/// met is minted deterministically from its first-sight `(type, key)`. the read
+/// itself runs with the same state, so adapters resolve refs through the same
+/// rule (state authoritative, derivation fills the gaps) and objects and refs
+/// land in one uid space. an empty store is the stateless degraded mode: pure
+/// value identity, minted fresh each run.
 ///
 /// the inventory is validated before it is returned, as `compile_map` validates
 /// what it builds: every consumer of an imported file validates on load, so one
@@ -34,21 +36,32 @@ pub async fn import_inventory(
     adapter: &(dyn Observer + '_),
     schema: &Schema,
     types: &[TypeName],
+    state: &StateStore,
 ) -> Result<ImportReport> {
-    let stateless = StateStore::new(None, StateData::default());
-    let observed = adapter.read(schema, types, &stateless).await?;
+    let observed = adapter.read(schema, types, state).await?;
 
-    let objects: Vec<ObservedObject> = observed.by_key.into_values().collect();
+    // an inventory cannot hold two objects under one (type, key), so a key
+    // named by several backend objects has no representation here. every
+    // ambiguous key is reported at once, with its holders.
+    ambiguities_to_result(&observed)?;
+
+    let objects: Vec<ObservedObject> = observed.into_objects();
     let observed_ids = observed_backend_ids(&objects);
-    let mappings = bootstrap_mappings(schema, &objects, &observed_ids);
+    let mut mappings = StateMappings::from_state(state);
+    bootstrap_mappings(schema, &objects, &observed_ids, &mut mappings);
 
     let mut inventory_objects = Vec::new();
     let mut warned: BTreeSet<(String, String)> = BTreeSet::new();
     for object in objects {
         let (key, mut attrs) = materialize(schema, &object, &mappings);
         project_attrs(schema, &object.type_name, &mut attrs, &mut warned);
+        let uid = object
+            .backend_id
+            .as_ref()
+            .and_then(|id| mappings.uid_for(object.type_name.as_str(), id))
+            .unwrap_or_else(|| uid_v5(object.type_name.as_str(), &key_string(&key)));
         inventory_objects.push(Object {
-            uid: uid_v5(object.type_name.as_str(), &key_string(&key)),
+            uid,
             type_name: object.type_name,
             key,
             attrs,
@@ -61,6 +74,7 @@ pub async fn import_inventory(
 
     let inventory = Inventory {
         schema: schema.clone(),
+        scope: None,
         objects: inventory_objects,
     };
     // both name a cause validation can only report as a symptom, and import
@@ -86,20 +100,23 @@ fn observed_backend_ids(objects: &[ObservedObject]) -> BTreeMap<String, BTreeSet
     ids
 }
 
-/// bootstrap a `backend id -> canonical uid` index out of the observation, so
-/// refs the adapter left as backend ids can be rewritten into the uid space the
-/// imported objects live in. mirrors the phase 2 the infrahub adapter runs
-/// locally for its own read.
+/// fill the `backend id -> uid` index out of the observation, so refs the
+/// adapter left as backend ids can be rewritten into the uid space the imported
+/// objects live in. mirrors the phase 2 the infrahub adapter runs locally for
+/// its own read.
 ///
-/// an object's uid derives from its key, and a key field may itself be a ref, so
-/// resolve to a fixpoint: each round settles the objects whose key refs are
-/// already known, seeding the next round, until nothing new resolves. objects in
-/// a reference cycle never settle and keep their backend ids.
+/// the index arrives seeded from state, which is authoritative for every object
+/// it already maps; derivation only fills the gaps. an unmapped object's uid
+/// derives from its key, and a key field may itself be a ref, so resolve to a
+/// fixpoint: each round settles the objects whose key refs are already known,
+/// seeding the next round, until nothing new resolves. objects in a reference
+/// cycle never settle and keep their backend ids.
 fn bootstrap_mappings(
     schema: &Schema,
     objects: &[ObservedObject],
     observed_ids: &BTreeMap<String, BTreeSet<BackendId>>,
-) -> StateMappings {
+    mappings: &mut StateMappings,
+) {
     // an object with no backend id seeds nothing, and one whose type the schema
     // omits is refused later as an undeclared type, so it seeds nothing either.
     let mut pending: Vec<_> = objects
@@ -111,27 +128,30 @@ fn bootstrap_mappings(
         })
         .collect();
 
-    let mut mappings = StateMappings::default();
     loop {
         let before = pending.len();
         pending.retain(|(object, backend_id, type_schema)| {
-            if !key_refs_settled(type_schema, &object.attrs, &mappings, observed_ids) {
+            if !key_refs_settled(type_schema, &object.attrs, mappings, observed_ids) {
                 return true;
             }
-            let attrs = normalize_attrs_refs(&object.attrs, type_schema, &mappings);
-            let key = derive_key(type_schema, &attrs, &object.key);
-            mappings.insert(
-                object.type_name.as_str(),
-                (*backend_id).clone(),
-                uid_v5(object.type_name.as_str(), &key_string(&key)),
-            );
+            if mappings
+                .uid_for(object.type_name.as_str(), backend_id)
+                .is_none()
+            {
+                let attrs = normalize_attrs_refs(&object.attrs, type_schema, mappings);
+                let key = derive_key(type_schema, &attrs, &object.key);
+                mappings.insert(
+                    object.type_name.as_str(),
+                    (*backend_id).clone(),
+                    uid_v5(object.type_name.as_str(), &key_string(&key)),
+                );
+            }
             false
         });
         if pending.len() == before {
             break;
         }
     }
-    mappings
 }
 
 /// whether every reference-typed *key* field of `attrs` is settled, so the
@@ -292,6 +312,36 @@ fn undeclared_types_to_result(
     Err(anyhow!(message))
 }
 
+/// refuse an observation whose keys cannot survive the inventory conversion:
+/// a key held by more than one backend object. named in full so the operator
+/// sees every collision, not the first.
+fn ambiguities_to_result(observed: &crate::types::ObservedState) -> Result<()> {
+    let ambiguous: Vec<String> = observed
+        .ambiguities()
+        .map(|(type_name, key, holders)| {
+            format!(
+                "- {type_name} {key}: backend ids {}",
+                holders
+                    .iter()
+                    .map(|object| match &object.backend_id {
+                        Some(id) => id.to_string(),
+                        None => "unknown".to_string(),
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        })
+        .collect();
+    if ambiguous.is_empty() {
+        return Ok(());
+    }
+    Err(anyhow!(
+        "import failed: {} key(s) name more than one backend object, so the inventory cannot represent them:\n{}\nkey the type the way the backend scopes uniqueness (docs/identity.md)",
+        ambiguous.len(),
+        ambiguous.join("\n")
+    ))
+}
+
 fn unresolved_refs_to_result(unresolved: Vec<UnresolvedRef>) -> Result<()> {
     if unresolved.is_empty() {
         return Ok(());
@@ -319,88 +369,25 @@ fn unresolved_refs(
         let Some(type_schema) = inventory.schema.types.get(object.type_name.as_str()) else {
             continue;
         };
-        let mut scan = |field: String, schema: &alembic_core::FieldSchema, value: &Value| {
-            scan_refs(
-                &object.type_name,
-                &field,
-                &schema.r#type,
-                value,
-                mappings,
-                observed_ids,
-                &mut found,
-            );
-        };
-        for (field, schema) in &type_schema.key {
-            if let Some(value) = object.key.get(field) {
-                scan(format!("key.{field}"), schema, value);
-            }
-        }
-        for (field, schema) in &type_schema.fields {
-            if let Some(value) = object.attrs.get(field) {
-                scan(field.clone(), schema, value);
-            }
-        }
+        crate::refs::visit_ref_leaves(
+            type_schema,
+            &object.key,
+            &object.attrs,
+            &mut |field, target, value| {
+                if let Some(entry) = classify_ref(
+                    &object.type_name,
+                    &field,
+                    target,
+                    value,
+                    mappings,
+                    observed_ids,
+                ) {
+                    found.push(entry);
+                }
+            },
+        );
     }
     found
-}
-
-fn scan_refs(
-    type_name: &TypeName,
-    field: &str,
-    field_type: &FieldType,
-    value: &Value,
-    mappings: &StateMappings,
-    observed_ids: &BTreeMap<String, BTreeSet<BackendId>>,
-    found: &mut Vec<UnresolvedRef>,
-) {
-    match field_type {
-        FieldType::Ref { target } => {
-            if let Some(entry) =
-                classify_ref(type_name, field, target, value, mappings, observed_ids)
-            {
-                found.push(entry);
-            }
-        }
-        FieldType::ListRef { target } => {
-            if let Value::Array(items) = value {
-                found.extend(items.iter().filter_map(|item| {
-                    classify_ref(type_name, field, target, item, mappings, observed_ids)
-                }));
-            }
-        }
-        FieldType::List { item } => {
-            if let Value::Array(items) = value {
-                for elem in items {
-                    scan_refs(type_name, field, item, elem, mappings, observed_ids, found);
-                }
-            }
-        }
-        FieldType::Map { value: inner } => {
-            if let Value::Object(map) = value {
-                for elem in map.values() {
-                    scan_refs(type_name, field, inner, elem, mappings, observed_ids, found);
-                }
-            }
-        }
-        // enumerated as in `normalize_value_for_type`, so a new ref-bearing
-        // variant has to answer in both places.
-        FieldType::String
-        | FieldType::Text
-        | FieldType::Int
-        | FieldType::Float
-        | FieldType::Bool
-        | FieldType::Uuid
-        | FieldType::Date
-        | FieldType::Datetime
-        | FieldType::Time
-        | FieldType::Json
-        | FieldType::IpAddress
-        | FieldType::Cidr
-        | FieldType::Prefix
-        | FieldType::Mac
-        | FieldType::Slug
-        | FieldType::Enum { .. } => {}
-    }
 }
 
 fn classify_ref(
@@ -411,18 +398,9 @@ fn classify_ref(
     mappings: &StateMappings,
     observed_ids: &BTreeMap<String, BTreeSet<BackendId>>,
 ) -> Option<UnresolvedRef> {
-    // a value that already is a uid is resolved; `backend_id_from_value` would
-    // otherwise read it back as a string id.
-    if value.is_null()
-        || value
-            .as_str()
-            .is_some_and(|raw| Uid::parse_str(raw).is_ok())
-    {
-        return None;
-    }
-    // not a ref shape at all: nothing to say about the observation, and
-    // validation names the value.
-    let backend_id = backend_id_from_value(value)?;
+    // a resolved ref, or a value that is not a ref shape at all: nothing to say
+    // about the observation, and validation names the value.
+    let backend_id = crate::refs::unrewritten_backend_id(value)?;
     let cause = match mappings.uid_for(target, &backend_id) {
         Some(uid) => UnresolvedCause::NotRewritten(uid),
         None if observed_ids
@@ -478,6 +456,7 @@ fn project_attrs(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::StateData;
     use crate::types::{BackendId, ObservedState};
     use crate::Observer;
     use alembic_core::{
@@ -495,7 +474,17 @@ mod tests {
     static IMPORT_LOCK: Mutex<()> = Mutex::new(());
 
     fn import_unlocked(adapter: &dyn Observer, schema: &Schema) -> ImportReport {
-        block_on(import_inventory(adapter, schema, &[])).unwrap()
+        let stateless = StateStore::new(None, StateData::default());
+        block_on(import_inventory(adapter, schema, &[], &stateless)).unwrap()
+    }
+
+    fn run_import_with_state(
+        adapter: &dyn Observer,
+        schema: &Schema,
+        state: &StateStore,
+    ) -> Result<ImportReport> {
+        let _guard = IMPORT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        block_on(import_inventory(adapter, schema, &[], state))
     }
 
     fn run_import(adapter: &dyn Observer, schema: &Schema) -> ImportReport {
@@ -579,7 +568,7 @@ mod tests {
 
     fn schema_for_observed(state: &ObservedState) -> Schema {
         let mut types: BTreeMap<String, TypeSchema> = BTreeMap::new();
-        for object in state.by_key.values() {
+        for object in state.objects() {
             let entry = types
                 .entry(object.type_name.as_str().to_string())
                 .or_insert_with(|| TypeSchema {
@@ -625,22 +614,84 @@ mod tests {
     }
 
     #[test]
-    fn import_observes_with_an_empty_state() {
-        // the guard: state-first ref resolvers must fall back to canonical uids,
-        // or the objects (always canonical) and their refs land in different spaces.
+    fn import_reads_with_the_state_it_assigns_identity_from() {
+        // the guard: objects and refs must land in one uid space, so the read
+        // sees the same state the identity assignment consults.
         let seen = Arc::new(Mutex::new(None));
         let adapter = RecordingAdapter {
             observed: observed_state().unwrap(),
             seen: Arc::clone(&seen),
         };
         let schema = schema_for_observed(&adapter.observed);
-        run_import(&adapter, &schema);
+        let authored = alembic_core::Uid::from_u128(42);
+        let mut state = StateStore::new(None, StateData::default());
+        state.set_backend_id(TypeName::new("dcim.site"), authored, BackendId::Int(1));
+        run_import_with_state(&adapter, &schema, &state).unwrap();
 
         let mappings = seen.lock().unwrap().clone().expect("adapter was read");
-        assert!(
-            mappings.is_empty(),
-            "import must observe with no state mappings: {mappings:?}"
+        assert_eq!(
+            mappings[&TypeName::new("dcim.site")][&authored],
+            BackendId::Int(1),
+            "import must read with the state it assigns identity from"
         );
+    }
+
+    #[test]
+    fn import_assigns_state_known_identity_first() {
+        // the object state binds keeps its uid whatever its key says now, so a
+        // backend-side rename round-trips as the same logical object; an object
+        // state has never met is minted from its first-sight (type, key).
+        let authored = alembic_core::Uid::from_u128(42);
+        let mut observed = ObservedState::default();
+        observed
+            .insert(observed_object(
+                "dcim.site",
+                "site=renamed",
+                json!({ "name": "renamed" }),
+                1,
+            ))
+            .unwrap();
+        observed
+            .insert(observed_object(
+                "dcim.site",
+                "site=fresh",
+                json!({ "name": "fresh" }),
+                2,
+            ))
+            .unwrap();
+        let schema = schema_for_observed(&observed);
+        let mut state = StateStore::new(None, StateData::default());
+        state.set_backend_id(TypeName::new("dcim.site"), authored, BackendId::Int(1));
+
+        let adapter = MockAdapter {
+            observed: observed.clone(),
+        };
+        let report = run_import_with_state(&adapter, &schema, &state).unwrap();
+        let uid_of = |name: &str| {
+            report
+                .inventory
+                .objects
+                .iter()
+                .find(|o| o.attrs.get("name") == Some(&json!(name)))
+                .unwrap()
+                .uid
+        };
+        assert_eq!(uid_of("renamed"), authored);
+        let fresh = report
+            .inventory
+            .objects
+            .iter()
+            .find(|o| o.attrs.get("name") == Some(&json!("fresh")))
+            .unwrap();
+        assert_eq!(
+            fresh.uid,
+            uid_v5("dcim.site", &key_string(&fresh.key)),
+            "an object state never met is minted from its first-sight (type, key)"
+        );
+
+        // repeated stateful import converges: same state, same answer.
+        let again = run_import_with_state(&adapter, &schema, &state).unwrap();
+        assert_eq!(report.inventory.objects, again.inventory.objects);
     }
 
     fn field_schema(required: bool, nullable: bool) -> FieldSchema {
@@ -696,9 +747,15 @@ mod tests {
 
     fn import_err(observed: ObservedState, schema: &Schema) -> String {
         let _guard = IMPORT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        block_on(import_inventory(&MockAdapter { observed }, schema, &[]))
-            .expect_err("import must refuse an inventory that does not validate")
-            .to_string()
+        let stateless = StateStore::new(None, StateData::default());
+        block_on(import_inventory(
+            &MockAdapter { observed },
+            schema,
+            &[],
+            &stateless,
+        ))
+        .expect_err("import must refuse an inventory that does not validate")
+        .to_string()
     }
 
     fn typed_field(field_type: FieldType) -> FieldSchema {
@@ -1013,7 +1070,7 @@ mod tests {
 
     #[test]
     fn import_reports_every_unresolved_ref_of_a_list_ref() {
-        // `scan_refs` has an arm per ref-bearing field type and the other tests
+        // the shared walk has an arm per ref-bearing field type and the other tests
         // only drive the plain `Ref`. a list of refs reports every element, not
         // just the first.
         let error = unresolved_in(

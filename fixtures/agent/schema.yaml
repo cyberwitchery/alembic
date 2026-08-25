@@ -1,0 +1,19 @@
+# the schema every fixture inventory here includes. one site type and one device
+# type referencing it, which is enough to exercise refs, renames, and a nullable
+# field.
+schema:
+  types:
+    dcim.site:
+      key:
+        slug: { type: slug }
+      fields:
+        name: { type: string }
+        slug: { type: slug }
+        description: { type: text, nullable: true }
+    dcim.device:
+      key:
+        name: { type: string }
+      fields:
+        name: { type: string }
+        site: { type: ref, target: dcim.site }
+objects: []

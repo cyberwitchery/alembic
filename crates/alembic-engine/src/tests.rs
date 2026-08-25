@@ -1,9 +1,23 @@
 use super::*;
+
+/// test-side plumbing: most plan tests care about the plan alone, so this
+/// keeps the call sites on the plan while `build_plan` also reports what
+/// bootstrap wrote. adoption reporting has its own tests.
+async fn build_plan(
+    adapter: &(dyn Observer + '_),
+    inventory: &alembic_core::Inventory,
+    state: &mut StateStore,
+    allow_delete: bool,
+) -> anyhow::Result<Plan> {
+    crate::build_plan(adapter, inventory, state, allow_delete, true)
+        .await
+        .map(|(plan, _)| plan)
+}
 use alembic_core::{
     FieldSchema, FieldType, Inventory, JsonMap, Key, Object, Schema, TypeName, TypeSchema, Uid,
 };
 use serde_json::json;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use tempfile::tempdir;
 use uuid::Uuid;
 
@@ -42,7 +56,11 @@ fn obj(uid: Uid, type_name: &str, key: &str, attrs: serde_json::Value) -> Object
 
 fn inv(objects: Vec<Object>) -> Inventory {
     let schema = schema_for(&objects);
-    Inventory { schema, objects }
+    Inventory {
+        scope: None,
+        schema,
+        objects,
+    }
 }
 
 fn schema_for(objects: &[Object]) -> Schema {
@@ -383,6 +401,7 @@ fn detects_missing_references() {
         }),
     )];
     let inventory = Inventory {
+        scope: None,
         schema: Schema {
             types: BTreeMap::from([(
                 "dcim.interface".to_string(),
@@ -465,8 +484,11 @@ fn plans_in_stable_order() {
         &observed,
         &state,
         &inventory.schema,
+        inventory.scope.as_ref(),
         false,
-    );
+        true,
+    )
+    .unwrap();
 
     assert_eq!(plan.ops.len(), 2);
     let kinds: Vec<TypeName> = plan
@@ -502,7 +524,16 @@ fn detects_attribute_diff() {
         .unwrap();
 
     let state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
-    let plan = plan(&desired.objects, &observed, &state, &desired.schema, false);
+    let plan = plan(
+        &desired.objects,
+        &observed,
+        &state,
+        &desired.schema,
+        desired.scope.as_ref(),
+        false,
+        true,
+    )
+    .unwrap();
 
     assert_eq!(plan.ops.len(), 1);
     match &plan.ops[0] {
@@ -541,7 +572,16 @@ fn detects_generic_payload_diff() {
         .unwrap();
 
     let state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
-    let plan = plan(&desired.objects, &observed, &state, &desired.schema, false);
+    let plan = plan(
+        &desired.objects,
+        &observed,
+        &state,
+        &desired.schema,
+        desired.scope.as_ref(),
+        false,
+        true,
+    )
+    .unwrap();
 
     assert_eq!(plan.ops.len(), 1);
     match &plan.ops[0] {
@@ -587,8 +627,11 @@ fn planner_ignores_optional_nulls() {
         &observed,
         &state,
         &schema,
+        None,
         false,
-    );
+        true,
+    )
+    .unwrap();
     assert!(plan.ops.is_empty());
 }
 
@@ -635,8 +678,11 @@ fn planner_matches_backend_id_by_kind() {
         &observed,
         &state,
         &schema,
+        None,
         false,
-    );
+        true,
+    )
+    .unwrap();
     assert!(plan.ops.is_empty());
 }
 
@@ -669,8 +715,11 @@ fn planner_includes_prefix_site_diff() {
         &observed,
         &state,
         &schema,
+        None,
         false,
-    );
+        true,
+    )
+    .unwrap();
     assert_eq!(plan.ops.len(), 1);
     match &plan.ops[0] {
         Op::Update { changes, .. } => {
@@ -922,7 +971,16 @@ fn plan_generates_deletes_when_enabled() {
         .unwrap();
 
     let state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
-    let plan = plan(&desired.objects, &observed, &state, &desired.schema, true);
+    let plan = plan(
+        &desired.objects,
+        &observed,
+        &state,
+        &desired.schema,
+        desired.scope.as_ref(),
+        true,
+        true,
+    )
+    .unwrap();
     assert!(plan.ops.iter().any(|op| matches!(op, Op::Delete { .. })));
 }
 
@@ -1083,6 +1141,509 @@ fn build_plan_bootstraps_state_by_key() {
     );
 }
 
+fn field_of(r#type: FieldType) -> FieldSchema {
+    FieldSchema {
+        r#type,
+        required: true,
+        nullable: false,
+        description: None,
+        format: None,
+        pattern: None,
+    }
+}
+
+fn ref_to(target: &str) -> FieldSchema {
+    field_of(FieldType::Ref {
+        target: target.to_string(),
+    })
+}
+
+/// a site keyed on a slug, a device keyed on a ref to the site, an interface
+/// keyed on a ref to the device. `depth` picks how much of the chain to take.
+fn ref_chain_inventory(depth: usize) -> Inventory {
+    let mut types = BTreeMap::new();
+    types.insert(
+        "dcim.site".to_string(),
+        TypeSchema {
+            key: BTreeMap::from([("slug".to_string(), field_of(FieldType::Slug))]),
+            fields: BTreeMap::from([
+                ("slug".to_string(), field_of(FieldType::Slug)),
+                ("name".to_string(), field_of(FieldType::String)),
+            ]),
+        },
+    );
+    types.insert(
+        "dcim.device".to_string(),
+        TypeSchema {
+            key: BTreeMap::from([
+                ("site".to_string(), ref_to("dcim.site")),
+                ("name".to_string(), field_of(FieldType::String)),
+            ]),
+            fields: BTreeMap::from([
+                ("site".to_string(), ref_to("dcim.site")),
+                ("name".to_string(), field_of(FieldType::String)),
+            ]),
+        },
+    );
+    types.insert(
+        "dcim.interface".to_string(),
+        TypeSchema {
+            key: BTreeMap::from([
+                ("device".to_string(), ref_to("dcim.device")),
+                ("name".to_string(), field_of(FieldType::String)),
+            ]),
+            fields: BTreeMap::from([
+                ("device".to_string(), ref_to("dcim.device")),
+                ("name".to_string(), field_of(FieldType::String)),
+            ]),
+        },
+    );
+
+    // canonical uids, as `alembic import` writes them: identity is derived from
+    // the key below the adapter, so a ref-typed key field has to name the uid
+    // its target derives.
+    let mut objects = vec![obj(
+        chain_uid("dcim.site", "slug=fra1"),
+        "dcim.site",
+        "slug=fra1",
+        json!({ "slug": "fra1", "name": "FRA1" }),
+    )];
+    if depth >= 1 {
+        let key = format!("site={};name=leaf01", chain_uid("dcim.site", "slug=fra1"));
+        objects.push(obj(
+            chain_uid("dcim.device", &key),
+            "dcim.device",
+            &key,
+            json!({ "site": chain_uid("dcim.site", "slug=fra1").to_string(), "name": "leaf01" }),
+        ));
+    }
+    if depth >= 2 {
+        let device = format!("site={};name=leaf01", chain_uid("dcim.site", "slug=fra1"));
+        let key = format!("device={};name=eth0", chain_uid("dcim.device", &device));
+        objects.push(obj(
+            chain_uid("dcim.interface", &key),
+            "dcim.interface",
+            &key,
+            json!({ "device": chain_uid("dcim.device", &device).to_string(), "name": "eth0" }),
+        ));
+    }
+    Inventory {
+        scope: None,
+        schema: Schema { types },
+        objects,
+    }
+}
+
+/// the uid a type derives from a key, the shape `key_str` writes.
+fn chain_uid(type_name: &str, key: &str) -> Uid {
+    alembic_core::uid_v5(type_name, &alembic_core::key_string(&key_str(key)))
+}
+
+/// the uid of the chain object at `level` (0 site, 1 device, 2 interface).
+fn chain_object_uid(level: usize) -> Uid {
+    ref_chain_inventory(level).objects[level].uid
+}
+
+/// an adapter's read path in miniature: ref-typed fields come back as backend
+/// ids and go through `resolve_ref_keyed_identity`, like the built-in adapters.
+#[derive(Clone)]
+struct RefChainAdapter {
+    rows: Vec<(TypeName, BackendId, serde_json::Value)>,
+    reads: std::sync::Arc<std::sync::Mutex<usize>>,
+}
+
+impl RefChainAdapter {
+    fn new(rows: Vec<(TypeName, BackendId, serde_json::Value)>) -> Self {
+        RefChainAdapter {
+            rows,
+            reads: std::sync::Arc::new(std::sync::Mutex::new(0)),
+        }
+    }
+
+    fn reads(&self) -> usize {
+        *self.reads.lock().unwrap()
+    }
+}
+
+#[async_trait::async_trait]
+impl Observer for RefChainAdapter {
+    async fn read(
+        &self,
+        schema: &alembic_core::Schema,
+        _types: &[TypeName],
+        state: &StateStore,
+    ) -> anyhow::Result<ObservedState> {
+        *self.reads.lock().unwrap() += 1;
+        let raw: Vec<RawNode> = self
+            .rows
+            .iter()
+            .map(|(type_name, backend_id, attrs)| RawNode {
+                type_name: type_name.clone(),
+                backend_id: backend_id.clone(),
+                attrs: attrs_map(attrs.clone()),
+            })
+            .collect();
+        let mut mappings = StateMappings::from_state(state);
+        let mut observed = ObservedState::default();
+        for object in resolve_ref_keyed_identity(
+            &raw,
+            schema,
+            &mut mappings,
+            |node, type_schema, mappings| normalize_attrs_refs(&node.attrs, type_schema, mappings),
+            |_, type_schema, attrs| build_key_from_schema(type_schema, attrs),
+        )? {
+            observed.insert(object)?;
+        }
+        Ok(observed)
+    }
+}
+
+/// backend rows for the chain, refs held as backend ids (the shape a backend
+/// that assigns its own ids returns).
+fn ref_chain_rows(depth: usize) -> Vec<(TypeName, BackendId, serde_json::Value)> {
+    let mut rows = vec![(
+        t("dcim.site"),
+        BackendId::Int(1),
+        json!({ "slug": "fra1", "name": "FRA1" }),
+    )];
+    if depth >= 1 {
+        rows.push((
+            t("dcim.device"),
+            BackendId::Int(2),
+            json!({ "site": 1, "name": "leaf01" }),
+        ));
+    }
+    if depth >= 2 {
+        rows.push((
+            t("dcim.interface"),
+            BackendId::Int(3),
+            json!({ "device": 2, "name": "eth0" }),
+        ));
+    }
+    rows
+}
+
+#[test]
+fn build_plan_bootstraps_object_keyed_on_a_ref() {
+    let inventory = ref_chain_inventory(1);
+    let adapter = RefChainAdapter::new(ref_chain_rows(1));
+    let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
+    let plan =
+        futures::executor::block_on(build_plan(&adapter, &inventory, &mut state, false)).unwrap();
+
+    assert!(plan.ops.is_empty(), "unexpected ops: {:?}", plan.ops);
+    assert_eq!(
+        state.backend_id(t("dcim.device"), chain_object_uid(1)),
+        Some(BackendId::Int(2))
+    );
+    assert_eq!(adapter.reads(), 1);
+}
+
+#[test]
+fn build_plan_bootstraps_a_chain_of_ref_keyed_objects() {
+    let inventory = ref_chain_inventory(2);
+    let adapter = RefChainAdapter::new(ref_chain_rows(2));
+    let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
+    let plan =
+        futures::executor::block_on(build_plan(&adapter, &inventory, &mut state, false)).unwrap();
+
+    // the whole chain resolves inside the one read the adapter takes.
+    assert!(plan.ops.is_empty(), "unexpected ops: {:?}", plan.ops);
+    assert_eq!(
+        state.backend_id(t("dcim.interface"), chain_object_uid(2)),
+        Some(BackendId::Int(3))
+    );
+    assert_eq!(adapter.reads(), 1);
+}
+
+#[test]
+fn build_plan_bootstraps_a_chain_already_in_uid_space() {
+    // control: a backend holding the same chain keyed by uid converges to the
+    // same plan and the same mappings.
+    let inventory = ref_chain_inventory(2);
+    let adapter = RefChainAdapter::new(vec![
+        (
+            t("dcim.site"),
+            BackendId::Int(1),
+            json!({ "slug": "fra1", "name": "FRA1" }),
+        ),
+        (
+            t("dcim.device"),
+            BackendId::Int(2),
+            json!({ "site": chain_object_uid(0).to_string(), "name": "leaf01" }),
+        ),
+        (
+            t("dcim.interface"),
+            BackendId::Int(3),
+            json!({ "device": chain_object_uid(1).to_string(), "name": "eth0" }),
+        ),
+    ]);
+    let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
+    let plan =
+        futures::executor::block_on(build_plan(&adapter, &inventory, &mut state, false)).unwrap();
+
+    assert!(plan.ops.is_empty(), "unexpected ops: {:?}", plan.ops);
+    assert_eq!(
+        state.backend_id(t("dcim.interface"), chain_object_uid(2)),
+        Some(BackendId::Int(3))
+    );
+    assert_eq!(adapter.reads(), 1);
+}
+
+#[test]
+fn build_plan_refuses_a_key_ref_left_in_backend_id_space() {
+    // the device row is absent from the read, so the interface keeps `device: 2`
+    // and its key never matches the desired one, which names a uid.
+    let inventory = ref_chain_inventory(2);
+    let adapter = RefChainAdapter::new(vec![
+        (
+            t("dcim.site"),
+            BackendId::Int(1),
+            json!({ "slug": "fra1", "name": "FRA1" }),
+        ),
+        (
+            t("dcim.interface"),
+            BackendId::Int(3),
+            json!({ "device": 2, "name": "eth0" }),
+        ),
+    ]);
+    let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
+    let error = futures::executor::block_on(build_plan(&adapter, &inventory, &mut state, false))
+        .unwrap_err()
+        .to_string();
+
+    assert!(
+        error.contains("reported 2 reference(s) as backend ids"),
+        "{error}"
+    );
+    assert!(
+        error.contains("dcim.interface.key.device -> dcim.device 2"),
+        "{error}"
+    );
+    assert!(
+        error.contains("dcim.interface.device -> dcim.device 2"),
+        "{error}"
+    );
+    assert!(
+        error.contains("no dcim.device with that backend id was observed"),
+        "{error}"
+    );
+}
+
+#[test]
+fn build_plan_names_a_backend_id_ref_whose_target_the_read_holds() {
+    // the site is in the same observation, so the adapter had the uid it needed
+    // without reading again.
+    let inventory = ref_chain_inventory(1);
+    let mut observed = ObservedState::default();
+    observed
+        .insert(ObservedObject {
+            type_name: t("dcim.site"),
+            key: key_str("slug=fra1"),
+            attrs: attrs_map(json!({ "slug": "fra1", "name": "FRA1" })),
+            backend_id: Some(BackendId::Int(1)),
+        })
+        .unwrap();
+    observed
+        .insert(ObservedObject {
+            type_name: t("dcim.device"),
+            key: Key::from(BTreeMap::from([
+                ("site".to_string(), json!(1)),
+                ("name".to_string(), json!("leaf01")),
+            ])),
+            attrs: attrs_map(json!({ "site": 1, "name": "leaf01" })),
+            backend_id: Some(BackendId::Int(2)),
+        })
+        .unwrap();
+    let adapter = TestAdapter {
+        observed,
+        report: ApplyReport::default(),
+    };
+    let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
+    let error = futures::executor::block_on(build_plan(&adapter, &inventory, &mut state, false))
+        .unwrap_err()
+        .to_string();
+
+    assert!(
+        error.contains("dcim.device.key.site -> dcim.site 1"),
+        "{error}"
+    );
+    assert!(
+        error.contains("the dcim.site it names was observed, so the adapter can rewrite the id without reading again"),
+        "{error}"
+    );
+}
+
+/// a type whose only ref sits outside the key: the key matches either way, so an
+/// unrewritten ref reads as a field diff rather than a missed adoption.
+fn attr_ref_inventory() -> Inventory {
+    let types = BTreeMap::from([
+        (
+            "dcim.site".to_string(),
+            TypeSchema {
+                key: BTreeMap::from([("slug".to_string(), field_of(FieldType::Slug))]),
+                fields: BTreeMap::from([("slug".to_string(), field_of(FieldType::Slug))]),
+            },
+        ),
+        (
+            "circuits.termination".to_string(),
+            TypeSchema {
+                key: BTreeMap::from([("cid".to_string(), field_of(FieldType::String))]),
+                fields: BTreeMap::from([
+                    ("cid".to_string(), field_of(FieldType::String)),
+                    ("site".to_string(), ref_to("dcim.site")),
+                ]),
+            },
+        ),
+    ]);
+    Inventory {
+        scope: None,
+        schema: Schema { types },
+        objects: vec![
+            obj(uid(1), "dcim.site", "slug=fra1", json!({ "slug": "fra1" })),
+            obj(
+                uid(2),
+                "circuits.termination",
+                "cid=c1",
+                json!({ "cid": "c1", "site": uid(1).to_string() }),
+            ),
+        ],
+    }
+}
+
+fn attr_ref_observation(site: serde_json::Value) -> ObservedState {
+    let mut observed = ObservedState::default();
+    observed
+        .insert(ObservedObject {
+            type_name: t("dcim.site"),
+            key: key_str("slug=fra1"),
+            attrs: attrs_map(json!({ "slug": "fra1" })),
+            backend_id: Some(BackendId::Int(1)),
+        })
+        .unwrap();
+    observed
+        .insert(ObservedObject {
+            type_name: t("circuits.termination"),
+            key: key_str("cid=c1"),
+            attrs: attrs_map(json!({ "cid": "c1", "site": site })),
+            backend_id: Some(BackendId::Int(7)),
+        })
+        .unwrap();
+    observed
+}
+
+#[test]
+fn build_plan_refuses_a_backend_id_ref_outside_the_key() {
+    let adapter = TestAdapter {
+        observed: attr_ref_observation(json!(1)),
+        report: ApplyReport::default(),
+    };
+    let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
+    let error = futures::executor::block_on(build_plan(
+        &adapter,
+        &attr_ref_inventory(),
+        &mut state,
+        false,
+    ))
+    .unwrap_err()
+    .to_string();
+
+    assert!(
+        error.contains("reported 1 reference(s) as backend ids"),
+        "{error}"
+    );
+    assert!(
+        error.contains("circuits.termination.site -> dcim.site 1"),
+        "{error}"
+    );
+}
+
+#[test]
+fn build_plan_takes_the_same_observation_in_uid_space() {
+    // the control for the two refusals above: the same rows with the ref
+    // rewritten adopt both objects and plan nothing.
+    let adapter = TestAdapter {
+        observed: attr_ref_observation(json!(uid(1).to_string())),
+        report: ApplyReport::default(),
+    };
+    let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
+    let plan = futures::executor::block_on(build_plan(
+        &adapter,
+        &attr_ref_inventory(),
+        &mut state,
+        false,
+    ))
+    .unwrap();
+
+    assert!(plan.ops.is_empty(), "unexpected ops: {:?}", plan.ops);
+    assert_eq!(
+        state.backend_id(t("circuits.termination"), uid(2)),
+        Some(BackendId::Int(7))
+    );
+}
+
+#[test]
+fn build_plan_keeps_a_declared_uid_state_already_maps() {
+    // a hand-authored inventory naming its own uids, the shape docs/ir.md writes
+    // and `alembic map` emits: once state maps one, derivation must not take it
+    // back, or the ref-keyed child never adopts.
+    let declared_site: Uid = "00000000-0000-0000-0000-000000000001".parse().unwrap();
+    let declared_device: Uid = "00000000-0000-0000-0000-000000000002".parse().unwrap();
+    let inventory = Inventory {
+        scope: None,
+        schema: ref_chain_inventory(1).schema,
+        objects: vec![
+            obj(
+                declared_site,
+                "dcim.site",
+                "slug=fra1",
+                json!({ "slug": "fra1", "name": "FRA1" }),
+            ),
+            obj(
+                declared_device,
+                "dcim.device",
+                &format!("site={declared_site};name=leaf01"),
+                json!({ "site": declared_site.to_string(), "name": "leaf01" }),
+            ),
+        ],
+    };
+
+    let dir = tempdir().unwrap();
+    let mut state = StateStore::load(dir.path().join("state.json")).unwrap();
+    // the site adopts on its slug; the device cannot yet, its observed key holds
+    // the uid the site derives rather than the declared one.
+    let cold = RefChainAdapter::new(ref_chain_rows(1));
+    futures::executor::block_on(build_plan(&cold, &inventory, &mut state, false)).unwrap();
+    assert_eq!(
+        state.backend_id(t("dcim.site"), declared_site),
+        Some(BackendId::Int(1))
+    );
+
+    let warm = RefChainAdapter::new(ref_chain_rows(1));
+    let plan =
+        futures::executor::block_on(build_plan(&warm, &inventory, &mut state, false)).unwrap();
+    assert!(plan.ops.is_empty(), "unexpected ops: {:?}", plan.ops);
+    assert_eq!(
+        state.backend_id(t("dcim.device"), declared_device),
+        Some(BackendId::Int(2))
+    );
+}
+
+#[test]
+fn build_plan_reads_once_when_state_is_warm() {
+    let inventory = ref_chain_inventory(2);
+    let adapter = RefChainAdapter::new(ref_chain_rows(2));
+    let dir = tempdir().unwrap();
+    let mut state = StateStore::load(dir.path().join("state.json")).unwrap();
+    futures::executor::block_on(build_plan(&adapter, &inventory, &mut state, false)).unwrap();
+
+    let warm = RefChainAdapter::new(ref_chain_rows(2));
+    let plan =
+        futures::executor::block_on(build_plan(&warm, &inventory, &mut state, false)).unwrap();
+    assert!(plan.ops.is_empty(), "unexpected ops: {:?}", plan.ops);
+    assert_eq!(warm.reads(), 1);
+}
+
 #[test]
 fn insert_with_duplicate_backend_id() {
     let id = 123;
@@ -1107,25 +1668,119 @@ fn insert_with_duplicate_backend_id() {
 }
 
 #[test]
-fn insert_with_duplicate_natural_key() {
-    // same (type, key) with no backend id: the by_key guard must reject the
-    // second insert. insert_with_duplicate_backend_id (different keys) returns
-    // at the backend-id branch and never reaches this guard.
+fn insert_records_a_duplicate_natural_key_as_data() {
+    // key ambiguity is data in the raw observation: both twins are held, and
+    // only dereferencing the key fails, naming every candidate. an id-less
+    // twin is named as `unknown`.
     let mut observed = ObservedState::default();
-    let mk = |name: &str| ObservedObject {
+    let mk = |id: Option<u64>| ObservedObject {
         type_name: t("dcim.site"),
         key: key_str("site=fra1"),
-        attrs: attrs_map(json!({ "name": name, "slug": "fra1" })),
-        backend_id: None,
+        attrs: attrs_map(json!({ "name": "FRA1", "slug": "fra1" })),
+        backend_id: id.map(BackendId::Int),
     };
-    observed.insert(mk("FRA1")).unwrap();
+    observed.insert(mk(Some(7))).unwrap();
+    observed.insert(mk(None)).unwrap();
+    assert_eq!(observed.len(), 2);
+    let err = observed
+        .unique_by_key(&t("dcim.site"), &key_string(&key_str("site=fra1")))
+        .expect_err("dereferencing an ambiguous key must fail");
+    let message = err.to_string();
+    assert!(
+        message.contains("2 dcim.site objects share the key"),
+        "{message}"
+    );
+    assert!(message.contains("7, unknown"), "{message}");
+
+    // ids stay unique and dereference cleanly beside the ambiguity.
+    assert!(observed
+        .by_backend_id(&t("dcim.site"), &BackendId::Int(7))
+        .is_some());
+    // an unambiguous key still answers.
     observed
-        .insert(mk("FRA1-dup"))
-        .expect_err("duplicate natural key not detected");
+        .insert(ObservedObject {
+            type_name: t("dcim.site"),
+            key: key_str("site=ams1"),
+            attrs: attrs_map(json!({ "name": "AMS1", "slug": "ams1" })),
+            backend_id: Some(BackendId::Int(8)),
+        })
+        .unwrap();
+    assert!(observed
+        .unique_by_key(&t("dcim.site"), &key_string(&key_str("site=ams1")))
+        .unwrap()
+        .is_some());
+    // and the ambiguity listing names the one contested key with its holders.
+    let ambiguous: Vec<_> = observed.ambiguities().collect();
+    assert_eq!(ambiguous.len(), 1);
+    assert_eq!(ambiguous[0].2.len(), 2);
 }
 
 #[test]
-fn build_plan_reobserves_after_bootstrap() {
+fn build_plan_names_both_backend_ids_for_a_colliding_key() {
+    struct CollidingAdapter;
+
+    #[async_trait::async_trait]
+    impl Observer for CollidingAdapter {
+        async fn read(
+            &self,
+            _schema: &alembic_core::Schema,
+            _types: &[TypeName],
+            _state: &StateStore,
+        ) -> anyhow::Result<ObservedState> {
+            let mut observed = ObservedState::default();
+            for id in [7u64, 9] {
+                observed.insert(ObservedObject {
+                    type_name: t("dcim.site"),
+                    key: key_str("site=fra1"),
+                    attrs: attrs_map(json!({ "name": "FRA1", "slug": "fra1" })),
+                    backend_id: Some(BackendId::Int(id)),
+                })?;
+            }
+            Ok(observed)
+        }
+    }
+
+    // adopting the contested key is the failure: never a choice among twins.
+    let inventory = inv(vec![obj(
+        uid(1),
+        "dcim.site",
+        "site=fra1",
+        json!({ "name": "FRA1", "slug": "fra1" }),
+    )]);
+    let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
+    let err =
+        futures::executor::block_on(build_plan(&CollidingAdapter, &inventory, &mut state, false))
+            .expect_err("adopting an ambiguous key must fail");
+    let message = format!("{err:#}");
+    assert!(
+        message.contains("cannot adopt dcim.site {\"site\":\"fra1\"}"),
+        "{message}"
+    );
+    assert!(message.contains("backend ids 7, 9"), "{message}");
+
+    // an unrelated desired object is not denied by the neighbors' collision.
+    let unrelated = inv(vec![obj(
+        uid(2),
+        "dcim.site",
+        "site=ams1",
+        json!({ "name": "AMS1", "slug": "ams1" }),
+    )]);
+    let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
+    let (plan, bootstrap) = futures::executor::block_on(crate::build_plan(
+        &CollidingAdapter,
+        &unrelated,
+        &mut state,
+        false,
+        true,
+    ))
+    .expect("unmanaged duplicate keys must not deny an unrelated plan");
+    assert_eq!(plan.ops.len(), 1);
+    assert!(matches!(plan.ops[0], Op::Create { .. }));
+    assert!(bootstrap.is_empty());
+}
+
+#[test]
+fn build_plan_observes_once_and_bootstraps() {
     #[derive(Clone)]
     struct ReobserveAdapter {
         states: std::sync::Arc<std::sync::Mutex<Vec<ObservedState>>>,
@@ -1150,24 +1805,38 @@ fn build_plan_reobserves_after_bootstrap() {
         "site=fra1",
         json!({ "name": "FRA1", "slug": "fra1" }),
     )]);
-    let mut first = ObservedState::default();
-    first
-        .insert(ObservedObject {
-            type_name: t("dcim.site"),
-            key: key_str("site=fra1"),
-            attrs: attrs_map(json!({ "name": "FRA1", "slug": "fra1" })),
-            backend_id: Some(BackendId::Int(1)),
-        })
-        .unwrap();
-    let second = first.clone();
+    // the second observation is stale, so a plan taken against it would report
+    // an update: identity is resolved below the adapter, and one read is all
+    // `observe` takes.
+    let observation = |name: &str| {
+        let mut observed = ObservedState::default();
+        observed
+            .insert(ObservedObject {
+                type_name: t("dcim.site"),
+                key: key_str("site=fra1"),
+                attrs: attrs_map(json!({ "name": name, "slug": "fra1" })),
+                backend_id: Some(BackendId::Int(1)),
+            })
+            .unwrap();
+        observed
+    };
 
+    let states = std::sync::Arc::new(std::sync::Mutex::new(vec![
+        observation("FRA1"),
+        observation("stale"),
+    ]));
     let adapter = ReobserveAdapter {
-        states: std::sync::Arc::new(std::sync::Mutex::new(vec![first, second])),
+        states: states.clone(),
     };
     let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
     let plan =
         futures::executor::block_on(build_plan(&adapter, &inventory, &mut state, false)).unwrap();
-    assert!(plan.ops.is_empty());
+    assert!(plan.ops.is_empty(), "unexpected ops: {:?}", plan.ops);
+    assert_eq!(states.lock().unwrap().len(), 1, "more than one read taken");
+    assert_eq!(
+        state.backend_id(t("dcim.site"), uid(1)),
+        Some(BackendId::Int(1))
+    );
 }
 
 #[test]
@@ -1857,4 +2526,803 @@ fn apply_plan_rejects_read_only_observer() {
         .unwrap_err()
         .to_string();
     assert!(err.contains("read-only"));
+}
+
+/// two types whose keys reference each other. the adapter's fixpoint settles
+/// neither, so both come back keyed on backend ids.
+fn ref_cycle_inventory() -> Inventory {
+    let cycle = |field: &str, target: &str| TypeSchema {
+        key: BTreeMap::from([
+            (field.to_string(), ref_to(target)),
+            ("name".to_string(), field_of(FieldType::String)),
+        ]),
+        fields: BTreeMap::from([
+            (field.to_string(), ref_to(target)),
+            ("name".to_string(), field_of(FieldType::String)),
+        ]),
+    };
+    Inventory {
+        scope: None,
+        schema: Schema {
+            types: BTreeMap::from([
+                ("net.a".to_string(), cycle("b", "net.b")),
+                ("net.b".to_string(), cycle("a", "net.a")),
+            ]),
+        },
+        objects: vec![
+            obj(
+                uid(1),
+                "net.a",
+                &format!("b={};name=a1", uid(2)),
+                json!({ "b": uid(2).to_string(), "name": "a1" }),
+            ),
+            obj(
+                uid(2),
+                "net.b",
+                &format!("a={};name=b1", uid(1)),
+                json!({ "a": uid(1).to_string(), "name": "b1" }),
+            ),
+        ],
+    }
+}
+
+#[test]
+fn build_plan_names_a_backend_id_ref_whose_target_is_keyed_on_a_cycle() {
+    // both targets are in the observation, so only their own keys separate
+    // this from a ref the adapter could still rewrite.
+    let adapter = RefChainAdapter::new(vec![
+        (
+            t("net.a"),
+            BackendId::Int(1),
+            json!({ "b": 2, "name": "a1" }),
+        ),
+        (
+            t("net.b"),
+            BackendId::Int(2),
+            json!({ "a": 1, "name": "b1" }),
+        ),
+    ]);
+    let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
+    let error = futures::executor::block_on(build_plan(
+        &adapter,
+        &ref_cycle_inventory(),
+        &mut state,
+        false,
+    ))
+    .unwrap_err()
+    .to_string();
+
+    assert!(
+        error.contains("reported 4 reference(s) as backend ids"),
+        "{error}"
+    );
+    assert!(error.contains("net.a.key.b -> net.b 2"), "{error}");
+    assert!(error.contains("net.b.key.a -> net.a 1"), "{error}");
+    assert!(
+        error.contains("was observed, but its own key still holds a backend id"),
+        "{error}"
+    );
+    // asserted absent, not merely outnumbered: every one of the four lands on
+    // the new arm, so the old wording surviving anywhere is the regression.
+    assert!(
+        !error.contains("so the adapter can rewrite the id without reading again"),
+        "{error}"
+    );
+}
+
+#[test]
+fn build_plan_names_a_backend_id_ref_whose_target_is_keyed_on_a_chain() {
+    // every row is observed, so the site ref rewrites, the device key lands in
+    // uid space and the interface ref rewrites after it. the arm reports the one
+    // hop the guard looked at and promises nothing about the chain above it.
+    let inventory = ref_chain_inventory(2);
+    let mut observed = ObservedState::default();
+    observed
+        .insert(ObservedObject {
+            type_name: t("dcim.site"),
+            key: key_str("slug=fra1"),
+            attrs: attrs_map(json!({ "slug": "fra1", "name": "FRA1" })),
+            backend_id: Some(BackendId::Int(1)),
+        })
+        .unwrap();
+    observed
+        .insert(ObservedObject {
+            type_name: t("dcim.device"),
+            key: Key::from(BTreeMap::from([
+                ("site".to_string(), json!(1)),
+                ("name".to_string(), json!("leaf01")),
+            ])),
+            attrs: attrs_map(json!({ "site": 1, "name": "leaf01" })),
+            backend_id: Some(BackendId::Int(2)),
+        })
+        .unwrap();
+    observed
+        .insert(ObservedObject {
+            type_name: t("dcim.interface"),
+            key: Key::from(BTreeMap::from([
+                ("device".to_string(), json!(2)),
+                ("name".to_string(), json!("eth0")),
+            ])),
+            attrs: attrs_map(json!({ "device": 2, "name": "eth0" })),
+            backend_id: Some(BackendId::Int(3)),
+        })
+        .unwrap();
+    let adapter = TestAdapter {
+        observed,
+        report: ApplyReport::default(),
+    };
+    let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
+    let error = futures::executor::block_on(build_plan(&adapter, &inventory, &mut state, false))
+        .unwrap_err()
+        .to_string();
+
+    assert!(
+        error.contains(
+            "dcim.interface.key.device -> dcim.device 2: the dcim.device it names was observed, but its own key still holds a backend id"
+        ),
+        "{error}"
+    );
+    assert!(
+        error.contains("dcim.device.key.site -> dcim.site 1: the dcim.site it names was observed, so the adapter can rewrite the id without reading again"),
+        "{error}"
+    );
+    // the site ref above it rewrites, so a uid does derive for the device in one
+    // read: the message may not say otherwise.
+    assert!(!error.contains("no uid can be derived"), "{error}");
+}
+
+/// a backend holding a site and a device whose `site` attr is the site's backend
+/// id. reads resolve that id back to a uid through the state store, the way the
+/// built-in adapters do.
+struct RefBackend;
+
+#[async_trait::async_trait]
+impl Observer for RefBackend {
+    async fn read(
+        &self,
+        schema: &Schema,
+        _types: &[TypeName],
+        state: &StateStore,
+    ) -> anyhow::Result<ObservedState> {
+        let raw = vec![
+            RawNode {
+                type_name: t("dcim.site"),
+                backend_id: BackendId::Int(1),
+                attrs: attrs_map(json!({ "slug": "fra1" })),
+            },
+            RawNode {
+                type_name: t("dcim.device"),
+                backend_id: BackendId::Int(2),
+                attrs: attrs_map(json!({ "name": "leaf01", "site": 1 })),
+            },
+        ];
+        let mut mappings = StateMappings::from_state(state);
+        let resolved = resolve_ref_keyed_identity(
+            &raw,
+            schema,
+            &mut mappings,
+            |node, type_schema, mappings| normalize_attrs_refs(&node.attrs, type_schema, mappings),
+            |_, type_schema, attrs| build_key_from_schema(type_schema, attrs),
+        )?;
+        let mut observed = ObservedState::default();
+        for object in resolved {
+            observed.insert(object)?;
+        }
+        Ok(observed)
+    }
+}
+
+fn ref_backend_schema() -> Schema {
+    let field = |r#type: FieldType, required: bool| FieldSchema {
+        r#type,
+        required,
+        nullable: !required,
+        description: None,
+        format: None,
+        pattern: None,
+    };
+    let mut types = BTreeMap::new();
+    types.insert(
+        "dcim.site".to_string(),
+        TypeSchema {
+            key: BTreeMap::from([("slug".to_string(), field(FieldType::String, true))]),
+            fields: BTreeMap::new(),
+        },
+    );
+    types.insert(
+        "dcim.device".to_string(),
+        TypeSchema {
+            key: BTreeMap::from([("name".to_string(), field(FieldType::String, true))]),
+            fields: BTreeMap::from([(
+                "site".to_string(),
+                field(
+                    FieldType::Ref {
+                        target: "dcim.site".to_string(),
+                    },
+                    false,
+                ),
+            )]),
+        },
+    );
+    Schema { types }
+}
+
+/// the two backend objects as an inventory claiming `site_uid` and `device_uid`,
+/// the device referencing the site by uid.
+fn ref_backend_inventory(site_uid: Uid, device_uid: Uid) -> Inventory {
+    Inventory {
+        scope: None,
+        schema: ref_backend_schema(),
+        objects: vec![
+            obj(site_uid, "dcim.site", "slug=fra1", json!({})),
+            obj(
+                device_uid,
+                "dcim.device",
+                "name=leaf01",
+                json!({ "site": site_uid.to_string() }),
+            ),
+        ],
+    }
+}
+
+/// every backend id state holds answers to one uid, and that uid maps back to it.
+fn backend_ids_are_unambiguous(state: &StateStore) -> bool {
+    state.all_mappings().iter().all(|(type_name, mapping)| {
+        mapping.values().collect::<BTreeSet<_>>().iter().all(|id| {
+            state
+                .uid_for_backend_id(type_name, id)
+                .is_some_and(|uid| mapping.get(&uid) == Some(*id))
+        })
+    })
+}
+
+#[tokio::test]
+async fn plan_converges_once_the_desired_set_claims_new_uids() {
+    let dir = tempdir().unwrap();
+    let mut state = StateStore::load(dir.path().join("state.json")).unwrap();
+    // the mappings a settled run left behind. they sort after the uids the
+    // inventory below claims, and the state inversion keeps the last uid it
+    // walks, so leaving them in state is enough to decide every ref.
+    state.set_backend_id(t("dcim.site"), uid(900), BackendId::Int(1));
+    state.set_backend_id(t("dcim.device"), uid(901), BackendId::Int(2));
+
+    let inventory = ref_backend_inventory(uid(10), uid(11));
+    let first = build_plan(&RefBackend, &inventory, &mut state, false)
+        .await
+        .unwrap();
+    // the first plan reads before it adopts, so the device's ref still resolves
+    // to the uid state held: one update, and the harness is doing something.
+    assert_eq!(first.ops.len(), 1, "{:?}", first.ops);
+
+    let second = build_plan(&RefBackend, &inventory, &mut state, false)
+        .await
+        .unwrap();
+    assert!(
+        second.ops.is_empty(),
+        "the model is settled and replanned anyway: {:?}",
+        second.ops
+    );
+    assert!(backend_ids_are_unambiguous(&state));
+}
+
+#[tokio::test]
+async fn plan_only_runs_leave_the_mapping_count_flat() {
+    let dir = tempdir().unwrap();
+    let mut state = StateStore::load(dir.path().join("state.json")).unwrap();
+    // an observer can never be applied through, so a plan-only loop is the only
+    // thing that ever writes here and nothing prunes behind it.
+    for round in 0..4u128 {
+        let inventory = ref_backend_inventory(uid(100 + round * 2), uid(101 + round * 2));
+        build_plan(&RefBackend, &inventory, &mut state, false)
+            .await
+            .unwrap();
+    }
+    let mappings: usize = state.all_mappings().values().map(|m| m.len()).sum();
+    assert_eq!(mappings, 2, "{:?}", state.all_mappings());
+}
+
+/// the state a run before this left behind: `dcim.site` mapped from both the
+/// uid the inventory declares and a stale one that sorts after it.
+fn write_doubled_state(path: &std::path::Path) {
+    std::fs::write(
+        path,
+        r#"{"mappings":{"dcim.device":{"00000000-0000-0000-0000-00000000000b":2},"dcim.site":{"00000000-0000-0000-0000-00000000000a":1,"00000000-0000-0000-0000-000000000384":1}}}"#,
+    )
+    .unwrap();
+}
+
+#[tokio::test]
+async fn plan_converges_on_a_state_file_that_already_doubled_a_backend_id() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("state.json");
+    write_doubled_state(&path);
+    let mut state = StateStore::load(&path).unwrap();
+
+    let inventory = ref_backend_inventory(uid(10), uid(11));
+    for round in 0..4 {
+        let plan = build_plan(&RefBackend, &inventory, &mut state, false)
+            .await
+            .unwrap();
+        assert!(plan.ops.is_empty(), "round {round}: {:?}", plan.ops);
+    }
+    assert!(backend_ids_are_unambiguous(&state));
+    assert_eq!(
+        state.backend_id(t("dcim.site"), uid(10)),
+        Some(BackendId::Int(1))
+    );
+}
+
+#[test]
+fn a_doubled_state_file_inverts_to_one_uid_per_backend_id() {
+    // why the readers that invert state go through the index: the forward map
+    // they used to fold is not single-valued and the index is.
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("state.json");
+    write_doubled_state(&path);
+    let state = StateStore::load(&path).unwrap();
+    assert_eq!(state.all_mappings()[&t("dcim.site")].len(), 2);
+
+    let by_id = state_mappings_by_id(&state, |id| match id {
+        BackendId::Int(n) => Some(*n),
+        BackendId::String(_) => None,
+    });
+    assert_eq!(by_id["dcim.site"], BTreeMap::from([(1, uid(10))]));
+    assert_eq!(by_id["dcim.device"], BTreeMap::from([(2, uid(11))]));
+}
+
+/// a backend holding a site with a non-key attr, and a device referencing it by
+/// backend id, so a rename shows up as an update rather than as nothing.
+struct RenameBackend;
+
+#[async_trait::async_trait]
+impl Observer for RenameBackend {
+    async fn read(
+        &self,
+        schema: &Schema,
+        _types: &[TypeName],
+        state: &StateStore,
+    ) -> anyhow::Result<ObservedState> {
+        let raw = vec![
+            RawNode {
+                type_name: t("dcim.site"),
+                backend_id: BackendId::Int(1),
+                attrs: attrs_map(json!({ "slug": "fra1", "status": "active" })),
+            },
+            RawNode {
+                type_name: t("dcim.device"),
+                backend_id: BackendId::Int(2),
+                attrs: attrs_map(json!({ "name": "leaf01", "site": 1 })),
+            },
+        ];
+        let mut mappings = StateMappings::from_state(state);
+        let resolved = resolve_ref_keyed_identity(
+            &raw,
+            schema,
+            &mut mappings,
+            |node, type_schema, mappings| normalize_attrs_refs(&node.attrs, type_schema, mappings),
+            |_, type_schema, attrs| build_key_from_schema(type_schema, attrs),
+        )?;
+        let mut observed = ObservedState::default();
+        for object in resolved {
+            observed.insert(object)?;
+        }
+        Ok(observed)
+    }
+}
+
+fn rename_schema() -> Schema {
+    let field = |r#type: FieldType, required: bool| FieldSchema {
+        r#type,
+        required,
+        nullable: !required,
+        description: None,
+        format: None,
+        pattern: None,
+    };
+    let mut types = BTreeMap::new();
+    types.insert(
+        "dcim.site".to_string(),
+        TypeSchema {
+            key: BTreeMap::from([("slug".to_string(), field(FieldType::String, true))]),
+            fields: BTreeMap::from([("status".to_string(), field(FieldType::String, false))]),
+        },
+    );
+    types.insert(
+        "dcim.device".to_string(),
+        TypeSchema {
+            key: BTreeMap::from([("name".to_string(), field(FieldType::String, true))]),
+            fields: BTreeMap::from([(
+                "site".to_string(),
+                field(
+                    FieldType::Ref {
+                        target: "dcim.site".to_string(),
+                    },
+                    false,
+                ),
+            )]),
+        },
+    );
+    Schema { types }
+}
+
+/// the site renamed to `fra2` under `site_uid`, with a status the backend does
+/// not hold, plus the device pointing at it.
+fn renamed_inventory(site_uid: Uid) -> Inventory {
+    Inventory {
+        scope: None,
+        schema: rename_schema(),
+        objects: vec![
+            obj(
+                site_uid,
+                "dcim.site",
+                "slug=fra2",
+                json!({ "status": "planned" }),
+            ),
+            obj(
+                uid(11),
+                "dcim.device",
+                "name=leaf01",
+                json!({ "site": site_uid.to_string() }),
+            ),
+        ],
+    }
+}
+
+/// a state file mapping `dcim.site` backend id 1 from both uids, and the device
+/// from its own.
+fn write_doubled_site_state(path: &std::path::Path, first: Uid, second: Uid) {
+    std::fs::write(
+        path,
+        format!(
+            r#"{{"mappings":{{"dcim.device":{{"{}":2}},"dcim.site":{{"{first}":1,"{second}":1}}}}}}"#,
+            uid(11)
+        ),
+    )
+    .unwrap();
+}
+
+fn site_ops(plan: &Plan) -> Vec<&Op> {
+    plan.ops
+        .iter()
+        .filter(|op| op.type_name() == &t("dcim.site"))
+        .collect()
+}
+
+#[tokio::test]
+async fn a_rename_stays_an_update_when_the_stale_uid_sorts_first() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("state.json");
+    write_doubled_site_state(&path, uid(1), uid(900));
+    let mut state = StateStore::load(&path).unwrap();
+
+    let plan = build_plan(
+        &RenameBackend,
+        &renamed_inventory(uid(900)),
+        &mut state,
+        false,
+    )
+    .await
+    .unwrap();
+    let ops = site_ops(&plan);
+    assert_eq!(ops.len(), 1, "{:?}", plan.ops);
+    assert!(
+        matches!(ops[0], Op::Update { uid: u, .. } if *u == uid(900)),
+        "the rename must stay an update of the declared uid: {:?}",
+        plan.ops
+    );
+    assert_eq!(
+        state.uid_for_backend_id(&t("dcim.site"), &BackendId::Int(1)),
+        Some(uid(900))
+    );
+    assert_eq!(state.all_mappings()[&t("dcim.site")].len(), 1);
+}
+
+#[tokio::test]
+async fn a_rename_emits_no_delete_when_the_stale_uid_sorts_first() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("state.json");
+    write_doubled_site_state(&path, uid(1), uid(900));
+    let mut state = StateStore::load(&path).unwrap();
+
+    let plan = build_plan(
+        &RenameBackend,
+        &renamed_inventory(uid(900)),
+        &mut state,
+        true,
+    )
+    .await
+    .unwrap();
+    assert!(
+        !plan.ops.iter().any(|op| matches!(op, Op::Delete { .. })),
+        "a rename must not delete the object it renames: {:?}",
+        plan.ops
+    );
+}
+
+#[tokio::test]
+async fn a_rename_stays_an_update_when_the_stale_uid_sorts_last() {
+    // the other arm of the same tiebreak: which uid sorts first decides nothing.
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("state.json");
+    write_doubled_site_state(&path, uid(1), uid(900));
+    let mut state = StateStore::load(&path).unwrap();
+
+    let plan = build_plan(&RenameBackend, &renamed_inventory(uid(1)), &mut state, true)
+        .await
+        .unwrap();
+    let ops = site_ops(&plan);
+    assert_eq!(ops.len(), 1, "{:?}", plan.ops);
+    assert!(
+        matches!(ops[0], Op::Update { uid: u, .. } if *u == uid(1)),
+        "{:?}",
+        plan.ops
+    );
+}
+
+#[tokio::test]
+async fn plan_converges_when_the_stale_uid_sorts_before_the_declared_uid() {
+    // the arm `plan_converges_once_the_desired_set_claims_new_uids` cannot reach:
+    // the uid state answers with at load is not the one the inventory claims.
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("state.json");
+    write_doubled_site_state(&path, uid(1), uid(900));
+    let mut state = StateStore::load(&path).unwrap();
+
+    let inventory = ref_backend_inventory(uid(900), uid(11));
+    let first = build_plan(&RefBackend, &inventory, &mut state, false)
+        .await
+        .unwrap();
+    assert_eq!(first.ops.len(), 1, "{:?}", first.ops);
+    for round in 1..4 {
+        let plan = build_plan(&RefBackend, &inventory, &mut state, false)
+            .await
+            .unwrap();
+        assert!(plan.ops.is_empty(), "round {round}: {:?}", plan.ops);
+    }
+    assert!(backend_ids_are_unambiguous(&state));
+    assert_eq!(
+        state.uid_for_backend_id(&t("dcim.site"), &BackendId::Int(1)),
+        Some(uid(900))
+    );
+    assert_eq!(state.all_mappings()[&t("dcim.site")].len(), 1);
+}
+
+#[tokio::test]
+async fn the_inventory_decides_which_uid_answers_when_it_declares_both() {
+    // an inventory declaring both uids contradicts itself: one backend object
+    // cannot be two objects. the one declared last owns the backend id, the other
+    // is planned by key like any object state does not map.
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("state.json");
+    write_doubled_site_state(&path, uid(1), uid(900));
+    let mut state = StateStore::load(&path).unwrap();
+
+    let inventory = Inventory {
+        scope: None,
+        schema: rename_schema(),
+        objects: vec![
+            obj(
+                uid(1),
+                "dcim.site",
+                "slug=fra1",
+                json!({ "status": "active" }),
+            ),
+            obj(
+                uid(900),
+                "dcim.site",
+                "slug=fra2",
+                json!({ "status": "planned" }),
+            ),
+        ],
+    };
+    build_plan(&RenameBackend, &inventory, &mut state, false)
+        .await
+        .unwrap();
+    assert_eq!(
+        state.uid_for_backend_id(&t("dcim.site"), &BackendId::Int(1)),
+        Some(uid(900))
+    );
+    assert_eq!(state.all_mappings()[&t("dcim.site")].len(), 1);
+}
+
+/// a single-site observer for the adoption-visibility tests: one dcim.site,
+/// key slug=fra1, backend id 5, attrs matching `adoption_inventory`.
+struct AdoptionBackend;
+
+#[async_trait::async_trait]
+impl Observer for AdoptionBackend {
+    async fn read(
+        &self,
+        _schema: &Schema,
+        _types: &[TypeName],
+        _state: &StateStore,
+    ) -> anyhow::Result<ObservedState> {
+        let mut observed = ObservedState::default();
+        observed.insert(ObservedObject {
+            type_name: t("dcim.site"),
+            key: key_str("slug=fra1"),
+            attrs: attrs_map(json!({ "status": "active" })),
+            backend_id: Some(BackendId::Int(5)),
+        })?;
+        Ok(observed)
+    }
+}
+
+fn adoption_inventory(site_uid: Uid) -> Inventory {
+    Inventory {
+        scope: None,
+        schema: rename_schema(),
+        objects: vec![obj(
+            site_uid,
+            "dcim.site",
+            "slug=fra1",
+            json!({ "status": "active" }),
+        )],
+    }
+}
+
+/// brownfield adoption is a semantic event: the run binds identity and says so,
+/// and the binding it persists is the one it reported.
+#[tokio::test]
+async fn a_key_adoption_is_reported_alongside_the_binding_it_writes() {
+    let mut state = StateStore::new(None, StateData::default());
+    let inventory = adoption_inventory(uid(1));
+    let (plan, bootstrap) =
+        crate::build_plan(&AdoptionBackend, &inventory, &mut state, false, true)
+            .await
+            .unwrap();
+    assert!(plan.ops.is_empty(), "converged adoption plans nothing");
+    assert_eq!(bootstrap.adoptions.len(), 1);
+    let adoption = &bootstrap.adoptions[0];
+    assert_eq!(adoption.type_name, t("dcim.site"));
+    assert_eq!(adoption.uid, uid(1));
+    assert_eq!(adoption.backend_id, BackendId::Int(5));
+    assert_eq!(
+        state.backend_id(t("dcim.site"), uid(1)),
+        Some(BackendId::Int(5)),
+        "the reported adoption is the binding that was written"
+    );
+}
+
+/// --no-adopt: state-known objects still match; nothing new is adopted, so an
+/// unknown declared object plans as a create and identity memory stays empty.
+#[tokio::test]
+async fn no_adopt_plans_unknown_objects_as_creates() {
+    let mut state = StateStore::new(None, StateData::default());
+    let inventory = adoption_inventory(uid(1));
+    let (plan, bootstrap) =
+        crate::build_plan(&AdoptionBackend, &inventory, &mut state, false, false)
+            .await
+            .unwrap();
+    assert!(bootstrap.is_empty());
+    assert_eq!(plan.ops.len(), 1);
+    assert!(matches!(plan.ops[0], Op::Create { .. }));
+    assert_eq!(state.backend_id(t("dcim.site"), uid(1)), None);
+
+    // a state-known object still matches without adoption.
+    let mut warm = StateStore::new(None, StateData::default());
+    warm.set_backend_id(t("dcim.site"), uid(1), BackendId::Int(5));
+    let (plan, bootstrap) =
+        crate::build_plan(&AdoptionBackend, &inventory, &mut warm, false, false)
+            .await
+            .unwrap();
+    assert!(bootstrap.is_empty());
+    assert!(plan.ops.is_empty(), "state-known objects still converge");
+}
+
+/// adopting an object another uid used to answer for supersedes that binding,
+/// and the supersede is reported next to the adoption.
+#[tokio::test]
+async fn a_superseding_adoption_reports_the_displaced_uid() {
+    let mut state = StateStore::new(None, StateData::default());
+    state.set_backend_id(t("dcim.site"), uid(9), BackendId::Int(5));
+    let inventory = adoption_inventory(uid(1));
+    let (_, bootstrap) = crate::build_plan(&AdoptionBackend, &inventory, &mut state, false, true)
+        .await
+        .unwrap();
+    assert_eq!(bootstrap.adoptions.len(), 1);
+    assert_eq!(bootstrap.superseded.len(), 1);
+    let superseded = &bootstrap.superseded[0];
+    assert_eq!(superseded.superseded, uid(9));
+    assert_eq!(superseded.by, uid(1));
+    assert_eq!(
+        state.backend_id(t("dcim.site"), uid(9)),
+        None,
+        "the displaced uid lost its binding"
+    );
+}
+
+/// identity is the uid alone: declaring an object under a new type keeps its
+/// uid and re-materializes it, so the plan is a create and a delete carrying
+/// one uid, with the create ordered first by `sort_ops_for_apply`.
+#[tokio::test]
+async fn a_retype_plans_create_and_delete_under_one_uid() {
+    let mut state = StateStore::new(None, StateData::default());
+    state.set_backend_id(t("dcim.site"), uid(1), BackendId::Int(5));
+    let mut inventory = adoption_inventory(uid(1));
+    // rename_schema declares dcim.site only; add the target vocabulary.
+    let site_schema = inventory.schema.types["dcim.site"].clone();
+    inventory
+        .schema
+        .types
+        .insert("location.site".to_string(), site_schema);
+    inventory.objects = vec![obj(
+        uid(1),
+        "location.site",
+        "slug=fra1",
+        json!({ "status": "active" }),
+    )];
+
+    let (plan, _) = crate::build_plan(&AdoptionBackend, &inventory, &mut state, true, true)
+        .await
+        .unwrap();
+    let mut kinds: Vec<_> = plan
+        .ops
+        .iter()
+        .map(|op| (op.uid(), op.type_name().as_str().to_string()))
+        .collect();
+    kinds.sort();
+    assert_eq!(plan.ops.len(), 2, "{:?}", plan.ops);
+    assert!(
+        plan.ops.iter().all(|op| op.uid() == uid(1)),
+        "one logical object: {kinds:?}"
+    );
+
+    let ordered = sort_ops_for_apply(&plan.ops, &plan.schema);
+    assert!(matches!(ordered[0], Op::Create { .. }));
+    assert!(matches!(ordered[1], Op::Delete { .. }));
+}
+
+/// deletion addresses objects by backend id, so unmanaged same-key twins are
+/// deletable without ever being told apart by key: both plan as deletes, each
+/// carrying its own id, and drift lists both as extra.
+#[tokio::test]
+async fn unmanaged_twins_both_plan_as_deletes_by_id() {
+    struct TwinAdapter;
+
+    #[async_trait::async_trait]
+    impl Observer for TwinAdapter {
+        async fn read(
+            &self,
+            _schema: &alembic_core::Schema,
+            _types: &[TypeName],
+            _state: &StateStore,
+        ) -> anyhow::Result<ObservedState> {
+            let mut observed = ObservedState::default();
+            for id in [7u64, 9] {
+                observed.insert(ObservedObject {
+                    type_name: t("dcim.site"),
+                    key: key_str("site=dup"),
+                    attrs: attrs_map(json!({ "name": "Ghost", "slug": "dup" })),
+                    backend_id: Some(BackendId::Int(id)),
+                })?;
+            }
+            Ok(observed)
+        }
+    }
+
+    let desired = inv(vec![obj(
+        uid(1),
+        "dcim.site",
+        "site=ams1",
+        json!({ "name": "AMS1", "slug": "ams1" }),
+    )]);
+    let mut state = StateStore::new(None, StateData::default());
+    let (plan, _) = crate::build_plan(&TwinAdapter, &desired, &mut state, true, true)
+        .await
+        .unwrap();
+
+    let mut delete_ids: Vec<_> = plan
+        .ops
+        .iter()
+        .filter_map(|op| match op {
+            Op::Delete { backend_id, .. } => backend_id.clone(),
+            _ => None,
+        })
+        .collect();
+    delete_ids.sort_by_key(|id| id.to_string());
+    assert_eq!(delete_ids, vec![BackendId::Int(7), BackendId::Int(9)]);
+
+    let drift = crate::DriftReport::from_plan(&plan);
+    assert_eq!(drift.extra.len(), 2, "both twins surface as extra");
 }

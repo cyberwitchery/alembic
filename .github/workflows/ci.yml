@@ -22,6 +22,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # needs no toolchain, so it runs before the cargo setup
+      - name: Release publish list
+        run: scripts/check-publish-list.sh
+
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -46,7 +50,9 @@ jobs:
   coverage:
     name: coverage
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # a stable-toolchain bump misses the cargo cache, and a job the budget
+    # cancels never saves one, so the budget has to cover a cold build.
+    timeout-minutes: 30
     env:
       RUSTFLAGS: "-C debuginfo=0"
       CARGO_TARGET_DIR: target/ci

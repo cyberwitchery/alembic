@@ -9,13 +9,16 @@ schema:
     dcim.device:
       key: {name: {type: slug}}
       fields:
-        name: {type: string}
+        name: {type: slug}
         site: {type: ref, target: dcim.site}
         role: {type: string}
     dcim.interface:
-      key: {name: {type: slug}}
+      # unique per device, so the key is (device, name).
+      key:
+        device: {type: ref, target: dcim.device}
+        name: {type: slug}
       fields:
-        name: {type: string}
+        name: {type: slug}
         device: {type: ref, target: dcim.device}
         type: {type: string}
     ipam.ip_address:
@@ -34,7 +37,7 @@ objects:
     attrs: {name: "leaf01", site: "a4d6a0c3-4e73-4a76-b216-4d38f8c55f3d", role: "leaf"}
   - uid: "5a1c43a4-4f52-4d07-8a2f-88ad1fbdf8c0"
     type: dcim.interface
-    key: {name: "eth0"}
+    key: {device: "7b8f7a92-8fd0-4667-9a4b-9f3b5c9a4b1a", name: "eth0"}
     attrs: {name: "eth0", device: "7b8f7a92-8fd0-4667-9a4b-9f3b5c9a4b1a", type: "1000base-t"}
   - uid: "c4a0c0f0-ef8a-4c7f-9b0a-2ff3a4d14fd1"
     type: ipam.ip_address

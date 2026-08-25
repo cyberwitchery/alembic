@@ -18,7 +18,7 @@ a site and a device
     dcim.device:
       key: {name: {type: slug}}
       fields:
-        name: {type: string}
+        name: {type: slug}
         site: {type: ref, target: dcim.site}   # a foreign key in the generated model
 ```
 

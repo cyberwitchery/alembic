@@ -702,7 +702,7 @@ async fn test_observe_with_results_path() {
         .unwrap();
 
     mock.assert();
-    assert_eq!(state.by_key.len(), 2);
+    assert_eq!(state.len(), 2);
 }
 
 #[tokio::test]
@@ -737,11 +737,7 @@ async fn test_observe_resolves_ref_ids_to_uids() {
         .unwrap();
 
     mock.assert();
-    let device = observed
-        .by_key
-        .values()
-        .next()
-        .expect("expected observed device");
+    let device = observed.objects().next().expect("expected observed device");
     assert_eq!(
         device.attrs.get("site"),
         Some(&serde_json::Value::String(site_uid.to_string()))
@@ -773,7 +769,8 @@ async fn test_import_resolves_bare_ref_ids_from_the_observation() {
     let adapter = GenericAdapter::new(test_config(&server.base_url())).unwrap();
     let schema = test_schema();
 
-    let report = alembic_engine::import_inventory(&adapter, &schema, &[])
+    let stateless = StateStore::new(None, StateData::default());
+    let report = alembic_engine::import_inventory(&adapter, &schema, &[], &stateless)
         .await
         .unwrap();
 
@@ -825,7 +822,7 @@ async fn test_observe_without_results_path() {
         .unwrap();
 
     mock.assert();
-    assert_eq!(state.by_key.len(), 2);
+    assert_eq!(state.len(), 2);
 }
 
 #[tokio::test]
@@ -853,7 +850,7 @@ async fn test_observe_all_types() {
 
     device_mock.assert();
     site_mock.assert();
-    assert_eq!(state.by_key.len(), 2);
+    assert_eq!(state.len(), 2);
 }
 
 #[tokio::test]
@@ -876,8 +873,8 @@ async fn test_observe_string_id() {
         .await
         .unwrap();
 
-    assert_eq!(state.by_key.len(), 1);
-    let obj = state.by_key.values().next().unwrap();
+    assert_eq!(state.len(), 1);
+    let obj = state.objects().next().unwrap();
     assert_eq!(
         obj.backend_id,
         Some(BackendId::String("uuid-123".to_string()))
@@ -1025,7 +1022,7 @@ async fn test_apply_create_then_observe_round_trips_the_key() {
         .unwrap();
     list.assert();
 
-    let obj = observed.by_key.values().next().unwrap();
+    let obj = observed.objects().next().unwrap();
     assert_eq!(obj.key, key);
     assert_eq!(obj.backend_id, Some(BackendId::Int(1)));
 }
@@ -1855,6 +1852,58 @@ async fn test_apply_create_conflict_reuses_existing() {
 }
 
 #[tokio::test]
+async fn test_apply_create_conflict_with_two_key_matches_is_refused() {
+    // a conflict-recovery lookup finding two backend objects under the key
+    // refuses naming both ids, never adopting one of them.
+    let server = MockServer::start();
+    let _create = server.mock(|when, then| {
+        when.method(POST).path("/api/sites");
+        then.status(409);
+    });
+    let _lookup = server.mock(|when, then| {
+        when.method(GET).path("/api/sites");
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(serde_json::json!([
+                {"id": 7, "name": "fra1"},
+                {"id": 9, "name": "fra1"}
+            ]));
+    });
+
+    let config = test_config(&server.base_url());
+    let adapter = GenericAdapter::new(config).unwrap();
+    let schema = test_schema();
+
+    let uid = Uid::new_v4();
+    let mut key = BTreeMap::new();
+    key.insert("name".to_string(), serde_json::json!("fra1"));
+    let mut attrs = BTreeMap::new();
+    attrs.insert("name".to_string(), serde_json::json!("fra1"));
+
+    let ops = vec![Op::Create {
+        uid,
+        type_name: TypeName::new("site".to_string()),
+        desired: alembic_core::Object {
+            uid,
+            type_name: TypeName::new("site".to_string()),
+            key: Key::from(key),
+            attrs: attrs.into(),
+            source: None,
+        },
+    }];
+
+    let state = new_state_store();
+    let err = adapter.write(&schema, &ops, &state).await.unwrap_err();
+    let chain = format!("{err:#}");
+    assert!(
+        chain.contains("2 backend objects match the site key"),
+        "{chain}"
+    );
+    assert!(chain.contains("backend ids 7, 9"), "{chain}");
+    assert!(chain.contains("cannot pick one"), "{chain}");
+}
+
+#[tokio::test]
 async fn test_apply_create_conflict_recovers_through_results_path() {
     // recovery must extract the list identically to observation, including the
     // `results_path`-wrapped shape: device wraps its list in "results" (unlike
@@ -2032,8 +2081,7 @@ fn paged_config(base_url: &str, next_path: &str) -> GenericConfig {
 
 fn observed_names(state: &ObservedState) -> Vec<String> {
     let mut names: Vec<String> = state
-        .by_key
-        .values()
+        .objects()
         .filter_map(|object| object.attrs.get("name")?.as_str().map(str::to_string))
         .collect();
     names.sort();

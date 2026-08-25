@@ -11,9 +11,9 @@ use alembic_core::{
 };
 use alembic_engine::{
     apply_non_delete_journaled, build_key_from_schema, collect_tag_names, describe_missing_refs,
-    is_missing_ref_error, query_filters_from_key, resolve_nested_ref_uid, Adapter, AppliedOp,
-    ApplyReport, BackendId, Emitter, ObservedObject, ObservedState, Observer, Op, ProvisionReport,
-    RetryApplyDriver,
+    is_missing_ref_error, query_filters_from_key, resolve_nested_ref_uid,
+    resolve_ref_keyed_identity, Adapter, AppliedOp, ApplyReport, BackendId, Emitter, ObservedState,
+    Observer, Op, ProvisionReport, RawNode, RetryApplyDriver,
 };
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
@@ -31,7 +31,7 @@ impl Observer for NautobotAdapter {
         state_store: &alembic_engine::StateStore,
     ) -> Result<ObservedState> {
         let registry: ObjectTypeRegistry = self.client.fetch_object_types().await?;
-        let mappings = state_mappings(state_store);
+        let mut mappings = state_mappings(state_store);
 
         let requested: BTreeSet<TypeName> = if types.is_empty() {
             // empty means every schema-declared type; skip backend types the schema omits.
@@ -50,43 +50,51 @@ impl Observer for NautobotAdapter {
                 .info_for(&type_name)
                 .ok_or_else(|| anyhow!("unsupported type {}", type_name))?
                 .clone();
-            let type_schema = schema
+            schema
                 .types
                 .get(type_name.as_str())
-                .ok_or_else(|| anyhow!("missing schema for {}", type_name))?
-                .clone();
+                .ok_or_else(|| anyhow!("missing schema for {}", type_name))?;
             let client = Arc::clone(&self.client);
-            let registry = registry.clone();
-            let mappings = mappings.clone();
-            let schema = schema.clone();
 
             tasks.push(tokio::spawn(async move {
                 let resource: Resource<Value> = client.resource(info.endpoint.clone());
                 let objects = client.list_all(&resource, None).await?;
-                let mut observed = Vec::new();
+                let mut raw = Vec::new();
                 for object in objects {
-                    let (backend_id, mut attrs) = extract_attrs(object)?;
-                    normalize_attrs(&mut attrs, &type_schema, &schema, &registry, &mappings);
-                    let key = build_key_from_schema(&type_schema, &attrs)
-                        .with_context(|| format!("build key for {}", type_name))?;
-                    observed.push(ObservedObject {
+                    let (backend_id, attrs) = extract_attrs(object)?;
+                    raw.push(RawNode {
                         type_name: type_name.clone(),
-                        key,
+                        backend_id: BackendId::String(backend_id),
                         attrs,
-                        backend_id: Some(BackendId::String(backend_id)),
                     });
                 }
-                Ok::<Vec<ObservedObject>, anyhow::Error>(observed)
+                Ok::<Vec<RawNode>, anyhow::Error>(raw)
             }));
         }
 
+        let mut raw = Vec::new();
+        for result in futures::future::join_all(tasks).await {
+            raw.extend(result??);
+        }
+
+        let observed = resolve_ref_keyed_identity(
+            &raw,
+            schema,
+            &mut mappings,
+            |node, type_schema, mappings| {
+                let mut attrs = node.attrs.clone();
+                normalize_attrs(&mut attrs, type_schema, schema, &registry, mappings);
+                attrs
+            },
+            |node, type_schema, attrs| {
+                build_key_from_schema(type_schema, attrs)
+                    .with_context(|| format!("build key for {}", node.type_name))
+            },
+        )?;
+
         let mut state = ObservedState::default();
-        let results = futures::future::join_all(tasks).await;
-        for result in results {
-            let objects = result??;
-            for object in objects {
-                state.insert(object)?;
-            }
+        for object in observed {
+            state.insert(object)?;
         }
 
         Ok(state)
@@ -291,13 +299,20 @@ impl Emitter for NautobotAdapter {
             }
         }
 
-        // existing custom fields: converge only the properties the schema declares.
+        // existing custom fields: converge only the properties the schema declares
+        // and the declared choices the field does not offer yet.
         let mut updated_fields = Vec::new();
         // untyped: the patch response is not read, so it need not deserialize
         // into the vendor's custom field model.
         let custom_fields: Resource<Value> = self.client.resource("extras/custom-fields/".into());
         for update in &plan.updates {
-            custom_fields.patch(&update.field_id, &update.patch).await?;
+            if let Some(patch) = &update.patch {
+                custom_fields.patch(&update.field_id, patch).await?;
+            }
+            if !update.missing_choices.is_empty() {
+                self.create_custom_field_choices(&update.field_id, &update.missing_choices)
+                    .await?;
+            }
             updated_fields.extend(update.declarations.iter().cloned());
         }
 
@@ -335,13 +350,15 @@ struct CustomFieldPlan<'a> {
     updates: Vec<PlannedFieldUpdate>,
 }
 
-/// an existing custom field to converge, with the patch that does it: only the
-/// properties the schema declares and the backend disagrees on.
+/// an existing custom field to converge: the properties the schema declares and
+/// the backend disagrees on, and the declared choices it does not offer yet.
 struct PlannedFieldUpdate {
     /// every `type.field` declaration this one backend field answers.
     declarations: Vec<String>,
     field_id: String,
-    patch: Value,
+    /// `None` when only the choices move.
+    patch: Option<Value>,
+    missing_choices: Vec<(String, usize)>,
 }
 
 /// the declarations landing on one backend custom field, accumulated so they can
@@ -349,6 +366,8 @@ struct PlannedFieldUpdate {
 struct SharedCustomField {
     field_name: String,
     current: ExistingCustomField,
+    /// what nautobot reports the field is, which decides whether it takes choices.
+    backend_type: Option<String>,
     desired: Map<String, Value>,
     choices: Vec<String>,
     declarations: Vec<String>,
@@ -415,12 +434,15 @@ impl NautobotAdapter {
                     let declared = format!("{type_name}.{field_name}");
                     let Some(field_id) = def.id.clone() else {
                         // nautobot listed the field without an id, so it can be
-                        // detected but not patched. saying so beats exiting 0 with
-                        // the divergence unreported.
-                        if custom_field_update_payload(&def.current, &payload).is_some() {
+                        // detected but neither patched nor keyed on to read its
+                        // choices. saying so beats exiting 0 with the divergence
+                        // unreported.
+                        if custom_field_update_payload(&def.current, &payload).is_some()
+                            || !declared_choices(field_schema).is_empty()
+                        {
                             tracing::warn!(
                                 field = %declared,
-                                "existing custom field diverges from the schema, but nautobot reported no id to patch it by"
+                                "existing custom field diverges from the schema or declares choices, but nautobot reported no id to write either by"
                             );
                         }
                         continue;
@@ -429,6 +451,7 @@ impl NautobotAdapter {
                         SharedCustomField {
                             field_name: field_name.clone(),
                             current: def.current.clone(),
+                            backend_type: def.field_type.clone(),
                             desired: Map::new(),
                             choices: Vec::new(),
                             declarations: Vec::new(),
@@ -455,19 +478,61 @@ impl NautobotAdapter {
             }
         }
 
+        // a field the model declares as an enum but nautobot holds as another type
+        // takes no choices, and a live field is never retyped, so no run clears
+        // it: warn rather than post into it and report it converged. its other
+        // properties still converge, so one mistyped field does not stall a run.
+        for shared in shared_fields.values_mut() {
+            if shared.choices.is_empty() || takes_choices(shared.backend_type.as_deref()) {
+                continue;
+            }
+            let declared = shared
+                .desired
+                .get("type")
+                .and_then(|declared| declared.as_str())
+                .unwrap_or_default();
+            tracing::warn!(
+                fields = %shared.declarations.join(", "),
+                declared = %declared,
+                backend = %shared.backend_type.as_deref().unwrap_or("none"),
+                "declared choices not posted: nautobot holds this custom field as another type"
+            );
+            shared.choices.clear();
+        }
+
+        // one read for every field's choices, and only when a declaration that
+        // landed on an existing field carries any: a model without enums must not
+        // cost a request.
+        let current_choices = if shared_fields
+            .values()
+            .any(|shared| !shared.choices.is_empty())
+        {
+            self.client.fetch_custom_field_choices().await?
+        } else {
+            BTreeMap::new()
+        };
+
         // one patch per backend field, computed once every declaration on it has
         // been merged: a property another type already agrees with the backend on
         // must not be planned away by this one.
         let mut updates = Vec::new();
         for (field_id, shared) in shared_fields {
-            let Some(patch) =
-                custom_field_update_payload(&shared.current, &Value::Object(shared.desired))
-            else {
+            let patch =
+                custom_field_update_payload(&shared.current, &Value::Object(shared.desired));
+            let choices = missing_choices(&shared.choices, current_choices.get(&field_id));
+            if patch.is_none() && choices.is_empty() {
                 continue;
-            };
-            // each declaration carries what the patch would write, so the
-            // preview names the change rather than only the field.
-            let changes = describe_custom_field_update(&shared.current, &patch).join(", ");
+            }
+            // each declaration carries what the write would do, so the preview
+            // names the change rather than only the field.
+            let mut changes = patch
+                .as_ref()
+                .map(|patch| describe_custom_field_update(&shared.current, patch))
+                .unwrap_or_default();
+            if !choices.is_empty() {
+                changes.push(describe_added_choices(&choices));
+            }
+            let changes = changes.join(", ");
             updates.push(PlannedFieldUpdate {
                 declarations: shared
                     .declarations
@@ -476,6 +541,7 @@ impl NautobotAdapter {
                     .collect(),
                 field_id,
                 patch,
+                missing_choices: choices,
             });
         }
 
@@ -615,6 +681,8 @@ impl NautobotAdapter {
 
     /// list the endpoint and return the backend id of the object whose key matches,
     /// or `None` when no such object exists. used to recover from a create conflict.
+    /// a key matching several backend objects is an error naming the count:
+    /// alembic never picks among same-key objects.
     async fn lookup_backend_id(
         &self,
         type_name: &TypeName,
@@ -626,6 +694,15 @@ impl NautobotAdapter {
         let query = query_from_key(type_schema, key, resolved)?;
         let resource: Resource<Value> = self.client.resource(info.endpoint.clone());
         let page = resource.list(Some(query)).await?;
+        if page.count > 1 {
+            return Err(anyhow!(
+                "{} backend objects match the {} key {}; alembic cannot pick one, so \
+                 resolve the collision or key the type the way the backend scopes uniqueness",
+                page.count,
+                type_name,
+                alembic_core::key_string(key)
+            ));
+        }
         let Some(item) = page.results.into_iter().next() else {
             return Ok(None);
         };
@@ -670,12 +747,12 @@ impl NautobotAdapter {
         let resource = self.client.extras().custom_fields();
         match resource.create(&payload).await {
             Ok(created) => {
-                let choices = declared_choices(field_schema);
+                let choices = missing_choices(declared_choices(field_schema), None);
                 if !choices.is_empty() {
                     let id = created
                         .id
                         .ok_or_else(|| anyhow!("custom field create returned no id"))?;
-                    self.create_custom_field_choices(&id.to_string(), choices)
+                    self.create_custom_field_choices(&id.to_string(), &choices)
                         .await?;
                 }
                 Ok(true)
@@ -686,10 +763,9 @@ impl NautobotAdapter {
                     .get(type_name.as_str())
                     .is_some_and(|fields| fields.contains(field_name))
                 {
-                    // choices belong to the create, so an existing field keeps the
-                    // ones it was created with: this adapter never updates a field
-                    // it did not create (the same rule `validation_regex` follows),
-                    // and re-posting them would duplicate whoever won the race.
+                    // the plan saw no field to converge, so posting choices here
+                    // would duplicate whoever won the race. the next run finds the
+                    // field and posts the ones it lacks.
                     tracing::warn!(
                         type_name = %type_name,
                         field = %field_name,
@@ -703,22 +779,26 @@ impl NautobotAdapter {
         }
     }
 
-    /// one choice per declared value, weighted in declaration order so nautobot
-    /// lists them the way the model declares them. nautobot's writable custom
-    /// field carries no inline `choices`, so they can only follow the create.
+    /// post each choice at the weight the caller computed. nautobot's writable
+    /// custom field carries no inline `choices`, so they follow the create or a
+    /// later converge.
     ///
     /// posts through a json resource, not `extras().custom_field_choices()`:
     /// that one decodes into the generated `CustomFieldChoice`, whose nested
     /// `custom_field.id` generates as an empty struct, so a create nautobot
     /// accepted would still fail to decode.
-    async fn create_custom_field_choices(&self, field_id: &str, values: &[String]) -> Result<()> {
+    async fn create_custom_field_choices(
+        &self,
+        field_id: &str,
+        values: &[(String, usize)],
+    ) -> Result<()> {
         let resource: Resource<Value> = self
             .client
             .resource("extras/custom-field-choices/".to_string());
-        for (index, value) in values.iter().enumerate() {
+        for (value, weight) in values {
             let payload = serde_json::json!({
                 "value": value,
-                "weight": (index + 1) * 100,
+                "weight": weight,
                 "custom_field": field_id,
             });
             resource
@@ -743,6 +823,12 @@ fn nautobot_custom_field_type(field_schema: &FieldSchema) -> String {
     }
 }
 
+/// whether a live field of this type carries choices at all. `None` is nautobot
+/// naming no type, which a real one does not do: unknown is not a select.
+fn takes_choices(backend_type: Option<&str>) -> bool {
+    matches!(backend_type, Some("select" | "multi-select"))
+}
+
 /// the values a `select`/`multi-select` field offers, in declaration order.
 /// empty for every other type.
 fn declared_choices(field_schema: &FieldSchema) -> &[String] {
@@ -754,6 +840,32 @@ fn declared_choices(field_schema: &FieldSchema) -> &[String] {
         },
         _ => &[],
     }
+}
+
+/// the declared choices a field does not offer yet, each at the weight its
+/// declared position implies. a value declared between two the backend already
+/// has can therefore tie one of their weights, which nautobot allows and orders
+/// itself.
+fn missing_choices(
+    declared: &[String],
+    current: Option<&BTreeSet<String>>,
+) -> Vec<(String, usize)> {
+    declared
+        .iter()
+        .enumerate()
+        .filter(|(_, value)| !current.is_some_and(|current| current.contains(*value)))
+        .map(|(index, value)| (value.clone(), (index + 1) * 100))
+        .collect()
+}
+
+/// what posting them would add, worded the way `describe_custom_field_update`
+/// words a property. additive, so only the values the field gains.
+fn describe_added_choices(choices: &[(String, usize)]) -> String {
+    let values: Vec<Value> = choices
+        .iter()
+        .map(|(value, _)| Value::String(value.clone()))
+        .collect();
+    format!("choices + {}", Value::Array(values))
 }
 
 /// the create payload for a custom field on a nautobot model.
@@ -848,33 +960,6 @@ fn normalize_attrs(
             attrs.insert(key, normalized);
         }
     }
-    if let (Some(Value::String(kind)), Some(id_value)) = (
-        attrs.remove("assigned_object_type"),
-        attrs.remove("assigned_object_id"),
-    ) {
-        if kind == "dcim.interface" {
-            // Nautobot: assigned_object_id is UUID string
-            if let Some(str_val) = as_string(&id_value) {
-                if let Some(uid) = mappings.uid_for("dcim.interface", &str_val) {
-                    attrs.insert(
-                        "assigned_interface".to_string(),
-                        Value::String(uid.to_string()),
-                    );
-                }
-            }
-        }
-    }
-    if let (Some(Value::String(scope)), Some(id_value)) =
-        (attrs.remove("scope_type"), attrs.remove("scope_id"))
-    {
-        if scope == "dcim.site" {
-            if let Some(str_val) = as_string(&id_value) {
-                if let Some(uid) = mappings.uid_for("dcim.site", &str_val) {
-                    attrs.insert("site".to_string(), Value::String(uid.to_string()));
-                }
-            }
-        }
-    }
 }
 
 fn normalize_value(
@@ -921,13 +1006,6 @@ fn normalize_value(
             Value::Object(normalized)
         }
         other => other,
-    }
-}
-
-fn as_string(value: &Value) -> Option<String> {
-    match value {
-        Value::String(s) => Some(s.clone()),
-        _ => None,
     }
 }
 
@@ -1775,9 +1853,9 @@ mod tests {
         assert!(payload.get("validation_regex").is_none());
     }
 
-    // a field that already exists keeps the choices it was created with: the
-    // create is the only thing that writes them, so a converged apply (and a
-    // lost race) posts none and duplicates nothing.
+    // the create's race fallback posts no choices: the plan that converges them
+    // ran before this field existed, so posting here would duplicate whoever won
+    // the race rather than converge anything.
     #[tokio::test]
     async fn test_existing_custom_field_posts_no_choices() {
         use httpmock::Method::{GET, POST};
@@ -1890,6 +1968,56 @@ mod tests {
         );
         assert_eq!(payload.get("type").unwrap(), &json!("select"));
         assert!(payload.get("validation_regex").is_none());
+    }
+
+    #[test]
+    fn test_missing_choices_weights_by_declared_position() {
+        let declared = ["core", "agg", "edge"].map(str::to_string);
+
+        // nothing offered yet is the create: the whole list, in order.
+        assert_eq!(
+            missing_choices(&declared, None),
+            vec![
+                ("core".to_string(), 100),
+                ("agg".to_string(), 200),
+                ("edge".to_string(), 300),
+            ],
+        );
+
+        // one already offered is left alone, and the rest keep the weight their
+        // declared position implies rather than being renumbered around it.
+        let current = BTreeSet::from(["core".to_string(), "edge".to_string()]);
+        assert_eq!(
+            missing_choices(&declared, Some(&current)),
+            vec![("agg".to_string(), 200)],
+        );
+
+        assert!(
+            missing_choices(&declared, Some(&BTreeSet::from_iter(declared.clone()))).is_empty()
+        );
+    }
+
+    // the create needs no gate of its own: the field types that declare choices
+    // are exactly the ones it writes as a select.
+    #[test]
+    fn test_a_declaration_carrying_choices_creates_a_field_that_takes_them() {
+        let values = vec!["core".to_string(), "edge".to_string()];
+        let enum_type = FieldType::Enum {
+            values: values.clone(),
+        };
+        for r#type in [
+            enum_type.clone(),
+            FieldType::List {
+                item: Box::new(enum_type),
+            },
+        ] {
+            let schema = field_schema(r#type, None);
+            assert!(!declared_choices(&schema).is_empty());
+            assert!(takes_choices(Some(&nautobot_custom_field_type(&schema))));
+        }
+        assert!(!takes_choices(Some(&nautobot_custom_field_type(
+            &field_schema(FieldType::String, None)
+        ))));
     }
 
     #[test]

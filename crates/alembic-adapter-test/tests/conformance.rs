@@ -200,6 +200,124 @@ fn read_null_result_still_rejected() {
 }
 
 #[test]
+fn read_values_outside_the_value_space_fail() {
+    // the read half of the value-space contract: a protocol-shaped answer whose
+    // values alembic's own validation rejects is not a conformant read.
+    let case = Case {
+        name: "read-bad-date".into(),
+        request: json!({
+            "version": 1, "setup": {}, "method": "read",
+            "schema": { "types": { "a.thing": {
+                "key": { "name": { "type": "string" } },
+                "fields": { "when": { "type": "date" } }
+            }}},
+            "types": ["a.thing"], "state": { "mappings": {} }
+        }),
+        expect: Expect {
+            ok: true,
+            result: None,
+            error: None,
+        },
+    };
+    let outcomes = run_cases(
+        &sh(
+            r#"cat >/dev/null; printf '{"ok":true,"result":[{"type_name":"a.thing","key":{"name":"x"},"attrs":{"when":"2026-02-30"}}]}\n'"#,
+        ),
+        TIMEOUT,
+        std::slice::from_ref(&case),
+    );
+    assert!(
+        !outcomes[0].passed(),
+        "a read answering an impossible date must fail"
+    );
+    assert!(
+        message(&outcomes[0]).contains("leaves alembic's value space"),
+        "{}",
+        message(&outcomes[0])
+    );
+}
+
+#[test]
+fn read_ref_holding_a_backend_id_fails() {
+    // refs in observed attrs are uids; a backend id there fails conformance the
+    // way `plan` would refuse it, so the adapter learns before its first user.
+    let case = Case {
+        name: "read-backend-id-ref".into(),
+        request: json!({
+            "version": 1, "setup": {}, "method": "read",
+            "schema": { "types": { "a.thing": {
+                "key": { "name": { "type": "string" } },
+                "fields": { "peer": { "type": "ref", "target": "a.thing" } }
+            }}},
+            "types": ["a.thing"], "state": { "mappings": {} }
+        }),
+        expect: Expect {
+            ok: true,
+            result: None,
+            error: None,
+        },
+    };
+    let outcomes = run_cases(
+        &sh(
+            r#"cat >/dev/null; printf '{"ok":true,"result":[{"type_name":"a.thing","key":{"name":"x"},"attrs":{"peer":7}}]}\n'"#,
+        ),
+        TIMEOUT,
+        std::slice::from_ref(&case),
+    );
+    assert!(
+        !outcomes[0].passed(),
+        "a backend id in a ref field must fail"
+    );
+    assert!(
+        message(&outcomes[0]).contains("leaves alembic's value space"),
+        "{}",
+        message(&outcomes[0])
+    );
+}
+
+#[test]
+fn read_values_inside_the_value_space_pass() {
+    // a ref naming its target by the target's `(type, key)`-derived uid resolves,
+    // so a well-behaved read still passes with the check in place.
+    let peer_uid = alembic_core::uid_v5(
+        "a.thing",
+        &alembic_core::key_string(&{
+            let mut key = std::collections::BTreeMap::new();
+            key.insert("name".to_string(), serde_json::Value::String("y".into()));
+            alembic_core::Key(key)
+        }),
+    );
+    let case = Case {
+        name: "read-good".into(),
+        request: json!({
+            "version": 1, "setup": {}, "method": "read",
+            "schema": { "types": { "a.thing": {
+                "key": { "name": { "type": "string" } },
+                "fields": { "peer": { "type": "ref", "target": "a.thing" } }
+            }}},
+            "types": ["a.thing"], "state": { "mappings": {} }
+        }),
+        expect: Expect {
+            ok: true,
+            result: None,
+            error: None,
+        },
+    };
+    let outcomes = run_cases(
+        &sh(&format!(
+            r#"cat >/dev/null; printf '{{"ok":true,"result":[{{"type_name":"a.thing","key":{{"name":"x"}},"attrs":{{"peer":"{peer_uid}"}}}},{{"type_name":"a.thing","key":{{"name":"y"}},"attrs":{{}}}}]}}\n'"#,
+        )),
+        TIMEOUT,
+        std::slice::from_ref(&case),
+    );
+    assert!(
+        outcomes[0].passed(),
+        "a conformant read must still pass: {:?}",
+        outcomes[0].failure
+    );
+}
+
+#[test]
 fn rejects_bad_payload() {
     let outcomes = run_builtin(
         &sh(r#"cat >/dev/null; printf '{"ok":true,"result":"nope"}\n'"#),
@@ -954,8 +1072,7 @@ fn a_misspelled_schema_delete_fails() {
 #[test]
 fn a_misspelled_result_key_fails() {
     // one level up, same gate: preview_schema is allowed to answer `(true, None,
-    // None)`, so a typo'd `result` reads as "cannot preview" and the run skips the
-    // --allow-delete refusal rather than hitting it.
+    // None)`, so a typo'd `result` reads as "cannot preview" and refuses the run.
     let outcomes = run_builtin(
         &sh(&emitter_reporting_deletes("resutl", "deleted_object_types")),
         TIMEOUT,

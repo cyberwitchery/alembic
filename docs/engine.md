@@ -6,12 +6,14 @@ the engine is responsible for loading, validating, planning, and applying change
 
 1) load inventory files (supports `include` / `imports`)
 2) validate object envelopes, keys, and schema references
-3) observe backend state via adapter (default scope: desired + schema types)
+3) observe backend state via adapter (default scope: desired + schema types). the observation is raw: backend ids must be unique, key ambiguity is data (see `docs/identity.md`, key ambiguity)
 4) bootstrap state mappings by key when missing
 5) plan deterministic operations
 6) provision schema primitives on apply (custom fields/custom objects where supported)
 7) apply operations in dependency order
 8) optionally import canonical inventory from backend state
+
+an object keyed on a ref only matches by key once that ref reads back in uid space, so an adapter resolves ref-keyed identity within its own read (`resolve_ref_keyed_identity`) rather than leaning on state.
 
 ## validation
 
@@ -54,12 +56,15 @@ diffing is **additive-only**: only fields declared in your desired inventory are
 
 comparison is type-aware: for a field declared `int` or `float`, values are compared by numeric value (and `list`/`map` fields elementwise), so a backend that returns `1.0` or `"1"` for an int you wrote as `1` does not produce a perpetual update. every other type compares exactly.
 
+an update writes the full declared projection: apply sends every declared field of the object, not only the fields the plan's `changes` listed. `changes` is the plan-time diff against the observation, recorded for review; a plan applied after the backend drifted re-asserts declared fields the plan never mentioned. undeclared fields stay untouched either way.
+
 ## import
 
-import reads backend state via the adapter and emits a canonical inventory:
+import reads backend state via the adapter and emits an inventory in the
+identity space state defines (see `docs/identity.md`):
 
-- `uid` is re-derived as `uid_v5(type, key)` to keep identities stable
-- import observes in the canonical uid space: it ignores the state store, so refs come back as canonical uids rather than the state-mapped ones `plan` observes. a ref the adapter can only report as a backend id is resolved against a `backend id -> canonical uid` index built from the observation itself, to a fixpoint since a key field can itself be a ref
+- identity is assigned state-first: a backend object state already binds keeps its uid, whatever its key says now, and only an object state has never met is minted as `uid_v5(type, key)` from its first-sight identity. `--stateless` drops the memory and mints every uid
+- the read runs with the same state, so refs resolve through the same rule (state authoritative, derivation fills the gaps) and objects and refs land in one uid space. a ref the adapter can only report as a backend id is resolved against a `backend id -> uid` index seeded from state and filled from the observation, to a fixpoint since a key field can itself be a ref
 - **import validates the inventory before writing it**, as `map` validates what it builds: every consumer validates on load, so a file that does not validate has no use. a ref that came out of the index still holding a backend id fails the import naming the cause rather than the symptom -- `no b.interface with that backend id was observed`, not `expected uuid, got number` -- and says which of the three causes it is: the target was not in the observation, the target is keyed on a reference cycle so no uid can be derived for it, or the target has a uid and the adapter reported this key field only in `key` and not in `attrs`, where only `attrs` is normalized. everything else the inventory gets wrong is reported by `validate` in its own words
 - `attrs` are pulled from observed records (including backend custom fields/tags where supported)
 - observed attrs are **projected onto the schema**: any attr whose key is not declared in the type's `fields` is dropped, with a `warn` log naming `<type>.<field>`. server-computed fields (e.g. `last_updated`) are not in the schema and could never be managed, so keeping them would only make the imported inventory fail validation. a type absent from the schema keeps its attrs untouched and then fails the import, naming the types import asked for: the schema you import against is also that list, so a type outside it came back from the adapter unasked rather than being missing from your `-f` (unless the schema declares no types, when the `-f` is the cause and the message says so).

@@ -3,20 +3,32 @@
 use crate::state::StateStore;
 use crate::types::{FieldChange, ObservedState, Op, Plan};
 use alembic_core::{
-    key_string, uid_v5, FieldType, JsonMap, Key, Object, Schema, TypeName, TypeSchema, Uid,
+    key_string, uid_v5, FieldType, JsonMap, Key, Object, Schema, Scope, TypeName, TypeSchema, Uid,
 };
+use anyhow::{Context, Result};
 use serde_json::Value;
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 
-/// build a deterministic plan from desired and observed state.
+/// build a deterministic plan from desired and observed state. `match_by_key`
+/// gates the key fallback: off (--no-adopt), only state-known objects match,
+/// so an unbound declared object plans as a create rather than converging
+/// against a backend object the run refused to identify with. dereferencing an
+/// ambiguous key is the one failure: alembic never picks among same-key
+/// backend objects, so a desired object whose key several of them share is an
+/// error naming every candidate. `scope` bounds what the inventory asserts
+/// completeness over (`docs/inventory.md`): with one, delete candidates (and
+/// so the drift report's `extra`, which is defined off them) are the observed
+/// objects inside it; without one, every observed object of a declared type.
 pub fn plan(
     desired: &[Object],
     observed: &ObservedState,
     state: &StateStore,
     schema: &alembic_core::Schema,
+    scope: Option<&Scope>,
     allow_delete: bool,
-) -> Plan {
+    match_by_key: bool,
+) -> Result<Plan> {
     let mut ops = Vec::new();
     let mut matched = BTreeSet::new();
 
@@ -24,14 +36,22 @@ pub fn plan(
     desired_sorted.sort_by_cached_key(|a| op_sort_key(&a.type_name, &a.key));
 
     for object in desired_sorted {
-        let observed_object = state
+        let state_match = state
             .backend_id(object.type_name.clone(), object.uid)
-            .and_then(|id| observed.by_backend_id.get(&(object.type_name.clone(), id)))
-            .or_else(|| {
-                observed
-                    .by_key
-                    .get(&(object.type_name.clone(), key_string(&object.key)))
-            });
+            .and_then(|id| observed.by_backend_id(&object.type_name, &id));
+        let observed_object = match state_match {
+            Some(found) => Some(found),
+            None if match_by_key => observed
+                .unique_by_key(&object.type_name, &key_string(&object.key))
+                .with_context(|| {
+                    format!(
+                        "cannot match {} {} by key",
+                        object.type_name,
+                        key_string(&object.key)
+                    )
+                })?,
+            None => None,
+        };
 
         if let Some(obs) = observed_object {
             let type_schema = schema.types.get(object.type_name.as_str());
@@ -59,14 +79,19 @@ pub fn plan(
 
     if allow_delete {
         let mut backend_to_uid = BTreeMap::new();
-        for (type_name, mapping) in state.all_mappings() {
-            for (uid, backend_id) in mapping {
+        for (type_name, index) in state.backend_ids() {
+            for (backend_id, uid) in index {
                 backend_to_uid.insert((type_name.clone(), backend_id.clone()), *uid);
             }
         }
-        for ((type_name, backend_id), obs) in &observed.by_backend_id {
+        for (type_name, backend_id, obs) in observed.backend_indexed() {
             if matched.contains(&(type_name.clone(), backend_id.clone())) {
                 continue;
+            }
+            if let Some(scope) = scope {
+                if !scope.contains(type_name.as_str(), &obs.key) {
+                    continue;
+                }
             }
             let uid = backend_to_uid
                 .get(&(type_name.clone(), backend_id.clone()))
@@ -90,7 +115,7 @@ pub fn plan(
         schema_preview: None,
     };
     plan.summary = Some(plan.summary());
-    plan
+    Ok(plan)
 }
 
 /// compute field-level diffs for attrs. `type_schema` drives type-aware value
@@ -670,7 +695,16 @@ mod tests {
             make_attrs(&[("name", json!("FRA1"))]),
         )];
         let observed = ObservedState::default();
-        let result = plan(&desired, &observed, &empty_state(), &empty_schema(), false);
+        let result = plan(
+            &desired,
+            &observed,
+            &empty_state(),
+            &empty_schema(),
+            None,
+            false,
+            true,
+        )
+        .unwrap();
         assert_eq!(result.ops.len(), 1);
         assert!(matches!(&result.ops[0], Op::Create { uid, type_name, .. }
             if *uid == Uid::from_u128(1) && type_name.as_str() == "dcim.site"));
@@ -697,7 +731,16 @@ mod tests {
                 backend_id: Some(BackendId::Int(100)),
             })
             .unwrap();
-        let result = plan(&desired, &observed, &empty_state(), &empty_schema(), false);
+        let result = plan(
+            &desired,
+            &observed,
+            &empty_state(),
+            &empty_schema(),
+            None,
+            false,
+            true,
+        )
+        .unwrap();
         assert_eq!(result.ops.len(), 1);
         match &result.ops[0] {
             Op::Update {
@@ -730,7 +773,16 @@ mod tests {
                 backend_id: Some(BackendId::Int(100)),
             })
             .unwrap();
-        let result = plan(&desired, &observed, &empty_state(), &empty_schema(), false);
+        let result = plan(
+            &desired,
+            &observed,
+            &empty_state(),
+            &empty_schema(),
+            None,
+            false,
+            true,
+        )
+        .unwrap();
         assert!(result.ops.is_empty());
     }
 
@@ -746,7 +798,16 @@ mod tests {
                 backend_id: Some(BackendId::Int(100)),
             })
             .unwrap();
-        let result = plan(&desired, &observed, &empty_state(), &empty_schema(), true);
+        let result = plan(
+            &desired,
+            &observed,
+            &empty_state(),
+            &empty_schema(),
+            None,
+            true,
+            true,
+        )
+        .unwrap();
         assert_eq!(result.ops.len(), 1);
         assert!(matches!(
             &result.ops[0],
@@ -754,6 +815,90 @@ mod tests {
                 backend_id: Some(BackendId::Int(100)),
                 ..
             }
+        ));
+    }
+
+    /// two observed sites, one inside a `slug: fra1` scope. only that one is a
+    /// delete candidate; the neighbor is another inventory's business.
+    #[test]
+    fn plan_scope_bounds_delete_candidates() {
+        let mut observed = ObservedState::default();
+        for (slug, id) in [("fra1", 100), ("ams1", 101)] {
+            observed
+                .insert(ObservedObject {
+                    type_name: TypeName::new("dcim.site"),
+                    key: make_key(slug),
+                    attrs: make_attrs(&[]),
+                    backend_id: Some(BackendId::Int(id)),
+                })
+                .unwrap();
+        }
+        let scope = Scope(BTreeMap::from([(
+            "dcim.site".to_string(),
+            BTreeMap::from([(
+                "slug".to_string(),
+                alembic_core::ScopeValues::One(json!("fra1")),
+            )]),
+        )]));
+        let result = plan(
+            &[],
+            &observed,
+            &empty_state(),
+            &empty_schema(),
+            Some(&scope),
+            true,
+            true,
+        )
+        .unwrap();
+        assert_eq!(result.ops.len(), 1);
+        assert!(matches!(
+            &result.ops[0],
+            Op::Delete {
+                backend_id: Some(BackendId::Int(100)),
+                ..
+            }
+        ));
+    }
+
+    /// a type without a scope entry carries no completeness assertion, and an
+    /// empty entry covers the whole type.
+    #[test]
+    fn plan_scope_entry_presence_decides_the_type() {
+        let mut observed = ObservedState::default();
+        observed
+            .insert(ObservedObject {
+                type_name: TypeName::new("dcim.site"),
+                key: make_key("fra1"),
+                attrs: make_attrs(&[]),
+                backend_id: Some(BackendId::Int(100)),
+            })
+            .unwrap();
+        observed
+            .insert(ObservedObject {
+                type_name: TypeName::new("dcim.device"),
+                key: make_key("leaf01"),
+                attrs: make_attrs(&[]),
+                backend_id: Some(BackendId::Int(200)),
+            })
+            .unwrap();
+        let scope = Scope(BTreeMap::from([(
+            "dcim.device".to_string(),
+            BTreeMap::new(),
+        )]));
+        let result = plan(
+            &[],
+            &observed,
+            &empty_state(),
+            &empty_schema(),
+            Some(&scope),
+            true,
+            true,
+        )
+        .unwrap();
+        assert_eq!(result.ops.len(), 1);
+        assert!(matches!(
+            &result.ops[0],
+            Op::Delete { type_name, .. } if type_name.as_str() == "dcim.device"
         ));
     }
 
@@ -769,7 +914,16 @@ mod tests {
                 backend_id: Some(BackendId::Int(100)),
             })
             .unwrap();
-        let result = plan(&desired, &observed, &empty_state(), &empty_schema(), false);
+        let result = plan(
+            &desired,
+            &observed,
+            &empty_state(),
+            &empty_schema(),
+            None,
+            false,
+            true,
+        )
+        .unwrap();
         assert!(result.ops.is_empty());
     }
 
@@ -790,7 +944,16 @@ mod tests {
                 backend_id: Some(BackendId::Int(100)),
             })
             .unwrap();
-        let result = plan(&desired, &observed, &empty_state(), &empty_schema(), true);
+        let result = plan(
+            &desired,
+            &observed,
+            &empty_state(),
+            &empty_schema(),
+            None,
+            true,
+            true,
+        )
+        .unwrap();
         assert!(result.ops.is_empty());
     }
 
@@ -821,7 +984,16 @@ mod tests {
                 backend_id: Some(BackendId::Int(100)),
             })
             .unwrap();
-        let result = plan(&desired, &observed, &empty_state(), &empty_schema(), true);
+        let result = plan(
+            &desired,
+            &observed,
+            &empty_state(),
+            &empty_schema(),
+            None,
+            true,
+            true,
+        )
+        .unwrap();
         let deletes: Vec<&Op> = result
             .ops
             .iter()
@@ -867,7 +1039,16 @@ mod tests {
                 backend_id: Some(BackendId::Int(200)),
             })
             .unwrap();
-        let result = plan(&desired, &observed, &empty_state(), &empty_schema(), true);
+        let result = plan(
+            &desired,
+            &observed,
+            &empty_state(),
+            &empty_schema(),
+            None,
+            true,
+            true,
+        )
+        .unwrap();
 
         let creates: Vec<_> = result
             .ops
@@ -919,7 +1100,16 @@ mod tests {
                 backend_id: Some(BackendId::Int(100)),
             })
             .unwrap();
-        let result = plan(&desired, &observed, &state, &empty_schema(), false);
+        let result = plan(
+            &desired,
+            &observed,
+            &state,
+            &empty_schema(),
+            None,
+            false,
+            true,
+        )
+        .unwrap();
         assert_eq!(result.ops.len(), 1);
         assert!(matches!(&result.ops[0], Op::Update { .. }));
     }
@@ -949,7 +1139,16 @@ mod tests {
                 backend_id: Some(BackendId::Int(100)),
             })
             .unwrap();
-        let result = plan(&desired, &observed, &state, &empty_schema(), true);
+        let result = plan(
+            &desired,
+            &observed,
+            &state,
+            &empty_schema(),
+            None,
+            true,
+            true,
+        )
+        .unwrap();
         assert_eq!(result.ops.len(), 1);
         assert!(matches!(
             &result.ops[0],
@@ -980,7 +1179,7 @@ mod tests {
             })
             .unwrap();
 
-        let result = plan(&[], &observed, &state, &empty_schema(), true);
+        let result = plan(&[], &observed, &state, &empty_schema(), None, true, true).unwrap();
         assert_eq!(result.ops.len(), 1);
         match &result.ops[0] {
             Op::Delete { uid, .. } => {
@@ -1006,7 +1205,16 @@ mod tests {
             })
             .unwrap();
 
-        let result = plan(&[], &observed, &empty_state(), &empty_schema(), true);
+        let result = plan(
+            &[],
+            &observed,
+            &empty_state(),
+            &empty_schema(),
+            None,
+            true,
+            true,
+        )
+        .unwrap();
         assert_eq!(result.ops.len(), 1);
         match &result.ops[0] {
             Op::Delete { uid, .. } => {

@@ -1,4 +1,5 @@
 use crate::mapping::{supports_feature, tags_from_value};
+use crate::types::ObservedObject;
 use crate::{AdapterApplyError, BackendId, Op, StateStore};
 use alembic_core::{
     key_string, uid_v5, FieldType, JsonMap, Key, Schema, TypeName, TypeSchema, Uid,
@@ -290,15 +291,16 @@ fn value_to_query_value(value: &Value) -> Result<String> {
 }
 
 /// project the state store into a per-type `backend-id -> uid` map, keeping only
-/// the backend ids `extract` accepts (the variant a given adapter retains).
+/// the backend ids `extract` accepts (the variant a given adapter retains). reads
+/// the inverse index, so a backend id resolves to the uid the inventory claims.
 pub fn state_mappings_by_id<I: Ord>(
     state: &StateStore,
     extract: impl Fn(&BackendId) -> Option<I>,
 ) -> BTreeMap<String, BTreeMap<I, Uid>> {
     let mut by_type = BTreeMap::new();
-    for (type_name, mapping) in state.all_mappings() {
+    for (type_name, index) in state.backend_ids() {
         let mut id_to_uid = BTreeMap::new();
-        for (uid, backend_id) in mapping {
+        for (backend_id, uid) in index {
             if let Some(id) = extract(backend_id) {
                 id_to_uid.insert(id, *uid);
             }
@@ -309,7 +311,8 @@ pub fn state_mappings_by_id<I: Ord>(
 }
 
 /// project the state store into a flat `uid -> backend-id` map, keeping only the
-/// backend ids `extract` accepts. companion to [`state_mappings_by_id`].
+/// backend ids `extract` accepts. companion to [`state_mappings_by_id`]. this
+/// direction is single-valued in state itself, so it reads the forward map.
 pub fn resolved_ids_from_state<I>(
     state: &StateStore,
     extract: impl Fn(&BackendId) -> Option<I>,
@@ -353,6 +356,145 @@ impl StateMappings {
             by_type: state_mappings_by_id(state, |b| Some(b.clone())),
         }
     }
+}
+
+/// the per-type `backend-id -> uid` map an adapter resolves refs through, so
+/// [`resolve_ref_keyed_identity`] can learn mappings in the id space each
+/// adapter keeps (netbox integers, nautobot uuids).
+pub trait RefMappings {
+    /// the canonical uid a backend id maps to for `type_name`, if known.
+    fn uid_of(&self, type_name: &str, backend_id: &BackendId) -> Option<Uid>;
+
+    /// record a `backend-id -> uid` mapping for `type_name`.
+    fn learn(&mut self, type_name: &str, backend_id: BackendId, uid: Uid);
+}
+
+impl RefMappings for StateMappings {
+    fn uid_of(&self, type_name: &str, backend_id: &BackendId) -> Option<Uid> {
+        self.uid_for(type_name, backend_id)
+    }
+
+    fn learn(&mut self, type_name: &str, backend_id: BackendId, uid: Uid) {
+        self.insert(type_name, backend_id, uid);
+    }
+}
+
+/// a node as a backend returned it, before its refs are resolved: ref-typed
+/// fields still hold backend ids.
+#[derive(Debug, Clone)]
+pub struct RawNode {
+    /// object type.
+    pub type_name: TypeName,
+    /// the backend's own id for the node.
+    pub backend_id: BackendId,
+    /// attrs as the backend returned them.
+    pub attrs: JsonMap,
+}
+
+/// resolve raw nodes into observed objects whose keys and ref-typed fields are
+/// in uid space, over the single read that produced them.
+///
+/// an object's uid derives from its key, which may itself hold references (an
+/// interface keyed by `(device, name)`), so this runs to a fixpoint: each round
+/// settles the nodes whose key refs are already known, seeding the next, until
+/// nothing new resolves. state is authoritative for the identity of an object
+/// it already maps and derivation only fills the gaps, so an inventory uid that
+/// is not the derived one keeps converging. a reference cycle leaves the
+/// stragglers on backend ids, still internally consistent.
+///
+/// `normalize` rewrites a node's refs through the mappings learned so far and
+/// `build_key` reads the key out of the result: the id space and the error
+/// context are each adapter's own.
+pub fn resolve_ref_keyed_identity<M, N, K>(
+    raw: &[RawNode],
+    schema: &Schema,
+    mappings: &mut M,
+    normalize: N,
+    build_key: K,
+) -> Result<Vec<ObservedObject>>
+where
+    M: RefMappings,
+    N: Fn(&RawNode, &TypeSchema, &M) -> JsonMap,
+    K: Fn(&RawNode, &TypeSchema, &JsonMap) -> Result<Key>,
+{
+    let type_schema = |node: &RawNode| {
+        schema
+            .types
+            .get(node.type_name.as_str())
+            .ok_or_else(|| anyhow!("missing schema for {}", node.type_name))
+    };
+
+    let mut resolved = vec![false; raw.len()];
+    loop {
+        let mut progressed = false;
+        for (i, node) in raw.iter().enumerate() {
+            if resolved[i] {
+                continue;
+            }
+            let type_schema = type_schema(node)?;
+            if !key_refs_resolved(type_schema, &node.attrs, mappings) {
+                continue;
+            }
+            let attrs = normalize(node, type_schema, mappings);
+            let key = build_key(node, type_schema, &attrs)?;
+            let uid = uid_v5(node.type_name.as_str(), &key_string(&key));
+            if mappings
+                .uid_of(node.type_name.as_str(), &node.backend_id)
+                .is_none()
+            {
+                mappings.learn(node.type_name.as_str(), node.backend_id.clone(), uid);
+            }
+            resolved[i] = true;
+            progressed = true;
+        }
+        if !progressed {
+            break;
+        }
+    }
+
+    raw.iter()
+        .map(|node| {
+            let type_schema = type_schema(node)?;
+            let attrs = normalize(node, type_schema, mappings);
+            Ok(ObservedObject {
+                key: build_key(node, type_schema, &attrs)?,
+                type_name: node.type_name.clone(),
+                attrs,
+                backend_id: Some(node.backend_id.clone()),
+            })
+        })
+        .collect()
+}
+
+/// whether every reference-typed *key* field of `attrs` already resolves to a
+/// canonical uid in `mappings`, so the node's own uid can be derived. a key
+/// field that is absent or not a reference imposes no constraint.
+fn key_refs_resolved<M: RefMappings>(
+    type_schema: &TypeSchema,
+    attrs: &JsonMap,
+    mappings: &M,
+) -> bool {
+    for (field, schema) in &type_schema.key {
+        let target = match &schema.r#type {
+            FieldType::Ref { target } | FieldType::ListRef { target } => target,
+            _ => continue,
+        };
+        let Some(value) = attrs.get(field) else {
+            continue;
+        };
+        let items = match value {
+            Value::Array(items) => items.as_slice(),
+            other => std::slice::from_ref(other),
+        };
+        for item in items {
+            if let Some(bid) = backend_id_from_value(item) {
+                if mappings.uid_of(target, &bid).is_none() {
+                    return false;
+                }
+            }
+        }
+    }
+    true
 }
 
 /// project the state store into a flat `uid -> backend-id` map, keeping every

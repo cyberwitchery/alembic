@@ -928,4 +928,34 @@ mod tests {
         journal.delete_backing_file().unwrap();
         assert!(!file_path.exists());
     }
+
+    /// identity is the uid alone, so a retype plans a create and (elsewhere) a
+    /// delete under one uid; the journal keys ops by (uid, type, hash), so the
+    /// new materialization's create is its own entry and marking it done never
+    /// touches another op sharing the uid.
+    #[test]
+    fn ops_sharing_a_uid_across_types_journal_independently() {
+        let dir = tempdir().unwrap();
+        let make = |type_name: &str| Op::Create {
+            uid: Uid::from_u128(9),
+            type_name: TypeName::new(type_name),
+            desired: Object {
+                uid: Uid::from_u128(9),
+                type_name: TypeName::new(type_name),
+                key: Default::default(),
+                attrs: Default::default(),
+                source: None,
+            },
+        };
+        let ops = vec![make("location.site"), make("net.zone")];
+        let mut journal = Journal::load_or_create(dir.path(), "retype", &ops).unwrap();
+        journal.mark_op_as_done(&ops[0], None).unwrap();
+        assert_eq!(journal.done_ops_count(), 1);
+
+        let reloaded = Journal::load_or_create(dir.path(), "retype", &ops).unwrap();
+        let done = reloaded.done_ops();
+        assert_eq!(done.len(), 1);
+        assert_eq!(done[0].1, TypeName::new("location.site"));
+        assert!(!reloaded.is_completed());
+    }
 }

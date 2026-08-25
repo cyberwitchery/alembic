@@ -6,9 +6,10 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-documentation = "https://docs.rs/alembic-file-generator"
 description = "A tool for generating alembic files (for testing)."
 readme = "../../README.md"
+# an internal generator for scale testing, not part of the release
+publish = false
 
 [dependencies]
 alembic-core.workspace = true

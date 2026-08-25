@@ -15,7 +15,8 @@ schema:
     dcim.device:
       key:
         site:
-          type: slug
+          type: ref
+          target: dcim.site
         device:
           type: slug
       fields:
@@ -46,7 +47,7 @@ objects:
   - uid: "bbbbbbbb-0000-0000-0000-000000000001"
     type: dcim.device
     key:
-      site: "ams1"
+      site: "aaaaaaaa-0000-0000-0000-000000000001"
       device: "spine01"
     attrs:
       name: "spine01"
@@ -56,7 +57,7 @@ objects:
   - uid: "bbbbbbbb-0000-0000-0000-000000000002"
     type: dcim.device
     key:
-      site: "ams1"
+      site: "aaaaaaaa-0000-0000-0000-000000000001"
       device: "leaf01"
     attrs:
       name: "leaf01"
@@ -66,7 +67,7 @@ objects:
   - uid: "bbbbbbbb-0000-0000-0000-000000000003"
     type: dcim.device
     key:
-      site: "fra1"
+      site: "aaaaaaaa-0000-0000-0000-000000000002"
       device: "leaf02"
     attrs:
       name: "leaf02"

@@ -2,11 +2,36 @@
 
 ## Unreleased
 
--`apply` rejects a plan file carrying an unknown key rather than dropping it, `schema_preview` included
+- `alembic skill list|show|install` writes out the agent skills the binary carries, `--dir` defaulting to `.agents/skills`; an install replaces only an unchanged Alembic-owned copy unless `--force` is passed, and records the release or source revision it describes (#426)
+- the cli gets an agent guide: the `alembic` skill states the identity and safety contract the command surface does not, `docs/agents.md` explains it, and `scripts/agent_fixtures.sh` exercises it against the fixtures in `fixtures/agent/` (#425)
+- an inventory takes an optional `scope:` block naming what it asserts completeness over, per type with optional key-field values; `--allow-delete` and the drift report's `extra` are defined inside it, so two inventories can share one backend without planning each other's objects as deletes (`docs/inventory.md`) (#413)
+
+- **breaking** a field declared in both `key:` and `fields:` with a different schema fails validation; the shipped examples align the disagreeing `name` fields to their key's `slug` (#311)
+- `alembic-adapter-test` validates a `--cases` read result against the request's schema, so a value outside alembic's value space or a backend id in a ref field fails conformance; types the schema does not declare stay a tolerated superset (#415)
+- **breaking** nautobot observations carry `assigned_object_type`/`assigned_object_id` and `scope_type`/`scope_id` as ordinary attrs; the read-only `assigned_interface` and `site` collapses are gone (#420)
+- **breaking** key ambiguity among observed objects is data, not a read failure: unmanaged backend objects sharing a key no longer deny unrelated plans, and only adopting, key-matching, or importing an ambiguous key fails, naming every candidate
+- `import` refuses an observation whose keys name more than one backend object, listing every ambiguous key and its holders at once
+- an adapter's conflict-recovery lookup refuses a key matching several backend objects instead of adopting the first (netbox, nautobot, infrahub, generic)
+- **breaking** identity is the uid alone: a 1:1 `map` emit and `passthrough` inherit the source uid, so a key rename through a map plans as an update, not create+delete (`docs/identity.md`)
+- **breaking** a multi-emit assigns identity explicitly: every emit needs a `uid:`, a one-element list included
+- `map` emits take `uid: target`, the explicit spelling for minting value identity from the rendered target `(type, key)`
+- **breaking** state is scoped to one backend instance: the file carries a `backend:` stamp, lives at `.alembic/state/<adapter>-<hash>.json`, the postgres row key is `<workspace>/<adapter>-<hash>` with `ALEMBIC_STATE_KEY` as the workspace, any other backend is refused, and an unstamped file with mappings is refused rather than claimed; backend configs take `instance:` to pin the identity
+- **breaking** `import` assigns identity state-first, so a backend rename round-trips as the same object; `--stateless` restores value-identity minting
+- `plan` reports every key adoption and superseded binding on stderr, so `--dry-run` stdout stays raw json, and `--no-adopt` (mutually exclusive with `--allow-delete`) disables key adoption for first contact with a populated backend
+- a same-uid create+delete across two types renders as a `retype`: one logical object re-materialized
+- apply journals are scoped by backend instance, so an interrupted apply resumes only against the same backend; older journals are orphaned once
+- the shipped examples key interfaces by `(device, name)`, the shape backend uniqueness actually has
+- a read returning two objects under one key names both colliding backend ids, not just the key
+- `plan` refuses an observation whose ref-typed fields hold backend ids rather than the target's uid
+- a backend id in state answers to one uid, and the inventory decides which, so planning settles without costing a rename
+- `alembic-adapter-test` fails a `--cases` directory whose subdirectories hold cases it does not load
+- `apply` rejects a plan file carrying an unknown key rather than dropping it, `schema_preview` included
 - external adapters: an unknown key in a provisioning report, an applied operation or the response envelope is rejected
 - provisioning is refused when the adapter cannot preview schema. the rust sdk default now previews an empty report
 - `alembic-adapter-test` writes only when asked. pass `--write-checks`, or a ci run stops certifying the two writing checks
 - `alembic-adapter-test` fails a `--cases` path that resolves to no cases instead of certifying only the built-ins
+- adapters resolve ref-keyed identity within one read, so an inventory imported from a backend converges against that backend (#307)
+- infrahub: state wins for an object it already maps, so a declared uid converges and a second uid stops clearing itself
 - **breaking** external adapters: an unknown key in an observed object, capabilities or apply report is now rejected
 - an external adapter may omit `applied` from a `write` result and `attrs` from a `read` object. a result the host cannot read names the method it answered
 - generic: a plan holding a delete the backend cannot perform is refused before anything is written
@@ -65,6 +90,8 @@
 - peeringdb answers `unsupported type <name>` when a run explicitly asks for a type it does not observe
 - generic adapter: an endpoint config takes `next_path`, the json path to the next-page url, and observe follows that chain
 - generic adapter: a redirect that leaves `base_url`'s origin is refused rather than followed
+- django: a datetime whose rfc 3339 separator is lowercase loads instead of failing at apply (#401)
+- nautobot: a declared enum value the existing `select` field lacks is provisioned as a choice, so a widened enum converges
 
 ## [0.8.0] - 2026-07-29
 

@@ -1,6 +1,7 @@
 # cli
 
-alembic ships a single cli binary with validate, import, map, plan, and apply subcommands.
+alembic ships a single cli binary with validate, import, map, plan, apply and
+skill subcommands.
 
 ## validate
 
@@ -61,6 +62,11 @@ backend adapters are configured via a yaml file passed with `--backend-config`.
 
 unknown keys are rejected: a typo'd option is a parse error naming the field,
 not a silently ignored key that leaves the default in place.
+
+every backend config also takes an optional `instance:`, a stable name for the
+backend instance the state file answers to (see `docs/state.md`); without it
+the identity derives from the config (the normalized url, the output
+directory, or a config fingerprint for external adapters).
 
 netbox:
 
@@ -137,7 +143,9 @@ NETBOX_URL=https://netbox.example.com NETBOX_TOKEN=$NETBOX_TOKEN \
 - creates a deterministic plan
 - against a write-only (emitter) backend such as `django`, which cannot report existing state, plain `plan` produces an all-creates plan against an empty observation, while `--report` is rejected up front (see below)
 - writes json plan to the `-o`/`--output` path (required only for this default write path), and prints a human-readable per-op summary of that plan (create/update/delete, with per-field `from -> to` for updates; long categories are truncated) so you can read what apply would do before applying
-- honors `--allow-delete` if you want delete ops
+- honors `--allow-delete` if you want delete ops; delete candidates are the observed objects the inventory asserts completeness over — bounded by its `scope:` block when one is declared (`docs/inventory.md`), the whole backend per declared type otherwise
+- reports what bootstrapping wrote into identity memory, on stderr like the schema preview so `--dry-run`'s stdout stays raw json: `adopted N existing object(s) by key` names each backend object the run bound to a declared uid, and `superseded:` names any binding an adoption displaced. adoption persists with the plan's state save, so it is never silent; `--no-adopt` disables key adoption (state-known objects still match, everything else plans as a create). it conflicts with `--allow-delete` at parse time: refusing to identify a backend object by key is refusing to know enough to replace it, and their combination would plan the unidentified twin of every declared object as a delete beside its create
+- a uid planned as one create and one delete under two types renders as a `retype`: one logical object re-materialized (see `docs/identity.md`), created under the new type before the old one is deleted
 - without `--provision`, plan asks the backend for a read-only schema preview (what `apply`'s `ensure_schema` would create/delete, writing nothing) and prints it to stderr as `schema preview: ...`; the machine-readable copy rides in the plan's `schema_preview`, and under `--report` (which writes no plan) in the drift report's. backends that cannot preview report `schema preview: unavailable for this backend`
 - `--provision` runs adapter provisioning (`ensure_schema`) before observing backend state; provisioning that would delete custom object types/fields the inventory no longer declares is blocked unless `--allow-delete` is also given (such deletes cascade to their objects on the backend)
 - `--dry-run` prints the raw plan json instead of writing it; it writes no file, so `-o`/`--output` is rejected with it at parse time rather than accepted and ignored
@@ -162,7 +170,7 @@ standalone human-readable summary grouped into three categories:
 
 - **changed**: declared and present on the backend, but one or more fields diverge (lists the per-field `from -> to`)
 - **missing**: declared in intent but absent from the backend
-- **extra**: present on the backend but not declared in intent
+- **extra**: present on the backend but not declared in intent, within what the inventory asserts completeness over (its `scope:` when declared, every declared type otherwise; `docs/inventory.md`)
 
 it is one-way by construction: it only ever describes how observed state diverges
 from intent and never writes observed state back into the inventory or state
@@ -210,7 +218,10 @@ truncated. the json shape:
 }
 ```
 
-every category is always present, so an empty one reads as "no drift here"
+the report also carries `adopted` and `superseded` when the run bound identity
+(see plan above), omitted when empty; they describe identity memory, not
+divergence, so they count towards no category. every category is always
+present, so an empty one reads as "no drift here"
 rather than a missing key, and a report with three empty lists is the json form
 of `no drift: observed backend state matches declared intent`. `schema_preview`
 is not a category and so does not follow that rule: it is the same preview the
@@ -244,6 +255,7 @@ alembic apply -p plan.json -o apply-report.json \
 ```
 
 - applies a plan file
+- an applied update re-asserts every declared field of its object, not only the changes the plan listed: a backend edit to a declared field between plan and apply is converged back, and approving an update under `--interactive` approves that full write. undeclared fields stay untouched (`docs/engine.md`, diff rules)
 - deletes are blocked unless `--allow-delete` is provided; this covers both object deletes and destructive schema provisioning (deleting custom object types/fields the inventory no longer declares, which cascades to their objects)
 - `--interactive` prompts per operation and applies only approved ops
   through the same engine path used by non-interactive apply. one answer is read
@@ -392,8 +404,39 @@ alembic import -f examples/inventory.yaml -o observed.json \
 - `-f` is your inventory; its `schema` selects which types to observe.
 - `-o` receives the observed inventory (ir).
 - output is validated against the inventory's schema before it is written; see `docs/engine.md`.
-- import neither reads nor locks the state store; it observes in the canonical uid space.
+- identity is assigned state-first: a backend object state already binds keeps its uid across backend-side renames, and only never-met objects are minted from their `(type, key)`. import takes the state lock shared and never saves
+- an inventory cannot hold two objects under one `(type, key)`, so a key named by several backend objects fails the import, every ambiguous key and its holders named at once
+- `--stateless` drops the identity memory: every uid is minted from the observed `(type, key)`, so a rename reads as a new object. the mode for one-shot audits and reproducible snapshots
 - `peeringdb` uses `PEERINGDB_API_KEY` for authentication
+
+## skill
+
+the agent skills the binary carries (see `docs/agents.md`). the text is embedded,
+so these commands reach no network, no backend and no state.
+
+```bash
+alembic skill list
+
+alembic skill show alembic
+
+alembic skill install alembic
+alembic skill install alembic --dir /srv/intent/.agents/skills
+```
+
+- `list` prints one `name<tab>summary` line per embedded skill
+- `show` prints the skill's markdown to stdout, for a host that reads no skills
+  directory
+- `install` writes it atomically to `<dir>/<name>/SKILL.md`, `--dir` defaulting
+  to `.agents/skills`, and prints the path it wrote. it replaces an unchanged
+  copy previously installed by Alembic; an unowned or locally modified file is
+  refused unless `--force` is passed
+- what leaves the binary is not quite the file in the repository. the
+  documentation links in a release are pinned from `main` to that version tag;
+  a Git build pins them to its commit, or leaves them on `main` when the checkout
+  is dirty. a trailing stamp identifies the release or unreleased source and an
+  ownership/content marker distinguishes an unchanged Alembic install. a skill
+  is only worth reading when it describes the alembic you are running, which is
+  why it ships inside it rather than being fetched
 
 ## environment variables
 
@@ -409,6 +452,6 @@ alembic import -f examples/inventory.yaml -o observed.json \
 - `ALEMBIC_STATE_BACKEND` (`local`/`file`/`postgres`, default: `local`)
 - `ALEMBIC_STATE_PATH` (optional local state file path override)
 - `ALEMBIC_STATE_POSTGRES_URL` (required when `ALEMBIC_STATE_BACKEND=postgres`)
-- `ALEMBIC_STATE_KEY` (optional logical key in postgres backend, default: `default`)
+- `ALEMBIC_STATE_KEY` (optional workspace namespace for postgres state rows, default: `default`; the row key is `<workspace>/<adapter>-<hash>`)
 - `ALEMBIC_STATE_POSTGRES_TLS` (`disable`/`require`, default: `disable`)
 - `RUST_LOG` (optional; defaults to `warn`, used by cli tracing output)

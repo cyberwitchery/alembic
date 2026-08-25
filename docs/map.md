@@ -61,15 +61,17 @@ rules:
 - an exact type name matches that type (`dcim.site`).
 - a trailing `*` is a prefix glob (`dcim.*` matches every `dcim.` type); a bare
   `*` matches every type.
-- predicates filter the matched objects using mapping's predicate syntax, e.g.
-  `dcim.device[attrs.role=leaf]`. quote the selector in yaml when it contains
-  brackets.
+- predicates filter the matched objects, e.g. `dcim.device[attrs.role=leaf]`.
+  quote the selector in yaml when it contains brackets.
 
 predicates address the same dotted namespace as templates (see vars below), so
 `[attrs.role=leaf]` tests the object's `role` attr and `[key.slug=fra1]` tests
 its key. the operators are `=`, `!=`, existence `[field]`, and absence
-`[!field]`; `=`/`!=` compare a field's scalar rendering, while `[field]` is true
-when the field is present and non-null. chained predicates are ANDed.
+`[!field]`; chained predicates are ANDed.
+
+`=`/`!=` compare a field's scalar rendering, so an absent, null or non-scalar
+field matches neither; select on presence with `[field]`, true when present
+and non-null, or its complement `[!field]`.
 
 ## passthrough
 
@@ -95,9 +97,8 @@ rules:
 passthrough only emits objects no other rule emitted, so a `match: "*"` catch-all
 never collides with a specific rule, whatever the rule order. the passed-through
 type's schema is taken from the input, so the target `schema` need only declare
-the types you actually reshape. refs are rewired as for a 1:1 rule, and a
-passed-through object keeps its `uid_v5(type, key)` identity. `passthrough` cannot
-be combined with `group_by`.
+the types you actually reshape. a passed-through object is genuinely unchanged:
+key, attrs, and uid. `passthrough` cannot be combined with `group_by`.
 
 ## vars
 
@@ -185,32 +186,46 @@ printed as json, and `fail()` exits non-zero with the message.
 
 ## uid
 
-a uid is a derived projection of `(type, key)`, not a stored identity. by default
-an emit's uid is `uid_v5(target_type, target_key)`, recomputed from the target
-vocabulary. this is correct for cross-backend work: the target system has its own
-identity, and the uid is canonical to the target model.
+identity is the uid alone (see `docs/identity.md`), and map hands it on rather
+than recomputing it:
 
-an emit may override its uid, reusing mapping's forms:
+- a **single emit** with no `uid:` inherits the source uid, target-type change
+  included: the emitted object is the same logical object in another
+  vocabulary, so renaming a key through a map stays an update.
+- a **multi-emit** declares every emitted object's uid explicitly, a
+  one-element list included, so reshaping `emit:` into a list cannot silently
+  change identity. `uid: "${uid}"` marks the continuing object of a split;
+  siblings anchor on the source or their own defining value.
+- a **group emit** defaults to value identity, minted from the rendered target
+  `(type, key)`: an aggregate is its group value.
+
+an explicit `uid:` always wins, in three forms:
 
 ```yaml
+uid: "${uid}"              # a uuid-string template
+uid: target                # mint from the rendered target (type, key)
 uid:
   v5:
-    type: "location.site"
-    stable: "slug=${key.slug}"
+    type: "net.zone"
+    stable: "${uid}#zone"  # a deterministic derivation from the inputs
 ```
 
-or a uuid-string template, `uid: "${attrs.external_id}"`.
+`uid: target` is the deliberate identity break: the emit is a new object keyed
+by its target identity, not a translation of its source. it is also the only
+spelling that reproduces the canonical mint, since the canonical key form is
+not reachable from a template.
 
 ## references
 
-references are by uid. when a rule renames a type or reshapes a key, the
-referent's uid changes, so map rewrites the references that point at it.
+references are by uid. under the inherit default a rename moves no uid, so
+refs stay valid untouched. when an emit declares a different identity, map
+rewrites the references that point at it.
 
-for a 1:1 rule (one emit per matched source), this is automatic: map records the
-source-to-target uid for every renamed object and rewrites `ref` / `list_ref`
-attrs through that map in a second pass. the `infra.device.location` ref in
-`examples/map.yaml` is rewired from the source `dcim.site` uid to the new
-`location.site` uid this way, with no extra wiring.
+for a 1:1 rule (one emit per matched source), this is automatic: map records
+the source-to-target uid for every re-identified object and rewrites `ref` /
+`list_ref` attrs through that map in a second pass. under the inherit default
+nothing moves and the pass is a no-op; it earns its keep when an emit declares
+a different identity (`uid: target`, a v5 expression).
 
 ## lookups
 
@@ -309,5 +324,6 @@ chain is a sequence of independently checked translations.
 
 - the compiler sorts objects by type name and key (canonical json of the key map).
 - the same input and spec yield the same ir and plan order.
-- default uids are deterministic functions of the target identity, so identity is
-  stable across runs without a state store.
+- inherited uids come from the input and declared uids are deterministic
+  functions of the rule's inputs, so identity is stable across runs, spec
+  reorderings, and composed one-to-one maps.

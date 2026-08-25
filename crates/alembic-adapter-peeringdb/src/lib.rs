@@ -329,7 +329,7 @@ mod tests {
         };
         let state = alembic_engine::StateStore::new(None, alembic_engine::StateData::default());
         let observed = adapter.read(&schema, &[], &state).await.unwrap();
-        assert!(observed.by_key.is_empty());
+        assert!(observed.is_empty());
     }
 
     #[tokio::test]
@@ -360,7 +360,7 @@ mod tests {
             alembic_engine::StateStore::new(None, alembic_engine::StateData::default());
         let observed = adapter.read(&schema, &[], &state_store).await.unwrap();
 
-        assert!(observed.by_key.is_empty());
+        assert!(observed.is_empty());
     }
 
     /// a record of another type deserialized as a netixlan: the fields the two

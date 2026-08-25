@@ -31,7 +31,8 @@ objects:
 
 - `schema` is required; `objects` is optional and defaults to empty.
 - `include` and `imports` are optional and equivalent.
-- a top-level key other than these four is a parse error, not a silent no-op.
+- `scope` is optional (see below).
+- a top-level key other than these five is a parse error, not a silent no-op.
 - paths in `include/imports` are resolved relative to the current file.
 - files are loaded once (deduplicated by canonical path).
 
@@ -58,14 +59,49 @@ fields:
   name: { type: string, pattern: "^[A-Z0-9-]+$" }
 ```
 
+## scope
+
+an optional top-level `scope:` block states what the inventory asserts
+completeness over, per type. delete detection (`--allow-delete`) and the drift
+report's `extra` category are defined inside it: only observed objects matching
+an entry are candidates. types without an entry carry no completeness assertion
+at all. without the block, the inventory is complete over every declared type,
+the historical behavior.
+
+```yaml
+scope:
+  dcim.site:
+    slug: ["fra1", "fra2"]   # a value or list of values, matched on key fields
+  dcim.device: {}            # every device
+```
+
+an entry constrains key fields by exact value; an empty entry covers the whole
+type. constraint values are scalars — an array always reads as a list of
+allowed values, never as one array-valued constraint, so a `json`-typed key
+holding composite values can only be scoped whole-type. a scope type must be declared in the schema, a scope field must be one of
+that type's key fields, and the values must be ones the field could hold — a
+`map` that renames a scoped type therefore fails its output validation instead
+of silently orphaning the entry (`map` carries `scope:` through verbatim). a
+ref-typed key field is constrained by the target's uid, which need not name an
+object the inventory manages.
+
+scope bounds delete authority and the `extra` category, not management: a
+declared object outside the scope still converges as a create or update. this
+lets two inventories share one backend — each declares its own objects, scopes
+itself to them, and `--allow-delete` from either no longer plans the neighbor's
+objects as deletes. across `include` files, disjoint scope types merge and a
+type scoped twice is an error, the way schemas merge.
+
 ## json input
 
 json is supported when the file extension is `.json`.
 
 ## guidelines
 
-- use stable uuids for `uid`.
-- keep `key` human-readable and stable across renames where possible.
+- `uid` is the object's identity, assigned once (see `docs/identity.md`).
+- keep `key` human-readable; renaming a key is an ordinary update, since
+  identity lives in the uid. key *design* still matters: mirror how the
+  backend scopes uniqueness (an interface is `(device, name)`, not `name`).
 - keys are canonicalized as JSON for matching and sorting.
 - never include backend ids in `attrs`.
 - `import` writes only schema-declared attrs; undeclared, server-computed fields (e.g. `last_updated`) are dropped with a warning.

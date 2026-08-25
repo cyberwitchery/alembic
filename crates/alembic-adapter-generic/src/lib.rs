@@ -3,9 +3,9 @@
 use alembic_core::{key_string, JsonMap, Key, Schema, TypeName, TypeSchema, Uid};
 use alembic_engine::{
     apply_non_delete_journaled, build_key_from_schema, bullet_list, describe_missing_refs,
-    is_missing_ref_error, normalize_attrs_refs, resolved_ids_identity, Adapter, AppliedOp,
-    ApplyReport, BackendId, Emitter, ObservedObject, ObservedState, Observer, Op, RetryApplyDriver,
-    StateMappings,
+    is_missing_ref_error, normalize_attrs_refs, resolve_ref_keyed_identity, resolved_ids_identity,
+    Adapter, AppliedOp, ApplyReport, BackendId, Emitter, ObservedState, Observer, Op, RawNode,
+    RetryApplyDriver, StateMappings,
 };
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
@@ -194,6 +194,9 @@ impl GenericAdapter {
         let results =
             list_endpoint_results(&self.client, &self.config.base_url, endpoint, type_name).await?;
 
+        // collect every key match: several backend objects sharing the key is
+        // an error naming them all, never a pick among candidates.
+        let mut matches: Vec<BackendId> = Vec::new();
         for item in results {
             let attrs: JsonMap = match &item {
                 serde_json::Value::Object(map) => {
@@ -210,8 +213,25 @@ impl GenericAdapter {
             )?;
             if listed == *key {
                 let id_val = resolve_path(&item, &endpoint.id_path)?;
-                let backend_id = parse_backend_id(id_val)?;
-                return Ok(Some(backend_id));
+                matches.push(parse_backend_id(id_val)?);
+            }
+        }
+        match matches.as_slice() {
+            [] => {}
+            [_] => return Ok(Some(matches.remove(0))),
+            many => {
+                return Err(anyhow!(
+                    "{} backend objects match the {} key {}: backend ids {}; alembic cannot \
+                     pick one, so resolve the collision or key the type the way the backend \
+                     scopes uniqueness",
+                    many.len(),
+                    type_name,
+                    alembic_core::key_string(key),
+                    many.iter()
+                        .map(|id| id.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ))
             }
         }
         Ok(None)
@@ -364,8 +384,6 @@ impl Observer for GenericAdapter {
         types: &[TypeName],
         state_store: &alembic_engine::StateStore,
     ) -> Result<ObservedState> {
-        let mut state = ObservedState::default();
-        let mappings = StateMappings::from_state(state_store);
         let requested: BTreeSet<TypeName> = if types.is_empty() {
             self.config
                 .types
@@ -384,21 +402,19 @@ impl Observer for GenericAdapter {
                 .get(type_name.as_str())
                 .ok_or_else(|| anyhow!("no generic config for type {}", type_name))?
                 .clone();
-            let type_schema = schema
+            schema
                 .types
                 .get(type_name.as_str())
-                .ok_or_else(|| anyhow!("missing schema for {}", type_name))?
-                .clone();
+                .ok_or_else(|| anyhow!("missing schema for {}", type_name))?;
 
             let client = self.client.clone();
             let base_url = self.config.base_url.clone();
-            let mappings = mappings.clone();
 
             tasks.push(tokio::spawn(async move {
                 let results =
                     list_endpoint_results(&client, &base_url, &endpoint, &type_name).await?;
 
-                let mut observed = Vec::new();
+                let mut raw = Vec::new();
                 for item in results {
                     let id_val = resolve_path(&item, &endpoint.id_path)?;
                     let backend_id = parse_backend_id(id_val)?;
@@ -410,31 +426,46 @@ impl Observer for GenericAdapter {
                         _ => return Err(anyhow!("expected object in results")),
                     };
 
-                    let attrs = normalize_attrs_refs(&attrs, &type_schema, &mappings);
-                    let key = key_from_response(
-                        &type_schema,
-                        &attrs,
-                        &type_name,
-                        &format!("{}/{}", endpoint.path.trim_end_matches('/'), backend_id),
-                    )?;
-
-                    observed.push(ObservedObject {
+                    raw.push(RawNode {
                         type_name: type_name.clone(),
-                        key,
+                        backend_id,
                         attrs,
-                        backend_id: Some(backend_id),
                     });
                 }
-                Ok::<Vec<ObservedObject>, anyhow::Error>(observed)
+                Ok::<Vec<RawNode>, anyhow::Error>(raw)
             }));
         }
 
-        let results = futures::future::join_all(tasks).await;
-        for result in results {
-            let objects = result??;
-            for object in objects {
-                state.insert(object)?;
-            }
+        let mut raw = Vec::new();
+        for result in futures::future::join_all(tasks).await {
+            raw.extend(result??);
+        }
+
+        let mut mappings = StateMappings::from_state(state_store);
+        let observed = resolve_ref_keyed_identity(
+            &raw,
+            schema,
+            &mut mappings,
+            |node, type_schema, mappings| normalize_attrs_refs(&node.attrs, type_schema, mappings),
+            |node, type_schema, attrs| {
+                let path = self
+                    .config
+                    .types
+                    .get(node.type_name.as_str())
+                    .map(|e| e.path.trim_end_matches('/'))
+                    .unwrap_or_default();
+                key_from_response(
+                    type_schema,
+                    attrs,
+                    &node.type_name,
+                    &format!("{}/{}", path, node.backend_id),
+                )
+            },
+        )?;
+
+        let mut state = ObservedState::default();
+        for object in observed {
+            state.insert(object)?;
         }
 
         Ok(state)

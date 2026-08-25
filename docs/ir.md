@@ -14,7 +14,7 @@ key:
 attrs: { ... }
 ```
 
-- `uid`: stable identifier (uuid). never use backend ids in input files.
+- `uid`: the object's identity (uuid), assigned once and never recomputed; see `docs/identity.md`. never use backend ids in input files.
 - `type`: canonical type id for the object (any string).
 - `key`: structured key used for matching when no state mapping exists.
 - `attrs`: payload for the object. alembic validates structure and references against the schema.
@@ -102,8 +102,9 @@ a key field feeds uid derivation (see `docs/map.md`, uid), which constrains its 
 - it may not be `nullable`: a null has no identity form.
 - it may not be a composite type (`list`, `list_ref`, `map`): there is no scalar identity form.
 - `required` is not consulted; key fields are mandatory.
+- declared again in `fields:`, it must carry the same schema: every consumer of the type would otherwise have to pick a winner, and each would pick its own. an identical duplicate is fine.
 
-the first two are schema-load errors, raised before any object is read.
+all but the `required` rule are schema-load errors, raised before any object is read.
 
 ## relationships
 

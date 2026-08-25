@@ -21,11 +21,24 @@ fn key_str(raw: &str) -> alembic_core::Key {
     alembic_core::Key::from(map)
 }
 
+/// the backend identity CLI state tests scope paths by.
+fn test_identity() -> alembic_engine::BackendIdentity {
+    alembic_engine::BackendIdentity::new("netbox", "https://netbox.example.com")
+}
 #[test]
-fn state_path_uses_dot_alembic() {
+fn state_path_is_scoped_per_backend_under_dot_alembic() {
     let root = Path::new("/tmp/example");
-    let path = state_path(root);
-    assert!(path.ends_with(".alembic/state.json"));
+    let identity = test_identity();
+    let path = state_path(root, &identity);
+    assert!(path.starts_with("/tmp/example/.alembic/state"));
+    assert!(path
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .starts_with("netbox-"));
+    // a different instance gets a different file.
+    let other = alembic_engine::BackendIdentity::new("netbox", "https://other.example.com");
+    assert_ne!(path, state_path(root, &other));
 }
 
 #[test]
@@ -36,11 +49,11 @@ fn resolve_state_backend_defaults_to_local() {
     ]);
 
     let root = Path::new("/tmp/example");
-    let config = resolve_state_backend_config(root).unwrap();
+    let config = resolve_state_backend_config(root, &test_identity()).unwrap();
     assert_eq!(
         config,
         StateBackendConfig::Local {
-            path: root.join(".alembic/state.json")
+            path: state_path(root, &test_identity())
         }
     );
 }
@@ -52,7 +65,7 @@ fn resolve_state_backend_uses_custom_local_path() {
         ("ALEMBIC_STATE_PATH", Some("/tmp/custom-state.json")),
     ]);
 
-    let config = resolve_state_backend_config(Path::new("/tmp/ignored")).unwrap();
+    let config = resolve_state_backend_config(Path::new("/tmp/ignored"), &test_identity()).unwrap();
     assert_eq!(
         config,
         StateBackendConfig::Local {
@@ -69,7 +82,8 @@ fn resolve_state_backend_postgres_requires_url() {
         ("ALEMBIC_STATE_POSTGRES_TLS", None),
     ]);
 
-    let err = resolve_state_backend_config(Path::new("/tmp/ignored")).unwrap_err();
+    let err =
+        resolve_state_backend_config(Path::new("/tmp/ignored"), &test_identity()).unwrap_err();
     assert!(err.to_string().contains("ALEMBIC_STATE_POSTGRES_URL"));
 }
 
@@ -85,12 +99,13 @@ fn resolve_state_backend_postgres_with_default_key() {
         ("ALEMBIC_STATE_POSTGRES_TLS", None),
     ]);
 
-    let config = resolve_state_backend_config(Path::new("/tmp/ignored")).unwrap();
+    let config = resolve_state_backend_config(Path::new("/tmp/ignored"), &test_identity()).unwrap();
     assert_eq!(
         config,
         StateBackendConfig::Postgres {
             url: "postgres://user:pass@localhost:5432/alembic".to_string(),
-            key: "default".to_string(),
+            // backend-scoped like the local path: workspace/adapter-hash.
+            key: format!("default/netbox-{}", test_identity().scope_hash()),
             tls_mode: PostgresTlsMode::Disable,
         }
     );
@@ -108,12 +123,12 @@ fn resolve_state_backend_postgres_with_tls_require() {
         ("ALEMBIC_STATE_POSTGRES_TLS", Some("require")),
     ]);
 
-    let config = resolve_state_backend_config(Path::new("/tmp/ignored")).unwrap();
+    let config = resolve_state_backend_config(Path::new("/tmp/ignored"), &test_identity()).unwrap();
     assert_eq!(
         config,
         StateBackendConfig::Postgres {
             url: "postgres://user:pass@localhost:5432/alembic".to_string(),
-            key: "workspace-a".to_string(),
+            key: format!("workspace-a/netbox-{}", test_identity().scope_hash()),
             tls_mode: PostgresTlsMode::Require,
         }
     );
@@ -130,7 +145,8 @@ fn resolve_state_backend_postgres_with_invalid_tls_mode_errors() {
         ("ALEMBIC_STATE_POSTGRES_TLS", Some("weird")),
     ]);
 
-    let err = resolve_state_backend_config(Path::new("/tmp/ignored")).unwrap_err();
+    let err =
+        resolve_state_backend_config(Path::new("/tmp/ignored"), &test_identity()).unwrap_err();
     assert!(err.to_string().contains("ALEMBIC_STATE_POSTGRES_TLS"));
 }
 
@@ -279,6 +295,7 @@ fn write_inventory_creates_missing_parent_dirs() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("nested/out/ir.json");
     let inventory = Inventory {
+        scope: None,
         schema: Default::default(),
         objects: vec![],
     };
@@ -294,6 +311,7 @@ fn django_emit_runs_migrations_by_default() {
     std::fs::write(output.join("manage.py"), "").unwrap();
     write_settings(&output, "alembic_project");
     let minimal_inventory = Inventory {
+        scope: None,
         schema: Default::default(),
         objects: vec![],
     };
@@ -362,6 +380,7 @@ fn django_emit_skips_migrate_with_flag() {
     std::fs::write(output.join("manage.py"), "").unwrap();
     write_settings(&output, "alembic_project");
     let minimal_inventory = Inventory {
+        scope: None,
         schema: Default::default(),
         objects: vec![],
     };
@@ -640,12 +659,11 @@ fn preflight_output_path_accepts_an_existing_file_and_keeps_it() {
 #[test]
 fn preflight_output_path_accepts_a_bare_filename() {
     // a bare filename has an empty parent, which create_dir_all cannot take.
+    let _cwd = CwdGuard::acquire();
     let dir = tempdir().unwrap();
-    let cwd = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
     let result = io::preflight_output_path(Path::new("plan.json"));
     let leftovers = std::fs::read_dir(dir.path()).unwrap().count();
-    std::env::set_current_dir(cwd).unwrap();
     result.expect("a bare filename in a writable cwd is a valid output");
     assert_eq!(leftovers, 0, "the probe must clean up after itself");
 }
@@ -665,6 +683,7 @@ fn output_path_is_the_one_place_every_write_site_is_named() {
             dry_run: false,
             report: false,
             allow_delete: false,
+            no_adopt: false,
         }),
         Some(out.as_path())
     );
@@ -685,6 +704,7 @@ fn output_path_is_the_one_place_every_write_site_is_named() {
             file: PathBuf::from("i.yaml"),
             backend: None,
             backend_config: None,
+            stateless: false,
         }),
         Some(out.as_path())
     );
@@ -896,7 +916,7 @@ async fn run_validate_writes_the_located_errors_and_still_fails() {
 
 #[tokio::test]
 async fn run_map_ir() {
-    let _guard = cwd_lock().lock().await;
+    let _cwd = CwdGuard::acquire_async().await;
     let dir = tempdir().unwrap();
     let input = dir.path().join("in.json");
     let spec = dir.path().join("map.yaml");
@@ -943,7 +963,6 @@ rules:
 "#,
     )
     .unwrap();
-    let cwd = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
 
     let cli = Cli {
@@ -959,7 +978,6 @@ rules:
     assert!(raw.contains("location.site"));
     assert!(raw.contains("\"label\""));
     assert!(!raw.contains("dcim.site"));
-    std::env::set_current_dir(cwd).unwrap();
 }
 
 #[tokio::test]
@@ -1065,7 +1083,7 @@ async fn run_map_without_flat_args_errors() {
 
 #[tokio::test]
 async fn run_plan_missing_credentials_errors() {
-    let _guard = cwd_lock().lock().await;
+    let _cwd = CwdGuard::acquire_async().await;
     let dir = tempdir().unwrap();
     let state_path = dir.path().join(".alembic").join("state.json");
     let _env = EnvVarGuard::acquire_async(&[
@@ -1099,7 +1117,6 @@ objects:
 "#,
     )
     .unwrap();
-    let cwd = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
 
     let cli = Cli {
@@ -1112,16 +1129,16 @@ objects:
             dry_run: false,
             report: false,
             allow_delete: false,
+            no_adopt: false,
         },
     };
     let err = run(cli, AppConfig::load().unwrap()).await.unwrap_err();
     assert!(err.to_string().contains("missing NETBOX_URL"));
-    std::env::set_current_dir(cwd).unwrap();
 }
 
 #[tokio::test]
 async fn run_apply_missing_credentials_errors() {
-    let _guard = cwd_lock().lock().await;
+    let _cwd = CwdGuard::acquire_async().await;
     let dir = tempdir().unwrap();
     let state_path = dir.path().join(".alembic").join("state.json");
     let _env = EnvVarGuard::acquire_async(&[
@@ -1131,7 +1148,6 @@ async fn run_apply_missing_credentials_errors() {
     .await;
     let plan_path = dir.path().join("plan.json");
     std::fs::write(&plan_path, r#"{ "ops": [] }"#).unwrap();
-    let cwd = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
 
     let cli = Cli {
@@ -1146,12 +1162,11 @@ async fn run_apply_missing_credentials_errors() {
     };
     let err = run(cli, AppConfig::load().unwrap()).await.unwrap_err();
     assert!(err.to_string().contains("missing NETBOX_URL"));
-    std::env::set_current_dir(cwd).unwrap();
 }
 
 #[tokio::test]
 async fn run_apply_interactive_delete_requires_allow_delete() {
-    let _guard = cwd_lock().lock().await;
+    let _cwd = CwdGuard::acquire_async().await;
     let dir = tempdir().unwrap();
     let state_path = dir.path().join(".alembic").join("state.json");
     let _env = EnvVarGuard::acquire_async(&[
@@ -1174,7 +1189,6 @@ async fn run_apply_interactive_delete_requires_allow_delete() {
         schema_preview: None,
     };
     write_plan(&plan_path, &plan).unwrap();
-    let cwd = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
 
     // django is write-only, so it passes the capability gate and reaches the
@@ -1193,7 +1207,6 @@ async fn run_apply_interactive_delete_requires_allow_delete() {
     assert!(err
         .to_string()
         .contains("plan contains delete operations; re-run with --allow-delete"));
-    std::env::set_current_dir(cwd).unwrap();
 }
 
 #[tokio::test]
@@ -1201,7 +1214,7 @@ async fn run_apply_read_only_backend_fails_before_prompting() {
     // the plan path is missing on purpose: the read-only error must fire before
     // read_plan (hence before the post-read_plan prompt loop) on both paths.
     // absence-of-prompt is checked out-of-process in tests/apply_capability.rs.
-    let _guard = cwd_lock().lock().await;
+    let _cwd = CwdGuard::acquire_async().await;
     let dir = tempdir().unwrap();
     let state_path = dir.path().join(".alembic").join("state.json");
     let _env = EnvVarGuard::acquire_async(&[
@@ -1210,7 +1223,6 @@ async fn run_apply_read_only_backend_fails_before_prompting() {
     ])
     .await;
     let missing_plan = dir.path().join("does-not-exist.json");
-    let cwd = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
 
     for interactive in [true, false] {
@@ -1232,7 +1244,6 @@ async fn run_apply_read_only_backend_fails_before_prompting() {
              before the plan is read, got: {err}"
         );
     }
-    std::env::set_current_dir(cwd).unwrap();
 }
 
 // a one-create plan against a generic rest backend, plus the config pointing at
@@ -1288,7 +1299,7 @@ types:
 async fn run_apply_writes_the_report_to_output() {
     use httpmock::Method::POST;
 
-    let _guard = cwd_lock().lock().await;
+    let _cwd = CwdGuard::acquire_async().await;
     let server = httpmock::MockServer::start();
     server.mock(|when, then| {
         when.method(POST).path("/sites/");
@@ -1305,7 +1316,6 @@ async fn run_apply_writes_the_report_to_output() {
     let (plan_path, config_path) = generic_apply_fixture(dir.path(), &server.base_url());
     let report_path = dir.path().join("nested/report.json");
 
-    let cwd = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
     let cli = Cli {
         command: Command::Apply {
@@ -1318,7 +1328,6 @@ async fn run_apply_writes_the_report_to_output() {
         },
     };
     let result = run(cli, AppConfig::load().unwrap()).await;
-    std::env::set_current_dir(cwd).unwrap();
     result.unwrap();
 
     let raw = std::fs::read_to_string(&report_path).unwrap();
@@ -1408,7 +1417,9 @@ types:
     std::fs::write(
         &config_path,
         format!(
-            "backend: generic\nconfig:\n  base_url: {base_url}\n  types:\n    dcim.site:\n      path: /sites/\n    dcim.device:\n      path: /devices/\n"
+            // the two runs talk to two mock servers standing in for one backend, so
+            // the config pins the instance: identity does not move with the port.
+            "backend: generic\ninstance: resume-test\nconfig:\n  base_url: {base_url}\n  types:\n    dcim.site:\n      path: /sites/\n    dcim.device:\n      path: /devices/\n"
         ),
     )
     .unwrap();
@@ -1419,7 +1430,7 @@ types:
 async fn run_apply_resumes_with_the_ids_the_interrupted_run_created() {
     use httpmock::Method::POST;
 
-    let _guard = cwd_lock().lock().await;
+    let _cwd = CwdGuard::acquire_async().await;
     let dir = tempdir().unwrap();
     let state_path = dir.path().join(".alembic").join("state.json");
     let _env = EnvVarGuard::acquire_async(&[
@@ -1428,7 +1439,6 @@ async fn run_apply_resumes_with_the_ids_the_interrupted_run_created() {
     ])
     .await;
     let report_path = dir.path().join("report.json");
-    let cwd = std::env::current_dir().unwrap();
 
     // run 1 creates the site and dies on the device. no state is saved: apply only
     // saves on the success path.
@@ -1457,7 +1467,6 @@ async fn run_apply_resumes_with_the_ids_the_interrupted_run_created() {
         AppConfig::load().unwrap(),
     )
     .await;
-    std::env::set_current_dir(&cwd).unwrap();
     result.expect_err("the device create fails");
     assert!(!state_path.exists(), "a failed apply saves no state");
 
@@ -1490,7 +1499,6 @@ async fn run_apply_resumes_with_the_ids_the_interrupted_run_created() {
         AppConfig::load().unwrap(),
     )
     .await;
-    std::env::set_current_dir(cwd).unwrap();
     result.unwrap();
 
     sites.assert_calls(0);
@@ -1532,7 +1540,7 @@ async fn run_apply_resumes_with_the_ids_the_interrupted_run_created() {
 async fn run_apply_rejects_a_bad_output_path_before_touching_the_backend() {
     use httpmock::Method::POST;
 
-    let _guard = cwd_lock().lock().await;
+    let _cwd = CwdGuard::acquire_async().await;
     let server = httpmock::MockServer::start();
     let mock = server.mock(|when, then| {
         when.method(POST).path("/sites/");
@@ -1551,7 +1559,6 @@ async fn run_apply_rejects_a_bad_output_path_before_touching_the_backend() {
     let blocker = dir.path().join("blocker");
     std::fs::write(&blocker, "").unwrap();
 
-    let cwd = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
     let cli = Cli {
         command: Command::Apply {
@@ -1564,7 +1571,6 @@ async fn run_apply_rejects_a_bad_output_path_before_touching_the_backend() {
         },
     };
     let result = run(cli, AppConfig::load().unwrap()).await;
-    std::env::set_current_dir(cwd).unwrap();
 
     result.expect_err("a bad -o must fail the run");
     assert_eq!(
@@ -1579,7 +1585,7 @@ async fn run_apply_rejects_a_bad_output_path_before_touching_the_backend() {
 async fn run_apply_writes_no_report_when_the_apply_fails() {
     use httpmock::Method::POST;
 
-    let _guard = cwd_lock().lock().await;
+    let _cwd = CwdGuard::acquire_async().await;
     let server = httpmock::MockServer::start();
     server.mock(|when, then| {
         when.method(POST).path("/sites/");
@@ -1596,7 +1602,6 @@ async fn run_apply_writes_no_report_when_the_apply_fails() {
     let (plan_path, config_path) = generic_apply_fixture(dir.path(), &server.base_url());
     let report_path = dir.path().join("report.json");
 
-    let cwd = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
     let cli = Cli {
         command: Command::Apply {
@@ -1609,7 +1614,6 @@ async fn run_apply_writes_no_report_when_the_apply_fails() {
         },
     };
     let result = run(cli, AppConfig::load().unwrap()).await;
-    std::env::set_current_dir(cwd).unwrap();
 
     result.expect_err("a failing apply must not report success");
     assert!(
@@ -1682,7 +1686,7 @@ fn nautobot_plan_server(device_results: serde_json::Value) -> httpmock::MockServ
 async fn run_plan_nautobot_backend() {
     use serde_json::json;
 
-    let _guard = cwd_lock().lock().await;
+    let _cwd = CwdGuard::acquire_async().await;
     let server = nautobot_plan_server(json!([]));
     let dir = tempdir().unwrap();
     let state_path = dir.path().join(".alembic").join("state.json");
@@ -1725,7 +1729,6 @@ objects:
     )
     .unwrap();
 
-    let cwd = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
 
     let cli = Cli {
@@ -1738,6 +1741,7 @@ objects:
             dry_run: false,
             report: false,
             allow_delete: false,
+            no_adopt: false,
         },
     };
     run(cli, AppConfig::load().unwrap()).await.unwrap();
@@ -1745,15 +1749,13 @@ objects:
     let raw = std::fs::read_to_string(&out).unwrap();
     assert!(raw.contains("\"op\": \"create\""));
     assert!(raw.contains("\"type_name\": \"dcim.device\""));
-
-    std::env::set_current_dir(cwd).unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn run_plan_report_is_read_only() {
     use serde_json::json;
 
-    let _guard = cwd_lock().lock().await;
+    let _cwd = CwdGuard::acquire_async().await;
     let server = nautobot_plan_server(json!([]));
     let dir = tempdir().unwrap();
     let state_path = dir.path().join(".alembic").join("state.json");
@@ -1796,7 +1798,6 @@ objects:
     )
     .unwrap();
 
-    let cwd = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
 
     let cli = Cli {
@@ -1809,6 +1810,7 @@ objects:
             dry_run: false,
             report: true,
             allow_delete: false,
+            no_adopt: false,
         },
     };
     run(cli, AppConfig::load().unwrap()).await.unwrap();
@@ -1824,8 +1826,6 @@ objects:
         !dir.path().join(".alembic/state.json").exists(),
         "state must not be saved for --report"
     );
-
-    std::env::set_current_dir(cwd).unwrap();
 }
 
 #[test]
@@ -1845,7 +1845,7 @@ fn plan_takes_a_shared_lock_only_when_it_saves_nothing() {
 async fn two_concurrent_report_runs_both_succeed() {
     use serde_json::json;
 
-    let _guard = cwd_lock().lock().await;
+    let _cwd = CwdGuard::acquire_async().await;
     let server = nautobot_plan_server(json!([]));
     let dir = tempdir().unwrap();
     let state_path = dir.path().join(".alembic").join("state.json");
@@ -1866,7 +1866,6 @@ async fn two_concurrent_report_runs_both_succeed() {
     )
     .unwrap();
 
-    let cwd = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
 
     // a reader of the test's own, so the two runs overlap by construction rather
@@ -1881,7 +1880,6 @@ async fn two_concurrent_report_runs_both_succeed() {
     );
     drop(reader);
 
-    std::env::set_current_dir(cwd).unwrap();
     first.expect("first drift report");
     second.expect("a second drift report must not be refused by the first");
 }
@@ -1890,7 +1888,7 @@ async fn two_concurrent_report_runs_both_succeed() {
 async fn a_saving_plan_run_is_refused_while_a_report_runs() {
     use serde_json::json;
 
-    let _guard = cwd_lock().lock().await;
+    let _cwd = CwdGuard::acquire_async().await;
     let server = nautobot_plan_server(json!([]));
     let dir = tempdir().unwrap();
     let state_path = dir.path().join(".alembic").join("state.json");
@@ -1911,7 +1909,6 @@ async fn a_saving_plan_run_is_refused_while_a_report_runs() {
     )
     .unwrap();
 
-    let cwd = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
 
     // the reader stands in for a running drift report.
@@ -1926,6 +1923,7 @@ async fn a_saving_plan_run_is_refused_while_a_report_runs() {
             dry_run: false,
             report: false,
             allow_delete: false,
+            no_adopt: false,
         },
     };
     let refused = run(saving, AppConfig::load().unwrap()).await;
@@ -1937,7 +1935,6 @@ async fn a_saving_plan_run_is_refused_while_a_report_runs() {
     let refused_provision = run(provisioning, AppConfig::load().unwrap()).await;
     drop(reader);
 
-    std::env::set_current_dir(cwd).unwrap();
     for err in [
         refused.expect_err("a saving run must not start under a reader"),
         refused_provision.expect_err("--provision must not start under a reader"),
@@ -1985,6 +1982,7 @@ fn report_cli(file: PathBuf, config: PathBuf) -> Cli {
             dry_run: false,
             report: true,
             allow_delete: false,
+            no_adopt: false,
         },
     }
 }
@@ -1993,7 +1991,7 @@ fn report_cli(file: PathBuf, config: PathBuf) -> Cli {
 async fn run_plan_report_writes_the_drift_report_to_output() {
     use serde_json::json;
 
-    let _guard = cwd_lock().lock().await;
+    let _cwd = CwdGuard::acquire_async().await;
     // the backend holds leaf01, intent declares leaf02: one extra, one missing.
     let server = nautobot_plan_server(json!([{ "id": "uuid-leaf01", "name": "leaf01" }]));
     let dir = tempdir().unwrap();
@@ -2037,7 +2035,6 @@ objects:
     )
     .unwrap();
 
-    let cwd = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
 
     let cli = Cli {
@@ -2050,10 +2047,10 @@ objects:
             dry_run: false,
             report: true,
             allow_delete: false,
+            no_adopt: false,
         },
     };
     let result = run(cli, AppConfig::load().unwrap()).await;
-    std::env::set_current_dir(cwd).unwrap();
     result.unwrap();
 
     let drift: DriftReport = serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
@@ -2074,7 +2071,7 @@ objects:
 async fn run_plan_report_carries_the_schema_preview_into_the_drift_report() {
     use serde_json::json;
 
-    let _guard = cwd_lock().lock().await;
+    let _cwd = CwdGuard::acquire_async().await;
     let server = nautobot_plan_server(json!([{ "id": "uuid-leaf01", "name": "leaf01" }]));
     // the native-field probe preview issues before deciding a declared field is
     // custom; without it the preview errors and never reaches the report.
@@ -2135,7 +2132,6 @@ objects:
     )
     .unwrap();
 
-    let cwd = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
     let cli = Cli {
         command: Command::Plan {
@@ -2147,10 +2143,10 @@ objects:
             dry_run: false,
             report: true,
             allow_delete: false,
+            no_adopt: false,
         },
     };
     let result = run(cli, AppConfig::load().unwrap()).await;
-    std::env::set_current_dir(cwd).unwrap();
     result.unwrap();
 
     let raw = std::fs::read_to_string(&out).unwrap();
@@ -2168,7 +2164,7 @@ objects:
 async fn run_plan_report_carries_an_empty_schema_preview_for_a_backend_that_provisions_nothing() {
     // an adapter overriding neither provisioning method reports nothing to
     // provision, the same document the generic backend writes.
-    let _guard = cwd_lock().lock().await;
+    let _cwd = CwdGuard::acquire_async().await;
     let dir = tempdir().unwrap();
     let state_path = dir.path().join(".alembic").join("state.json");
     let _env = EnvVarGuard::acquire_async(&[
@@ -2190,7 +2186,6 @@ async fn run_plan_report_carries_an_empty_schema_preview_for_a_backend_that_prov
     )
     .unwrap();
 
-    let cwd = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
     let cli = Cli {
         command: Command::Plan {
@@ -2202,10 +2197,10 @@ async fn run_plan_report_carries_an_empty_schema_preview_for_a_backend_that_prov
             dry_run: false,
             report: true,
             allow_delete: false,
+            no_adopt: false,
         },
     };
     let result = run(cli, AppConfig::load().unwrap()).await;
-    std::env::set_current_dir(cwd).unwrap();
     result.unwrap();
 
     let raw = std::fs::read_to_string(&out).unwrap();
@@ -2218,7 +2213,7 @@ async fn run_plan_report_carries_an_empty_schema_preview_for_a_backend_that_prov
 
 #[tokio::test(flavor = "multi_thread")]
 async fn run_plan_report_rejects_a_bad_output_path_before_observing() {
-    let _guard = cwd_lock().lock().await;
+    let _cwd = CwdGuard::acquire_async().await;
     let server = httpmock::MockServer::start();
     let mock = server.mock(|when, then| {
         when.any_request();
@@ -2247,7 +2242,6 @@ async fn run_plan_report_rejects_a_bad_output_path_before_observing() {
     let blocker = dir.path().join("blocker");
     std::fs::write(&blocker, "").unwrap();
 
-    let cwd = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
     let cli = Cli {
         command: Command::Plan {
@@ -2259,10 +2253,10 @@ async fn run_plan_report_rejects_a_bad_output_path_before_observing() {
             dry_run: false,
             report: true,
             allow_delete: false,
+            no_adopt: false,
         },
     };
     let result = run(cli, AppConfig::load().unwrap()).await;
-    std::env::set_current_dir(cwd).unwrap();
 
     let err = result.expect_err("a bad -o must fail the run");
     assert!(
@@ -2280,7 +2274,7 @@ async fn run_plan_report_rejects_a_bad_output_path_before_observing() {
 #[tokio::test(flavor = "multi_thread")]
 async fn run_plan_rejects_an_unwritable_existing_output_file_before_observing() {
     use std::os::unix::fs::PermissionsExt;
-    let _guard = cwd_lock().lock().await;
+    let _cwd = CwdGuard::acquire_async().await;
     let server = httpmock::MockServer::start();
     let mock = server.mock(|when, then| {
         when.any_request();
@@ -2315,7 +2309,6 @@ async fn run_plan_rejects_an_unwritable_existing_output_file_before_observing() 
     std::fs::set_permissions(&sentinel, std::fs::Permissions::from_mode(0o444)).unwrap();
     let denied = std::fs::write(&sentinel, b"y").is_err();
 
-    let cwd = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
     let cli = Cli {
         command: Command::Plan {
@@ -2327,10 +2320,10 @@ async fn run_plan_rejects_an_unwritable_existing_output_file_before_observing() 
             dry_run: false,
             report: false,
             allow_delete: false,
+            no_adopt: false,
         },
     };
     let result = run(cli, AppConfig::load().unwrap()).await;
-    std::env::set_current_dir(cwd).unwrap();
     std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644)).unwrap();
 
     if denied {
@@ -2358,7 +2351,7 @@ async fn run_plan_rejects_an_unwritable_existing_output_file_before_observing() 
 
 #[tokio::test(flavor = "multi_thread")]
 async fn run_plan_rejects_an_output_path_that_is_a_directory_before_observing() {
-    let _guard = cwd_lock().lock().await;
+    let _cwd = CwdGuard::acquire_async().await;
     let server = httpmock::MockServer::start();
     let mock = server.mock(|when, then| {
         when.any_request();
@@ -2387,7 +2380,6 @@ async fn run_plan_rejects_an_output_path_that_is_a_directory_before_observing() 
     let target = dir.path().join("outdir");
     std::fs::create_dir(&target).unwrap();
 
-    let cwd = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
     let cli = Cli {
         command: Command::Plan {
@@ -2399,10 +2391,10 @@ async fn run_plan_rejects_an_output_path_that_is_a_directory_before_observing() 
             dry_run: false,
             report: false,
             allow_delete: false,
+            no_adopt: false,
         },
     };
     let result = run(cli, AppConfig::load().unwrap()).await;
-    std::env::set_current_dir(cwd).unwrap();
 
     let err = result.expect_err("a bad -o must fail the run");
     assert!(
@@ -2418,7 +2410,7 @@ async fn run_plan_rejects_an_output_path_that_is_a_directory_before_observing() 
 
 #[tokio::test(flavor = "multi_thread")]
 async fn run_plan_leaves_no_output_directory_when_observing_fails() {
-    let _guard = cwd_lock().lock().await;
+    let _cwd = CwdGuard::acquire_async().await;
     let server = httpmock::MockServer::start();
     let _mock = server.mock(|when, then| {
         when.any_request();
@@ -2444,7 +2436,6 @@ async fn run_plan_leaves_no_output_directory_when_observing_fails() {
     .unwrap();
     let out_dir = dir.path().join("brand_new_dir");
 
-    let cwd = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
     let cli = Cli {
         command: Command::Plan {
@@ -2456,10 +2447,10 @@ async fn run_plan_leaves_no_output_directory_when_observing_fails() {
             dry_run: false,
             report: false,
             allow_delete: false,
+            no_adopt: false,
         },
     };
     let result = run(cli, AppConfig::load().unwrap()).await;
-    std::env::set_current_dir(cwd).unwrap();
 
     result.expect_err("observing a 500 backend must fail the run");
     assert!(
@@ -2470,7 +2461,7 @@ async fn run_plan_leaves_no_output_directory_when_observing_fails() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn run_plan_report_refuses_a_write_only_backend() {
-    let _guard = cwd_lock().lock().await;
+    let _cwd = CwdGuard::acquire_async().await;
     let dir = tempdir().unwrap();
     let state_path = dir.path().join(".alembic").join("state.json");
     let _env = EnvVarGuard::acquire_async(&[
@@ -2485,7 +2476,6 @@ async fn run_plan_report_refuses_a_write_only_backend() {
     // do first: the refusal below is the guard's, not the preflight's.
     let out = dir.path().join("nested/drift.json");
 
-    let cwd = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
     let cli = Cli {
         command: Command::Plan {
@@ -2497,10 +2487,10 @@ async fn run_plan_report_refuses_a_write_only_backend() {
             dry_run: false,
             report: true,
             allow_delete: false,
+            no_adopt: false,
         },
     };
     let result = run(cli, AppConfig::load().unwrap()).await;
-    std::env::set_current_dir(cwd).unwrap();
 
     let err = result.expect_err("a write-only backend has no drift to report");
     let err = format!("{err:#}");
@@ -2521,7 +2511,7 @@ async fn run_plan_report_reports_an_unwritable_output_ahead_of_the_refusal() {
     // both are wrong at once. the output preflight (#325) runs for every command
     // before a backend is built, so it answers first, and the refusal below never
     // gets to speak. docs/cli.md says so; this is what keeps that true.
-    let _guard = cwd_lock().lock().await;
+    let _cwd = CwdGuard::acquire_async().await;
     let dir = tempdir().unwrap();
     let state_path = dir.path().join(".alembic").join("state.json");
     let _env = EnvVarGuard::acquire_async(&[
@@ -2542,7 +2532,6 @@ async fn run_plan_report_reports_an_unwritable_output_ahead_of_the_refusal() {
         return;
     }
 
-    let cwd = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
     let cli = Cli {
         command: Command::Plan {
@@ -2554,10 +2543,10 @@ async fn run_plan_report_reports_an_unwritable_output_ahead_of_the_refusal() {
             dry_run: false,
             report: true,
             allow_delete: false,
+            no_adopt: false,
         },
     };
     let result = run(cli, AppConfig::load().unwrap()).await;
-    std::env::set_current_dir(cwd).unwrap();
 
     let err = format!("{:#}", result.expect_err("an unwritable -o must fail"));
     assert!(err.contains("write output:"), "{err}");
@@ -2570,7 +2559,7 @@ async fn run_plan_report_reports_an_unwritable_output_ahead_of_the_refusal() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn run_plan_report_refuses_an_external_adapter_declaring_emitter() {
-    let _guard = cwd_lock().lock().await;
+    let _cwd = CwdGuard::acquire_async().await;
     let dir = tempdir().unwrap();
     let state_path = dir.path().join(".alembic").join("state.json");
     let _env = EnvVarGuard::acquire_async(&[
@@ -2592,7 +2581,6 @@ async fn run_plan_report_refuses_an_external_adapter_declaring_emitter() {
     )
     .unwrap();
 
-    let cwd = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
     let cli = Cli {
         command: Command::Plan {
@@ -2604,10 +2592,10 @@ async fn run_plan_report_refuses_an_external_adapter_declaring_emitter() {
             dry_run: false,
             report: true,
             allow_delete: false,
+            no_adopt: false,
         },
     };
     let result = run(cli, AppConfig::load().unwrap()).await;
-    std::env::set_current_dir(cwd).unwrap();
 
     let err = result.expect_err("a declared emitter has no drift to report");
     assert!(format!("{err:#}").contains("write-only"), "{err:#}");
@@ -2648,7 +2636,7 @@ fn methods_without_provisioning(log: &Path) -> String {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn run_refuses_to_write_an_external_adapter_declaring_observer() {
-    let _guard = cwd_lock().lock().await;
+    let _cwd = CwdGuard::acquire_async().await;
     let dir = tempdir().unwrap();
     let state_path = dir.path().join(".alembic").join("state.json");
     let _env = EnvVarGuard::acquire_async(&[
@@ -2663,7 +2651,6 @@ async fn run_refuses_to_write_an_external_adapter_declaring_observer() {
     // as run_apply_read_only_backend_fails_before_prompting pins for a built-in
     let plan_path = dir.path().join("does-not-exist.json");
 
-    let cwd = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
     let provision = run(
         Cli {
@@ -2676,6 +2663,7 @@ async fn run_refuses_to_write_an_external_adapter_declaring_observer() {
                 dry_run: false,
                 report: false,
                 allow_delete: false,
+                no_adopt: false,
             },
         },
         AppConfig::load().unwrap(),
@@ -2695,7 +2683,6 @@ async fn run_refuses_to_write_an_external_adapter_declaring_observer() {
         AppConfig::load().unwrap(),
     )
     .await;
-    std::env::set_current_dir(cwd).unwrap();
 
     for (command, result) in [("plan --provision", provision), ("apply", applied)] {
         let err = format!(
@@ -2714,7 +2701,7 @@ async fn run_refuses_to_write_an_external_adapter_declaring_observer() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn run_plan_and_import_an_external_adapter_declaring_observer() {
-    let _guard = cwd_lock().lock().await;
+    let _cwd = CwdGuard::acquire_async().await;
     let dir = tempdir().unwrap();
     let state_path = dir.path().join(".alembic").join("state.json");
     let _env = EnvVarGuard::acquire_async(&[
@@ -2724,7 +2711,6 @@ async fn run_plan_and_import_an_external_adapter_declaring_observer() {
     .await;
     let (inventory, config, log) = observer_role_fixture(dir.path());
 
-    let cwd = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
     let planned = run(
         Cli {
@@ -2737,6 +2723,7 @@ async fn run_plan_and_import_an_external_adapter_declaring_observer() {
                 dry_run: false,
                 report: false,
                 allow_delete: false,
+                no_adopt: false,
             },
         },
         AppConfig::load().unwrap(),
@@ -2749,12 +2736,12 @@ async fn run_plan_and_import_an_external_adapter_declaring_observer() {
                 file: inventory,
                 backend: Some("external".to_string()),
                 backend_config: Some(config),
+                stateless: false,
             },
         },
         AppConfig::load().unwrap(),
     )
     .await;
-    std::env::set_current_dir(cwd).unwrap();
 
     planned.expect("a declared observer plans");
     imported.expect("a declared observer imports");
@@ -2762,9 +2749,203 @@ async fn run_plan_and_import_an_external_adapter_declaring_observer() {
     assert!(methods.contains("read"), "both commands read: {methods}");
 }
 
+fn write_ref_chain_inventory(dir: &Path) -> PathBuf {
+    let inventory = dir.join("chain.yaml");
+    std::fs::write(
+        &inventory,
+        r#"
+schema:
+  types:
+    dcim.site:
+      key:
+        slug:
+          type: slug
+      fields:
+        slug:
+          type: slug
+        name:
+          type: string
+    dcim.device:
+      key:
+        site:
+          type: ref
+          target: dcim.site
+        name:
+          type: string
+      fields:
+        site:
+          type: ref
+          target: dcim.site
+        name:
+          type: string
+    dcim.interface:
+      key:
+        device:
+          type: ref
+          target: dcim.device
+        name:
+          type: string
+      fields:
+        device:
+          type: ref
+          target: dcim.device
+        name:
+          type: string
+# canonical uids, as `alembic import` writes them: a ref-typed key field names
+# the uid its target derives.
+objects:
+  - uid: "8c998348-947f-568d-bbb0-efbed3c3f903"
+    type: dcim.site
+    key:
+      slug: "fra1"
+    attrs:
+      slug: "fra1"
+      name: "FRA1"
+  - uid: "46a4f856-9778-577f-bb3a-d9c63a59fe56"
+    type: dcim.device
+    key:
+      site: "8c998348-947f-568d-bbb0-efbed3c3f903"
+      name: "leaf01"
+    attrs:
+      site: "8c998348-947f-568d-bbb0-efbed3c3f903"
+      name: "leaf01"
+  - uid: "e677c075-7bc8-54b5-ac34-ee71611bc7a1"
+    type: dcim.interface
+    key:
+      device: "46a4f856-9778-577f-bb3a-d9c63a59fe56"
+      name: "eth0"
+    attrs:
+      device: "46a4f856-9778-577f-bb3a-d9c63a59fe56"
+      name: "eth0"
+"#,
+    )
+    .unwrap();
+    inventory
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn run_plan_adopts_a_backend_whose_keys_hold_refs() {
+    let _cwd = CwdGuard::acquire_async().await;
+    let dir = tempdir().unwrap();
+    let state_path = dir.path().join(".alembic").join("state.json");
+    let _env = EnvVarGuard::acquire_async(&[
+        ("ALEMBIC_STATE_BACKEND", Some("local")),
+        ("ALEMBIC_STATE_PATH", Some(state_path.to_str().unwrap())),
+    ])
+    .await;
+
+    let adapter = example_binary("ref_chain_adapter");
+    let log = dir.path().join("reads.log");
+    let config = dir.path().join("backend.yaml");
+    std::fs::write(
+        &config,
+        format!(
+            "backend: external\ncommand: \"{}\"\ntimeout_seconds: 5\nenv:\n  REF_CHAIN_ADAPTER_LOG: \"{}\"\n",
+            adapter.display(),
+            log.display()
+        ),
+    )
+    .unwrap();
+    let inventory = write_ref_chain_inventory(dir.path());
+    let out = dir.path().join("plan.json");
+
+    std::env::set_current_dir(dir.path()).unwrap();
+    let planned = run(
+        Cli {
+            command: Command::Plan {
+                file: inventory,
+                output: Some(out.clone()),
+                backend: Some("external".to_string()),
+                backend_config: Some(config),
+                provision: false,
+                dry_run: false,
+                report: false,
+                allow_delete: false,
+                no_adopt: false,
+            },
+        },
+        AppConfig::load().unwrap(),
+    )
+    .await;
+    planned.expect("the chain plans");
+
+    let plan: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    assert_eq!(
+        plan["ops"].as_array().map(Vec::len),
+        Some(0),
+        "the backend already holds the chain: {}",
+        plan["ops"]
+    );
+    let reads = std::fs::read_to_string(&log).unwrap().lines().count();
+    assert_eq!(reads, 1, "the adapter resolves the chain in its own read");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn run_plan_refuses_an_adapter_that_reports_refs_as_backend_ids() {
+    let _cwd = CwdGuard::acquire_async().await;
+    let dir = tempdir().unwrap();
+    let state_path = dir.path().join(".alembic").join("state.json");
+    let _env = EnvVarGuard::acquire_async(&[
+        ("ALEMBIC_STATE_BACKEND", Some("local")),
+        ("ALEMBIC_STATE_PATH", Some(state_path.to_str().unwrap())),
+    ])
+    .await;
+
+    let config = dir.path().join("backend.yaml");
+    std::fs::write(
+        &config,
+        format!(
+            "backend: external\ncommand: \"{}\"\ntimeout_seconds: 5\n",
+            example_binary("raw_ref_adapter").display()
+        ),
+    )
+    .unwrap();
+    let inventory = write_ref_chain_inventory(dir.path());
+    let out = dir.path().join("plan.json");
+
+    std::env::set_current_dir(dir.path()).unwrap();
+    let planned = run(
+        Cli {
+            command: Command::Plan {
+                file: inventory,
+                output: Some(out.clone()),
+                backend: Some("external".to_string()),
+                backend_config: Some(config),
+                provision: false,
+                dry_run: false,
+                report: false,
+                allow_delete: false,
+                no_adopt: false,
+            },
+        },
+        AppConfig::load().unwrap(),
+    )
+    .await;
+
+    let error = match planned {
+        // the backend holds all three objects, so a plan here is a plan of
+        // creates that duplicate them.
+        Ok(()) => panic!(
+            "the plan was taken: {}",
+            std::fs::read_to_string(&out).unwrap_or_default()
+        ),
+        Err(err) => format!("{err:#}"),
+    };
+    assert!(
+        error.contains("dcim.device.key.site -> dcim.site 1"),
+        "{error}"
+    );
+    assert!(
+        error.contains("dcim.interface.key.device -> dcim.device 2"),
+        "{error}"
+    );
+    assert!(error.contains("docs/external-adapters.md"), "{error}");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn run_plan_without_report_still_plans_a_write_only_backend() {
-    let _guard = cwd_lock().lock().await;
+    let _cwd = CwdGuard::acquire_async().await;
     let dir = tempdir().unwrap();
     let state_path = dir.path().join(".alembic").join("state.json");
     let _env = EnvVarGuard::acquire_async(&[
@@ -2775,7 +2956,6 @@ async fn run_plan_without_report_still_plans_a_write_only_backend() {
     let inventory = write_site_inventory(dir.path());
     let out = dir.path().join("plan.json");
 
-    let cwd = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
     let cli = Cli {
         command: Command::Plan {
@@ -2787,10 +2967,10 @@ async fn run_plan_without_report_still_plans_a_write_only_backend() {
             dry_run: false,
             report: false,
             allow_delete: false,
+            no_adopt: false,
         },
     };
     let result = run(cli, AppConfig::load().unwrap()).await;
-    std::env::set_current_dir(cwd).unwrap();
 
     // the all-creates plan is what apply will emit, so it stays: only the
     // report, which claims to have observed, is refused.
@@ -2828,6 +3008,38 @@ fn report_and_dry_run_conflict() {
     // `Cli` is not `Debug`, so unwrap the error via `Option` rather than `expect_err`.
     let err = result.err().expect("--report and --dry-run must conflict");
     assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+}
+
+#[test]
+fn no_adopt_and_allow_delete_conflict() {
+    use clap::Parser;
+    // --no-adopt refuses to identify backend objects by key; --allow-delete
+    // would then plan the unidentified twin of every declared object as a
+    // delete beside its create, replacing objects the run refused to know.
+    // rejected at parse time rather than composed into a footgun.
+    let result = Cli::try_parse_from([
+        "alembic",
+        "plan",
+        "-f",
+        "inventory.yaml",
+        "-o",
+        "plan.json",
+        "--no-adopt",
+        "--allow-delete",
+    ]);
+    // `Cli` is not `Debug`, so unwrap the error via `Option` rather than `expect_err`.
+    let err = result
+        .err()
+        .expect("--no-adopt and --allow-delete must conflict");
+    assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+
+    // each flag alone still parses.
+    for flag in ["--no-adopt", "--allow-delete"] {
+        assert!(
+            Cli::try_parse_from(["alembic", "plan", "-f", "i.yaml", "-o", "p.json", flag]).is_ok(),
+            "{flag} alone must parse"
+        );
+    }
 }
 
 #[test]
@@ -3043,7 +3255,7 @@ async fn run_plan_report_surfaces_extra() {
     // under --report even without --allow-delete.
     use serde_json::json;
 
-    let _guard = cwd_lock().lock().await;
+    let _cwd = CwdGuard::acquire_async().await;
     let server = nautobot_plan_server(json!([{ "id": "uuid-leaf01", "name": "leaf01" }]));
     let dir = tempdir().unwrap();
     let state_path = dir.path().join(".alembic").join("state.json");
@@ -3081,20 +3293,20 @@ objects: []
     )
     .unwrap();
 
-    let cwd = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
 
     let inventory = load_inventory(&inventory).unwrap();
-    let mut state = load_state(StateLock::Exclusive).await.unwrap();
-    let backend = create_backend(&[], None, Some(config)).unwrap();
+    let (backend, identity) = create_backend(&[], None, Some(config)).unwrap();
+    let mut state = load_state(StateLock::Exclusive, &identity).await.unwrap();
 
     // without report-forced delete-detection, allow_delete=false emits no
     // deletes and the `extra` category stays empty.
-    let buggy = build_plan(
+    let (buggy, _) = build_plan(
         backend.observer().unwrap(),
         &inventory,
         &mut state,
         should_detect_deletes(false, false),
+        true,
     )
     .await
     .unwrap();
@@ -3105,11 +3317,12 @@ objects: []
 
     // report mode forces delete-detection, so the unmanaged backend object
     // surfaces as an `extra` even though --allow-delete was not passed.
-    let plan = build_plan(
+    let (plan, _) = build_plan(
         backend.observer().unwrap(),
         &inventory,
         &mut state,
         should_detect_deletes(false, true),
+        true,
     )
     .await
     .unwrap();
@@ -3126,8 +3339,6 @@ objects: []
     assert_eq!(drift.extra[0].key, key_str("name=leaf01"));
     assert!(drift.missing.is_empty());
     assert!(drift.changed.is_empty());
-
-    std::env::set_current_dir(cwd).unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -3144,9 +3355,10 @@ async fn minimal_external_adapter() {
         env: BTreeMap::new(),
         timeout_seconds: Some(5),
         setup: serde_yaml::Value::default(),
+        instance: None,
     });
 
-    let backend = config.build().unwrap();
+    let (backend, _) = config.build().unwrap();
 
     let response = backend
         .emitter()
@@ -3170,7 +3382,7 @@ async fn minimal_external_adapter() {
 // must propagate a preview Err and abort before ensure_schema.
 #[tokio::test(flavor = "multi_thread")]
 async fn run_plan_provision_fails_closed_on_preview_error() {
-    let _guard = cwd_lock().lock().await;
+    let _cwd = CwdGuard::acquire_async().await;
     let dir = tempdir().unwrap();
     let state_path = dir.path().join(".alembic").join("state.json");
     let _env = EnvVarGuard::acquire_async(&[
@@ -3192,7 +3404,6 @@ async fn run_plan_provision_fails_closed_on_preview_error() {
     )
     .unwrap();
 
-    let cwd = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
     let cli = Cli {
         command: Command::Plan {
@@ -3204,10 +3415,10 @@ async fn run_plan_provision_fails_closed_on_preview_error() {
             dry_run: false,
             report: false,
             allow_delete: false,
+            no_adopt: false,
         },
     };
     let result = run(cli, AppConfig::load().unwrap()).await;
-    std::env::set_current_dir(cwd).unwrap();
 
     let err = result.expect_err("a preview error must abort provisioning, not fall through");
     assert!(
@@ -3222,7 +3433,7 @@ async fn run_plan_provision_fails_closed_on_preview_error() {
 // than be refused up front.
 #[tokio::test(flavor = "multi_thread")]
 async fn run_plan_provision_over_a_write_only_backend() {
-    let _guard = cwd_lock().lock().await;
+    let _cwd = CwdGuard::acquire_async().await;
     let dir = tempdir().unwrap();
     let state_path = dir.path().join(".alembic").join("state.json");
     let _env = EnvVarGuard::acquire_async(&[
@@ -3244,7 +3455,6 @@ async fn run_plan_provision_over_a_write_only_backend() {
     )
     .unwrap();
 
-    let cwd = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
     let cli = Cli {
         command: Command::Plan {
@@ -3256,10 +3466,10 @@ async fn run_plan_provision_over_a_write_only_backend() {
             dry_run: false,
             report: false,
             allow_delete: false,
+            no_adopt: false,
         },
     };
     let result = run(cli, AppConfig::load().unwrap()).await;
-    std::env::set_current_dir(cwd).unwrap();
 
     result.expect("a declared emitter provisions rather than being refused");
 }
@@ -3268,7 +3478,7 @@ async fn run_plan_provision_over_a_write_only_backend() {
 // plan carries, so a write-only backend that can preview must fill it in.
 #[tokio::test(flavor = "multi_thread")]
 async fn run_plan_previews_schema_over_a_write_only_backend() {
-    let _guard = cwd_lock().lock().await;
+    let _cwd = CwdGuard::acquire_async().await;
     let dir = tempdir().unwrap();
     let state_path = dir.path().join(".alembic").join("state.json");
     let _env = EnvVarGuard::acquire_async(&[
@@ -3290,7 +3500,6 @@ async fn run_plan_previews_schema_over_a_write_only_backend() {
     )
     .unwrap();
 
-    let cwd = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
     let cli = Cli {
         command: Command::Plan {
@@ -3302,10 +3511,10 @@ async fn run_plan_previews_schema_over_a_write_only_backend() {
             dry_run: false,
             report: false,
             allow_delete: false,
+            no_adopt: false,
         },
     };
     let result = run(cli, AppConfig::load().unwrap()).await;
-    std::env::set_current_dir(cwd).unwrap();
     result.expect("plan over a write-only backend still plans");
 
     let plan: serde_json::Value =
@@ -3373,7 +3582,7 @@ esac
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn run_applies_a_converged_hand_written_adapter_that_omits_applied() {
-    let _guard = cwd_lock().lock().await;
+    let _cwd = CwdGuard::acquire_async().await;
     for (case, converged) in [
         ("omitted", r#"{"ok":true,"result":{}}"#),
         ("spelled out", r#"{"ok":true,"result":{"applied":[]}}"#),
@@ -3387,7 +3596,6 @@ async fn run_applies_a_converged_hand_written_adapter_that_omits_applied() {
         .await;
         let (inventory, config) = hand_written_adapter_fixture(dir.path(), converged);
 
-        let cwd = std::env::current_dir().unwrap();
         std::env::set_current_dir(dir.path()).unwrap();
         // two full cycles: the first creates the site, the second finds it there
         let mut rounds = Vec::new();
@@ -3404,6 +3612,7 @@ async fn run_applies_a_converged_hand_written_adapter_that_omits_applied() {
                         dry_run: false,
                         report: false,
                         allow_delete: false,
+                        no_adopt: false,
                     },
                 },
                 AppConfig::load().unwrap(),
@@ -3425,7 +3634,6 @@ async fn run_applies_a_converged_hand_written_adapter_that_omits_applied() {
             .await;
             rounds.push((planned, applied, plan_path));
         }
-        std::env::set_current_dir(cwd).unwrap();
 
         let mut ops = Vec::new();
         for (round, (planned, applied, plan_path)) in rounds.into_iter().enumerate() {
@@ -3468,4 +3676,133 @@ fn search_for_plugins_reports_a_dir_it_could_not_read() {
         format!("{err:#}").contains("plugins"),
         "the error must name the path: {err:#}"
     );
+}
+
+/// the run-level half of the skill tests; `app::skill` covers what rendering
+/// puts in the file, this covers the command reaching it.
+#[tokio::test]
+async fn run_skill_install_writes_the_skill_under_the_given_root() {
+    let dir = tempdir().unwrap();
+    let root = dir.path().join("skills");
+
+    let cli = Cli {
+        command: Command::Skill {
+            action: SkillAction::Install {
+                name: "alembic".to_string(),
+                dir: root.clone(),
+                force: false,
+            },
+        },
+    };
+    run(cli, AppConfig::load().unwrap()).await.unwrap();
+
+    let installed = std::fs::read_to_string(root.join("alembic/SKILL.md")).unwrap();
+    assert!(
+        installed.starts_with("---\nname: alembic\n"),
+        "the installed file must be the skill a host reads: {installed:.80}"
+    );
+    assert!(
+        installed.contains(&format!("alembic {}", env!("CARGO_PKG_VERSION"))),
+        "the installed file must say which binary wrote it"
+    );
+}
+
+/// the whole point of embedding the text is that installing needs no backend,
+/// no inventory and no state; a run that took the state lock could not run
+/// beside anything else in the directory.
+#[tokio::test]
+async fn run_skill_install_touches_no_state() {
+    let dir = tempdir().unwrap();
+    let _cwd = CwdGuard::acquire_async().await;
+    let state_path = dir.path().join(".alembic").join("state.json");
+    let _env = EnvVarGuard::acquire_async(&[
+        ("ALEMBIC_STATE_BACKEND", Some("local")),
+        ("ALEMBIC_STATE_PATH", Some(state_path.to_str().unwrap())),
+    ])
+    .await;
+    std::env::set_current_dir(dir.path()).unwrap();
+
+    let cli = Cli {
+        command: Command::Skill {
+            action: SkillAction::Install {
+                name: "alembic".to_string(),
+                dir: dir.path().join("skills"),
+                force: false,
+            },
+        },
+    };
+    run(cli, AppConfig::load().unwrap()).await.unwrap();
+
+    assert!(
+        !state_path.exists(),
+        "installing a skill must not create identity memory"
+    );
+}
+
+#[tokio::test]
+async fn run_skill_show_and_list_write_no_files() {
+    let dir = tempdir().unwrap();
+    let _cwd = CwdGuard::acquire_async().await;
+    std::env::set_current_dir(dir.path()).unwrap();
+
+    for action in [
+        SkillAction::List,
+        SkillAction::Show {
+            name: "alembic".to_string(),
+        },
+    ] {
+        run(
+            Cli {
+                command: Command::Skill { action },
+            },
+            AppConfig::load().unwrap(),
+        )
+        .await
+        .unwrap();
+    }
+
+    assert_eq!(
+        std::fs::read_dir(dir.path()).unwrap().count(),
+        0,
+        "list and show print; neither leaves an artifact behind"
+    );
+}
+
+#[tokio::test]
+async fn run_skill_show_rejects_a_name_this_binary_does_not_carry() {
+    let err = run(
+        Cli {
+            command: Command::Skill {
+                action: SkillAction::Show {
+                    name: "netbox".to_string(),
+                },
+            },
+        },
+        AppConfig::load().unwrap(),
+    )
+    .await
+    .expect_err("an unknown skill is an error, not an empty print");
+
+    assert!(
+        format!("{err:#}").contains("no skill named `netbox`"),
+        "{err:#}"
+    );
+}
+
+/// the default skills root is documented (`docs/cli.md`, skill), so it is pinned
+/// here rather than left to whatever the arg definition drifts to.
+#[test]
+fn skill_install_defaults_to_the_documented_skills_root() {
+    use clap::Parser;
+    let cli = Cli::try_parse_from(["alembic", "skill", "install", "alembic"])
+        .expect("skill install parses without --dir");
+    let Command::Skill {
+        action: SkillAction::Install { name, dir, force },
+    } = cli.command
+    else {
+        panic!("expected a skill install command");
+    };
+    assert_eq!(name, "alembic");
+    assert_eq!(dir, PathBuf::from(".agents/skills"));
+    assert!(!force);
 }

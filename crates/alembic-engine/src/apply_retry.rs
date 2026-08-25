@@ -231,8 +231,12 @@ pub async fn apply_non_delete_journaled(
     creates_updates: &[Op],
     driver: &mut impl RetryApplyDriver,
 ) -> Result<(RetryApplyResult, Option<usize>, JournalGuard<'static>)> {
+    // the journal name carries the backend instance, not just the adapter kind,
+    // so two instances of one backend applied from one directory cannot resume
+    // into each other's runs.
+    let scope = state.journal_scope(adapter_name);
     let mut journal = match state.journal_dir() {
-        Some(dir) => Some(Journal::load_or_create(dir, adapter_name, creates_updates)?),
+        Some(dir) => Some(Journal::load_or_create(dir, &scope, creates_updates)?),
         None => None,
     };
     let (result, borrowed) =

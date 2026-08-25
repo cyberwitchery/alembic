@@ -27,6 +27,7 @@ impl DjangoAdapter {
 impl Emitter for DjangoAdapter {
     async fn write(&self, schema: &Schema, ops: &[Op], _state: &StateStore) -> Result<ApplyReport> {
         let mut inventory = Inventory {
+            scope: None,
             schema: schema.clone(),
             objects: Vec::new(),
         };
@@ -969,6 +970,27 @@ fn serializer_fields(model: &ModelSpec) -> Vec<&str> {
     fields
 }
 
+/// the value the fixture carries for `spec`.
+///
+/// a datetime goes out with an uppercase separator. `loaddata` reads it with
+/// django's `parse_datetime`, which falls back to a regex taking only `T` when
+/// `datetime.fromisoformat` declines, and below python 3.11 `fromisoformat`
+/// declines a trailing `Z`. rfc 3339 lets the inventory write either case, so
+/// the two meet here rather than in `validate`.
+fn fixture_value(spec: &FieldSpec, value: &Value) -> Value {
+    match (&spec.field_type, value) {
+        (DjangoFieldType::DateTime, Value::String(raw)) => {
+            // rfc 3339 fixes the separator at index 10, after `full-date`.
+            let mut out = raw.clone();
+            if out.as_bytes().get(10) == Some(&b't') {
+                out.replace_range(10..11, "T");
+            }
+            Value::String(out)
+        }
+        _ => value.clone(),
+    }
+}
+
 /// the ir objects as a django fixture: the uid is the primary key, so relations
 /// carry over as-is and `loaddata` is idempotent across runs.
 fn fixture_entries(app_name: &str, models: &[ModelSpec], objects: &[Object]) -> Result<Vec<Value>> {
@@ -996,7 +1018,7 @@ fn fixture_entries(app_name: &str, models: &[ModelSpec], objects: &[Object]) -> 
             match value {
                 Some(Value::Null) | None => {}
                 Some(value) => {
-                    fields.insert(spec.name.clone(), value.clone());
+                    fields.insert(spec.name.clone(), fixture_value(spec, value));
                 }
             }
         }
@@ -1424,6 +1446,7 @@ mod tests {
             ),
         ];
         Inventory {
+            scope: None,
             schema: test_schema(),
             objects,
         }
@@ -1483,6 +1506,7 @@ mod tests {
         // `blank=True` is a form-level flag: without `null=True` the column stays
         // NOT NULL and an absent value cannot be saved at all.
         let inventory = Inventory {
+            scope: None,
             schema: schema_of(vec![(
                 "dcim.site",
                 type_schema(
@@ -1522,6 +1546,7 @@ mod tests {
     fn many_to_many_is_never_nullable() {
         // django rejects null=True on a ManyToManyField (fields.W340).
         let inventory = Inventory {
+            scope: None,
             schema: schema_of(vec![
                 (
                     "dcim.tag",
@@ -1550,6 +1575,7 @@ mod tests {
 
     fn list_field_models(item: FieldType) -> String {
         let inventory = Inventory {
+            scope: None,
             schema: schema_of(vec![(
                 "dcim.interface",
                 type_schema(
@@ -1697,6 +1723,7 @@ mod tests {
     fn map_values_carry_no_member_check() {
         // maps stay plain json, as they do on the nautobot backend.
         let inventory = Inventory {
+            scope: None,
             schema: schema_of(vec![(
                 "dcim.interface",
                 type_schema(
@@ -1730,6 +1757,7 @@ mod tests {
 
     fn core_accepts(schema: FieldSchema, value: Value) -> bool {
         let inventory = Inventory {
+            scope: None,
             schema: schema_of(vec![(
                 "dcim.interface",
                 type_schema(
@@ -1929,6 +1957,7 @@ mod tests {
         status.pattern = Some("^\\d+\"$".to_string());
         status.description = Some("a \"quoted\" description".to_string());
         let inventory = Inventory {
+            scope: None,
             schema: schema_of(vec![(
                 "dcim.site",
                 type_schema(
@@ -1953,6 +1982,7 @@ mod tests {
 
     fn models_for_field(schema: FieldSchema) -> String {
         let inventory = Inventory {
+            scope: None,
             schema: schema_of(vec![(
                 "ipam.address",
                 type_schema(
@@ -2018,6 +2048,7 @@ mod tests {
         let mut name = field(FieldType::String);
         name.description = Some("human readable name".to_string());
         let inventory = Inventory {
+            scope: None,
             schema: schema_of(vec![(
                 "dcim.site",
                 type_schema(vec![("slug", field(FieldType::Slug))], vec![("name", name)]),
@@ -2035,6 +2066,7 @@ mod tests {
     fn unusable_field_names_are_rejected() {
         for name in ["class", "key", "attrs", "uid", "pk", "trailing_", "do__ble"] {
             let inventory = Inventory {
+                scope: None,
                 schema: schema_of(vec![(
                     "dcim.site",
                     type_schema(
@@ -2057,6 +2089,7 @@ mod tests {
     fn colliding_model_names_are_rejected() {
         // both types render as `class DcimSite`, which would silently drop one.
         let inventory = Inventory {
+            scope: None,
             schema: schema_of(vec![
                 (
                     "dcim.site",
@@ -2078,6 +2111,7 @@ mod tests {
     #[test]
     fn dangling_relation_targets_are_rejected() {
         let inventory = Inventory {
+            scope: None,
             schema: schema_of(vec![(
                 "dcim.device",
                 type_schema(
@@ -2096,6 +2130,41 @@ mod tests {
         let err = emit_django_app(dir.path(), &inventory, DjangoEmitOptions::default())
             .expect_err("a relation to a type outside the model must fail");
         assert!(err.to_string().contains("dcim.site"), "{err}");
+    }
+
+    #[test]
+    fn a_datetime_is_emitted_with_an_uppercase_separator() {
+        // rfc 3339 permits a lowercase `t` and `validate` takes it, but django
+        // reads the fixture with `parse_datetime`, whose regex fallback wants an
+        // uppercase one. the fallback is reached whenever `fromisoformat`
+        // declines, which it does for a trailing `Z` below python 3.11.
+        let inventory = Inventory {
+            scope: None,
+            schema: schema_of(vec![(
+                "ops.window",
+                type_schema(
+                    vec![("slug", field(FieldType::Slug))],
+                    vec![("starts_at", optional(FieldType::Datetime))],
+                ),
+            )]),
+            objects: vec![obj(
+                1,
+                "ops.window",
+                "slug=maintenance",
+                attrs_map(vec![
+                    ("slug", json!("maintenance")),
+                    ("starts_at", json!("2026-08-01t22:00:00Z")),
+                ]),
+            )],
+        };
+
+        let dir = emit_to_temp(&inventory);
+        let fixture: Value = serde_json::from_str(
+            &fs::read_to_string(dir.path().join(FIXTURES_DIR).join(FIXTURE_FILE)).unwrap(),
+        )
+        .unwrap();
+        let entry = &fixture.as_array().expect("a fixture list")[0];
+        assert_eq!(entry["fields"]["starts_at"], json!("2026-08-01T22:00:00Z"));
     }
 
     #[test]
@@ -2133,6 +2202,7 @@ mod tests {
         // a ManyToManyField in admin list_display trips admin.E109 under `manage.py check`,
         // so a list_ref field must not leak into it. it must still exist as a model field.
         let inventory = Inventory {
+            scope: None,
             schema: schema_of(vec![
                 (
                     "dcim.tag",
@@ -2236,6 +2306,7 @@ mod tests {
         );
         // a composite key renders every component, refs through their own __str__.
         let inventory = Inventory {
+            scope: None,
             schema: schema_of(vec![
                 (
                     "dcim.device",
@@ -2365,6 +2436,7 @@ mod tests {
             },
         );
         Inventory {
+            scope: None,
             schema: Schema { types },
             objects: vec![],
         }
@@ -2451,6 +2523,7 @@ mod tests {
             },
         );
         let inventory = Inventory {
+            scope: None,
             schema: Schema { types },
             objects: vec![],
         };
@@ -2474,6 +2547,7 @@ mod tests {
             },
         );
         let inventory = Inventory {
+            scope: None,
             schema: Schema { types },
             objects: vec![],
         };
@@ -2503,6 +2577,7 @@ mod tests {
             },
         );
         let inventory = Inventory {
+            scope: None,
             schema: Schema { types },
             objects: vec![],
         };
@@ -2528,6 +2603,7 @@ mod tests {
             },
         );
         let inventory = Inventory {
+            scope: None,
             schema: Schema { types },
             objects: vec![],
         };

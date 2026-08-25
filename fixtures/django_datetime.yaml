@@ -11,7 +11,7 @@ schema:
           type: slug
       fields:
         name:
-          type: string
+          type: slug
         starts_on:
           type: date
         starts_at:
@@ -25,7 +25,7 @@ objects:
     key:
       name: "lower-bound"
     attrs:
-      name: "lower bound"
+      name: "lower-bound"
       starts_on: "0001-01-01"
       starts_at: "0001-01-01T00:00:00Z"
       opens_at: "00:00:00"
@@ -35,7 +35,7 @@ objects:
     key:
       name: "upper-bound"
     attrs:
-      name: "upper bound"
+      name: "upper-bound"
       starts_on: "9999-12-31"
       starts_at: "9999-12-31T23:59:59Z"
       opens_at: "23:59:59"
@@ -46,7 +46,7 @@ objects:
     key:
       name: "leap-day"
     attrs:
-      name: "leap day"
+      name: "leap-day"
       starts_on: "2024-02-29"
       starts_at: "2024-02-29T12:00:00+02:00"
       opens_at: "12:00:00.123456"
@@ -69,7 +69,7 @@ objects:
     key:
       name: "lowercase-separator"
     attrs:
-      name: "lowercase separator"
+      name: "lowercase-separator"
       starts_on: "2026-08-01"
       starts_at: "2026-08-01t22:00:00Z"
       opens_at: "05:30:00.5"
@@ -79,7 +79,7 @@ objects:
     key:
       name: "negative-offset"
     attrs:
-      name: "negative offset"
+      name: "negative-offset"
       starts_on: "2026-08-01"
       starts_at: "2026-08-01T22:00:00-05:30"
       opens_at: "22:00:00"

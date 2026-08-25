@@ -20,8 +20,8 @@ fn main() {
         "capabilities" => r#"{"ok":true,"result":{"role":"adapter"}}"#.to_string(),
         "read" => r#"{"ok":true,"result":[]}"#.to_string(),
         "preview_schema" => format!(r#"{{"ok":true,"{result}":{{"{deleted}":["dcim.site"]}}}}"#),
-        // the envelope key stays correct here: a run that skips the gate on a
-        // typo'd preview still reaches a provisioning it can read.
+        // the typo is confined to preview_schema: this arm keeps `result`, so a
+        // run that gets past the preview reads what it answers.
         "ensure_schema" => format!(r#"{{"ok":true,"result":{{"{deleted}":["dcim.site"]}}}}"#),
         "write" => r#"{"ok":true,"result":{"applied":[]}}"#.to_string(),
         _ => r#"{"ok":false,"error":"unknown method"}"#.to_string(),

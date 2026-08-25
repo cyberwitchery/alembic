@@ -1,0 +1,15 @@
+# base.yaml without the device: intent no longer declares an object the backend
+# holds.
+include:
+  - schema.yaml
+schema:
+  types: {}
+objects:
+  - uid: "11111111-1111-1111-1111-111111111111"
+    type: dcim.site
+    key:
+      slug: "fra1"
+    attrs:
+      name: "FRA1"
+      slug: "fra1"
+      description: "primary site"
