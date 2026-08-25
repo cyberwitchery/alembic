@@ -488,6 +488,7 @@ mod tests {
             },
         );
         Inventory {
+            scope: None,
             schema: Schema { types },
             objects,
         }

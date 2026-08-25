@@ -295,6 +295,7 @@ fn write_inventory_creates_missing_parent_dirs() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("nested/out/ir.json");
     let inventory = Inventory {
+        scope: None,
         schema: Default::default(),
         objects: vec![],
     };
@@ -310,6 +311,7 @@ fn django_emit_runs_migrations_by_default() {
     std::fs::write(output.join("manage.py"), "").unwrap();
     write_settings(&output, "alembic_project");
     let minimal_inventory = Inventory {
+        scope: None,
         schema: Default::default(),
         objects: vec![],
     };
@@ -378,6 +380,7 @@ fn django_emit_skips_migrate_with_flag() {
     std::fs::write(output.join("manage.py"), "").unwrap();
     write_settings(&output, "alembic_project");
     let minimal_inventory = Inventory {
+        scope: None,
         schema: Default::default(),
         objects: vec![],
     };

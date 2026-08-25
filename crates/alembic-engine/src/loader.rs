@@ -1,7 +1,7 @@
 //! inventory file loading with include/import support.
 
 use crate::{report_to_result_with_sources, validate};
-use alembic_core::{Inventory, Schema, SourceLocation, Uid};
+use alembic_core::{Inventory, Schema, Scope, SourceLocation, Uid};
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
 use std::collections::{BTreeSet, HashMap};
@@ -19,6 +19,8 @@ struct InventoryFile {
     #[serde(default)]
     schema: Option<Schema>,
     #[serde(default)]
+    scope: Option<Scope>,
+    #[serde(default)]
     objects: Vec<alembic_core::Object>,
 }
 
@@ -35,10 +37,15 @@ pub fn load_inventory_unvalidated(path: impl AsRef<Path>) -> Result<Inventory> {
     let mut visited = BTreeSet::new();
     let mut objects = Vec::new();
     let mut schema: Option<Schema> = None;
+    let mut scope: Option<Scope> = None;
     let path = path.as_ref();
-    load_recursive(path, &mut visited, &mut objects, &mut schema)?;
+    load_recursive(path, &mut visited, &mut objects, &mut schema, &mut scope)?;
     let schema = schema.ok_or_else(|| anyhow!("inventory is missing a schema block"))?;
-    Ok(Inventory { schema, objects })
+    Ok(Inventory {
+        schema,
+        scope,
+        objects,
+    })
 }
 
 /// recursive loader with cycle-safe include handling.
@@ -47,6 +54,7 @@ fn load_recursive(
     visited: &mut BTreeSet<PathBuf>,
     objects: &mut Vec<alembic_core::Object>,
     schema: &mut Option<Schema>,
+    scope: &mut Option<Scope>,
 ) -> Result<()> {
     let canonical =
         fs::canonicalize(path).with_context(|| format!("load inventory: {}", path.display()))?;
@@ -74,10 +82,11 @@ fn load_recursive(
 
     for entry in includes {
         let include_path = base.join(entry);
-        load_recursive(&include_path, visited, objects, schema)?;
+        load_recursive(&include_path, visited, objects, schema, scope)?;
     }
 
     merge_schema(schema, inventory.schema)?;
+    merge_scope(scope, inventory.scope)?;
 
     // set source location on each object from this file, with line numbers.
     // the uid->line index is built once per file (one pass), not rescanned per
@@ -124,6 +133,28 @@ fn uid_key_value(line: &str) -> Option<&str> {
     Some(value)
 }
 
+/// merge an included file's scope the way schemas merge: disjoint types
+/// combine, a type scoped twice is an error rather than a silent winner.
+fn merge_scope(current: &mut Option<Scope>, incoming: Option<Scope>) -> Result<()> {
+    let Some(incoming) = incoming else {
+        return Ok(());
+    };
+    match current {
+        Some(existing) => {
+            for (name, entry) in incoming.0 {
+                if existing.0.contains_key(&name) {
+                    return Err(anyhow!("duplicate scope type {name}"));
+                }
+                existing.0.insert(name, entry);
+            }
+        }
+        None => {
+            *current = Some(incoming);
+        }
+    }
+    Ok(())
+}
+
 fn merge_schema(current: &mut Option<Schema>, incoming: Option<Schema>) -> Result<()> {
     let Some(incoming) = incoming else {
         return Ok(());
@@ -150,6 +181,40 @@ mod tests {
     use alembic_core::{Schema, TypeSchema, Uid};
     use std::collections::BTreeMap;
     use tempfile::tempdir;
+
+    #[test]
+    fn a_loaded_scope_survives_and_merges_across_includes() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("inv.yaml");
+        std::fs::write(
+            dir.path().join("other.yaml"),
+            "schema: { types: { dcim.device: { key: { name: { type: slug } }, fields: {} } } }\nscope: { dcim.device: {} }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &root,
+            "include: [other.yaml]\nschema: { types: { dcim.site: { key: { slug: { type: slug } }, fields: {} } } }\nscope: { dcim.site: { slug: fra1 } }\n",
+        )
+        .unwrap();
+        let inventory = load_inventory(&root).unwrap();
+        let scope = inventory.scope.expect("scope loaded");
+        assert!(scope.entry("dcim.site").is_some());
+        assert!(scope.entry("dcim.device").is_some());
+    }
+
+    #[test]
+    fn a_type_scoped_twice_across_includes_is_an_error() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("inv.yaml");
+        std::fs::write(dir.path().join("other.yaml"), "scope: { dcim.site: {} }\n").unwrap();
+        std::fs::write(
+            &root,
+            "include: [other.yaml]\nschema: { types: { dcim.site: { key: { slug: { type: slug } }, fields: {} } } }\nscope: { dcim.site: { slug: fra1 } }\n",
+        )
+        .unwrap();
+        let err = format!("{:#}", load_inventory(&root).unwrap_err());
+        assert!(err.contains("duplicate scope type dcim.site"), "{}", err);
+    }
 
     #[test]
     fn rejects_an_unknown_key_in_an_inventory_file() {

@@ -87,11 +87,12 @@ these hold whatever the task is.
    line). only `--report` and `--dry-run` save nothing. read the adoption lines
    before treating a plan run as a look.
 7. **`--allow-delete` is an assertion, not a retry flag.** it says the inventory
-   is complete over every declared type on that backend: every observed object of
-   a declared type that this inventory does not declare is planned for deletion,
-   including objects a *different* inventory manages (#413 — that scope is a known
-   open question, not a settled design). pass it only when the operator has said
-   the inventory is complete and has read the deletes in the plan.
+   is complete inside its top-level `scope:` (`docs/inventory.md`): only observed
+   objects matching a scope entry are delete candidates, and a type with no entry
+   carries no delete authority. without `scope:`, the historical assertion covers
+   every declared type on the backend, including objects another inventory
+   manages. pass it only when the operator has confirmed that completeness claim
+   and has read the deletes in the plan.
 8. **an interrupted apply resumes from its journal.** apply appends each completed
    create/update to a journal under `.alembic/`, keyed to the backend and to the
    plan's operations. re-running the same `alembic apply` picks it up by name and
