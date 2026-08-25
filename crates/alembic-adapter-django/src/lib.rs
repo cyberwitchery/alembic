@@ -27,6 +27,7 @@ impl DjangoAdapter {
 impl Emitter for DjangoAdapter {
     async fn write(&self, schema: &Schema, ops: &[Op], _state: &StateStore) -> Result<ApplyReport> {
         let mut inventory = Inventory {
+            scope: None,
             schema: schema.clone(),
             objects: Vec::new(),
         };
@@ -1445,6 +1446,7 @@ mod tests {
             ),
         ];
         Inventory {
+            scope: None,
             schema: test_schema(),
             objects,
         }
@@ -1504,6 +1506,7 @@ mod tests {
         // `blank=True` is a form-level flag: without `null=True` the column stays
         // NOT NULL and an absent value cannot be saved at all.
         let inventory = Inventory {
+            scope: None,
             schema: schema_of(vec![(
                 "dcim.site",
                 type_schema(
@@ -1543,6 +1546,7 @@ mod tests {
     fn many_to_many_is_never_nullable() {
         // django rejects null=True on a ManyToManyField (fields.W340).
         let inventory = Inventory {
+            scope: None,
             schema: schema_of(vec![
                 (
                     "dcim.tag",
@@ -1571,6 +1575,7 @@ mod tests {
 
     fn list_field_models(item: FieldType) -> String {
         let inventory = Inventory {
+            scope: None,
             schema: schema_of(vec![(
                 "dcim.interface",
                 type_schema(
@@ -1718,6 +1723,7 @@ mod tests {
     fn map_values_carry_no_member_check() {
         // maps stay plain json, as they do on the nautobot backend.
         let inventory = Inventory {
+            scope: None,
             schema: schema_of(vec![(
                 "dcim.interface",
                 type_schema(
@@ -1751,6 +1757,7 @@ mod tests {
 
     fn core_accepts(schema: FieldSchema, value: Value) -> bool {
         let inventory = Inventory {
+            scope: None,
             schema: schema_of(vec![(
                 "dcim.interface",
                 type_schema(
@@ -1950,6 +1957,7 @@ mod tests {
         status.pattern = Some("^\\d+\"$".to_string());
         status.description = Some("a \"quoted\" description".to_string());
         let inventory = Inventory {
+            scope: None,
             schema: schema_of(vec![(
                 "dcim.site",
                 type_schema(
@@ -1974,6 +1982,7 @@ mod tests {
 
     fn models_for_field(schema: FieldSchema) -> String {
         let inventory = Inventory {
+            scope: None,
             schema: schema_of(vec![(
                 "ipam.address",
                 type_schema(
@@ -2039,6 +2048,7 @@ mod tests {
         let mut name = field(FieldType::String);
         name.description = Some("human readable name".to_string());
         let inventory = Inventory {
+            scope: None,
             schema: schema_of(vec![(
                 "dcim.site",
                 type_schema(vec![("slug", field(FieldType::Slug))], vec![("name", name)]),
@@ -2056,6 +2066,7 @@ mod tests {
     fn unusable_field_names_are_rejected() {
         for name in ["class", "key", "attrs", "uid", "pk", "trailing_", "do__ble"] {
             let inventory = Inventory {
+                scope: None,
                 schema: schema_of(vec![(
                     "dcim.site",
                     type_schema(
@@ -2078,6 +2089,7 @@ mod tests {
     fn colliding_model_names_are_rejected() {
         // both types render as `class DcimSite`, which would silently drop one.
         let inventory = Inventory {
+            scope: None,
             schema: schema_of(vec![
                 (
                     "dcim.site",
@@ -2099,6 +2111,7 @@ mod tests {
     #[test]
     fn dangling_relation_targets_are_rejected() {
         let inventory = Inventory {
+            scope: None,
             schema: schema_of(vec![(
                 "dcim.device",
                 type_schema(
@@ -2126,6 +2139,7 @@ mod tests {
         // uppercase one. the fallback is reached whenever `fromisoformat`
         // declines, which it does for a trailing `Z` below python 3.11.
         let inventory = Inventory {
+            scope: None,
             schema: schema_of(vec![(
                 "ops.window",
                 type_schema(
@@ -2188,6 +2202,7 @@ mod tests {
         // a ManyToManyField in admin list_display trips admin.E109 under `manage.py check`,
         // so a list_ref field must not leak into it. it must still exist as a model field.
         let inventory = Inventory {
+            scope: None,
             schema: schema_of(vec![
                 (
                     "dcim.tag",
@@ -2291,6 +2306,7 @@ mod tests {
         );
         // a composite key renders every component, refs through their own __str__.
         let inventory = Inventory {
+            scope: None,
             schema: schema_of(vec![
                 (
                     "dcim.device",
@@ -2420,6 +2436,7 @@ mod tests {
             },
         );
         Inventory {
+            scope: None,
             schema: Schema { types },
             objects: vec![],
         }
@@ -2506,6 +2523,7 @@ mod tests {
             },
         );
         let inventory = Inventory {
+            scope: None,
             schema: Schema { types },
             objects: vec![],
         };
@@ -2529,6 +2547,7 @@ mod tests {
             },
         );
         let inventory = Inventory {
+            scope: None,
             schema: Schema { types },
             objects: vec![],
         };
@@ -2558,6 +2577,7 @@ mod tests {
             },
         );
         let inventory = Inventory {
+            scope: None,
             schema: Schema { types },
             objects: vec![],
         };
@@ -2583,6 +2603,7 @@ mod tests {
             },
         );
         let inventory = Inventory {
+            scope: None,
             schema: Schema { types },
             objects: vec![],
         };

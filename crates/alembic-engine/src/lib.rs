@@ -106,6 +106,7 @@ pub async fn build_plan(
         &observed,
         state,
         &inventory.schema,
+        inventory.scope.as_ref(),
         allow_delete,
         adopt_by_key,
     )?;
@@ -122,6 +123,7 @@ pub fn plan_write_only(inventory: &Inventory, state: &StateStore) -> Result<Plan
         &ObservedState::default(),
         state,
         &inventory.schema,
+        inventory.scope.as_ref(),
         false,
         true,
     )

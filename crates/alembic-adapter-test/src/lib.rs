@@ -546,7 +546,11 @@ fn check_read_values(request: &Value, result: &Value) -> Result<(), String> {
             source: None,
         })
         .collect();
-    let inventory = Inventory { schema, objects };
+    let inventory = Inventory {
+        schema,
+        scope: None,
+        objects,
+    };
     let report = validate_inventory(&inventory);
     if report.is_err() {
         let rendered: Vec<String> = report

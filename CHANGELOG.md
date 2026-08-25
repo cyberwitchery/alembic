@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- an inventory takes an optional `scope:` block naming what it asserts completeness over, per type with optional key-field values; `--allow-delete` and the drift report's `extra` are defined inside it, so two inventories can share one backend without planning each other's objects as deletes (`docs/inventory.md`) (#413)
+
 - **breaking** a field declared in both `key:` and `fields:` with a different schema fails validation; the shipped examples align the disagreeing `name` fields to their key's `slug` (#311)
 - `alembic-adapter-test` validates a `--cases` read result against the request's schema, so a value outside alembic's value space or a backend id in a ref field fails conformance; types the schema does not declare stay a tolerated superset (#415)
 - **breaking** nautobot observations carry `assigned_object_type`/`assigned_object_id` and `scope_type`/`scope_id` as ordinary attrs; the read-only `assigned_interface` and `site` collapses are gone (#420)

@@ -56,7 +56,11 @@ fn obj(uid: Uid, type_name: &str, key: &str, attrs: serde_json::Value) -> Object
 
 fn inv(objects: Vec<Object>) -> Inventory {
     let schema = schema_for(&objects);
-    Inventory { schema, objects }
+    Inventory {
+        scope: None,
+        schema,
+        objects,
+    }
 }
 
 fn schema_for(objects: &[Object]) -> Schema {
@@ -397,6 +401,7 @@ fn detects_missing_references() {
         }),
     )];
     let inventory = Inventory {
+        scope: None,
         schema: Schema {
             types: BTreeMap::from([(
                 "dcim.interface".to_string(),
@@ -479,6 +484,7 @@ fn plans_in_stable_order() {
         &observed,
         &state,
         &inventory.schema,
+        inventory.scope.as_ref(),
         false,
         true,
     )
@@ -523,6 +529,7 @@ fn detects_attribute_diff() {
         &observed,
         &state,
         &desired.schema,
+        desired.scope.as_ref(),
         false,
         true,
     )
@@ -570,6 +577,7 @@ fn detects_generic_payload_diff() {
         &observed,
         &state,
         &desired.schema,
+        desired.scope.as_ref(),
         false,
         true,
     )
@@ -619,6 +627,7 @@ fn planner_ignores_optional_nulls() {
         &observed,
         &state,
         &schema,
+        None,
         false,
         true,
     )
@@ -669,6 +678,7 @@ fn planner_matches_backend_id_by_kind() {
         &observed,
         &state,
         &schema,
+        None,
         false,
         true,
     )
@@ -705,6 +715,7 @@ fn planner_includes_prefix_site_diff() {
         &observed,
         &state,
         &schema,
+        None,
         false,
         true,
     )
@@ -965,6 +976,7 @@ fn plan_generates_deletes_when_enabled() {
         &observed,
         &state,
         &desired.schema,
+        desired.scope.as_ref(),
         true,
         true,
     )
@@ -1216,6 +1228,7 @@ fn ref_chain_inventory(depth: usize) -> Inventory {
         ));
     }
     Inventory {
+        scope: None,
         schema: Schema { types },
         objects,
     }
@@ -1484,6 +1497,7 @@ fn attr_ref_inventory() -> Inventory {
         ),
     ]);
     Inventory {
+        scope: None,
         schema: Schema { types },
         objects: vec![
             obj(uid(1), "dcim.site", "slug=fra1", json!({ "slug": "fra1" })),
@@ -1576,6 +1590,7 @@ fn build_plan_keeps_a_declared_uid_state_already_maps() {
     let declared_site: Uid = "00000000-0000-0000-0000-000000000001".parse().unwrap();
     let declared_device: Uid = "00000000-0000-0000-0000-000000000002".parse().unwrap();
     let inventory = Inventory {
+        scope: None,
         schema: ref_chain_inventory(1).schema,
         objects: vec![
             obj(
@@ -2527,6 +2542,7 @@ fn ref_cycle_inventory() -> Inventory {
         ]),
     };
     Inventory {
+        scope: None,
         schema: Schema {
             types: BTreeMap::from([
                 ("net.a".to_string(), cycle("b", "net.b")),
@@ -2735,6 +2751,7 @@ fn ref_backend_schema() -> Schema {
 /// the device referencing the site by uid.
 fn ref_backend_inventory(site_uid: Uid, device_uid: Uid) -> Inventory {
     Inventory {
+        scope: None,
         schema: ref_backend_schema(),
         objects: vec![
             obj(site_uid, "dcim.site", "slug=fra1", json!({})),
@@ -2932,6 +2949,7 @@ fn rename_schema() -> Schema {
 /// not hold, plus the device pointing at it.
 fn renamed_inventory(site_uid: Uid) -> Inventory {
     Inventory {
+        scope: None,
         schema: rename_schema(),
         objects: vec![
             obj(
@@ -3080,6 +3098,7 @@ async fn the_inventory_decides_which_uid_answers_when_it_declares_both() {
     let mut state = StateStore::load(&path).unwrap();
 
     let inventory = Inventory {
+        scope: None,
         schema: rename_schema(),
         objects: vec![
             obj(
@@ -3131,6 +3150,7 @@ impl Observer for AdoptionBackend {
 
 fn adoption_inventory(site_uid: Uid) -> Inventory {
     Inventory {
+        scope: None,
         schema: rename_schema(),
         objects: vec![obj(
             site_uid,

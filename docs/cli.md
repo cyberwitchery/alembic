@@ -142,7 +142,7 @@ NETBOX_URL=https://netbox.example.com NETBOX_TOKEN=$NETBOX_TOKEN \
 - creates a deterministic plan
 - against a write-only (emitter) backend such as `django`, which cannot report existing state, plain `plan` produces an all-creates plan against an empty observation, while `--report` is rejected up front (see below)
 - writes json plan to the `-o`/`--output` path (required only for this default write path), and prints a human-readable per-op summary of that plan (create/update/delete, with per-field `from -> to` for updates; long categories are truncated) so you can read what apply would do before applying
-- honors `--allow-delete` if you want delete ops
+- honors `--allow-delete` if you want delete ops; delete candidates are the observed objects the inventory asserts completeness over — bounded by its `scope:` block when one is declared (`docs/inventory.md`), the whole backend per declared type otherwise
 - reports what bootstrapping wrote into identity memory, on stderr like the schema preview so `--dry-run`'s stdout stays raw json: `adopted N existing object(s) by key` names each backend object the run bound to a declared uid, and `superseded:` names any binding an adoption displaced. adoption persists with the plan's state save, so it is never silent; `--no-adopt` disables key adoption (state-known objects still match, everything else plans as a create). it conflicts with `--allow-delete` at parse time: refusing to identify a backend object by key is refusing to know enough to replace it, and their combination would plan the unidentified twin of every declared object as a delete beside its create
 - a uid planned as one create and one delete under two types renders as a `retype`: one logical object re-materialized (see `docs/identity.md`), created under the new type before the old one is deleted
 - without `--provision`, plan asks the backend for a read-only schema preview (what `apply`'s `ensure_schema` would create/delete, writing nothing) and prints it to stderr as `schema preview: ...`; the machine-readable copy rides in the plan's `schema_preview`, and under `--report` (which writes no plan) in the drift report's. backends that cannot preview report `schema preview: unavailable for this backend`
@@ -169,7 +169,7 @@ standalone human-readable summary grouped into three categories:
 
 - **changed**: declared and present on the backend, but one or more fields diverge (lists the per-field `from -> to`)
 - **missing**: declared in intent but absent from the backend
-- **extra**: present on the backend but not declared in intent
+- **extra**: present on the backend but not declared in intent, within what the inventory asserts completeness over (its `scope:` when declared, every declared type otherwise; `docs/inventory.md`)
 
 it is one-way by construction: it only ever describes how observed state diverges
 from intent and never writes observed state back into the inventory or state

@@ -58,6 +58,37 @@ fields:
   name: { type: string, pattern: "^[A-Z0-9-]+$" }
 ```
 
+## scope
+
+an optional top-level `scope:` block states what the inventory asserts
+completeness over, per type. delete detection (`--allow-delete`) and the drift
+report's `extra` category are defined inside it: only observed objects matching
+an entry are candidates. types without an entry carry no completeness assertion
+at all. without the block, the inventory is complete over every declared type,
+the historical behavior.
+
+```yaml
+scope:
+  dcim.site:
+    slug: ["fra1", "fra2"]   # a value or list of values, matched on key fields
+  dcim.device: {}            # every device
+```
+
+an entry constrains key fields by exact value; an empty entry covers the whole
+type. a scope type must be declared in the schema, a scope field must be one of
+that type's key fields, and the values must be ones the field could hold — a
+`map` that renames a scoped type therefore fails its output validation instead
+of silently orphaning the entry (`map` carries `scope:` through verbatim). a
+ref-typed key field is constrained by the target's uid, which need not name an
+object the inventory manages.
+
+scope bounds delete authority and the `extra` category, not management: a
+declared object outside the scope still converges as a create or update. this
+lets two inventories share one backend — each declares its own objects, scopes
+itself to them, and `--allow-delete` from either no longer plans the neighbor's
+objects as deletes. across `include` files, disjoint scope types merge and a
+type scoped twice is an error, the way schemas merge.
+
 ## json input
 
 json is supported when the file extension is `.json`.

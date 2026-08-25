@@ -689,12 +689,63 @@ impl Object {
     }
 }
 
+/// what an inventory asserts completeness over, per type: delete detection and
+/// the drift report's `extra` are defined inside it (`docs/inventory.md`).
+/// absent, the inventory is complete over every declared type, the historical
+/// behavior. an empty entry covers the whole type; a non-empty entry matches
+/// observed objects whose named key fields hold one of the listed values.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct Scope(pub BTreeMap<String, ScopeEntry>);
+
+/// one type's scope: key field name to the value, or values, it may hold.
+pub type ScopeEntry = BTreeMap<String, ScopeValues>;
+
+/// a scope constraint's right-hand side: one value or a list of them.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ScopeValues {
+    One(Value),
+    Many(Vec<Value>),
+}
+
+impl ScopeValues {
+    /// whether `value` is one of the allowed values.
+    pub fn admits(&self, value: &Value) -> bool {
+        match self {
+            Self::One(allowed) => allowed == value,
+            Self::Many(allowed) => allowed.contains(value),
+        }
+    }
+}
+
+impl Scope {
+    /// the entry asserting completeness over `type_name`, if any.
+    pub fn entry(&self, type_name: &str) -> Option<&ScopeEntry> {
+        self.0.get(type_name)
+    }
+
+    /// whether an observed object of `type_name` with `key` falls inside the
+    /// scope. a type without an entry carries no completeness assertion; an
+    /// absent key field fails the match rather than passing it.
+    pub fn contains(&self, type_name: &str, key: &Key) -> bool {
+        let Some(entry) = self.0.get(type_name) else {
+            return false;
+        };
+        entry
+            .iter()
+            .all(|(field, values)| key.get(field).is_some_and(|value| values.admits(value)))
+    }
+}
+
 /// top-level inventory of objects.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Inventory {
     /// schema definitions for type metadata.
     pub schema: Schema,
+    /// what this inventory asserts completeness over; see [`Scope`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<Scope>,
     /// list of objects in this inventory.
     #[serde(default)]
     pub objects: Vec<Object>,
