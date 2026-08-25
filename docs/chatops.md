@@ -17,4 +17,4 @@ Available backends are:
 
 Notifications will be sent on the following events:
 
-- `plan`
+- `plan` (after successfully writing the plan file; not on `--dry-run` or `--report`)
