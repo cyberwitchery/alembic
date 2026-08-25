@@ -150,6 +150,7 @@ relationships are validated strictly by schema and `uid` references.
 - `docs/state.md`
 - `docs/cli.md`
 - `docs/configuration.md`
+- `docs/agents.md`
 - `docs/netbox.md`
 - `docs/nautobot.md`
 - `docs/infrahub.md`

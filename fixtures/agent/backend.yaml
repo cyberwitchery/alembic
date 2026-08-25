@@ -1,0 +1,7 @@
+# the backend config the exercises pass to `--backend-config`. the adapter is the
+# file-backed process next to this file; it reads its store and log paths from the
+# environment, the way a real adapter reads its credentials (see `docs/cli.md`).
+backend: external
+command: python3
+args: ["backend.py"]
+instance: agent-fixtures

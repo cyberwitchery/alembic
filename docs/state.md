@@ -76,14 +76,16 @@ endpoint rename; without one, a moved endpoint reads as a different backend.
 
 ## concurrency
 
-for the local backend, each run takes an advisory lock on a sidecar `<state>.lock`
-file next to the state file and holds it for its whole lifetime, so two
-runs against the same state file cannot both load it and race to save, silently
-clobbering each other's mappings. a run that saves nothing (`plan --report` or
-`plan --dry-run`, without `--provision`) takes it shared, so drift reports may run
-alongside each other; every other run takes it exclusively and neither kind starts
-while the other holds it. a run that is refused fails fast with `another alembic
-run holds the state lock` instead of waiting. the lock releases when the run exits
+for the local backend, a run that loads identity state takes an advisory lock on
+a sidecar `<state>.lock` file next to the state file and holds it for its whole
+lifetime, so two runs cannot load it and race to save, silently clobbering each
+other's mappings. `import`, `plan --report`, and `plan --dry-run` take it shared
+because they never save state; adding `--provision` to a report makes the lock
+exclusive because that run writes backend schema. a plan that writes a plan file
+and `apply` take it exclusive and save state. `validate`, `map`, and stateless
+import do not load state or take its lock. neither lock kind starts while an
+incompatible holder has it: the refused run fails fast with `another alembic run
+holds the state lock` instead of waiting. the lock releases when the run exits
 (the `.lock` file is left in place and reused). the postgres backend instead uses
 optimistic concurrency via `loaded_version`, failing a save whose base version
 changed underneath it.
