@@ -700,12 +700,14 @@ pub struct Scope(pub BTreeMap<String, ScopeEntry>);
 /// one type's scope: key field name to the value, or values, it may hold.
 pub type ScopeEntry = BTreeMap<String, ScopeValues>;
 
-/// a scope constraint's right-hand side: one value or a list of them.
+/// a scope constraint's right-hand side: one scalar value or a list of them.
 /// `Many` is declared first: untagged deserialization tries variants in order,
 /// and `One(Value)` accepts any json — an array would land there and read as
-/// one array-valued constraint instead of a list of values. keys are scalar
-/// (`validate_schema_key_scalar`), so routing every array to `Many` loses
-/// nothing.
+/// one array-valued constraint instead of a list of values. an array at the
+/// constraint position therefore always means a list of allowed values, and
+/// validation rejects composite values inside it: a `json`-typed key can hold
+/// an array, but that value has no unambiguous spelling here, so such a key is
+/// scoped whole-type or not at all.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ScopeValues {

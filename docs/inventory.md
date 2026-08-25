@@ -76,7 +76,9 @@ scope:
 ```
 
 an entry constrains key fields by exact value; an empty entry covers the whole
-type. a scope type must be declared in the schema, a scope field must be one of
+type. constraint values are scalars — an array always reads as a list of
+allowed values, never as one array-valued constraint, so a `json`-typed key
+holding composite values can only be scoped whole-type. a scope type must be declared in the schema, a scope field must be one of
 that type's key fields, and the values must be ones the field could hold — a
 `map` that renames a scoped type therefore fails its output validation instead
 of silently orphaning the entry (`map` carries `scope:` through verbatim). a

@@ -811,7 +811,11 @@ fn validate_scope(
 
 /// check one scope value against the key field it constrains, reporting
 /// through `ScopeInvalidValue` so the message names the scope rather than an
-/// object. refs check only uid shape (see [`validate_scope`]).
+/// object. refs check only uid shape (see [`validate_scope`]). a constraint
+/// value must be a scalar: an array at the constraint position always reads as
+/// a list of allowed values, so a composite value there could only be the
+/// ambiguous spelling of a constraint the syntax cannot express — a `json` key
+/// holding composites is scoped whole-type or not at all.
 fn validate_scope_value(
     type_name: &str,
     field: &str,
@@ -820,6 +824,15 @@ fn validate_scope_value(
     pattern_cache: &BTreeMap<String, Regex>,
     report: &mut ValidationReport,
 ) {
+    if value.is_array() || value.is_object() {
+        report.errors.push(ValidationError::ScopeInvalidValue {
+            type_name: type_name.to_string(),
+            field: field.to_string(),
+            expected: "a scalar value".to_string(),
+            actual: value_type_label(value),
+        });
+        return;
+    }
     if let FieldType::Ref { .. } = field_schema.r#type {
         if parse_uid(value).is_none() {
             report.errors.push(ValidationError::ScopeInvalidValue {
@@ -1992,6 +2005,61 @@ mod tests {
             ValidationError::ScopeInvalidValue { type_name, field, .. }
                 if type_name == "dcim.site" && field == "slug"
         )));
+    }
+
+    #[test]
+    fn rejects_a_composite_scope_value() {
+        // a `json` key can hold an array, but an array at the constraint
+        // position is always a list of allowed values — so a composite value
+        // inside one is rejected rather than silently matching the scalars it
+        // contains and widening delete authority.
+        let window = TypeSchema {
+            key: BTreeMap::from([("identity".to_string(), schema_field(FieldType::Json))]),
+            fields: BTreeMap::new(),
+        };
+        let schema = Schema {
+            types: BTreeMap::from([("ops.window".to_string(), window)]),
+        };
+        let scope: crate::ir::Scope =
+            serde_json::from_value(serde_json::json!({ "ops.window": { "identity": [[1, 2]] } }))
+                .unwrap();
+        let report = validate_inventory(&Inventory {
+            schema: schema.clone(),
+            scope: Some(scope),
+            objects: vec![],
+        });
+        assert!(
+            report.errors.iter().any(|e| matches!(
+                e,
+                ValidationError::ScopeInvalidValue { field, expected, .. }
+                    if field == "identity" && expected == "a scalar value"
+            )),
+            "{:?}",
+            report.errors
+        );
+        // an object-valued constraint is the same ambiguity through `One`.
+        let scope: crate::ir::Scope =
+            serde_json::from_value(serde_json::json!({ "ops.window": { "identity": {"a": 1} } }))
+                .unwrap();
+        let report = validate_inventory(&Inventory {
+            schema: schema.clone(),
+            scope: Some(scope),
+            objects: vec![],
+        });
+        assert!(report
+            .errors
+            .iter()
+            .any(|e| matches!(e, ValidationError::ScopeInvalidValue { .. })));
+        // scalar json values stay legal.
+        let scope: crate::ir::Scope =
+            serde_json::from_value(serde_json::json!({ "ops.window": { "identity": [1, 2] } }))
+                .unwrap();
+        let report = validate_inventory(&Inventory {
+            schema,
+            scope: Some(scope),
+            objects: vec![],
+        });
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
     }
 
     #[test]
