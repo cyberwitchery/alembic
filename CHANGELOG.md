@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- `alembic skill list|show|install` writes out the agent skills the binary carries, `--dir` defaulting to `.claude/skills`; the copy it writes names the version that wrote it and pins its documentation links to that version (#426)
+- `alembic skill list|show|install` writes out the agent skills the binary carries, `--dir` defaulting to `.agents/skills`; an install replaces only an unchanged Alembic-owned copy unless `--force` is passed, and records the release or source revision it describes (#426)
 - the cli gets an agent guide: the `alembic` skill states the identity and safety contract the command surface does not, `docs/agents.md` explains it, and `scripts/agent_fixtures.sh` exercises it against the fixtures in `fixtures/agent/` (#425)
 - **breaking** a field declared in both `key:` and `fields:` with a different schema fails validation; the shipped examples align the disagreeing `name` fields to their key's `slug` (#311)
 - `alembic-adapter-test` validates a `--cases` read result against the request's schema, so a value outside alembic's value space or a backend id in a ref field fails conformance; types the schema does not declare stay a tolerated superset (#415)

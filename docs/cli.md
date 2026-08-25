@@ -420,21 +420,23 @@ alembic skill list
 alembic skill show alembic
 
 alembic skill install alembic
-alembic skill install alembic --dir /srv/intent/.claude/skills
+alembic skill install alembic --dir /srv/intent/.agents/skills
 ```
 
 - `list` prints one `name<tab>summary` line per embedded skill
 - `show` prints the skill's markdown to stdout, for a host that reads no skills
   directory
-- `install` writes it to `<dir>/<name>/SKILL.md`, `--dir` defaulting to
-  `.claude/skills`, and prints the path it wrote. an existing file is
-  overwritten: replacing a stale copy is what installing again is for
+- `install` writes it atomically to `<dir>/<name>/SKILL.md`, `--dir` defaulting
+  to `.agents/skills`, and prints the path it wrote. it replaces an unchanged
+  copy previously installed by Alembic; an unowned or locally modified file is
+  refused unless `--force` is passed
 - what leaves the binary is not quite the file in the repository. the
-  documentation links are pinned from `main` to this binary's version, so an
-  installed copy reads the pages for the cli it describes, and a trailing line
-  records the version that wrote it. a skill is only worth reading when it
-  describes the alembic you are running, which is why it ships inside it rather
-  than being fetched
+  documentation links in a release are pinned from `main` to that version tag;
+  a Git build pins them to its commit, or leaves them on `main` when the checkout
+  is dirty. a trailing stamp identifies the release or unreleased source and an
+  ownership/content marker distinguishes an unchanged Alembic install. a skill
+  is only worth reading when it describes the alembic you are running, which is
+  why it ships inside it rather than being fetched
 
 ## environment variables
 

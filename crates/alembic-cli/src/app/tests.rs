@@ -3685,6 +3685,7 @@ async fn run_skill_install_writes_the_skill_under_the_given_root() {
             action: SkillAction::Install {
                 name: "alembic".to_string(),
                 dir: root.clone(),
+                force: false,
             },
         },
     };
@@ -3696,10 +3697,7 @@ async fn run_skill_install_writes_the_skill_under_the_given_root() {
         "the installed file must be the skill a host reads: {installed:.80}"
     );
     assert!(
-        installed.contains(&format!(
-            "installed from alembic {}",
-            env!("CARGO_PKG_VERSION")
-        )),
+        installed.contains(&format!("alembic {}", env!("CARGO_PKG_VERSION"))),
         "the installed file must say which binary wrote it"
     );
 }
@@ -3724,6 +3722,7 @@ async fn run_skill_install_touches_no_state() {
             action: SkillAction::Install {
                 name: "alembic".to_string(),
                 dir: dir.path().join("skills"),
+                force: false,
             },
         },
     };
@@ -3793,11 +3792,12 @@ fn skill_install_defaults_to_the_documented_skills_root() {
     let cli = Cli::try_parse_from(["alembic", "skill", "install", "alembic"])
         .expect("skill install parses without --dir");
     let Command::Skill {
-        action: SkillAction::Install { name, dir },
+        action: SkillAction::Install { name, dir, force },
     } = cli.command
     else {
         panic!("expected a skill install command");
     };
     assert_eq!(name, "alembic");
-    assert_eq!(dir, PathBuf::from(".claude/skills"));
+    assert_eq!(dir, PathBuf::from(".agents/skills"));
+    assert!(!force);
 }

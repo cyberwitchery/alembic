@@ -191,13 +191,16 @@ enum SkillAction {
         /// skill name, as `list` reports it.
         name: String,
     },
-    /// write a skill to a skills directory, replacing any copy already there.
+    /// write a skill to a skills directory.
     Install {
         /// skill name, as `list` reports it.
         name: String,
         /// skills root to install under; the file lands at `<dir>/<name>/SKILL.md`.
         #[arg(long, default_value = skill::DEFAULT_SKILLS_DIR)]
         dir: PathBuf,
+        /// replace a file not installed by alembic, or one modified since install.
+        #[arg(long, default_value_t = false)]
+        force: bool,
     },
 }
 
@@ -571,8 +574,8 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
         Command::Skill { action } => match action {
             SkillAction::List => skill::list(),
             SkillAction::Show { name } => skill::show(&name)?,
-            SkillAction::Install { name, dir } => {
-                let path = skill::install(&name, &dir)?;
+            SkillAction::Install { name, dir, force } => {
+                let path = skill::install(&name, &dir, force)?;
                 println!("skill written to {}", path.display());
             }
         },

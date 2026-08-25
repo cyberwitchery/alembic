@@ -32,21 +32,26 @@ below otherwise:
 read this before choosing a command, and say which column you are in before you
 run it.
 
-| invocation | reads backend | writes locally | writes backend |
-| --- | --- | --- | --- |
-| `validate -f` | no | the `-o` report only | no |
-| `map -f --spec -o` | no | the `-o` inventory | no |
-| `map transform --spec` | no | nothing (stdout) | no |
-| `import -f -o` | yes | the `-o` inventory | no |
-| `plan --report` | yes | the `-o` report, if given | **no** |
-| `plan --dry-run` | yes | nothing (stdout) | no |
-| `plan -o` | yes | the plan, **and state** | no |
-| `--provision`, in any of those modes | yes | what that mode writes, **and state** | **yes: schema** |
-| `apply -p` | yes | journal, state, `-o` report | **yes: objects and schema** |
+| invocation | reads backend | local output | writes backend | loads state | state lock | saves state |
+| --- | --- | --- | --- | --- | --- | --- |
+| `validate -f` | no | `-o` report, if given | no | no | none | no |
+| `map -f --spec -o` | no | `-o` inventory | no | no | none | no |
+| `map transform --spec` | no | stdout | no | no | none | no |
+| `import -f -o` | yes | `-o` inventory | no | yes | shared | no |
+| `import -f -o --stateless` | yes | `-o` inventory | no | no | none | no |
+| `plan --report` | yes | `-o` report, if given | no | yes | shared | no |
+| `plan --dry-run` | yes | stdout | no | yes | shared | no |
+| `plan --report --provision` | yes | `-o` report, if given | **schema** | yes | exclusive | no |
+| `plan -o` | yes | plan | no | yes | exclusive | yes |
+| `plan -o --provision` | yes | plan | **schema** | yes | exclusive | yes |
+| `apply -p` | yes | journal, `-o` report | **objects and schema** | yes | exclusive | yes |
 
-`plan -o` and `apply` save identity memory. `--report` and `--dry-run` save
-nothing, and take the state lock shared so they can run beside each other; every
-other run takes it exclusively.
+state loading, locking, and saving are separate properties. a shared lock means
+the run may load identity memory but cannot persist changes to it. `validate` and
+`map` do not touch state at all; stateless import deliberately does not. adding
+`--provision` to `plan --report` changes its lock to exclusive because the run
+writes backend schema, but the report path still does not save identity state.
+`--dry-run --provision` is rejected at argument parsing.
 
 ## invariants
 

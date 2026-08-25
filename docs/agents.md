@@ -13,8 +13,10 @@ the two disagree -- the skill is an operating guide over the docs, not a second
 source of truth.
 
 it ships inside the binary. `crates/alembic-cli/skills/alembic/SKILL.md` is the
-file, embedded at compile time, and `.claude/skills/alembic` points at the same
-directory so a checkout of this repository reads the copy it publishes.
+file embedded at compile time. `.agents/skills/alembic` points at the same
+directory for standard project discovery, and `.claude/skills/alembic` provides
+the Claude-specific compatibility path. a checkout therefore reads the copy it
+publishes without making either host layout canonical.
 
 ## what it states
 
@@ -40,21 +42,25 @@ the binary writes it out (`docs/cli.md`, skill):
 
 ```bash
 alembic skill install alembic
-alembic skill install alembic --dir /srv/intent/.claude/skills
+alembic skill install alembic --dir /srv/intent/.agents/skills
 ```
 
-`--dir` is a skills root, not a claude-specific path: the file lands at
-`<dir>/<name>/SKILL.md`, which is the layout agent hosts read. for a host that
-reads something else, `alembic skill show alembic` prints the same markdown to
-stdout.
+`--dir` is a skills root: the file lands at `<dir>/<name>/SKILL.md`. it defaults
+to `.agents/skills`; pass a host-specific root when needed. for a host that reads
+something else entirely, `alembic skill show alembic` prints the same markdown
+to stdout.
 
-installing needs no network, no backend and no state, and it overwrites an
-existing copy, which is how an upgrade lands. that is the point of embedding the
-text rather than publishing it somewhere to be fetched: a skill states what the
-command surface does not, so one that describes a different release states it
-wrongly, and confidently. the copy that leaves the binary says which version
-wrote it, and its documentation links are pinned to that version rather than to
-`main`.
+installing needs no network, no backend and no state. a generated ownership and
+content marker lets a later Alembic replace an unchanged installed copy; a local
+edit or any unowned file is refused unless `--force` is explicit. the write is a
+temporary file renamed into place, so an interruption cannot truncate the skill.
+
+that is the point of embedding the text rather than publishing it somewhere to
+be fetched: a skill states what the command surface does not, so one that
+describes a different build states it wrongly, and confidently. a release copy
+pins documentation to its version tag. an unreleased build from a Git checkout
+pins it to that commit, or to `main` when the checkout is dirty, and identifies
+itself as unreleased in the stamp.
 
 re-run `alembic skill install` after upgrading alembic.
 
