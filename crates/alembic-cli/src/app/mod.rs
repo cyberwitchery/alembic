@@ -328,7 +328,7 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             let plugins = search_for_plugins(&config)?;
             let backend_name = backend.clone();
             let (backend, backend_identity) =
-                create_backend(&plugins, backend.as_deref(), backend_config)?;
+                create_backend(&plugins, backend.as_deref(), backend_config.clone())?;
             let mut state = load_state(
                 state_lock_for_plan(report, dry_run, provision),
                 &backend_identity,
@@ -427,7 +427,8 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                     let notification = Notification::from_plan(
                         &plan,
                         file.to_str().unwrap(),
-                        &backend_name.unwrap(), // Fall back to backend config here
+                        backend_name,
+                        backend_config,
                     );
                     chatops::notify(chatops_backend, &notification).await?;
                 }

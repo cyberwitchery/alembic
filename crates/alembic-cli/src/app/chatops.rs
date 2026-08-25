@@ -4,6 +4,7 @@ use alembic_core::key_string;
 use alembic_engine::{Op, Plan};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::path::PathBuf;
 use tracing;
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
@@ -90,8 +91,8 @@ impl ChatopsBackend {
         })
     }
 
-    fn notification_message(&self, notification: &Notification) -> serde_json::Value {
-        let command_data_json = serde_json::to_string(&notification.command).unwrap();
+    fn notification_message(&self, notification: &Notification) -> anyhow::Result<Value> {
+        let command_data_json = serde_json::to_string(&notification.command)?;
         match self {
             ChatopsBackend::Slack { .. } => {
                 let elements = notification
@@ -109,7 +110,7 @@ impl ChatopsBackend {
                         ]
                     })
                     .collect::<Vec<_>>();
-                json!({
+                Ok(json!({
                     "blocks": [
                         {
                             "type": "rich_text",
@@ -117,13 +118,11 @@ impl ChatopsBackend {
                         },
                         Self::slack_action_buttons(command_data_json),
                     ]
-                })
+                }))
             }
-            ChatopsBackend::Discord { .. } => {
-                json!({"content":
-                    notification.text()
-                })
-            }
+            ChatopsBackend::Discord { .. } => Ok(json!({"content":
+                notification.text()
+            })),
         }
     }
 }
@@ -135,7 +134,11 @@ pub struct Notification {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum CommandData {
-    Plan { file: String, backend: String },
+    Plan {
+        file: String,
+        backend: Option<String>,
+        backend_config: Option<PathBuf>,
+    },
 }
 
 pub struct NotificationSection {
@@ -145,7 +148,12 @@ pub struct NotificationSection {
 
 // general purpose container for notification data, not tied to a particular chat service
 impl Notification {
-    pub fn from_plan(plan: &Plan, plan_path: &str, backend: &str) -> Self {
+    pub fn from_plan(
+        plan: &Plan,
+        plan_path: &str,
+        backend: Option<String>,
+        backend_config: Option<PathBuf>,
+    ) -> Self {
         let sections = vec![
             NotificationSection {
                 title: "Create".to_string(),
@@ -192,7 +200,8 @@ impl Notification {
             sections,
             command: CommandData::Plan {
                 file: plan_path.to_string(),
-                backend: backend.to_string(),
+                backend,
+                backend_config,
             },
         }
     }
@@ -222,10 +231,8 @@ async fn notify_with_base_url(
     let client = reqwest::Client::new();
 
     tracing::debug!(
-        "Notification json: {}",
-        chatops_backend
-            .notification_message(notification)
-            .to_string()
+        "Notification json: {:?}",
+        chatops_backend.notification_message(notification)
     );
 
     let res = client
@@ -233,7 +240,7 @@ async fn notify_with_base_url(
         .header("Content-Type", "application/json")
         .body(
             chatops_backend
-                .notification_message(notification)
+                .notification_message(notification)?
                 .to_string(),
         )
         .send()
@@ -264,7 +271,8 @@ mod tests {
             sections: vec![],
             command: CommandData::Plan {
                 file: "plan.json".to_string(),
-                backend: "test".to_string(),
+                backend: Some("test".to_string()),
+                backend_config: None,
             },
         }
     }
@@ -356,7 +364,7 @@ mod tests {
     #[test]
     fn slack_message_format_is_blocks() {
         let backend = ChatopsBackend::Slack { secret: "s".into() };
-        let msg = backend.notification_message(&dummy_notification());
+        let msg = backend.notification_message(&dummy_notification()).unwrap();
         assert_eq!(
             msg,
             json!(
@@ -373,14 +381,14 @@ mod tests {
                                 "type": "plain_text",
                             },
                             "type": "button",
-                            "value": "{\"Plan\":{\"file\":\"plan.json\",\"backend\":\"test\"}}"
+                            "value": "{\"Plan\":{\"file\":\"plan.json\",\"backend\":\"test\",\"backend_config\":null}}"
                         },
                         {
                             "action_id": "deny_button",
                             "style": "danger",
                             "text": {"text": "Deny", "type": "plain_text"},
                             "type": "button",
-                            "value": "{\"Plan\":{\"file\":\"plan.json\",\"backend\":\"test\"}}"
+                            "value": "{\"Plan\":{\"file\":\"plan.json\",\"backend\":\"test\",\"backend_config\":null}}"
                         }
                     ],
                         "type": "actions"}
@@ -392,7 +400,7 @@ mod tests {
     #[test]
     fn discord_message_format_is_content_field() {
         let backend = ChatopsBackend::Discord { token: "t".into() };
-        let msg = backend.notification_message(&dummy_notification());
+        let msg = backend.notification_message(&dummy_notification()).unwrap();
         assert_eq!(msg, json!({ "content": "" }));
     }
 }
