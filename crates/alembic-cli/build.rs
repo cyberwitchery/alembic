@@ -37,6 +37,11 @@ fn main() {
     if let Some(git_head) = git(&manifest_dir, &["rev-parse", "--git-path", "HEAD"]) {
         println!("cargo:rerun-if-changed={git_head}");
     }
+    if let Some(head_ref) = git(&manifest_dir, &["symbolic-ref", "HEAD"]) {
+        if let Some(ref_path) = git(&manifest_dir, &["rev-parse", "--git-path", &head_ref]) {
+            println!("cargo:rerun-if-changed={ref_path}");
+        }
+    }
 
     let version = env::var("CARGO_PKG_VERSION").unwrap();
     let expected_tag = format!("v{version}");
