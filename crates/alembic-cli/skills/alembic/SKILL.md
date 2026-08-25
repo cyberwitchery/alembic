@@ -15,16 +15,17 @@ assertions rather than switches. get one of those wrong and a run that looks
 successful is wrong in a way no exit code reports.
 
 the canonical documentation is authoritative wherever this file is thinner or
-disagrees:
+disagrees. it is `docs/` in a checkout of the alembic repository, and the links
+below otherwise:
 
 | topic | doc |
 | --- | --- |
-| commands, flags, json shapes | `docs/cli.md` |
-| uids, keys, adoption, retype | `docs/identity.md` |
-| validation, diff rules, import | `docs/engine.md` |
-| identity memory and its locking | `docs/state.md` |
-| inventory format, field schemas | `docs/inventory.md`, `docs/ir.md` |
-| plan file shape | `docs/plan.md` |
+| commands, flags, json shapes | [`docs/cli.md`](https://github.com/cyberwitchery/alembic/blob/main/docs/cli.md) |
+| uids, keys, adoption, retype | [`docs/identity.md`](https://github.com/cyberwitchery/alembic/blob/main/docs/identity.md) |
+| validation, diff rules, import | [`docs/engine.md`](https://github.com/cyberwitchery/alembic/blob/main/docs/engine.md) |
+| identity memory and its locking | [`docs/state.md`](https://github.com/cyberwitchery/alembic/blob/main/docs/state.md) |
+| inventory format, field schemas | [`docs/inventory.md`](https://github.com/cyberwitchery/alembic/blob/main/docs/inventory.md), [`docs/ir.md`](https://github.com/cyberwitchery/alembic/blob/main/docs/ir.md) |
+| plan file shape | [`docs/plan.md`](https://github.com/cyberwitchery/alembic/blob/main/docs/plan.md) |
 
 ## what each command touches
 
@@ -231,9 +232,10 @@ the operation that failed.
 
 ## exercises
 
-`fixtures/agent/` in the alembic repository holds a file-backed backend and the
-inventories that put the invariants above under test;
-`scripts/agent_fixtures.sh` runs them offline and checks the artifacts. run it
-when you change this file, and read the exercises when an invariant here is
-unclear: each one is the smallest case that distinguishes getting it right from
-getting it plausibly wrong.
+[`fixtures/agent/`](https://github.com/cyberwitchery/alembic/blob/main/fixtures/agent)
+in the alembic repository holds a file-backed backend and the inventories that
+put the invariants above under test;
+[`scripts/agent_fixtures.sh`](https://github.com/cyberwitchery/alembic/blob/main/scripts/agent_fixtures.sh)
+runs them offline and checks the artifacts. run it when you change this file, and
+read the exercises when an invariant here is unclear: each one is the smallest
+case that distinguishes getting it right from getting it plausibly wrong.

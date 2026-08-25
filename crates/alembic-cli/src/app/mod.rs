@@ -2,6 +2,7 @@
 
 pub mod config;
 mod io;
+mod skill;
 mod state;
 
 use alembic_adapter_registry::{create_backend, Plugin};
@@ -173,6 +174,31 @@ enum Command {
         #[arg(long)]
         stateless: bool,
     },
+    /// install or print the agent skills this binary carries.
+    Skill {
+        #[command(subcommand)]
+        action: SkillAction,
+    },
+}
+
+/// skill subcommands.
+#[derive(Subcommand)]
+enum SkillAction {
+    /// list the skills embedded in this binary.
+    List,
+    /// print a skill to stdout, for a host that reads no skills directory.
+    Show {
+        /// skill name, as `list` reports it.
+        name: String,
+    },
+    /// write a skill to a skills directory, replacing any copy already there.
+    Install {
+        /// skill name, as `list` reports it.
+        name: String,
+        /// skills root to install under; the file lands at `<dir>/<name>/SKILL.md`.
+        #[arg(long, default_value = skill::DEFAULT_SKILLS_DIR)]
+        dir: PathBuf,
+    },
 }
 
 /// map subcommands.
@@ -248,6 +274,9 @@ fn output_path(command: &Command) -> Option<&Path> {
         } => None,
         Command::Map { output, .. } => output.as_deref(),
         Command::Import { output, .. } => Some(output),
+        // `install` writes into a directory it creates rather than to a named
+        // output file, and it reports the path it wrote; the other two print
+        Command::Skill { .. } => None,
     }
 }
 
@@ -538,6 +567,15 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             write_inventory(&output, &report.inventory)?;
             println!("inventory written to {}", output.display());
         }
+        // no backend, no state, no inventory: the text is in the binary
+        Command::Skill { action } => match action {
+            SkillAction::List => skill::list(),
+            SkillAction::Show { name } => skill::show(&name)?,
+            SkillAction::Install { name, dir } => {
+                let path = skill::install(&name, &dir)?;
+                println!("skill written to {}", path.display());
+            }
+        },
     }
 
     Ok(())
