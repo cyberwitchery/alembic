@@ -86,6 +86,7 @@ fn build_plan(num_devices: u128) -> Result<Plan> {
 fn build_inventory(num_devices: u128) -> Result<Inventory> {
     Ok(Inventory {
         schema: schema()?,
+        scope: None,
         objects: objects(num_devices)?,
     })
 }
@@ -330,6 +331,7 @@ mod tests {
     /// the plan's own objects, lifted into an inventory carrying its schema.
     fn plan_as_inventory(plan: &Plan) -> Inventory {
         Inventory {
+            scope: None,
             schema: plan.schema.clone(),
             objects: plan
                 .ops

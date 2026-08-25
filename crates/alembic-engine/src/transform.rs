@@ -572,6 +572,9 @@ pub fn compile_map(input: &Inventory, spec: &MapSpec) -> Result<Inventory> {
 
     let inventory = Inventory {
         schema: out_schema,
+        // carried verbatim: a spec that renames a scoped type fails the output
+        // validation below (scope must name declared types), loudly not silently.
+        scope: input.scope.clone(),
         objects,
     };
     crate::report_to_result(crate::validate(&inventory))?;

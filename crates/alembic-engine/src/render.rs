@@ -1095,6 +1095,7 @@ uid:
             )
             .unwrap();
             validate_inventory(&Inventory {
+                scope: None,
                 schema: Schema {
                     types: BTreeMap::from([("site".to_string(), type_schema)]),
                 },

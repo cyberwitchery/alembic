@@ -101,6 +101,17 @@ pub enum ValidationError {
         "key field {type_name}.{field} is declared again in fields with a different schema; one name carries one schema (docs/ir.md)"
     )]
     KeyFieldDisagreement { type_name: String, field: String },
+    #[error("scope names undeclared type {type_name} (docs/inventory.md)")]
+    ScopeUnknownType { type_name: String },
+    #[error("scope field {type_name}.{field} is not a key field of the type (docs/inventory.md)")]
+    ScopeNonKeyField { type_name: String, field: String },
+    #[error("invalid scope value for {type_name}.{field}: expected {expected}, got {actual}")]
+    ScopeInvalidValue {
+        type_name: String,
+        field: String,
+        expected: String,
+        actual: String,
+    },
 }
 
 impl ValidationError {
@@ -128,7 +139,10 @@ impl ValidationError {
             | ValidationError::EmptyEnum { .. }
             | ValidationError::NonScalarKeyField { .. }
             | ValidationError::NullableKeyField { .. }
-            | ValidationError::KeyFieldDisagreement { .. } => None,
+            | ValidationError::KeyFieldDisagreement { .. }
+            | ValidationError::ScopeUnknownType { .. }
+            | ValidationError::ScopeNonKeyField { .. }
+            | ValidationError::ScopeInvalidValue { .. } => None,
         }
     }
 
@@ -161,7 +175,10 @@ impl ValidationError {
             | ValidationError::EmptyEnum { .. }
             | ValidationError::NonScalarKeyField { .. }
             | ValidationError::NullableKeyField { .. }
-            | ValidationError::KeyFieldDisagreement { .. } => None,
+            | ValidationError::KeyFieldDisagreement { .. }
+            | ValidationError::ScopeUnknownType { .. }
+            | ValidationError::ScopeNonKeyField { .. }
+            | ValidationError::ScopeInvalidValue { .. } => None,
         }
     }
 
@@ -180,7 +197,10 @@ impl ValidationError {
             | ValidationError::EmptyEnum { type_name, .. }
             | ValidationError::NonScalarKeyField { type_name, .. }
             | ValidationError::NullableKeyField { type_name, .. }
-            | ValidationError::KeyFieldDisagreement { type_name, .. } => Some(type_name.clone()),
+            | ValidationError::KeyFieldDisagreement { type_name, .. }
+            | ValidationError::ScopeUnknownType { type_name }
+            | ValidationError::ScopeNonKeyField { type_name, .. }
+            | ValidationError::ScopeInvalidValue { type_name, .. } => Some(type_name.clone()),
             ValidationError::InvalidValue { field, .. } => {
                 field.split('.').next().map(|s| s.to_string())
             }
@@ -219,7 +239,10 @@ impl ValidationError {
             | ValidationError::EmptyEnum { .. }
             | ValidationError::NonScalarKeyField { .. }
             | ValidationError::NullableKeyField { .. }
-            | ValidationError::KeyFieldDisagreement { .. } => None,
+            | ValidationError::KeyFieldDisagreement { .. }
+            | ValidationError::ScopeUnknownType { .. }
+            | ValidationError::ScopeNonKeyField { .. }
+            | ValidationError::ScopeInvalidValue { .. } => None,
         }
     }
 }
@@ -386,6 +409,9 @@ pub fn validate_inventory(inventory: &Inventory) -> ValidationReport {
     validate_schema_key_scalar(&inventory.schema, &mut report);
     validate_schema_key_nullable(&inventory.schema, &mut report);
     validate_schema_key_field_agreement(&inventory.schema, &mut report);
+    if let Some(scope) = &inventory.scope {
+        validate_scope(scope, &inventory.schema, &pattern_cache, &mut report);
+    }
     validate_schema_types(&inventory.schema, &inventory.objects, &mut report);
     for object in &inventory.objects {
         validate_object(
@@ -743,6 +769,102 @@ fn validate_schema_key_field_agreement(schema: &Schema, report: &mut ValidationR
                     });
                 }
             }
+        }
+    }
+}
+
+/// a scope entry names a declared type and constrains its key fields with
+/// values those fields could hold (`docs/inventory.md`). a ref-typed key field
+/// is constrained by uid: the target may be an object the inventory does not
+/// manage, so nothing here requires the uid to resolve.
+fn validate_scope(
+    scope: &crate::ir::Scope,
+    schema: &Schema,
+    pattern_cache: &BTreeMap<String, Regex>,
+    report: &mut ValidationReport,
+) {
+    for (type_name, entry) in &scope.0 {
+        let Some(type_schema) = schema.types.get(type_name) else {
+            report.errors.push(ValidationError::ScopeUnknownType {
+                type_name: type_name.clone(),
+            });
+            continue;
+        };
+        for (field, values) in entry {
+            let Some(field_schema) = type_schema.key.get(field) else {
+                report.errors.push(ValidationError::ScopeNonKeyField {
+                    type_name: type_name.clone(),
+                    field: field.clone(),
+                });
+                continue;
+            };
+            let values: &[Value] = match values {
+                crate::ir::ScopeValues::One(value) => std::slice::from_ref(value),
+                crate::ir::ScopeValues::Many(values) => values,
+            };
+            for value in values {
+                validate_scope_value(type_name, field, field_schema, value, pattern_cache, report);
+            }
+        }
+    }
+}
+
+/// check one scope value against the key field it constrains, reporting
+/// through `ScopeInvalidValue` so the message names the scope rather than an
+/// object. refs check only uid shape (see [`validate_scope`]). a constraint
+/// value must be a scalar: an array at the constraint position always reads as
+/// a list of allowed values, so a composite value there could only be the
+/// ambiguous spelling of a constraint the syntax cannot express — a `json` key
+/// holding composites is scoped whole-type or not at all.
+fn validate_scope_value(
+    type_name: &str,
+    field: &str,
+    field_schema: &crate::ir::FieldSchema,
+    value: &Value,
+    pattern_cache: &BTreeMap<String, Regex>,
+    report: &mut ValidationReport,
+) {
+    if value.is_array() || value.is_object() {
+        report.errors.push(ValidationError::ScopeInvalidValue {
+            type_name: type_name.to_string(),
+            field: field.to_string(),
+            expected: "a scalar value".to_string(),
+            actual: value_type_label(value),
+        });
+        return;
+    }
+    if let FieldType::Ref { .. } = field_schema.r#type {
+        if parse_uid(value).is_none() {
+            report.errors.push(ValidationError::ScopeInvalidValue {
+                type_name: type_name.to_string(),
+                field: field.to_string(),
+                expected: "uuid".to_string(),
+                actual: value_type_label(value),
+            });
+        }
+        return;
+    }
+    let mut scratch = ValidationReport::default();
+    validate_field_value(
+        &TypeName::new(type_name),
+        field,
+        field_schema,
+        value,
+        &BTreeMap::new(),
+        pattern_cache,
+        &mut scratch,
+    );
+    for error in scratch.errors {
+        if let ValidationError::InvalidValue {
+            expected, actual, ..
+        } = error
+        {
+            report.errors.push(ValidationError::ScopeInvalidValue {
+                type_name: type_name.to_string(),
+                field: field.to_string(),
+                expected,
+                actual,
+            });
         }
     }
 }
@@ -1458,6 +1580,7 @@ mod tests {
             Object::new(uid(2), TypeName::new("site"), key, JsonMap::default()).unwrap(),
         ];
         let report = validate_inventory(&Inventory {
+            scope: None,
             schema: Schema {
                 types: BTreeMap::from([("site".to_string(), type_schema)]),
             },
@@ -1479,6 +1602,7 @@ mod tests {
             source: None,
         }];
         let report = validate_inventory(&Inventory {
+            scope: None,
             schema: Schema {
                 types: BTreeMap::from([(
                     "site".to_string(),
@@ -1508,6 +1632,7 @@ mod tests {
             source: None,
         }];
         let report = validate_inventory(&Inventory {
+            scope: None,
             schema: Schema {
                 types: BTreeMap::new(),
             },
@@ -1533,7 +1658,11 @@ mod tests {
         let schema = Schema {
             types: BTreeMap::new(),
         };
-        let report = validate_inventory(&Inventory { schema, objects });
+        let report = validate_inventory(&Inventory {
+            scope: None,
+            schema,
+            objects,
+        });
         assert!(report
             .errors
             .iter()
@@ -1572,6 +1701,7 @@ mod tests {
             .unwrap()
         };
         let report = validate_inventory(&Inventory {
+            scope: None,
             schema: Schema {
                 types: BTreeMap::from([("site".to_string(), slug_key_schema())]),
             },
@@ -1596,6 +1726,7 @@ mod tests {
             source: None,
         }];
         let report = validate_inventory(&Inventory {
+            scope: None,
             schema: Schema {
                 types: BTreeMap::from([("site".to_string(), slug_key_schema())]),
             },
@@ -1620,6 +1751,7 @@ mod tests {
             source: None,
         }];
         let report = validate_inventory(&Inventory {
+            scope: None,
             schema: Schema {
                 types: BTreeMap::from([(
                     "site".to_string(),
@@ -1664,6 +1796,7 @@ mod tests {
         )
         .unwrap()];
         let report = validate_inventory(&Inventory {
+            scope: None,
             schema: Schema {
                 types: BTreeMap::from([("site".to_string(), type_schema)]),
             },
@@ -1690,6 +1823,7 @@ mod tests {
         )
         .unwrap()];
         let report = validate_inventory(&Inventory {
+            scope: None,
             schema: Schema {
                 types: BTreeMap::from([("site".to_string(), slug_key_schema())]),
             },
@@ -1753,7 +1887,11 @@ mod tests {
             attrs.into(),
         )
         .unwrap()];
-        let report = validate_inventory(&Inventory { schema, objects });
+        let report = validate_inventory(&Inventory {
+            scope: None,
+            schema,
+            objects,
+        });
         assert!(report
             .errors
             .iter()
@@ -1782,9 +1920,192 @@ mod tests {
     /// run schema-only validation (no objects) and return the report.
     fn validate_schema(types: BTreeMap<String, TypeSchema>) -> ValidationReport {
         validate_inventory(&Inventory {
+            scope: None,
             schema: Schema { types },
             objects: vec![],
         })
+    }
+
+    /// a `dcim.site` keyed on a `slug` field, with the given scope, no objects.
+    fn validate_scoped(scope: crate::ir::Scope) -> ValidationReport {
+        let site = TypeSchema {
+            key: BTreeMap::from([("slug".to_string(), schema_field(FieldType::Slug))]),
+            fields: BTreeMap::new(),
+        };
+        validate_inventory(&Inventory {
+            schema: Schema {
+                types: BTreeMap::from([("dcim.site".to_string(), site)]),
+            },
+            scope: Some(scope),
+            objects: vec![],
+        })
+    }
+
+    fn scope_of(type_name: &str, entry: &[(&str, serde_json::Value)]) -> crate::ir::Scope {
+        crate::ir::Scope(BTreeMap::from([(
+            type_name.to_string(),
+            entry
+                .iter()
+                .map(|(field, value)| {
+                    (
+                        field.to_string(),
+                        crate::ir::ScopeValues::One(value.clone()),
+                    )
+                })
+                .collect(),
+        )]))
+    }
+
+    #[test]
+    fn accepts_a_scope_on_a_declared_key_field() {
+        let report = validate_scoped(scope_of(
+            "dcim.site",
+            &[("slug", serde_json::json!("fra1"))],
+        ));
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+    }
+
+    #[test]
+    fn accepts_an_empty_scope_entry() {
+        // an empty entry asserts completeness over the whole type.
+        let report = validate_scoped(scope_of("dcim.site", &[]));
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+    }
+
+    #[test]
+    fn rejects_a_scope_on_an_undeclared_type() {
+        let report = validate_scoped(scope_of("dcim.device", &[]));
+        assert!(report.errors.iter().any(|e| matches!(
+            e,
+            ValidationError::ScopeUnknownType { type_name } if type_name == "dcim.device"
+        )));
+    }
+
+    #[test]
+    fn rejects_a_scope_on_a_non_key_field() {
+        let report = validate_scoped(scope_of(
+            "dcim.site",
+            &[("name", serde_json::json!("FRA1"))],
+        ));
+        assert!(report.errors.iter().any(|e| matches!(
+            e,
+            ValidationError::ScopeNonKeyField { type_name, field }
+                if type_name == "dcim.site" && field == "name"
+        )));
+    }
+
+    #[test]
+    fn rejects_a_scope_value_the_key_field_could_not_hold() {
+        let report = validate_scoped(scope_of(
+            "dcim.site",
+            &[("slug", serde_json::json!("FRA 1"))],
+        ));
+        assert!(report.errors.iter().any(|e| matches!(
+            e,
+            ValidationError::ScopeInvalidValue { type_name, field, .. }
+                if type_name == "dcim.site" && field == "slug"
+        )));
+    }
+
+    #[test]
+    fn rejects_a_composite_scope_value() {
+        // a `json` key can hold an array, but an array at the constraint
+        // position is always a list of allowed values — so a composite value
+        // inside one is rejected rather than silently matching the scalars it
+        // contains and widening delete authority.
+        let window = TypeSchema {
+            key: BTreeMap::from([("identity".to_string(), schema_field(FieldType::Json))]),
+            fields: BTreeMap::new(),
+        };
+        let schema = Schema {
+            types: BTreeMap::from([("ops.window".to_string(), window)]),
+        };
+        let scope: crate::ir::Scope =
+            serde_json::from_value(serde_json::json!({ "ops.window": { "identity": [[1, 2]] } }))
+                .unwrap();
+        let report = validate_inventory(&Inventory {
+            schema: schema.clone(),
+            scope: Some(scope),
+            objects: vec![],
+        });
+        assert!(
+            report.errors.iter().any(|e| matches!(
+                e,
+                ValidationError::ScopeInvalidValue { field, expected, .. }
+                    if field == "identity" && expected == "a scalar value"
+            )),
+            "{:?}",
+            report.errors
+        );
+        // an object-valued constraint is the same ambiguity through `One`.
+        let scope: crate::ir::Scope =
+            serde_json::from_value(serde_json::json!({ "ops.window": { "identity": {"a": 1} } }))
+                .unwrap();
+        let report = validate_inventory(&Inventory {
+            schema: schema.clone(),
+            scope: Some(scope),
+            objects: vec![],
+        });
+        assert!(report
+            .errors
+            .iter()
+            .any(|e| matches!(e, ValidationError::ScopeInvalidValue { .. })));
+        // scalar json values stay legal.
+        let scope: crate::ir::Scope =
+            serde_json::from_value(serde_json::json!({ "ops.window": { "identity": [1, 2] } }))
+                .unwrap();
+        let report = validate_inventory(&Inventory {
+            schema,
+            scope: Some(scope),
+            objects: vec![],
+        });
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+    }
+
+    #[test]
+    fn a_ref_scope_value_needs_only_uid_shape() {
+        // the target may be an object the inventory does not manage, so the uid
+        // is not required to resolve; a non-uid still fails.
+        let device = TypeSchema {
+            key: BTreeMap::from([(
+                "site".to_string(),
+                schema_field(FieldType::Ref {
+                    target: "dcim.site".to_string(),
+                }),
+            )]),
+            fields: BTreeMap::new(),
+        };
+        let site = TypeSchema {
+            key: BTreeMap::from([("slug".to_string(), schema_field(FieldType::Slug))]),
+            fields: BTreeMap::new(),
+        };
+        let schema = Schema {
+            types: BTreeMap::from([
+                ("dcim.device".to_string(), device),
+                ("dcim.site".to_string(), site),
+            ]),
+        };
+        let ok = validate_inventory(&Inventory {
+            schema: schema.clone(),
+            scope: Some(scope_of(
+                "dcim.device",
+                &[("site", serde_json::json!(uid(7).to_string()))],
+            )),
+            objects: vec![],
+        });
+        assert!(ok.errors.is_empty(), "{:?}", ok.errors);
+        let bad = validate_inventory(&Inventory {
+            schema,
+            scope: Some(scope_of(
+                "dcim.device",
+                &[("site", serde_json::json!("not-a-uid"))],
+            )),
+            objects: vec![],
+        });
+        assert!(bad.errors.iter().any(|e| matches!(
+            e,
+            ValidationError::ScopeInvalidValue { field, .. } if field == "site"
+        )));
     }
 
     #[test]
@@ -2024,6 +2345,7 @@ mod tests {
         )
         .unwrap();
         let report = validate_inventory(&Inventory {
+            scope: None,
             schema: Schema {
                 types: BTreeMap::from([("device".to_string(), device)]),
             },
@@ -2176,6 +2498,7 @@ mod tests {
             fields: BTreeMap::from([("name".to_string(), pattern_field("[bad"))]),
         };
         let report = validate_inventory(&Inventory {
+            scope: None,
             schema: Schema {
                 types: BTreeMap::from([("ghost".to_string(), ghost)]),
             },
@@ -2295,6 +2618,7 @@ mod tests {
             fields: BTreeMap::from([("count".to_string(), count)]),
         };
         let report = validate_inventory(&Inventory {
+            scope: None,
             schema: Schema {
                 types: BTreeMap::from([("ghost".to_string(), ghost)]),
             },
@@ -2638,6 +2962,7 @@ mod tests {
             fields: BTreeMap::new(),
         };
         let report = validate_inventory(&Inventory {
+            scope: None,
             schema: Schema {
                 types: BTreeMap::from([("ghost".to_string(), ghost)]),
             },
@@ -2680,6 +3005,7 @@ mod tests {
         )
         .unwrap()];
         let report = validate_inventory(&Inventory {
+            scope: None,
             schema: Schema {
                 types: BTreeMap::from([("device".to_string(), type_schema)]),
             },
@@ -2786,6 +3112,7 @@ mod tests {
         .with_source(SourceLocation::file_line("inventory.yaml", 7));
 
         let inventory = Inventory {
+            scope: None,
             schema: Schema {
                 types: BTreeMap::from([("device".to_string(), device)]),
             },
@@ -2826,6 +3153,7 @@ mod tests {
         .with_source(SourceLocation::file_line("inventory.yaml", 7));
 
         let inventory = Inventory {
+            scope: None,
             schema: Schema {
                 types: BTreeMap::from([("device".to_string(), device)]),
             },
@@ -2868,6 +3196,7 @@ mod tests {
         .with_source(SourceLocation::file_line("inventory.yaml", 12));
 
         let inventory = Inventory {
+            scope: None,
             schema: Schema {
                 types: BTreeMap::from([("device".to_string(), device)]),
             },
@@ -2910,6 +3239,7 @@ mod tests {
         .with_source(SourceLocation::file_line("inventory.yaml", 5));
 
         let inventory = Inventory {
+            scope: None,
             schema: Schema {
                 types: BTreeMap::from([("device".to_string(), device)]),
             },
@@ -2947,6 +3277,7 @@ mod tests {
         .with_source(SourceLocation::file_line("inventory.yaml", 7));
 
         let inventory = Inventory {
+            scope: None,
             schema: Schema {
                 types: BTreeMap::from([("device".to_string(), device)]),
             },
@@ -3787,6 +4118,7 @@ mod tests {
             })
             .collect();
         let report = validate_inventory(&Inventory {
+            scope: None,
             schema: Schema {
                 types: BTreeMap::from([("device".to_string(), device)]),
             },
@@ -3862,6 +4194,9 @@ mod tests {
             ValidationError::NonScalarKeyField { .. } => "non_scalar_key_field",
             ValidationError::NullableKeyField { .. } => "nullable_key_field",
             ValidationError::KeyFieldDisagreement { .. } => "key_field_disagreement",
+            ValidationError::ScopeUnknownType { .. } => "scope_unknown_type",
+            ValidationError::ScopeNonKeyField { .. } => "scope_non_key_field",
+            ValidationError::ScopeInvalidValue { .. } => "scope_invalid_value",
         }
     }
 
@@ -3871,7 +4206,7 @@ mod tests {
         // a breaking change to the wire format rather than a refactor. the table
         // is hand-maintained: a twentieth variant gets its wire_kind arm from the
         // compiler, but is neither serialized nor compared until it is added here.
-        let all: [ValidationError; 20] = [
+        let all: [ValidationError; 23] = [
             ValidationError::DuplicateUid(uid(1)),
             ValidationError::DuplicateKey("dcim.site::fra1".into()),
             ValidationError::MissingType,
@@ -3948,6 +4283,19 @@ mod tests {
             ValidationError::KeyFieldDisagreement {
                 type_name: "dcim.site".into(),
                 field: "name".into(),
+            },
+            ValidationError::ScopeUnknownType {
+                type_name: "dcim.site".into(),
+            },
+            ValidationError::ScopeNonKeyField {
+                type_name: "dcim.site".into(),
+                field: "name".into(),
+            },
+            ValidationError::ScopeInvalidValue {
+                type_name: "dcim.site".into(),
+                field: "slug".into(),
+                expected: "slug".into(),
+                actual: "FRA 1".into(),
             },
         ];
 
