@@ -3784,3 +3784,20 @@ async fn run_skill_show_rejects_a_name_this_binary_does_not_carry() {
         "{err:#}"
     );
 }
+
+/// the default skills root is documented (`docs/cli.md`, skill), so it is pinned
+/// here rather than left to whatever the arg definition drifts to.
+#[test]
+fn skill_install_defaults_to_the_documented_skills_root() {
+    use clap::Parser;
+    let cli = Cli::try_parse_from(["alembic", "skill", "install", "alembic"])
+        .expect("skill install parses without --dir");
+    let Command::Skill {
+        action: SkillAction::Install { name, dir },
+    } = cli.command
+    else {
+        panic!("expected a skill install command");
+    };
+    assert_eq!(name, "alembic");
+    assert_eq!(dir, PathBuf::from(".claude/skills"));
+}
