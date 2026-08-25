@@ -701,11 +701,16 @@ pub struct Scope(pub BTreeMap<String, ScopeEntry>);
 pub type ScopeEntry = BTreeMap<String, ScopeValues>;
 
 /// a scope constraint's right-hand side: one value or a list of them.
+/// `Many` is declared first: untagged deserialization tries variants in order,
+/// and `One(Value)` accepts any json — an array would land there and read as
+/// one array-valued constraint instead of a list of values. keys are scalar
+/// (`validate_schema_key_scalar`), so routing every array to `Many` loses
+/// nothing.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ScopeValues {
-    One(Value),
     Many(Vec<Value>),
+    One(Value),
 }
 
 impl ScopeValues {
@@ -754,6 +759,39 @@ pub struct Inventory {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_scope_value_list_deserializes_as_many() {
+        // untagged tries variants in order and `One(Value)` accepts any json,
+        // so `Many` must come first or a list reads as one array-valued
+        // constraint and every documented multi-value scope fails validation.
+        let scope: Scope = serde_json::from_value(
+            serde_json::json!({ "dcim.site": { "slug": ["fra1", "fra2"] } }),
+        )
+        .unwrap();
+        let values = &scope.entry("dcim.site").unwrap()["slug"];
+        assert!(
+            matches!(values, ScopeValues::Many(v) if v.len() == 2),
+            "{values:?}"
+        );
+        for slug in ["fra1", "fra2"] {
+            let key = Key::from(std::collections::BTreeMap::from([(
+                "slug".to_string(),
+                serde_json::json!(slug),
+            )]));
+            assert!(scope.contains("dcim.site", &key), "{slug} not admitted");
+        }
+    }
+
+    #[test]
+    fn a_scalar_scope_value_still_deserializes_as_one() {
+        let scope: Scope =
+            serde_json::from_value(serde_json::json!({ "dcim.site": { "slug": "fra1" } })).unwrap();
+        assert!(matches!(
+            &scope.entry("dcim.site").unwrap()["slug"],
+            ScopeValues::One(v) if v == "fra1"
+        ));
+    }
 
     #[test]
     fn object_rejects_an_unknown_key() {

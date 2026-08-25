@@ -31,7 +31,8 @@ objects:
 
 - `schema` is required; `objects` is optional and defaults to empty.
 - `include` and `imports` are optional and equivalent.
-- a top-level key other than these four is a parse error, not a silent no-op.
+- `scope` is optional (see below).
+- a top-level key other than these five is a parse error, not a silent no-op.
 - paths in `include/imports` are resolved relative to the current file.
 - files are loaded once (deduplicated by canonical path).
 
