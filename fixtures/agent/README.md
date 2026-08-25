@@ -1,7 +1,7 @@
 # agent fixtures
 
 the backend and the inventories `scripts/agent_fixtures.sh` exercises
-`.claude/skills/alembic/SKILL.md` against. see `docs/agents.md` for what the
+`.agents/skills/alembic/SKILL.md` against. see `docs/agents.md` for what the
 skill claims and why these check it.
 
 - `backend.py` is a file-backed external adapter (`docs/external-adapters.md`)

@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- the cli gets an agent guide: `.claude/skills/alembic/SKILL.md` states the identity and safety contract the command surface does not, `docs/agents.md` explains it, and `scripts/agent_fixtures.sh` exercises it against the fixtures in `fixtures/agent/` (#425)
+- the cli gets an agent guide: `.agents/skills/alembic/SKILL.md` states the identity and safety contract the command surface does not, `docs/agents.md` explains it, and `scripts/agent_fixtures.sh` exercises it against the fixtures in `fixtures/agent/` (#425)
 - **breaking** a field declared in both `key:` and `fields:` with a different schema fails validation; the shipped examples align the disagreeing `name` fields to their key's `slug` (#311)
 - `alembic-adapter-test` validates a `--cases` read result against the request's schema, so a value outside alembic's value space or a backend id in a ref field fails conformance; types the schema does not declare stay a tolerated superset (#415)
 - **breaking** nautobot observations carry `assigned_object_type`/`assigned_object_id` and `scope_type`/`scope_id` as ordinary attrs; the read-only `assigned_interface` and `site` collapses are gone (#420)

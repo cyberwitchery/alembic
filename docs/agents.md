@@ -6,11 +6,12 @@ artifacts, and only `apply` writes objects. what an agent cannot read off the
 command line is the operational contract around those commands, which lives
 across `docs/cli.md`, `docs/engine.md`, `docs/identity.md` and `docs/state.md`.
 
-`.claude/skills/alembic/SKILL.md` collects that contract as instructions: what
+`.agents/skills/alembic/SKILL.md` collects that contract as instructions: what
 each command touches, the invariants a plausible-looking run can violate, which
 task takes which pipeline, and five worked workflows. this page is authoritative
 where the two disagree -- the skill is an operating guide over these docs, not a
-second source of truth.
+second source of truth. `.claude/skills/alembic` points to that directory for a
+host that still uses the Claude-specific project path.
 
 ## what it states
 
@@ -32,16 +33,16 @@ committed backend config.
 
 ## using it
 
-in a repository whose agent host reads `.claude/skills/`, copy the directory:
+copy the skill into the standard project skill directory:
 
 ```bash
-cp -r path/to/alembic/.claude/skills/alembic .claude/skills/
+cp -r path/to/alembic/.agents/skills/alembic .agents/skills/
 ```
 
-for any other host, `SKILL.md` is a single self-contained markdown file: point
-the agent at it, or paste it into whatever the host reads as project
-instructions. it names doc paths relative to this repository, so keep the docs
-reachable, or replace the paths with links to them.
+for a host that uses a different project skill directory, copy the same directory
+there. `SKILL.md` is one self-contained markdown file; it names doc paths relative
+to this repository, so keep the docs reachable, or replace the paths with links
+to them.
 
 ## exercising it
 
