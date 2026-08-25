@@ -3675,3 +3675,132 @@ fn search_for_plugins_reports_a_dir_it_could_not_read() {
         "the error must name the path: {err:#}"
     );
 }
+
+/// the run-level half of the skill tests; `app::skill` covers what rendering
+/// puts in the file, this covers the command reaching it.
+#[tokio::test]
+async fn run_skill_install_writes_the_skill_under_the_given_root() {
+    let dir = tempdir().unwrap();
+    let root = dir.path().join("skills");
+
+    let cli = Cli {
+        command: Command::Skill {
+            action: SkillAction::Install {
+                name: "alembic".to_string(),
+                dir: root.clone(),
+                force: false,
+            },
+        },
+    };
+    run(cli, AppConfig::load().unwrap()).await.unwrap();
+
+    let installed = std::fs::read_to_string(root.join("alembic/SKILL.md")).unwrap();
+    assert!(
+        installed.starts_with("---\nname: alembic\n"),
+        "the installed file must be the skill a host reads: {installed:.80}"
+    );
+    assert!(
+        installed.contains(&format!("alembic {}", env!("CARGO_PKG_VERSION"))),
+        "the installed file must say which binary wrote it"
+    );
+}
+
+/// the whole point of embedding the text is that installing needs no backend,
+/// no inventory and no state; a run that took the state lock could not run
+/// beside anything else in the directory.
+#[tokio::test]
+async fn run_skill_install_touches_no_state() {
+    let dir = tempdir().unwrap();
+    let _cwd = CwdGuard::acquire_async().await;
+    let state_path = dir.path().join(".alembic").join("state.json");
+    let _env = EnvVarGuard::acquire_async(&[
+        ("ALEMBIC_STATE_BACKEND", Some("local")),
+        ("ALEMBIC_STATE_PATH", Some(state_path.to_str().unwrap())),
+    ])
+    .await;
+    std::env::set_current_dir(dir.path()).unwrap();
+
+    let cli = Cli {
+        command: Command::Skill {
+            action: SkillAction::Install {
+                name: "alembic".to_string(),
+                dir: dir.path().join("skills"),
+                force: false,
+            },
+        },
+    };
+    run(cli, AppConfig::load().unwrap()).await.unwrap();
+
+    assert!(
+        !state_path.exists(),
+        "installing a skill must not create identity memory"
+    );
+}
+
+#[tokio::test]
+async fn run_skill_show_and_list_write_no_files() {
+    let dir = tempdir().unwrap();
+    let _cwd = CwdGuard::acquire_async().await;
+    std::env::set_current_dir(dir.path()).unwrap();
+
+    for action in [
+        SkillAction::List,
+        SkillAction::Show {
+            name: "alembic".to_string(),
+        },
+    ] {
+        run(
+            Cli {
+                command: Command::Skill { action },
+            },
+            AppConfig::load().unwrap(),
+        )
+        .await
+        .unwrap();
+    }
+
+    assert_eq!(
+        std::fs::read_dir(dir.path()).unwrap().count(),
+        0,
+        "list and show print; neither leaves an artifact behind"
+    );
+}
+
+#[tokio::test]
+async fn run_skill_show_rejects_a_name_this_binary_does_not_carry() {
+    let err = run(
+        Cli {
+            command: Command::Skill {
+                action: SkillAction::Show {
+                    name: "netbox".to_string(),
+                },
+            },
+        },
+        AppConfig::load().unwrap(),
+    )
+    .await
+    .expect_err("an unknown skill is an error, not an empty print");
+
+    assert!(
+        format!("{err:#}").contains("no skill named `netbox`"),
+        "{err:#}"
+    );
+}
+
+/// the default skills root is documented (`docs/cli.md`, skill), so it is pinned
+/// here rather than left to whatever the arg definition drifts to.
+#[test]
+fn skill_install_defaults_to_the_documented_skills_root() {
+    use clap::Parser;
+    let cli = Cli::try_parse_from(["alembic", "skill", "install", "alembic"])
+        .expect("skill install parses without --dir");
+    let Command::Skill {
+        action: SkillAction::Install { name, dir, force },
+    } = cli.command
+    else {
+        panic!("expected a skill install command");
+    };
+    assert_eq!(name, "alembic");
+    assert_eq!(dir, PathBuf::from(".agents/skills"));
+    assert!(!force);
+}

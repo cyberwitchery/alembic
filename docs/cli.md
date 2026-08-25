@@ -1,6 +1,7 @@
 # cli
 
-alembic ships a single cli binary with validate, import, map, plan, and apply subcommands.
+alembic ships a single cli binary with validate, import, map, plan, apply and
+skill subcommands.
 
 ## validate
 
@@ -407,6 +408,35 @@ alembic import -f examples/inventory.yaml -o observed.json \
 - an inventory cannot hold two objects under one `(type, key)`, so a key named by several backend objects fails the import, every ambiguous key and its holders named at once
 - `--stateless` drops the identity memory: every uid is minted from the observed `(type, key)`, so a rename reads as a new object. the mode for one-shot audits and reproducible snapshots
 - `peeringdb` uses `PEERINGDB_API_KEY` for authentication
+
+## skill
+
+the agent skills the binary carries (see `docs/agents.md`). the text is embedded,
+so these commands reach no network, no backend and no state.
+
+```bash
+alembic skill list
+
+alembic skill show alembic
+
+alembic skill install alembic
+alembic skill install alembic --dir /srv/intent/.agents/skills
+```
+
+- `list` prints one `name<tab>summary` line per embedded skill
+- `show` prints the skill's markdown to stdout, for a host that reads no skills
+  directory
+- `install` writes it atomically to `<dir>/<name>/SKILL.md`, `--dir` defaulting
+  to `.agents/skills`, and prints the path it wrote. it replaces an unchanged
+  copy previously installed by Alembic; an unowned or locally modified file is
+  refused unless `--force` is passed
+- what leaves the binary is not quite the file in the repository. the
+  documentation links in a release are pinned from `main` to that version tag;
+  a Git build pins them to its commit, or leaves them on `main` when the checkout
+  is dirty. a trailing stamp identifies the release or unreleased source and an
+  ownership/content marker distinguishes an unchanged Alembic install. a skill
+  is only worth reading when it describes the alembic you are running, which is
+  why it ships inside it rather than being fetched
 
 ## environment variables
 

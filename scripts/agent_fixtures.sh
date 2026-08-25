@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# the exercises behind `.agents/skills/alembic/SKILL.md`. each one is a task an
-# agent is asked to do, run against the file-backed backend in `fixtures/agent/`
-# and checked against the artifacts it leaves: the plan's ops, the drift report's
-# categories, the backend store, and the adapter's method log. no network, no
-# model in the loop -- what is asserted is what the cli did.
+# the exercises behind `crates/alembic-cli/skills/alembic/SKILL.md`. each one is
+# a task an agent is asked to do, run against the file-backed backend in
+# `fixtures/agent/` and checked against the artifacts it leaves: the plan's ops,
+# the drift report's categories, the backend store, and the adapter's method log.
+# no network, no model in the loop -- what is asserted is what the cli did.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

@@ -6,12 +6,17 @@ artifacts, and only `apply` writes objects. what an agent cannot read off the
 command line is the operational contract around those commands, which lives
 across `docs/cli.md`, `docs/engine.md`, `docs/identity.md` and `docs/state.md`.
 
-`.agents/skills/alembic/SKILL.md` collects that contract as instructions: what
-each command touches, the invariants a plausible-looking run can violate, which
-task takes which pipeline, and five worked workflows. this page is authoritative
-where the two disagree -- the skill is an operating guide over these docs, not a
-second source of truth. `.claude/skills/alembic` points to that directory for a
-host that still uses the Claude-specific project path.
+the `alembic` skill collects that contract as instructions: what each command
+touches, the invariants a plausible-looking run can violate, which task takes
+which pipeline, and five worked workflows. these pages are authoritative where
+the two disagree -- the skill is an operating guide over the docs, not a second
+source of truth.
+
+it ships inside the binary. `crates/alembic-cli/skills/alembic/SKILL.md` is the
+file embedded at compile time. `.agents/skills/alembic` points at the same
+directory for standard project discovery, and `.claude/skills/alembic` provides
+the Claude-specific compatibility path. a checkout therefore reads the copy it
+publishes without making either host layout canonical.
 
 ## what it states
 
@@ -32,18 +37,33 @@ backend writes, requires validation after an inventory or map edit and a reviewe
 plan before an apply, and keeps credentials in the environment rather than in a
 committed backend config.
 
-## using it
+## installing it
 
-copy the skill into the standard project skill directory:
+the binary writes it out (`docs/cli.md`, skill):
 
 ```bash
-cp -r path/to/alembic/.agents/skills/alembic .agents/skills/
+alembic skill install alembic
+alembic skill install alembic --dir /srv/intent/.agents/skills
 ```
 
-for a host that uses a different project skill directory, copy the same directory
-there. `SKILL.md` is one self-contained markdown file; it names doc paths relative
-to this repository, so keep the docs reachable, or replace the paths with links
-to them.
+`--dir` is a skills root: the file lands at `<dir>/<name>/SKILL.md`. it defaults
+to `.agents/skills`; pass a host-specific root when needed. for a host that reads
+something else entirely, `alembic skill show alembic` prints the same markdown
+to stdout.
+
+installing needs no network, no backend and no state. a generated ownership and
+content marker lets a later Alembic replace an unchanged installed copy; a local
+edit or any unowned file is refused unless `--force` is explicit. the write is a
+temporary file renamed into place, so an interruption cannot truncate the skill.
+
+that is the point of embedding the text rather than publishing it somewhere to
+be fetched: a skill states what the command surface does not, so one that
+describes a different build states it wrongly, and confidently. a release copy
+pins documentation to its version tag. an unreleased build from a Git checkout
+pins it to that commit, or to `main` when the checkout is dirty, and identifies
+itself as unreleased in the stamp.
+
+re-run `alembic skill install` after upgrading alembic.
 
 ## exercising it
 
@@ -76,3 +96,8 @@ host-mediated approval of an exact plan -- and none of that is needed to find ou
 whether the agent-facing semantics are sufficient. a gap these exercises expose
 in the cli's own machine-readable discovery belongs in a cli issue, not inside a
 wrapper.
+
+nor is `skill install` a plugin manifest. a claude code marketplace entry would
+install and update natively for that audience, and can carry the same file, but
+it tracks a branch rather than the binary an operator is running, which is the
+version the contract has to match.

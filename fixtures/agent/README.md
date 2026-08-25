@@ -1,8 +1,8 @@
 # agent fixtures
 
 the backend and the inventories `scripts/agent_fixtures.sh` exercises
-`.agents/skills/alembic/SKILL.md` against. see `docs/agents.md` for what the
-skill claims and why these check it.
+`crates/alembic-cli/skills/alembic/SKILL.md` against. see `docs/agents.md` for
+what the skill claims and why these check it.
 
 - `backend.py` is a file-backed external adapter (`docs/external-adapters.md`)
   standing in for a real backend: it holds objects in `store.json` and appends
