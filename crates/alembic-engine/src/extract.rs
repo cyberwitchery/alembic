@@ -74,6 +74,7 @@ pub async fn import_inventory(
 
     let inventory = Inventory {
         schema: schema.clone(),
+        scope: None,
         objects: inventory_objects,
     };
     // both name a cause validation can only report as a symptom, and import

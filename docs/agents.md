@@ -22,8 +22,9 @@ host that still uses the Claude-specific project path.
 - an update writes the full declared projection, not only the plan's `changes`
 - `plan --report` is read-only only without `--provision`
 - planning can persist identity adoption unless `--report` or `--dry-run`
-- `--allow-delete` asserts the inventory is complete over every declared type on
-  the backend (#413), and is not a retry flag
+- `--allow-delete` asserts the inventory is complete inside its top-level
+  `scope:`; without one it covers every declared type on the backend. it is not a
+  retry flag
 - an interrupted apply resumes from its journal by re-running the same plan
 
 it also separates read-only inspection from local artifact writes and from

@@ -1507,6 +1507,7 @@ mod tests {
 
         // and core accepts what came back against the schema that declared it.
         let inventory = alembic_core::Inventory {
+            scope: None,
             schema,
             objects: vec![Object::new(
                 uid(1),
