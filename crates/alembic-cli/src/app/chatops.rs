@@ -154,37 +154,58 @@ impl Notification {
         backend: Option<String>,
         backend_config: Option<PathBuf>,
     ) -> Self {
-        let sections = vec![
-            NotificationSection {
+        let mut sections: Vec<NotificationSection> = vec![];
+
+        let creates = plan
+            .ops
+            .iter()
+            .filter(|op| matches!(op, Op::Create { .. }))
+            .collect::<Vec<_>>();
+        let updates = plan
+            .ops
+            .iter()
+            .filter(|op| matches!(op, Op::Update { .. }))
+            .collect::<Vec<_>>();
+        let deletes = plan
+            .ops
+            .iter()
+            .filter(|op| matches!(op, Op::Delete { .. }))
+            .collect::<Vec<_>>();
+
+        if !creates.is_empty() {
+            sections.push(NotificationSection {
                 title: "Create".to_string(),
-                bullet_points: plan
-                    .ops
+                bullet_points: creates
                     .iter()
-                    .filter_map(|op| match op {
+                    .map(|op| match op {
                         Op::Create {
                             type_name, desired, ..
-                        } => Some(format!("{} {}", type_name, key_string(&desired.key))),
-                        _ => None,
+                        } => format!("{} {}", type_name, key_string(&desired.key)),
+                        _ => unreachable!(),
                     })
                     .collect::<Vec<_>>(),
-            },
-            NotificationSection {
+            });
+        }
+
+        if !updates.is_empty() {
+            sections.push(NotificationSection {
                 title: "Update".to_string(),
-                bullet_points: plan
-                    .ops
+                bullet_points: updates
                     .iter()
-                    .filter_map(|op| match op {
+                    .map(|op| match op {
                         Op::Update {
                             type_name, desired, ..
-                        } => Some(format!("{} {}", type_name, key_string(&desired.key))),
-                        _ => None,
+                        } => format!("{} {}", type_name, key_string(&desired.key)),
+                        _ => unreachable!(),
                     })
                     .collect::<Vec<_>>(),
-            },
-            NotificationSection {
+            });
+        }
+
+        if !deletes.is_empty() {
+            sections.push(NotificationSection {
                 title: "Delete".to_string(),
-                bullet_points: plan
-                    .ops
+                bullet_points: deletes
                     .iter()
                     .filter_map(|op| match op {
                         Op::Delete { type_name, key, .. } => {
@@ -193,8 +214,8 @@ impl Notification {
                         _ => None,
                     })
                     .collect::<Vec<_>>(),
-            },
-        ];
+            });
+        }
 
         Notification {
             sections,
