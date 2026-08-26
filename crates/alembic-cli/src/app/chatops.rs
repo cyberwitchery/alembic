@@ -431,31 +431,35 @@ mod tests {
         assert_eq!(
             msg,
             json!(
-            {
-                "blocks": [
-                    { "elements": [], "type": "rich_text" },
-                    { "block_id": "approval_actions",
-                        "elements": [
                         {
-                            "action_id": "approve_button",
-                            "style": "primary",
-                            "text": {
-                                "text": "Approve",
-                                "type": "plain_text",
-                            },
-                            "type": "button",
-                            "value": "{\"Plan\":{\"file\":\"plan.json\",\"backend\":\"test\",\"backend_config\":null}}"
-                        },
-                        {
-                            "action_id": "deny_button",
-                            "style": "danger",
-                            "text": {"text": "Deny", "type": "plain_text"},
-                            "type": "button",
-                            "value": "{\"Plan\":{\"file\":\"plan.json\",\"backend\":\"test\",\"backend_config\":null}}"
-                        }
-                    ],
-                        "type": "actions"}
-                ]
+              "blocks": [
+                {
+                  "block_id": "approval_actions",
+                  "elements": [
+                    {
+                      "action_id": "approve_button",
+                      "style": "primary",
+                      "text": {
+                        "text": "Approve",
+                        "type": "plain_text"
+                      },
+                      "type": "button",
+                      "value": "{\"Plan\":{\"file\":\"plan.json\",\"backend\":\"test\",\"backend_config\":null}}"
+                    },
+                    {
+                      "action_id": "deny_button",
+                      "style": "danger",
+                      "text": {
+                        "text": "Deny",
+                        "type": "plain_text"
+                      },
+                      "type": "button",
+                      "value": "{\"Plan\":{\"file\":\"plan.json\",\"backend\":\"test\",\"backend_config\":null}}"
+                    }
+                  ],
+                  "type": "actions"
+                }
+              ]
             })
         );
     }
