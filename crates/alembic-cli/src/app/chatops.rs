@@ -57,14 +57,35 @@ impl ChatopsBackend {
         })
     }
 
-    fn slack_bullet_point_list_block(elements: Vec<Value>) -> Value {
-        json!({
-            "type": "rich_text",
-            "elements": [{
+    fn slack_bullet_list_block(points: &[BulletPoint]) -> Value {
+        let mut elements: Vec<Value> = Vec::new();
+
+        for point in points {
+            // top-level bullet
+            elements.push(json!({
                 "type": "rich_text_list",
                 "style": "bullet",
-                "elements": elements,
-            }]
+                "indent": 0,
+                "elements": [Self::slack_bullet_point(&point.text)]
+            }));
+
+            // sub-bullets, if any, as an indented sibling list
+            if !point.sub_points.is_empty() {
+                elements.push(json!({
+                    "type": "rich_text_list",
+                    "style": "bullet",
+                    "indent": 1,
+                    "elements": point.sub_points
+                        .iter()
+                        .map(|p| Self::slack_bullet_point(p))
+                        .collect::<Vec<_>>()
+                }));
+            }
+        }
+
+        json!({
+            "type": "rich_text",
+            "elements": elements
         })
     }
 
@@ -108,12 +129,7 @@ impl ChatopsBackend {
                     .flat_map(|s| {
                         vec![
                             Self::slack_header(&s.title),
-                            Self::slack_bullet_point_list_block(
-                                s.bullet_points
-                                    .iter()
-                                    .map(|p| Self::slack_bullet_point(p))
-                                    .collect(),
-                            ),
+                            Self::slack_bullet_list_block(&s.bullet_points),
                         ]
                     })
                     .collect();
@@ -143,9 +159,15 @@ pub enum CommandData {
     },
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BulletPoint {
+    pub text: String,
+    pub sub_points: Vec<String>,
+}
+
 pub struct NotificationSection {
     pub title: String,
-    pub bullet_points: Vec<String>,
+    pub bullet_points: Vec<BulletPoint>,
 }
 
 // general purpose container for notification data, not tied to a particular chat service
@@ -182,7 +204,10 @@ impl Notification {
                     .map(|op| match op {
                         Op::Create {
                             type_name, desired, ..
-                        } => format!("{} {}", type_name, key_string(&desired.key)),
+                        } => BulletPoint {
+                            text: format!("{} {}", type_name, key_string(&desired.key)),
+                            sub_points: vec![],
+                        },
                         _ => unreachable!(),
                     })
                     .collect::<Vec<_>>(),
@@ -196,8 +221,19 @@ impl Notification {
                     .iter()
                     .map(|op| match op {
                         Op::Update {
-                            type_name, desired, ..
-                        } => format!("{} {}", type_name, key_string(&desired.key)),
+                            type_name,
+                            desired,
+                            changes,
+                            ..
+                        } => BulletPoint {
+                            text: format!("{} {}", type_name, key_string(&desired.key)),
+                            sub_points: changes
+                                .iter()
+                                .map(|change| {
+                                    format!("{}: {} -> {}", change.field, change.from, change.to)
+                                })
+                                .collect(),
+                        },
                         _ => unreachable!(),
                     })
                     .collect::<Vec<_>>(),
@@ -209,11 +245,12 @@ impl Notification {
                 title: "Delete".to_string(),
                 bullet_points: deletes
                     .iter()
-                    .filter_map(|op| match op {
-                        Op::Delete { type_name, key, .. } => {
-                            Some(format!("{} {}", type_name, key_string(key)))
-                        }
-                        _ => None,
+                    .map(|op| match op {
+                        Op::Delete { type_name, key, .. } => BulletPoint {
+                            text: format!("{} {}", type_name, key_string(key)),
+                            sub_points: vec![],
+                        },
+                        _ => unreachable!(),
                     })
                     .collect::<Vec<_>>(),
             });
