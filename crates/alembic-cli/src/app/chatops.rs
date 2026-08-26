@@ -39,10 +39,14 @@ impl ChatopsBackend {
         }
     }
 
-    fn slack_heading(text: &str) -> Value {
+    fn slack_header(text: &str) -> Value {
         json!({
-            "type": "rich_text_section",
-            "elements": [{ "type": "text", "text": text }]
+            "type": "header",
+            "text": {
+                "type": "plain_text",
+                "text": text,
+                "emoji": true
+            }
         })
     }
 
@@ -53,11 +57,14 @@ impl ChatopsBackend {
         })
     }
 
-    fn slack_bullet_point_list(elements: Vec<Value>) -> Value {
+    fn slack_bullet_point_list_block(elements: Vec<Value>) -> Value {
         json!({
-            "type": "rich_text_list",
-            "style": "bullet",
-            "elements": elements,
+            "type": "rich_text",
+            "elements": [{
+                "type": "rich_text_list",
+                "style": "bullet",
+                "elements": elements,
+            }]
         })
     }
 
@@ -95,13 +102,13 @@ impl ChatopsBackend {
         let command_data_json = serde_json::to_string(&notification.command)?;
         match self {
             ChatopsBackend::Slack { .. } => {
-                let elements = notification
+                let mut blocks: Vec<Value> = notification
                     .sections
                     .iter()
                     .flat_map(|s| {
                         vec![
-                            Self::slack_heading(&s.title),
-                            Self::slack_bullet_point_list(
+                            Self::slack_header(&s.title),
+                            Self::slack_bullet_point_list_block(
                                 s.bullet_points
                                     .iter()
                                     .map(|p| Self::slack_bullet_point(p))
@@ -109,16 +116,11 @@ impl ChatopsBackend {
                             ),
                         ]
                     })
-                    .collect::<Vec<_>>();
-                Ok(json!({
-                    "blocks": [
-                        {
-                            "type": "rich_text",
-                            "elements": elements,
-                        },
-                        Self::slack_action_buttons(command_data_json),
-                    ]
-                }))
+                    .collect();
+
+                blocks.push(Self::slack_action_buttons(command_data_json));
+
+                Ok(json!({ "blocks": blocks }))
             }
             ChatopsBackend::Discord { .. } => Ok(json!({"content":
                 notification.text()
@@ -252,8 +254,10 @@ async fn notify_with_base_url(
     let client = reqwest::Client::new();
 
     tracing::debug!(
-        "Notification json: {:?}",
-        chatops_backend.notification_message(notification)
+        "Notification json: {}",
+        chatops_backend
+            .notification_message(notification)?
+            .to_string()
     );
 
     let res = client
