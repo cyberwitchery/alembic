@@ -273,9 +273,10 @@ async fn notify_with_base_url(
             Ok(())
         }
         Err(e) => Err(anyhow::anyhow!(
-            "chatops notification response error ({}): {:?}",
+            "chatops notification response error ({}): {}",
             chatops_backend.name(),
-            e
+            e.status()
+                .map_or_else(|| "<none>".to_string(), |s| s.to_string()),
         )),
     }
 }
