@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `chatops` feature for posting notifications to Slack
 - `alembic skill list|show|install` writes out the agent skills the binary carries, `--dir` defaulting to `.agents/skills`; an install replaces only an unchanged Alembic-owned copy unless `--force` is passed, and records the release or source revision it describes (#426)
 - the cli gets an agent guide: the `alembic` skill states the identity and safety contract the command surface does not, `docs/agents.md` explains it, and `scripts/agent_fixtures.sh` exercises it against the fixtures in `fixtures/agent/` (#425)
 - an inventory takes an optional `scope:` block naming what it asserts completeness over, per type with optional key-field values; `--allow-delete` and the drift report's `extra` are defined inside it, so two inventories can share one backend without planning each other's objects as deletes (`docs/inventory.md`) (#413)
