@@ -4,6 +4,7 @@ use alembic_core::key_string;
 use alembic_engine::{Op, Plan};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 use tracing;
 
@@ -120,7 +121,7 @@ impl ChatopsBackend {
     }
 
     fn notification_message(&self, notification: &Notification) -> anyhow::Result<Value> {
-        let command_data_json = serde_json::to_string(&notification.command)?;
+        let command_wrapper_json = serde_json::to_string(&notification.command_wrapper)?;
         match self {
             ChatopsBackend::Slack { .. } => {
                 let mut blocks: Vec<Value> = notification
@@ -139,7 +140,7 @@ impl ChatopsBackend {
                         "The plan did not contain any ops to approve.",
                     ))
                 } else {
-                    blocks.push(Self::slack_action_buttons(command_data_json));
+                    blocks.push(Self::slack_action_buttons(command_wrapper_json));
                 }
 
                 Ok(json!({ "blocks": blocks }))
@@ -153,7 +154,14 @@ impl ChatopsBackend {
 
 pub struct Notification {
     pub sections: Vec<NotificationSection>,
-    pub command: CommandData,
+    pub command_wrapper: CommandWrapper,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CommandWrapper {
+    pub hash: String,
+    pub data: CommandData,
+    // TODO: timestamp
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -262,12 +270,17 @@ impl Notification {
             });
         }
 
+        let command_data = CommandData::Plan {
+            file: plan_path.to_string(),
+            backend,
+            backend_config,
+        };
+
         Notification {
             sections,
-            command: CommandData::Plan {
-                file: plan_path.to_string(),
-                backend,
-                backend_config,
+            command_wrapper: CommandWrapper {
+                hash: hash_from_command_and_machine(&command_data),
+                data: command_data,
             },
         }
     }
@@ -275,6 +288,37 @@ impl Notification {
     fn text(&self) -> String {
         self.sections.iter().map(|s| s.title.clone()).collect()
     }
+}
+
+fn hash_from_command_and_machine(command: &CommandData) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(machine_uid::get().unwrap().as_bytes());
+    match command {
+        CommandData::Plan {
+            file,
+            backend,
+            backend_config,
+        } => {
+            hasher.update(file.as_bytes());
+            hasher.update(
+                backend
+                    .clone()
+                    .unwrap_or("<missing backend>".to_string())
+                    .as_bytes(),
+            );
+            hasher.update(
+                backend_config
+                    .clone()
+                    .unwrap_or("<missing backend config>".into())
+                    .display()
+                    .to_string()
+                    .as_bytes(),
+            )
+        }
+    }
+
+    let result = hasher.finalize();
+    result.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
 pub async fn notify(
@@ -330,18 +374,25 @@ async fn notify_with_base_url(
 
 #[cfg(test)]
 mod tests {
-    use crate::app::chatops::{notify_with_base_url, ChatopsBackend, CommandData, Notification};
+    use crate::app::chatops::{
+        hash_from_command_and_machine, notify_with_base_url, ChatopsBackend, CommandData,
+        CommandWrapper, Notification,
+    };
     use httpmock::Method::POST;
     use httpmock::MockServer;
     use serde_json::json;
 
     fn dummy_notification() -> Notification {
+        let command_data = CommandData::Plan {
+            file: "plan.json".to_string(),
+            backend: Some("test".to_string()),
+            backend_config: None,
+        };
         Notification {
             sections: vec![],
-            command: CommandData::Plan {
-                file: "plan.json".to_string(),
-                backend: Some("test".to_string()),
-                backend_config: None,
+            command_wrapper: CommandWrapper {
+                hash: hash_from_command_and_machine(&command_data),
+                data: command_data,
             },
         }
     }
