@@ -134,7 +134,13 @@ impl ChatopsBackend {
                     })
                     .collect();
 
-                blocks.push(Self::slack_action_buttons(command_data_json));
+                if blocks.is_empty() {
+                    blocks.push(Self::slack_header(
+                        "The plan did not contain any ops to approve.",
+                    ))
+                } else {
+                    blocks.push(Self::slack_action_buttons(command_data_json));
+                }
 
                 Ok(json!({ "blocks": blocks }))
             }
@@ -291,7 +297,7 @@ async fn notify_with_base_url(
     let client = reqwest::Client::new();
 
     tracing::debug!(
-        "Notification json: {}",
+        "notification json: {}",
         chatops_backend
             .notification_message(notification)?
             .to_string()
