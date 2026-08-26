@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tracing;
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
@@ -161,7 +162,7 @@ pub struct Notification {
 pub struct CommandWrapper {
     pub hash: String,
     pub data: CommandData,
-    // TODO: timestamp
+    pub timestamp: u64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -275,12 +276,17 @@ impl Notification {
             backend,
             backend_config,
         };
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
 
         Notification {
             sections,
             command_wrapper: CommandWrapper {
-                hash: hash_from_command_and_machine(&command_data),
+                hash: hash_from_command_and_machine(&command_data, timestamp),
                 data: command_data,
+                timestamp,
             },
         }
     }
@@ -290,33 +296,11 @@ impl Notification {
     }
 }
 
-fn hash_from_command_and_machine(command: &CommandData) -> String {
+fn hash_from_command_and_machine(command: &CommandData, timestamp_secs: u64) -> String {
     let mut hasher = Sha256::new();
     hasher.update(machine_uid::get().unwrap().as_bytes());
-    match command {
-        CommandData::Plan {
-            file,
-            backend,
-            backend_config,
-        } => {
-            hasher.update(file.as_bytes());
-            hasher.update(
-                backend
-                    .clone()
-                    .unwrap_or("<missing backend>".to_string())
-                    .as_bytes(),
-            );
-            hasher.update(
-                backend_config
-                    .clone()
-                    .unwrap_or("<missing backend config>".into())
-                    .display()
-                    .to_string()
-                    .as_bytes(),
-            )
-        }
-    }
-
+    hasher.update(timestamp_secs.to_string().as_bytes());
+    hasher.update(format!("{:?}", command).as_bytes());
     let result = hasher.finalize();
     result.iter().map(|b| format!("{:02x}", b)).collect()
 }
@@ -381,6 +365,7 @@ mod tests {
     use httpmock::Method::POST;
     use httpmock::MockServer;
     use serde_json::json;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn dummy_notification() -> Notification {
         let command_data = CommandData::Plan {
@@ -388,11 +373,16 @@ mod tests {
             backend: Some("test".to_string()),
             backend_config: None,
         };
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
         Notification {
             sections: vec![],
             command_wrapper: CommandWrapper {
-                hash: hash_from_command_and_machine(&command_data),
+                hash: hash_from_command_and_machine(&command_data, timestamp),
                 data: command_data,
+                timestamp,
             },
         }
     }
