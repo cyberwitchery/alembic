@@ -1,6 +1,6 @@
 # chatops
 
-Configured via the key `chatops_backend`. Example:
+configured via the key `chatops_backend`. example:
 
 ```yaml
 chatops_backend:
@@ -8,13 +8,13 @@ chatops_backend:
     secret: "XXXXXXXX/YYYYYYYY/ZZZZZZZZZZZZZZZZ"
 ```
 
-Available backends are:
+available backends are:
 
 - `Slack`
     - `secret`
 - `Discord`
     - `token`
 
-Notifications will be sent on the following events:
+notifications will be sent when the following cli commands are run:
 
 - `plan` (after successfully writing the plan file; not on `--dry-run` or `--report`)
