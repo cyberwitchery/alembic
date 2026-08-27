@@ -26,7 +26,7 @@ impl AppConfig {
         Figment::from(Serialized::defaults(Self::default()))
             .merge(Yaml::file("alembic.yaml"))
             .merge(Yaml::file("alembic.yml"))
-            .merge(Env::prefixed("ALEMBIC_").only(&["plugins_dir"]))
+            .merge(Env::prefixed("ALEMBIC_").only(&["plugins_dir", "machine_id_override"]))
     }
 
     pub(crate) fn load() -> Result<AppConfig, AppConfigError> {
