@@ -7,7 +7,6 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tracing;
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub enum ChatopsBackend {
@@ -323,22 +322,16 @@ async fn notify_with_base_url(
     base_url: &str,
 ) -> Result<(), anyhow::Error> {
     let client = reqwest::Client::new();
+    let notification_json = chatops_backend
+        .notification_message(notification)?
+        .to_string();
 
-    tracing::debug!(
-        "notification json: {}",
-        chatops_backend
-            .notification_message(notification)?
-            .to_string()
-    );
+    tracing::debug!("notification json: {}", notification_json);
 
     let res = client
         .post(chatops_backend.notification_url(base_url))
         .header("Content-Type", "application/json")
-        .body(
-            chatops_backend
-                .notification_message(notification)?
-                .to_string(),
-        )
+        .body(notification_json)
         .send()
         .await?;
 

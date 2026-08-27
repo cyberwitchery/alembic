@@ -424,12 +424,9 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                 println!("\nplan written to {}", output.display());
 
                 if let Some(chatops_backend) = &config.chatops_backend {
-                    let notification = Notification::from_plan(
-                        &plan,
-                        file.to_str().unwrap(),
-                        backend_name,
-                        backend_config,
-                    );
+                    let plan_path = file.to_string_lossy();
+                    let notification =
+                        Notification::from_plan(&plan, &plan_path, backend_name, backend_config);
                     chatops::notify(chatops_backend, &notification).await?;
                 }
             }
