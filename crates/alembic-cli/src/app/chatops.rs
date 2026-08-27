@@ -191,6 +191,7 @@ impl Notification {
         plan_path: &str,
         backend: Option<String>,
         backend_config: Option<PathBuf>,
+        machine_id_override: Option<String>,
     ) -> Self {
         let mut sections: Vec<NotificationSection> = vec![];
 
@@ -283,7 +284,7 @@ impl Notification {
         Notification {
             sections,
             command_wrapper: CommandWrapper {
-                hash: hash_from_command_and_machine(&command_data, timestamp),
+                hash: hash_from_command_and_machine(machine_id_override, &command_data, timestamp),
                 data: command_data,
                 timestamp,
             },
@@ -295,9 +296,18 @@ impl Notification {
     }
 }
 
-fn hash_from_command_and_machine(command: &CommandData, timestamp_secs: u64) -> String {
+fn hash_from_command_and_machine(
+    machine_id_override: Option<String>,
+    command: &CommandData,
+    timestamp_secs: u64,
+) -> String {
     let mut hasher = Sha256::new();
-    hasher.update(machine_uid::get().unwrap().as_bytes());
+    let machine_id = if let Some(id) = machine_id_override {
+        id
+    } else {
+        machine_uid::get().unwrap_or_else(|_| "unknown".to_string())
+    };
+    hasher.update(machine_id.as_bytes());
     hasher.update(timestamp_secs.to_string().as_bytes());
     hasher.update(format!("{:?}", command).as_bytes());
     let result = hasher.finalize();
@@ -373,7 +383,11 @@ mod tests {
         Notification {
             sections: vec![],
             command_wrapper: CommandWrapper {
-                hash: hash_from_command_and_machine(&command_data, timestamp),
+                hash: hash_from_command_and_machine(
+                    Some("machine01".to_string()),
+                    &command_data,
+                    timestamp,
+                ),
                 data: command_data,
                 timestamp,
             },

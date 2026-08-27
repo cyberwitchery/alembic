@@ -21,6 +21,9 @@ the `ALEMBIC_STATE_*` variables are a separate, env-only surface: they select th
 state backend rather than a configuration key, and cannot be set in
 `alembic.yaml`. see [state](state.md) for the full list.
 
+- `machine_id_override`, the machine id is used for hashing but can be
+  set manually which is useful for tests
+
 ## examples
 
 to set a path where to look for plugins, use an `alembic.yaml` config file in

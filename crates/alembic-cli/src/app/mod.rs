@@ -425,8 +425,13 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
 
                 if let Some(chatops_backend) = &config.chatops_backend {
                     let plan_path = file.to_string_lossy();
-                    let notification =
-                        Notification::from_plan(&plan, &plan_path, backend_name, backend_config);
+                    let notification = Notification::from_plan(
+                        &plan,
+                        &plan_path,
+                        backend_name,
+                        backend_config,
+                        config.machine_id_override,
+                    );
                     chatops::notify(chatops_backend, &notification).await?;
                 }
             }

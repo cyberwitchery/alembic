@@ -16,6 +16,7 @@ use std::path::PathBuf;
 pub struct AppConfig {
     pub plugins_dir: PathBuf,
     pub chatops_backend: Option<ChatopsBackend>,
+    pub machine_id_override: Option<String>,
 }
 
 impl AppConfig {
@@ -41,6 +42,7 @@ impl Default for AppConfig {
         AppConfig {
             plugins_dir: "./plugins".into(),
             chatops_backend: None,
+            machine_id_override: None,
         }
     }
 }
