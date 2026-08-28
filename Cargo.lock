@@ -23,7 +23,7 @@ dependencies = [
 
 [[package]]
 name = "alembic-adapter-django"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "alembic-core",
  "alembic-engine",
@@ -38,7 +38,7 @@ dependencies = [
 
 [[package]]
 name = "alembic-adapter-generic"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "alembic-core",
  "alembic-engine",
@@ -55,7 +55,7 @@ dependencies = [
 
 [[package]]
 name = "alembic-adapter-infrahub"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "alembic-core",
  "alembic-engine",
@@ -75,7 +75,7 @@ dependencies = [
 
 [[package]]
 name = "alembic-adapter-nautobot"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "alembic-core",
  "alembic-engine",
@@ -94,7 +94,7 @@ dependencies = [
 
 [[package]]
 name = "alembic-adapter-netbox"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "alembic-core",
  "alembic-engine",
@@ -112,7 +112,7 @@ dependencies = [
 
 [[package]]
 name = "alembic-adapter-peeringdb"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "alembic-core",
  "alembic-engine",
@@ -126,7 +126,7 @@ dependencies = [
 
 [[package]]
 name = "alembic-adapter-registry"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "alembic-adapter-django",
  "alembic-adapter-generic",
@@ -147,7 +147,7 @@ dependencies = [
 
 [[package]]
 name = "alembic-adapter-test"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "alembic-core",
  "alembic-engine",
@@ -161,7 +161,7 @@ dependencies = [
 
 [[package]]
 name = "alembic-cli"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "alembic-adapter-django",
  "alembic-adapter-registry",
@@ -183,7 +183,7 @@ dependencies = [
 
 [[package]]
 name = "alembic-core"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "ipnet",
  "regex",
@@ -195,7 +195,7 @@ dependencies = [
 
 [[package]]
 name = "alembic-engine"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "alembic-core",
  "anyhow",
@@ -219,7 +219,7 @@ dependencies = [
 
 [[package]]
 name = "alembic-file-generator"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "alembic-core",
  "alembic-engine",

@@ -1,6 +1,6 @@
 # changelog
 
-## Unreleased
+## [0.9.0] - 2026-08-28
 
 - the shipped examples declare an interface's type under the name the backend uses, `type`, so an interface create carries the field netbox and nautobot require; the adapter-side `if_type` aliasing was removed in 0.7.0 and the examples kept the old name
 - the shipped example names the service owner field `owned_by`; netbox custom objects reserves `owner` and refuses a field declaring it
