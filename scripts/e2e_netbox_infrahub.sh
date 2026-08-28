@@ -11,7 +11,10 @@ INFRAHUB_SCHEMA_PATH="${INFRAHUB_SCHEMA_PATH:-/tmp/alembic-infrahub-schema.yaml}
 INFRAHUBCTL_PATH="${INFRAHUBCTL_PATH:-$ROOT/scripts/infrahubctl_docker.sh}"
 
 NETBOX_COMPOSE="${NETBOX_COMPOSE:-$ROOT/docker-compose.netbox.yml}"
-INFRAHUB_COMPOSE="${INFRAHUB_COMPOSE:-$ROOT/../infrahub.rs/docker-compose.yml}"
+# infrahub ships no compose file in this repo; take upstream's at the version
+# infrahub.rs pins its integration ci to.
+INFRAHUB_VERSION="${INFRAHUB_VERSION:-1.10.6}"
+INFRAHUB_COMPOSE="${INFRAHUB_COMPOSE:-/tmp/infrahub-compose-$INFRAHUB_VERSION.yml}"
 INFRAHUB_STATE_PATH="$(mktemp /tmp/alembic-state-infrahub-XXXXXX.json)"
 NETBOX_STATE_PATH="$(mktemp /tmp/alembic-state-netbox-XXXXXX.json)"
 rm -f "$INFRAHUB_STATE_PATH" "$NETBOX_STATE_PATH"
@@ -37,9 +40,23 @@ wait_for_url() {
 }
 
 if [[ "${SKIP_DOCKER:-0}" != "1" ]]; then
-  docker compose -f "$INFRAHUB_COMPOSE" up -d
+  if [[ ! -f "$INFRAHUB_COMPOSE" ]]; then
+    curl -sSfL \
+      "https://raw.githubusercontent.com/opsmill/infrahub/infrahub-v${INFRAHUB_VERSION}/docker-compose.yml" \
+      -o "$INFRAHUB_COMPOSE"
+  fi
+  # the token the alembic config authenticates with is the one infrahub mints
+  # for its initial admin, so the stack has to be started with it.
+  VERSION="$INFRAHUB_VERSION" \
+    INFRAHUB_IMAGE_TAG="$INFRAHUB_VERSION" \
+    INFRAHUB_INITIAL_ADMIN_TOKEN="$INFRAHUB_TOKEN" \
+    docker compose -f "$INFRAHUB_COMPOSE" up -d
   docker compose -f "$NETBOX_COMPOSE" up -d --build
 fi
+
+# infrahubctl_docker.sh reads the token from the environment, not from the
+# backend config the cli hands it.
+export INFRAHUB_API_TOKEN="$INFRAHUB_TOKEN"
 
 wait_for_url "http://localhost:8000/api/config" "infrahub"
 wait_for_url "http://localhost:8001/api/" "netbox" 180 1

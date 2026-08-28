@@ -6,7 +6,7 @@ services:
       POSTGRES_USER: netbox
       POSTGRES_PASSWORD: netbox
     volumes:
-      - netbox-postgres:/var/lib/postgresql/data
+      - netbox-postgres:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U netbox -d netbox"]
       interval: 5s
@@ -50,7 +50,7 @@ services:
       context: .
       dockerfile: docker/netbox-custom-objects/Dockerfile
       args:
-        NETBOX_IMAGE: ${NETBOX_IMAGE:-docker.io/netboxcommunity/netbox:latest}
+        NETBOX_IMAGE: ${NETBOX_IMAGE:-docker.io/netboxcommunity/netbox:v4.6.2}
     image: alembic-netbox-custom-objects
     depends_on:
       postgres:
@@ -102,7 +102,7 @@ services:
       context: .
       dockerfile: docker/netbox-custom-objects/Dockerfile
       args:
-        NETBOX_IMAGE: ${NETBOX_IMAGE:-docker.io/netboxcommunity/netbox:latest}
+        NETBOX_IMAGE: ${NETBOX_IMAGE:-docker.io/netboxcommunity/netbox:v4.6.2}
     image: alembic-netbox-custom-objects
     depends_on:
       netbox:
