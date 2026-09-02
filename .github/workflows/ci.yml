@@ -155,8 +155,13 @@ jobs:
     name: agents
     runs-on: ubuntu-latest
     # scripts/agent_fixtures.sh drives the contract the embedded skill states
-    # through the cli, offline. the budget is the cli build, not the exercises.
-    timeout-minutes: 20
+    # through the cli, offline: the exercises are seconds, the budget is the
+    # build. this is the only job that links a runnable binary -- lint caches
+    # check artifacts and coverage caches instrumented ones -- so it codegens
+    # the cli's whole dependency tree and needs a cache of its own to reuse.
+    timeout-minutes: 40
+    env:
+      RUSTFLAGS: "-C debuginfo=0"
     steps:
       - uses: actions/checkout@v7
 
@@ -171,7 +176,7 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: alembic-ci
+          shared-key: alembic-agents
 
       - name: Build the cli
         run: cargo build -p alembic-cli
