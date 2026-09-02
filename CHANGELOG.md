@@ -1,5 +1,9 @@
 # changelog
 
+## Unreleased
+
+- the nautobot adapter takes each object type's route from nautobot's api root, deriving one only where the root is unreachable or names no match (#419)
+
 ## [0.9.0] - 2026-08-28
 
 - the shipped examples declare an interface's type under the name the backend uses, `type`, so an interface create carries the field netbox and nautobot require; the adapter-side `if_type` aliasing was removed in 0.7.0 and the examples kept the old name

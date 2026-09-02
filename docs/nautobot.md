@@ -1,12 +1,15 @@
 # nautobot adapter
 
 the nautobot adapter maps alembic ir objects to nautobot REST endpoints. it uses the
-`extras/content-types` endpoint to resolve a `type` like `dcim.device` into its REST endpoint.
+`extras/content-types` endpoint to resolve a `type` like `dcim.device`, and the api root
+for the endpoint that type reads from.
 
 ## object types and endpoints
 
 - the adapter resolves `type` names (e.g. `dcim.device`) to nautobot content types.
-- it maps these to endpoints like `/api/dcim/devices/`.
+- it maps these to endpoints like `/api/dcim/devices/`, taking the route from the api
+  root: `/api/` names the apps, each app root its routes. an unreachable root, or a
+  content type no route matches, falls back to a route derived from the content type.
 - unlike netbox, nautobot uses UUIDs for all identifiers. alembic stores these as string
   `BackendId` values.
 
