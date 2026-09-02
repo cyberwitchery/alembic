@@ -1,12 +1,14 @@
 name: ci
 
+# last match wins in a paths filter, so markdown is out except the skill
+# crates/alembic-cli/src/app/skill.rs include_str!s into the binary.
 on:
   push:
     branches: ["main"]
-    paths-ignore: ["**/*.md"]
+    paths: ["**", "!**/*.md", "crates/alembic-cli/skills/**"]
   pull_request:
     branches: ["main"]
-    paths-ignore: ["**/*.md"]
+    paths: ["**", "!**/*.md", "crates/alembic-cli/skills/**"]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
@@ -149,9 +151,42 @@ jobs:
       - name: Build docs
         run: cargo doc --workspace --no-deps
 
+  agents:
+    name: agents
+    runs-on: ubuntu-latest
+    # scripts/agent_fixtures.sh drives the contract the embedded skill states
+    # through the cli, offline: the exercises are seconds, the budget is the
+    # build. this is the only job that links a runnable binary -- lint caches
+    # check artifacts and coverage caches instrumented ones -- so it codegens
+    # the cli's whole dependency tree and needs a cache of its own to reuse.
+    timeout-minutes: 40
+    env:
+      RUSTFLAGS: "-C debuginfo=0"
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: alembic-agents
+
+      - name: Build the cli
+        run: cargo build -p alembic-cli
+
+      - name: Agent fixtures
+        run: ALEMBIC="$PWD/target/debug/alembic" scripts/agent_fixtures.sh
+
   success:
     name: success
-    needs: [lint, coverage, doc]
+    needs: [lint, coverage, doc, agents]
     runs-on: ubuntu-latest
     if: always()
     steps:

@@ -52,4 +52,9 @@ else
     exit 1
 fi
 
+echo "--- Agent Fixtures ---"
+# the operational contract the embedded skill states, driven through the cli
+cargo build -p alembic-cli
+ALEMBIC="$PWD/target/debug/alembic" ./scripts/agent_fixtures.sh
+
 echo "--- Personal Assurance Check: PASSED ---"

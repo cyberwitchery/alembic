@@ -96,7 +96,7 @@ cargo llvm-cov --workspace --all-features --fail-under-lines 80 \
 ./scripts/ci.sh
 ```
 
-- runs the same steps as ci: fmt, clippy, cargo-deny, docs, and one instrumented test and coverage pass
+- runs the same steps as ci: fmt, clippy, cargo-deny, docs, one instrumented test and coverage pass, and the agent fixtures
 - needs `cargo-deny` and `cargo-llvm-cov` on the path, and django + djangorestframework + django-filter + drf-spectacular importable from `ALEMBIC_DJANGO_PYTHON`, which defaults to `python3`; exits with an install hint without any of them
 - the postgres state store tests no-op unless `ALEMBIC_TEST_POSTGRES_URL` is set; ci runs them against a service
 - local mock servers require binding to loopback; some environments may need elevated privileges
