@@ -187,7 +187,12 @@ mod tests {
             ]),
         };
         let observed = adapter
-            .read(&schema, &[TypeName::new("dcim.device")], &state)
+            .read(
+                &schema,
+                &[TypeName::new("dcim.device")],
+                &state,
+                &alembic_engine::ReadScope::Full,
+            )
             .await
             .unwrap();
 
@@ -1646,7 +1651,10 @@ mod tests {
             )]),
         };
         // dcim.device is in the registry but not the schema, so it is skipped, not an error.
-        let observed = adapter.read(&schema, &[], &state).await.unwrap();
+        let observed = adapter
+            .read(&schema, &[], &state, &alembic_engine::ReadScope::Full)
+            .await
+            .unwrap();
         assert!(observed.is_empty());
     }
 
@@ -3085,7 +3093,7 @@ mod tests {
 
         let schema = two_custom_types("custom.asset_tag", "custom.asset.tag");
         let err = adapter
-            .read(&schema, &[], &state)
+            .read(&schema, &[], &state, &alembic_engine::ReadScope::Full)
             .await
             .unwrap_err()
             .to_string();
@@ -3156,7 +3164,10 @@ mod tests {
         let racks = custom_object_rows(&server, "custom_rack");
 
         let schema = two_custom_types("custom.asset", "custom.rack");
-        let observed = adapter.read(&schema, &[], &state).await.unwrap();
+        let observed = adapter
+            .read(&schema, &[], &state, &alembic_engine::ReadScope::Full)
+            .await
+            .unwrap();
         assert_eq!(observed.len(), 2);
         assets.assert_calls(1);
         racks.assert_calls(1);

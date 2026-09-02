@@ -1057,6 +1057,7 @@ mod tests {
                 &site_schema(),
                 &[TypeName::new("dcim.site")],
                 &state(dir.path()),
+                &alembic_engine::ReadScope::Full,
             )
             .await
             .unwrap();
@@ -1107,6 +1108,7 @@ mod tests {
                 &schema,
                 &[TypeName::new("dcim.locationtype")],
                 &state(dir.path()),
+                &alembic_engine::ReadScope::Full,
             )
             .await
             .unwrap();
@@ -1142,6 +1144,7 @@ mod tests {
                 &site_schema(),
                 &[TypeName::new("dcim.site")],
                 &state(dir.path()),
+                &alembic_engine::ReadScope::Full,
             )
             .await
             .unwrap();
@@ -1180,6 +1183,7 @@ mod tests {
                 &site_schema(),
                 &[TypeName::new("dcim.site")],
                 &state(dir.path()),
+                &alembic_engine::ReadScope::Full,
             )
             .await
             .unwrap();
@@ -1206,7 +1210,12 @@ mod tests {
 
         let adapter = NautobotAdapter::new(&server.base_url(), "token").unwrap();
         let observed = adapter
-            .read(&site_schema(), &[], &state(dir.path()))
+            .read(
+                &site_schema(),
+                &[],
+                &state(dir.path()),
+                &alembic_engine::ReadScope::Full,
+            )
             .await
             .unwrap();
         assert!(observed.is_empty());
@@ -1643,7 +1652,12 @@ mod tests {
 
         let adapter = NautobotAdapter::new(&server.base_url(), "token").unwrap();
         let observed = adapter
-            .read(&schema, &[TypeName::new("dcim.site")], &state(dir.path()))
+            .read(
+                &schema,
+                &[TypeName::new("dcim.site")],
+                &state(dir.path()),
+                &alembic_engine::ReadScope::Full,
+            )
             .await
             .unwrap();
 

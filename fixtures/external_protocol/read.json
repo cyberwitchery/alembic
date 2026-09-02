@@ -18,7 +18,16 @@
       }
     },
     "types": ["dcim.site"],
-    "state": { "mappings": {} }
+    "state": { "mappings": {} },
+    "scope": {
+      "kind": "narrowed",
+      "backend_ids": {},
+      "keys": {
+        "dcim.site": [
+          { "key": { "site": "fra1" }, "canonical": "{\"site\":\"fra1\"}" }
+        ]
+      }
+    }
   },
   "response": {
     "ok": true,

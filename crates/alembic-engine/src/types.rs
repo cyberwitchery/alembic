@@ -525,11 +525,15 @@ impl fmt::Display for ProvisionReport {
 /// read capability: observe backend state.
 #[async_trait]
 pub trait Observer: Send + Sync {
+    /// observe the requested types. `scope` is advisory: an adapter that can
+    /// filter may narrow its query to what it names, and one that cannot may
+    /// ignore it entirely. a superset is always a valid answer.
     async fn read(
         &self,
         schema: &Schema,
         types: &[TypeName],
         state: &crate::state::StateStore,
+        scope: &crate::state::ReadScope,
     ) -> anyhow::Result<ObservedState>;
 }
 

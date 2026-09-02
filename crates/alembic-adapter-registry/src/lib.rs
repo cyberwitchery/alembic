@@ -3,7 +3,7 @@
 use alembic_engine::{
     Adapter, ApplyReport, Backend, BackendIdentity, Emitter, ExternalCapabilities,
     ExternalEnvelopeRef, ExternalObject, ExternalRequestRef, ExternalResponse, ExternalRole,
-    ObservedObject, ObservedState, Observer, Op, ProvisionReport, StateData, StateStore,
+    ObservedObject, ObservedState, Observer, Op, ProvisionReport, ReadScope, StateData, StateStore,
     EXTERNAL_PROTOCOL_VERSION,
 };
 use anyhow::{anyhow, Context, Result};
@@ -558,6 +558,7 @@ impl Observer for ProcessAdapter {
         schema: &alembic_core::Schema,
         types: &[alembic_core::TypeName],
         state: &StateStore,
+        scope: &ReadScope,
     ) -> Result<ObservedState> {
         let state = StateData::from(state);
         let objects: Vec<ExternalObject> = self
@@ -565,6 +566,7 @@ impl Observer for ProcessAdapter {
                 schema,
                 types,
                 state,
+                scope,
             })
             .await?;
         let mut observed = ObservedState::default();
@@ -971,7 +973,7 @@ fi
         let observed = backend
             .observer()
             .unwrap()
-            .read(&schema, &[], &state)
+            .read(&schema, &[], &state, &alembic_engine::ReadScope::Full)
             .await
             .unwrap();
         assert_eq!(observed.len(), 1);

@@ -6,12 +6,14 @@ the engine is responsible for loading, validating, planning, and applying change
 
 1) load inventory files (supports `include` / `imports`)
 2) validate object envelopes, keys, and schema references
-3) observe backend state via adapter (default scope: desired + schema types). the observation is raw: backend ids must be unique, key ambiguity is data (see `docs/identity.md`, key ambiguity)
+3) observe backend state via adapter, over the desired and schema types. the observation is raw: backend ids must be unique, key ambiguity is data (see `docs/identity.md`, key ambiguity)
 4) bootstrap state mappings by key when missing
 5) plan deterministic operations
 6) provision schema primitives on apply (custom fields/custom objects where supported)
 7) apply operations in dependency order
 8) optionally import canonical inventory from backend state
+
+the read (3) carries an advisory `ReadScope`: state-bound backend ids and declared keys, per type, so an adapter that can filter narrows its query. an adapter may always answer with a superset, so nothing depends on the hint being honored. a run that detects deletes (`--allow-delete`, and `--report`, which forces detection on to populate `extra`) reads unscoped, as does `import`, since both are defined against the full observation. this hint is not the inventory's `scope:` block, which is a different thing under a similar name: it bounds delete candidates at plan (5), two steps later (`docs/inventory.md`).
 
 an object keyed on a ref only matches by key once that ref reads back in uid space, so an adapter resolves ref-keyed identity within its own read (`resolve_ref_keyed_identity`) rather than leaning on state.
 

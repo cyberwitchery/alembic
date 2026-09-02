@@ -95,9 +95,43 @@ request:
   "method": "read",
   "schema": { "types": { /* alembic schema */ } },
   "types": ["dcim.site", "dcim.device"],
-  "state": { "mappings": { /* uid -> backend id */ } }
+  "state": { "mappings": { /* uid -> backend id */ } },
+  "scope": {
+    "kind": "narrowed",
+    "backend_ids": { "dcim.site": ["site-1"] },
+    "keys": {
+      "dcim.site": [
+        { "key": { "name": "site-a" }, "canonical": "{\"name\":\"site-a\"}" }
+      ]
+    }
+  }
 }
 ```
+
+`scope` is an advisory narrowing hint: what the host already knows it needs, in
+backend-neutral terms. an adapter that can filter may translate it into a
+backend query, one that cannot may ignore it, and the host behaves identically
+either way — returning a *superset* of what the hint names is always valid, so
+no correctness may rest on honoring it. narrowing on `backend_ids` alone is
+wrong: an object the host has not yet bound is named only by `keys`, and
+dropping it turns an adoption into a create.
+
+each entry in `keys` carries the key twice: `key` for an adapter turning the
+hint into a backend query, `canonical` for one filtering in memory. the host
+matches on `canonical`, so an object read back as `{"vid": 100.0}` and a
+declared `{"vid": 100}` are one key to it and two to a structural compare of
+`key`. the canonicalization lives in the host, so an adapter that cannot
+reproduce it must **keep** an object it is unsure about: a superset is always a
+valid answer, dropping one on a key mismatch alone is not.
+
+`{"kind": "full"}` asks for every object of every requested type, and is what
+delete detection and `import` send, since both are defined against the full
+observation. a `narrowed` scope naming nothing for a type is not the same
+request: it says nothing of that type is needed.
+
+the field is additive. an older adapter that does not read it is unaffected, and
+the rust sdk's `read_scoped` defaults to delegating to `read`, so only an
+adapter that wants the hint overrides it.
 
 response:
 

@@ -94,6 +94,7 @@ impl Observer for PeeringDBAdapter {
         schema: &Schema,
         types: &[TypeName],
         _state: &alembic_engine::StateStore,
+        _scope: &alembic_engine::ReadScope,
     ) -> Result<ObservedState> {
         let requested: BTreeSet<TypeName> = if types.is_empty() {
             // empty means every schema-declared supported type; skip types the schema omits.
@@ -313,7 +314,12 @@ mod tests {
         };
         let state = alembic_engine::StateStore::new(None, alembic_engine::StateData::default());
         let err = adapter
-            .read(&schema, &[TypeName::new("peeringdb.ix")], &state)
+            .read(
+                &schema,
+                &[TypeName::new("peeringdb.ix")],
+                &state,
+                &alembic_engine::ReadScope::Full,
+            )
             .await
             .unwrap_err();
         assert!(err.to_string().contains("missing schema"));
@@ -328,7 +334,10 @@ mod tests {
             types: BTreeMap::new(),
         };
         let state = alembic_engine::StateStore::new(None, alembic_engine::StateData::default());
-        let observed = adapter.read(&schema, &[], &state).await.unwrap();
+        let observed = adapter
+            .read(&schema, &[], &state, &alembic_engine::ReadScope::Full)
+            .await
+            .unwrap();
         assert!(observed.is_empty());
     }
 
@@ -341,7 +350,12 @@ mod tests {
         let state_store =
             alembic_engine::StateStore::new(None, alembic_engine::StateData::default());
         let err = adapter
-            .read(&schema, &[TypeName::new("peeringdb.fac")], &state_store)
+            .read(
+                &schema,
+                &[TypeName::new("peeringdb.fac")],
+                &state_store,
+                &alembic_engine::ReadScope::Full,
+            )
             .await
             .unwrap_err();
 
@@ -358,7 +372,10 @@ mod tests {
         };
         let state_store =
             alembic_engine::StateStore::new(None, alembic_engine::StateData::default());
-        let observed = adapter.read(&schema, &[], &state_store).await.unwrap();
+        let observed = adapter
+            .read(&schema, &[], &state_store, &alembic_engine::ReadScope::Full)
+            .await
+            .unwrap();
 
         assert!(observed.is_empty());
     }

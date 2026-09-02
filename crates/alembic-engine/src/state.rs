@@ -2,10 +2,10 @@
 //! instance.
 
 use crate::types::BackendId;
-use alembic_core::{uid_v5, TypeName, Uid};
+use alembic_core::{key_string, uid_v5, Key, TypeName, Uid};
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::path::{Path, PathBuf};
@@ -20,6 +20,145 @@ use tokio_postgres::Client;
 pub struct StateData {
     #[serde(default)]
     pub mappings: BTreeMap<TypeName, BTreeMap<Uid, BackendId>>,
+}
+
+/// advisory narrowing hint carried alongside [`StateData`] on a read: what the
+/// engine already knows it needs, in backend-neutral terms. an adapter may
+/// narrow its query to this or ignore it entirely, since a superset is always a
+/// valid answer -- so no engine behavior may depend on a hint being honored.
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ReadScope {
+    /// every object of every requested type. delete detection and `import` are
+    /// defined against the full observation, so they read unscoped.
+    #[default]
+    Full,
+    /// only the named objects are needed. a type missing from both maps is a
+    /// narrow hint naming nothing, which is not [`ReadScope::Full`].
+    Narrowed {
+        /// backend ids state already binds, per type.
+        #[serde(default)]
+        backend_ids: BTreeMap<TypeName, BTreeSet<BackendId>>,
+        /// declared keys, per type. adoption matches on key, so an object state
+        /// has never seen still has to come back.
+        #[serde(default)]
+        keys: BTreeMap<TypeName, Vec<ScopeKey>>,
+    },
+}
+
+/// a declared key in both spaces its consumers need: `key` for an adapter
+/// building a backend query, `canonical` for one filtering in memory. the
+/// engine matches on `canonical`, so `{"vid": 100.0}` and `{"vid": 100}` are
+/// one key, and a structural compare of `key` alone drops the first.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScopeKey {
+    pub key: Key,
+    pub canonical: String,
+}
+
+impl ScopeKey {
+    pub fn new(key: Key) -> Self {
+        let canonical = key_string(&key);
+        Self { key, canonical }
+    }
+}
+
+/// the hint for one type, handed out by [`ReadScope::for_type`]. the keys are
+/// reachable as a query ([`Self::keys`]) or a comparison ([`Self::names_key`]),
+/// never as a raw set to compare structurally.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TypeReadScope<'a> {
+    pub backend_ids: &'a BTreeSet<BackendId>,
+    keys: &'a [ScopeKey],
+}
+
+impl<'a> TypeReadScope<'a> {
+    /// the declared keys, for an adapter building a backend query out of them.
+    pub fn keys(&self) -> impl ExactSizeIterator<Item = &'a Key> {
+        self.keys.iter().map(|scoped| &scoped.key)
+    }
+
+    /// true when the hint names this key, compared the way the engine matches.
+    pub fn names_key(&self, key: &Key) -> bool {
+        let canonical = key_string(key);
+        self.keys.iter().any(|scoped| scoped.canonical == canonical)
+    }
+
+    /// true when the hint names this object at all. this is the whole filter:
+    /// narrowing on `backend_ids` alone drops an object state has never bound
+    /// and turns its adoption into a create.
+    pub fn wants(&self, object: &crate::types::ObservedObject) -> bool {
+        self.names_key(&object.key)
+            || object
+                .backend_id
+                .as_ref()
+                .is_some_and(|id| self.backend_ids.contains(id))
+    }
+
+    /// true when the hint names nothing of this type: still not a full read.
+    pub fn is_empty(&self) -> bool {
+        self.backend_ids.is_empty() && self.keys.is_empty()
+    }
+}
+
+static NO_IDS: BTreeSet<BackendId> = BTreeSet::new();
+
+impl ReadScope {
+    /// build a narrowed hint from state bindings and declared objects, limited
+    /// to `types` (the read asks for no others). keys are deduplicated and
+    /// ordered by their canonical string, so the hint is deterministic.
+    pub fn narrowed<'a>(
+        types: &[TypeName],
+        state: &StateStore,
+        desired: impl IntoIterator<Item = (&'a TypeName, &'a Key)>,
+    ) -> Self {
+        let requested: BTreeSet<&TypeName> = types.iter().collect();
+        let mut backend_ids: BTreeMap<TypeName, BTreeSet<BackendId>> = BTreeMap::new();
+        for (type_name, index) in state.backend_ids() {
+            if !requested.contains(type_name) {
+                continue;
+            }
+            let ids: BTreeSet<BackendId> = index.keys().cloned().collect();
+            if !ids.is_empty() {
+                backend_ids.insert(type_name.clone(), ids);
+            }
+        }
+
+        let mut sorted: BTreeMap<TypeName, BTreeMap<String, ScopeKey>> = BTreeMap::new();
+        for (type_name, key) in desired {
+            if !requested.contains(type_name) {
+                continue;
+            }
+            let scoped = ScopeKey::new(key.clone());
+            sorted
+                .entry(type_name.clone())
+                .or_default()
+                .insert(scoped.canonical.clone(), scoped);
+        }
+        let keys = sorted
+            .into_iter()
+            .map(|(type_name, keys)| (type_name, keys.into_values().collect()))
+            .collect();
+
+        Self::Narrowed { backend_ids, keys }
+    }
+
+    /// true when the adapter must return everything of the requested types.
+    pub fn is_full(&self) -> bool {
+        matches!(self, Self::Full)
+    }
+
+    /// what is wanted of one type, or `None` when the read is unscoped. a
+    /// narrowed scope that names nothing for a type still answers `Some`.
+    pub fn for_type(&self, type_name: &TypeName) -> Option<TypeReadScope<'_>> {
+        match self {
+            Self::Full => None,
+            Self::Narrowed { backend_ids, keys } => Some(TypeReadScope {
+                backend_ids: backend_ids.get(type_name).unwrap_or(&NO_IDS),
+                keys: keys.get(type_name).map(Vec::as_slice).unwrap_or(&[]),
+            }),
+        }
+    }
 }
 
 /// the backend instance a state store binds identities to: the adapter kind
@@ -587,6 +726,45 @@ mod tests {
 
     fn uid(n: u128) -> Uid {
         Uid::from_u128(n)
+    }
+
+    fn vid(value: serde_json::Value) -> Key {
+        Key::from(BTreeMap::from([("vid".to_string(), value)]))
+    }
+
+    #[test]
+    fn a_hint_names_a_key_the_way_the_engine_matches() {
+        let store = StateStore::new(None, StateData::default());
+        let declared = vid(serde_json::json!(100));
+        let types = [t("ipam.vlan")];
+        let scope = ReadScope::narrowed(&types, &store, [(&types[0], &declared)]);
+        let hint = scope.for_type(&types[0]).expect("narrowed");
+
+        // what an adapter observes back, in the other representation.
+        let observed = vid(serde_json::json!(100.0));
+        assert_ne!(declared, observed, "structurally two keys");
+        assert!(hint.names_key(&observed), "canonically one");
+        assert!(!hint.names_key(&vid(serde_json::json!(101))));
+    }
+
+    #[test]
+    fn a_narrowed_hint_carries_both_key_spaces_on_the_wire() {
+        let store = StateStore::new(None, StateData::default());
+        let declared = vid(serde_json::json!(100));
+        let types = [t("ipam.vlan")];
+        let scope = ReadScope::narrowed(&types, &store, [(&types[0], &declared)]);
+
+        assert_eq!(
+            serde_json::to_value(&scope).unwrap(),
+            serde_json::json!({
+                "kind": "narrowed",
+                "backend_ids": {},
+                "keys": {
+                    "ipam.vlan": [{ "key": { "vid": 100 }, "canonical": "{\"vid\":100}" }],
+                },
+            }),
+            "docs/external-adapters.md documents this shape"
+        );
     }
 
     #[test]

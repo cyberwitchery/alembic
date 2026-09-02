@@ -720,7 +720,8 @@ fn case_result_pinned_against_null_reported() {
 #[test]
 fn fixtures_match_the_protocol_types() {
     use alembic_engine::{
-        ApplyReport, ExternalCapabilities, ExternalObject, ExternalResponse, ProvisionReport,
+        ApplyReport, ExternalCapabilities, ExternalEnvelope, ExternalObject, ExternalResponse,
+        ProvisionReport,
     };
     use serde_json::Value;
 
@@ -741,6 +742,8 @@ fn fixtures_match_the_protocol_types() {
         let method = fixture["request"]["method"]
             .as_str()
             .unwrap_or_else(|| panic!("{name}: request has no method"));
+        serde_json::from_value::<ExternalEnvelope>(fixture["request"].clone())
+            .unwrap_or_else(|e| panic!("{name}: request is not an envelope: {e}"));
         let response: ExternalResponse<Value> = serde_json::from_value(fixture["response"].clone())
             .unwrap_or_else(|e| panic!("{name}: response is not an envelope: {e}"));
         match (response.ok, response.result, response.error) {
