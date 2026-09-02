@@ -90,8 +90,37 @@ mod tests {
         }
     }
 
+    // the api root and each app root, which is where the registry takes routes from.
+    fn mock_api_root(server: &MockServer, apps: &[(&str, &[&str])]) {
+        let base = server.base_url();
+        let root: serde_json::Map<String, serde_json::Value> = apps
+            .iter()
+            .map(|(app, _)| ((*app).to_string(), json!(format!("{base}/api/{app}/"))))
+            .collect();
+        let _root = server.mock(|when, then| {
+            when.method(GET).path("/api/");
+            then.status(200).json_body(json!(root));
+        });
+        for (app, routes) in apps {
+            let body: serde_json::Map<String, serde_json::Value> = routes
+                .iter()
+                .map(|route| {
+                    (
+                        (*route).to_string(),
+                        json!(format!("{base}/api/{app}/{route}/")),
+                    )
+                })
+                .collect();
+            let _app = server.mock(|when, then| {
+                when.method(GET).path(format!("/api/{app}/"));
+                then.status(200).json_body(json!(body));
+            });
+        }
+    }
+
     // content-types drives the endpoint registry: "dcim"/"site" -> dcim/sites/.
     fn mock_content_types(server: &MockServer) {
+        mock_api_root(server, &[("dcim", &["sites"])]);
         let _m = server.mock(|when, then| {
             when.method(GET).path("/api/extras/content-types/");
             then.status(200)
@@ -141,6 +170,7 @@ mod tests {
     // content-types for both dcim.site and dcim.device, plus the sample-object
     // probe each native type needs.
     fn mock_two_content_types(server: &MockServer) {
+        mock_api_root(server, &[("dcim", &["sites", "devices"])]);
         for path in ["/api/dcim/sites/", "/api/dcim/devices/"] {
             let _probe = server.mock(|when, then| {
                 when.method(GET).path(path);
@@ -1039,6 +1069,122 @@ mod tests {
             object.backend_id,
             Some(BackendId::String(site_id.to_string()))
         );
+    }
+
+    /// `locationtype` carries no word boundary to pluralize, so the route only
+    /// spells itself if it came from the api root.
+    #[tokio::test]
+    async fn observe_takes_the_route_from_the_api_root() {
+        let server = MockServer::start();
+        let dir = tempdir().unwrap();
+        mock_api_root(&server, &[("dcim", &["location-types"])]);
+        let _content_types = server.mock(|when, then| {
+            when.method(GET).path("/api/extras/content-types/");
+            then.status(200).json_body(page(
+                json!([{ "app_label": "dcim", "model": "locationtype" }]),
+            ));
+        });
+        let _location_types = server.mock(|when, then| {
+            when.method(GET).path("/api/dcim/location-types/");
+            then.status(200).json_body(page(json!([{
+                "id": "22222222-2222-2222-2222-222222222222",
+                "name": "campus",
+            }])));
+        });
+
+        let schema = Schema {
+            types: BTreeMap::from([(
+                "dcim.locationtype".to_string(),
+                TypeSchema {
+                    key: BTreeMap::from([("name".to_string(), field(FieldType::String))]),
+                    fields: BTreeMap::from([("name".to_string(), field(FieldType::String))]),
+                },
+            )]),
+        };
+        let adapter = NautobotAdapter::new(&server.base_url(), "token").unwrap();
+        let observed = adapter
+            .read(
+                &schema,
+                &[TypeName::new("dcim.locationtype")],
+                &state(dir.path()),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(observed.len(), 1);
+        let object = observed.objects().next().unwrap();
+        assert_eq!(object.attrs.get("name"), Some(&json!("campus")));
+    }
+
+    /// a deployment that hides `/api/` keeps the derived route, so it stays
+    /// readable rather than erroring on a missing root.
+    #[tokio::test]
+    async fn observe_falls_back_when_the_api_root_is_unreachable() {
+        let server = MockServer::start();
+        let dir = tempdir().unwrap();
+        let _content_types = server.mock(|when, then| {
+            when.method(GET).path("/api/extras/content-types/");
+            then.status(200)
+                .json_body(page(json!([{ "app_label": "dcim", "model": "site" }])));
+        });
+        let _sites = server.mock(|when, then| {
+            when.method(GET).path("/api/dcim/sites/");
+            then.status(200).json_body(page(json!([{
+                "id": "11111111-1111-1111-1111-111111111111",
+                "name": "FRA1",
+                "slug": "fra1",
+            }])));
+        });
+
+        let adapter = NautobotAdapter::new(&server.base_url(), "token").unwrap();
+        let observed = adapter
+            .read(
+                &site_schema(),
+                &[TypeName::new("dcim.site")],
+                &state(dir.path()),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(observed.len(), 1);
+    }
+
+    /// the same fallback one level down: the root lists the app, the app root
+    /// itself does not answer.
+    #[tokio::test]
+    async fn observe_falls_back_when_an_app_root_is_unreachable() {
+        let server = MockServer::start();
+        let dir = tempdir().unwrap();
+        let _root = server.mock(|when, then| {
+            when.method(GET).path("/api/");
+            then.status(200)
+                .json_body(json!({ "dcim": format!("{}/api/dcim/", server.base_url()) }));
+        });
+        let _content_types = server.mock(|when, then| {
+            when.method(GET).path("/api/extras/content-types/");
+            then.status(200)
+                .json_body(page(json!([{ "app_label": "dcim", "model": "site" }])));
+        });
+        let _sites = server.mock(|when, then| {
+            when.method(GET).path("/api/dcim/sites/");
+            then.status(200).json_body(page(json!([{
+                "id": "11111111-1111-1111-1111-111111111111",
+                "name": "FRA1",
+                "slug": "fra1",
+            }])));
+        });
+
+        let adapter = NautobotAdapter::new(&server.base_url(), "token").unwrap();
+        let observed = adapter
+            .read(
+                &site_schema(),
+                &[TypeName::new("dcim.site")],
+                &state(dir.path()),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(observed.len(), 1);
     }
 
     #[tokio::test]

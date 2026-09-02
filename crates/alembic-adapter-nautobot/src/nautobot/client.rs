@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Mutex;
 
 use super::mapping::{slugify, ExistingCustomField};
-use super::registry::ObjectTypeRegistry;
+use super::registry::{route_key, ObjectTypeRegistry, RouteIndex};
 
 /// an existing custom field, reduced to what a provision needs: its backend id,
 /// its type and the properties convergence compares.
@@ -170,7 +170,44 @@ impl NautobotClient {
         let types = self
             .list_all(&self.client.extras().content_types(), None)
             .await?;
-        ObjectTypeRegistry::from_content_types(types)
+        let apps: BTreeSet<String> = types
+            .iter()
+            .map(|content_type| content_type.app_label.clone())
+            .collect();
+        let routes = self.fetch_routes(&apps).await;
+        ObjectTypeRegistry::from_content_types(types, &routes)
+    }
+
+    /// the real route of every listed object type: `/api/` names the apps, each
+    /// app root its routes. an unreachable root yields no entry, and the
+    /// registry derives that route instead.
+    async fn fetch_routes(&self, apps: &BTreeSet<String>) -> RouteIndex {
+        let Ok(root) = self.client.get::<BTreeMap<String, Value>>("").await else {
+            tracing::debug!("nautobot api root unreadable, deriving endpoints");
+            return RouteIndex::new();
+        };
+        let listed: Vec<&String> = root.keys().filter(|app| apps.contains(*app)).collect();
+        let roots = futures::future::join_all(listed.iter().map(|app| async move {
+            self.client
+                .get::<BTreeMap<String, Value>>(&format!("{app}/"))
+                .await
+        }))
+        .await;
+
+        let mut index = RouteIndex::new();
+        for (app, app_root) in listed.into_iter().zip(roots) {
+            let Ok(app_root) = app_root else {
+                tracing::debug!(app = %app, "nautobot app root unreadable, deriving endpoints");
+                continue;
+            };
+            // the key an app root lists a view under is the route itself.
+            let routes = app_root
+                .into_keys()
+                .map(|route| (route_key(&route), route))
+                .collect();
+            index.insert(app.clone(), routes);
+        }
+        index
     }
 }
 
