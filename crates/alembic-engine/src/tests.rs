@@ -3402,14 +3402,17 @@ impl Emitter for ScopeRecorder {
 
 impl Adapter for ScopeRecorder {}
 
-/// three backend objects: one state binds, one only a declared key names, and
-/// one the plan has no claim on at all.
+/// four backend objects, one per cell of the hint: one both halves name, one
+/// only a declared key names, one the plan has no claim on at all, and one
+/// whose key drifted on the backend after state bound it, which only the
+/// backend-ids half still names.
 fn scope_backend() -> ObservedState {
     let mut observed = ObservedState::default();
     for (key, id, name) in [
         ("site=fra1", 10u64, "OLD"),
         ("site=ber1", 11, "BER1"),
         ("site=ams1", 12, "AMS1"),
+        ("site=lon1-renamed", 13, "LON1 renamed"),
     ] {
         observed
             .insert(ObservedObject {
@@ -3437,12 +3440,25 @@ fn scope_inventory() -> Inventory {
             "site=ber1",
             json!({ "name": "BER1", "slug": "site=ber1" }),
         ),
+        obj(
+            uid(4),
+            "dcim.site",
+            "site=lon1",
+            json!({ "name": "LON1", "slug": "site=lon1" }),
+        ),
     ])
 }
 
+/// the bindings [`scope_backend`] is observed under: `uid(4)` is bound to the
+/// object whose key has since drifted, so its identity survives only through
+/// the backend id.
+const SCOPE_BOUND: [(u128, u64); 2] = [(1, 10), (4, 13)];
+
 fn scope_state(dir: &std::path::Path) -> StateStore {
     let mut state = StateStore::load(dir.join("state.json")).unwrap();
-    state.set_backend_id(t("dcim.site"), uid(1), BackendId::Int(10));
+    for (u, id) in SCOPE_BOUND {
+        state.set_backend_id(t("dcim.site"), uid(u), BackendId::Int(id));
+    }
     state
 }
 
@@ -3458,14 +3474,49 @@ fn plan_hints_state_ids_and_desired_keys() {
     let hint = scope.for_type(&t("dcim.site")).expect("narrowed");
     assert_eq!(
         hint.backend_ids,
-        &BTreeSet::from([BackendId::Int(10)]),
+        &BTreeSet::from([BackendId::Int(10), BackendId::Int(13)]),
         "state-bound ids only"
     );
     assert_eq!(
         hint.keys().cloned().collect::<Vec<_>>(),
-        vec![key_str("site=ber1"), key_str("site=fra1")],
+        vec![
+            key_str("site=ber1"),
+            key_str("site=fra1"),
+            key_str("site=lon1")
+        ],
         "every declared key, ordered"
     );
+}
+
+/// a ref-keyed type's declared key is in uid space, which no backend can be
+/// queried in and which the adapter's own rows only reach after
+/// `resolve_ref_keyed_identity` has run over the batch it already fetched. the
+/// hint holds such a type out whole rather than naming a key nothing matches.
+#[test]
+fn a_ref_keyed_type_is_read_whole() {
+    let dir = tempdir().unwrap();
+    let adapter = ScopeRecorder::new(ObservedState::default(), false);
+    let mut state = StateStore::load(dir.path().join("state.json")).unwrap();
+    futures::executor::block_on(build_plan(
+        &adapter,
+        &ref_chain_inventory(2),
+        &mut state,
+        false,
+    ))
+    .unwrap();
+
+    let scope = adapter.seen();
+    assert!(!scope.is_full(), "the run still narrows what it can");
+    assert!(
+        scope.for_type(&t("dcim.site")).is_some(),
+        "a string-keyed type narrows"
+    );
+    for ref_keyed in [t("dcim.device"), t("dcim.interface")] {
+        assert!(
+            scope.for_type(&ref_keyed).is_none(),
+            "{ref_keyed} is keyed on a ref, so it is read whole"
+        );
+    }
 }
 
 #[test]
@@ -3584,11 +3635,11 @@ fn narrowing_changes_nothing(
 
 #[test]
 fn narrowing_to_the_hint_changes_nothing() {
-    narrowing_changes_nothing(
-        &scope_backend(),
-        &scope_inventory(),
-        &[(t("dcim.site"), uid(1), BackendId::Int(10))],
-    );
+    let bound: Vec<_> = SCOPE_BOUND
+        .iter()
+        .map(|(u, id)| (t("dcim.site"), uid(*u), BackendId::Int(*id)))
+        .collect();
+    narrowing_changes_nothing(&scope_backend(), &scope_inventory(), &bound);
 }
 
 /// the same constraint over a numerically keyed type, where the backend answers
@@ -3605,6 +3656,7 @@ fn a_narrow_hint_naming_nothing_is_not_a_full_read() {
     let empty = crate::state::ReadScope::Narrowed {
         backend_ids: Default::default(),
         keys: Default::default(),
+        unnarrowed: Default::default(),
     };
     assert!(!empty.is_full());
     let hint = empty.for_type(&t("dcim.site")).expect("narrowed, not full");

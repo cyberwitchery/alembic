@@ -2,7 +2,7 @@
 //! instance.
 
 use crate::types::BackendId;
-use alembic_core::{key_string, uid_v5, Key, TypeName, Uid};
+use alembic_core::{key_string, uid_v5, FieldType, Key, Schema, TypeName, Uid};
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -33,8 +33,8 @@ pub enum ReadScope {
     /// defined against the full observation, so they read unscoped.
     #[default]
     Full,
-    /// only the named objects are needed. a type missing from both maps is a
-    /// narrow hint naming nothing, which is not [`ReadScope::Full`].
+    /// only the named objects are needed. a type missing from all three fields
+    /// is a narrow hint naming nothing, which is not [`ReadScope::Full`].
     Narrowed {
         /// backend ids state already binds, per type.
         #[serde(default)]
@@ -43,6 +43,10 @@ pub enum ReadScope {
         /// has never seen still has to come back.
         #[serde(default)]
         keys: BTreeMap<TypeName, Vec<ScopeKey>>,
+        /// types the hint cannot narrow, to be read whole. a ref-keyed type's
+        /// declared key is in uid space, which no backend can be queried in.
+        #[serde(default)]
+        unnarrowed: BTreeSet<TypeName>,
     },
 }
 
@@ -84,9 +88,10 @@ impl<'a> TypeReadScope<'a> {
         self.keys.iter().any(|scoped| scoped.canonical == canonical)
     }
 
-    /// true when the hint names this object at all. this is the whole filter:
-    /// narrowing on `backend_ids` alone drops an object state has never bound
-    /// and turns its adoption into a create.
+    /// true when the hint names this object at all. only the union is safe:
+    /// `backend_ids` alone drops an object state has never bound and turns its
+    /// adoption into a create, `keys` alone drops one whose key drifted on the
+    /// backend since state bound it and plans a create over a live object.
     pub fn wants(&self, object: &crate::types::ObservedObject) -> bool {
         self.names_key(&object.key)
             || object
@@ -103,16 +108,43 @@ impl<'a> TypeReadScope<'a> {
 
 static NO_IDS: BTreeSet<BackendId> = BTreeSet::new();
 
+/// whether any of a type's key fields is a ref. such a key holds canonical
+/// uids, which the backend does not store and the adapter only reaches after
+/// `resolve_ref_keyed_identity` has run over the batch it already fetched.
+fn is_ref_keyed(schema: &Schema, type_name: &TypeName) -> bool {
+    schema
+        .types
+        .get(type_name.as_str())
+        .is_some_and(|type_schema| {
+            type_schema.key.values().any(|field| {
+                matches!(
+                    field.r#type,
+                    FieldType::Ref { .. } | FieldType::ListRef { .. }
+                )
+            })
+        })
+}
+
 impl ReadScope {
     /// build a narrowed hint from state bindings and declared objects, limited
     /// to `types` (the read asks for no others). keys are deduplicated and
     /// ordered by their canonical string, so the hint is deterministic.
+    /// ref-keyed types are held out whole: their keys are in uid space.
     pub fn narrowed<'a>(
+        schema: &Schema,
         types: &[TypeName],
         state: &StateStore,
         desired: impl IntoIterator<Item = (&'a TypeName, &'a Key)>,
     ) -> Self {
-        let requested: BTreeSet<&TypeName> = types.iter().collect();
+        let unnarrowed: BTreeSet<TypeName> = types
+            .iter()
+            .filter(|type_name| is_ref_keyed(schema, type_name))
+            .cloned()
+            .collect();
+        let requested: BTreeSet<&TypeName> = types
+            .iter()
+            .filter(|type_name| !unnarrowed.contains(*type_name))
+            .collect();
         let mut backend_ids: BTreeMap<TypeName, BTreeSet<BackendId>> = BTreeMap::new();
         for (type_name, index) in state.backend_ids() {
             if !requested.contains(type_name) {
@@ -140,7 +172,11 @@ impl ReadScope {
             .map(|(type_name, keys)| (type_name, keys.into_values().collect()))
             .collect();
 
-        Self::Narrowed { backend_ids, keys }
+        Self::Narrowed {
+            backend_ids,
+            keys,
+            unnarrowed,
+        }
     }
 
     /// true when the adapter must return everything of the requested types.
@@ -148,15 +184,25 @@ impl ReadScope {
         matches!(self, Self::Full)
     }
 
-    /// what is wanted of one type, or `None` when the read is unscoped. a
+    /// what is wanted of one type, or `None` when the type is not narrowed at
+    /// all: an unscoped read, or one the hint holds this type out of. a
     /// narrowed scope that names nothing for a type still answers `Some`.
     pub fn for_type(&self, type_name: &TypeName) -> Option<TypeReadScope<'_>> {
         match self {
             Self::Full => None,
-            Self::Narrowed { backend_ids, keys } => Some(TypeReadScope {
-                backend_ids: backend_ids.get(type_name).unwrap_or(&NO_IDS),
-                keys: keys.get(type_name).map(Vec::as_slice).unwrap_or(&[]),
-            }),
+            Self::Narrowed {
+                backend_ids,
+                keys,
+                unnarrowed,
+            } => {
+                if unnarrowed.contains(type_name) {
+                    return None;
+                }
+                Some(TypeReadScope {
+                    backend_ids: backend_ids.get(type_name).unwrap_or(&NO_IDS),
+                    keys: keys.get(type_name).map(Vec::as_slice).unwrap_or(&[]),
+                })
+            }
         }
     }
 }
@@ -737,7 +783,8 @@ mod tests {
         let store = StateStore::new(None, StateData::default());
         let declared = vid(serde_json::json!(100));
         let types = [t("ipam.vlan")];
-        let scope = ReadScope::narrowed(&types, &store, [(&types[0], &declared)]);
+        let scope =
+            ReadScope::narrowed(&Schema::default(), &types, &store, [(&types[0], &declared)]);
         let hint = scope.for_type(&types[0]).expect("narrowed");
 
         // what an adapter observes back, in the other representation.
@@ -752,7 +799,8 @@ mod tests {
         let store = StateStore::new(None, StateData::default());
         let declared = vid(serde_json::json!(100));
         let types = [t("ipam.vlan")];
-        let scope = ReadScope::narrowed(&types, &store, [(&types[0], &declared)]);
+        let scope =
+            ReadScope::narrowed(&Schema::default(), &types, &store, [(&types[0], &declared)]);
 
         assert_eq!(
             serde_json::to_value(&scope).unwrap(),
@@ -762,6 +810,7 @@ mod tests {
                 "keys": {
                     "ipam.vlan": [{ "key": { "vid": 100 }, "canonical": "{\"vid\":100}" }],
                 },
+                "unnarrowed": [],
             }),
             "docs/external-adapters.md documents this shape"
         );

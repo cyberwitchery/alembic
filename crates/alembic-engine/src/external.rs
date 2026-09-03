@@ -512,7 +512,7 @@ mod tests {
         }];
         let state = StateData::default();
 
-        let scope = ReadScope::narrowed(&types, &StateStore::new(None, state.clone()), []);
+        let scope = ReadScope::narrowed(&schema, &types, &StateStore::new(None, state.clone()), []);
         let owned_read = serde_json::to_value(ExternalRequest::Read {
             schema: schema.clone(),
             types: types.clone(),

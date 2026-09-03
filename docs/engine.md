@@ -15,7 +15,7 @@ the engine is responsible for loading, validating, planning, and applying change
 
 the read (3) carries an advisory `ReadScope`: state-bound backend ids and declared keys, per type, so an adapter that can filter narrows its query. an adapter may always answer with a superset, so nothing depends on the hint being honored. a run that detects deletes (`--allow-delete`, and `--report`, which forces detection on to populate `extra`) reads unscoped, as does `import`, since both are defined against the full observation. this hint is not the inventory's `scope:` block, which is a different thing under a similar name: it bounds delete candidates at plan (5), two steps later (`docs/inventory.md`).
 
-an object keyed on a ref only matches by key once that ref reads back in uid space, so an adapter resolves ref-keyed identity within its own read (`resolve_ref_keyed_identity`) rather than leaning on state.
+an object keyed on a ref only matches by key once that ref reads back in uid space, so an adapter resolves ref-keyed identity within its own read (`resolve_ref_keyed_identity`) rather than leaning on state. that is also why the hint above cannot narrow such a type: its declared key is in uid space, which the backend does not store, so the scope names the type in `unnarrowed` and asks for all of it.
 
 ## validation
 

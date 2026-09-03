@@ -26,7 +26,8 @@
         "dcim.site": [
           { "key": { "site": "fra1" }, "canonical": "{\"site\":\"fra1\"}" }
         ]
-      }
+      },
+      "unnarrowed": []
     }
   },
   "response": {

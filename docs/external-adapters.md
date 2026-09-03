@@ -103,7 +103,8 @@ request:
       "dcim.site": [
         { "key": { "name": "site-a" }, "canonical": "{\"name\":\"site-a\"}" }
       ]
-    }
+    },
+    "unnarrowed": ["dcim.device"]
   }
 }
 ```
@@ -112,9 +113,14 @@ request:
 backend-neutral terms. an adapter that can filter may translate it into a
 backend query, one that cannot may ignore it, and the host behaves identically
 either way — returning a *superset* of what the hint names is always valid, so
-no correctness may rest on honoring it. narrowing on `backend_ids` alone is
-wrong: an object the host has not yet bound is named only by `keys`, and
-dropping it turns an adoption into a create.
+no correctness may rest on honoring it.
+
+the rule is the union of the two halves, and neither alone is safe. an object
+the host has not yet bound is named only by `keys`, so `backend_ids` alone drops
+it and turns its adoption into a create. an object whose key drifted on the
+backend since the host bound it is named only by `backend_ids`, so `keys` alone
+drops it and plans a create over a live object, on that run and every one after,
+since the host only ever binds what came back. keep an object either half names.
 
 each entry in `keys` carries the key twice: `key` for an adapter turning the
 hint into a backend query, `canonical` for one filtering in memory. the host
@@ -123,6 +129,13 @@ declared `{"vid": 100}` are one key to it and two to a structural compare of
 `key`. the canonicalization lives in the host, so an adapter that cannot
 reproduce it must **keep** an object it is unsure about: a superset is always a
 valid answer, dropping one on a key mismatch alone is not.
+
+`unnarrowed` names the types the hint cannot narrow, to be read whole. a
+ref-keyed type's declared key holds canonical uids, which is not a space any
+backend can be queried in, and not the space the adapter's own rows are in until
+`resolve_ref_keyed_identity` has run over the batch it already fetched. such a
+type is named in `unnarrowed` and in neither map, and the host asks for all of
+it (`docs/engine.md`).
 
 `{"kind": "full"}` asks for every object of every requested type, and is what
 delete detection and `import` send, since both are defined against the full
@@ -466,6 +479,12 @@ alembic-adapter-test --cases tests/alembic -- ./alembic-adapter-mybackend
 ```yaml
 - run: alembic-adapter-test --cases tests/alembic -- ./alembic-adapter-mybackend
 ```
+
+a read case is also held to the narrowing rule above: the runner reads it once
+unscoped, then once through each half of the hint alone, and fails the case when
+an object the scope names does not come back. a superset is always valid, so an
+adapter ignoring the hint passes and only a wrong narrower fails. the comparison
+is canonical, which the host can do and an adapter cannot.
 
 a worked python adapter and its cases live in
 `crates/alembic-adapter-test/examples/`. the canonical request/response pairs in

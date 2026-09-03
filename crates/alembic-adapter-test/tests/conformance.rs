@@ -645,8 +645,20 @@ fn python_example_passes_cases() {
     let dir = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/cases"));
     let cases = load_cases(&dir).expect("load example cases");
     let outcomes = run_cases(&python_adapter(), TIMEOUT, &cases);
-    assert_eq!(outcomes.len(), 6);
+    assert_eq!(
+        outcomes.len(),
+        10,
+        "each read case adds its two narrowing arms"
+    );
     for outcome in &outcomes {
+        // the empty read answers with no object, so its arms certify nothing.
+        if outcome
+            .name
+            .starts_with("case/read empty inventory narrowed")
+        {
+            assert!(outcome.skipped(), "{} certified nothing", outcome.name);
+            continue;
+        }
         assert!(
             outcome.passed(),
             "{} failed: {:?}",

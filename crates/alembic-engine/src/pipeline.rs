@@ -35,6 +35,7 @@ pub(crate) async fn observe(
         ReadScope::Full
     } else {
         ReadScope::narrowed(
+            &inventory.schema,
             &types_vec,
             state,
             inventory.objects.iter().map(|o| (&o.type_name, &o.key)),
