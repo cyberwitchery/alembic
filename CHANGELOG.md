@@ -3,10 +3,15 @@
 ## Unreleased
 
 - `chatops` feature for posting notifications to Slack
+- the nautobot adapter takes each object type's route from nautobot's api root, deriving one only where the root is unreachable or names no match (#419)
+
+## [0.9.0] - 2026-08-28
+
+- the shipped examples declare an interface's type under the name the backend uses, `type`, so an interface create carries the field netbox and nautobot require; the adapter-side `if_type` aliasing was removed in 0.7.0 and the examples kept the old name
+- the shipped example names the service owner field `owned_by`; netbox custom objects reserves `owner` and refuses a field declaring it
 - `alembic skill list|show|install` writes out the agent skills the binary carries, `--dir` defaulting to `.agents/skills`; an install replaces only an unchanged Alembic-owned copy unless `--force` is passed, and records the release or source revision it describes (#426)
 - the cli gets an agent guide: the `alembic` skill states the identity and safety contract the command surface does not, `docs/agents.md` explains it, and `scripts/agent_fixtures.sh` exercises it against the fixtures in `fixtures/agent/` (#425)
 - an inventory takes an optional `scope:` block naming what it asserts completeness over, per type with optional key-field values; `--allow-delete` and the drift report's `extra` are defined inside it, so two inventories can share one backend without planning each other's objects as deletes (`docs/inventory.md`) (#413)
-
 - **breaking** a field declared in both `key:` and `fields:` with a different schema fails validation; the shipped examples align the disagreeing `name` fields to their key's `slug` (#311)
 - `alembic-adapter-test` validates a `--cases` read result against the request's schema, so a value outside alembic's value space or a backend id in a ref field fails conformance; types the schema does not declare stay a tolerated superset (#415)
 - **breaking** nautobot observations carry `assigned_object_type`/`assigned_object_id` and `scope_type`/`scope_id` as ordinary attrs; the read-only `assigned_interface` and `site` collapses are gone (#420)

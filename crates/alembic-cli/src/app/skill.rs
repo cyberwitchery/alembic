@@ -54,8 +54,6 @@ fn find(name: &str) -> Result<&'static Skill> {
         })
 }
 
-/// the skill as it leaves the binary.
-///
 fn fingerprint(content: &str) -> u64 {
     content.bytes().fold(0xcbf29ce484222325, |hash, byte| {
         (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
@@ -70,6 +68,8 @@ fn stamp(skill: &Skill, content: &str) -> String {
     )
 }
 
+/// the skill as it leaves the binary.
+///
 /// release builds link to their version tag. a Git build links to the source
 /// commit, or to `main` when the checkout was dirty and no commit describes it.
 fn render(skill: &Skill) -> String {
