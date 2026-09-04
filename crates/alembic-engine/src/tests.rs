@@ -3519,6 +3519,173 @@ fn a_ref_keyed_type_is_read_whole() {
     }
 }
 
+/// an adapter reading in the order a real one must: filter by the hint, then
+/// resolve refs over what survived. `close_over_held_out` additionally keeps
+/// the narrowed rows a held-out row's key-refs name.
+#[derive(Clone)]
+struct HintFilteringAdapter {
+    rows: Vec<(TypeName, BackendId, serde_json::Value)>,
+    honor_hint: bool,
+    close_over_held_out: bool,
+}
+
+impl HintFilteringAdapter {
+    fn keep(
+        &self,
+        raw: &[RawNode],
+        schema: &Schema,
+        scope: &crate::state::ReadScope,
+    ) -> Vec<RawNode> {
+        if !self.honor_hint {
+            return raw.to_vec();
+        }
+        let mut named: BTreeSet<(TypeName, BackendId)> = BTreeSet::new();
+        if self.close_over_held_out {
+            for node in raw
+                .iter()
+                .filter(|node| scope.for_type(&node.type_name).is_none())
+            {
+                let Some(type_schema) = schema.types.get(node.type_name.as_str()) else {
+                    continue;
+                };
+                for (field, field_schema) in &type_schema.key {
+                    let FieldType::Ref { target } = &field_schema.r#type else {
+                        continue;
+                    };
+                    if let Some(id) = node
+                        .attrs
+                        .get(field)
+                        .and_then(crate::adapter_ops::backend_id_from_value)
+                    {
+                        named.insert((t(target), id));
+                    }
+                }
+            }
+        }
+        raw.iter()
+            .filter(|node| {
+                let Some(hint) = scope.for_type(&node.type_name) else {
+                    return true;
+                };
+                named.contains(&(node.type_name.clone(), node.backend_id.clone()))
+                    || hint.backend_ids.contains(&node.backend_id)
+                    || schema
+                        .types
+                        .get(node.type_name.as_str())
+                        .and_then(|type_schema| {
+                            build_key_from_schema(type_schema, &node.attrs).ok()
+                        })
+                        .is_some_and(|key| hint.names_key(&key))
+            })
+            .cloned()
+            .collect()
+    }
+}
+
+#[async_trait::async_trait]
+impl Observer for HintFilteringAdapter {
+    async fn read(
+        &self,
+        schema: &Schema,
+        _types: &[TypeName],
+        state: &StateStore,
+        scope: &crate::state::ReadScope,
+    ) -> anyhow::Result<ObservedState> {
+        let raw: Vec<RawNode> = self
+            .rows
+            .iter()
+            .map(|(type_name, backend_id, attrs)| RawNode {
+                type_name: type_name.clone(),
+                backend_id: backend_id.clone(),
+                attrs: attrs_map(attrs.clone()),
+            })
+            .collect();
+        let mut mappings = StateMappings::from_state(state);
+        let mut observed = ObservedState::default();
+        for object in resolve_ref_keyed_identity(
+            &self.keep(&raw, schema, scope),
+            schema,
+            &mut mappings,
+            |node, type_schema, mappings| normalize_attrs_refs(&node.attrs, type_schema, mappings),
+            |_, type_schema, attrs| build_key_from_schema(type_schema, attrs),
+        )? {
+            observed.insert(object)?;
+        }
+        Ok(observed)
+    }
+}
+
+/// the chain plus a site and a device the inventory does not declare, which is
+/// what an ordinary brownfield backend holds.
+fn brownfield_ref_chain_rows(
+    undeclared_site: bool,
+) -> Vec<(TypeName, BackendId, serde_json::Value)> {
+    let mut rows = ref_chain_rows(2);
+    let site = if undeclared_site { 10 } else { 1 };
+    if undeclared_site {
+        rows.push((
+            t("dcim.site"),
+            BackendId::Int(10),
+            json!({ "slug": "ber1", "name": "BER1" }),
+        ));
+    }
+    rows.push((
+        t("dcim.device"),
+        BackendId::Int(11),
+        json!({ "site": site, "name": "leaf99" }),
+    ));
+    rows
+}
+
+fn plan_brownfield(adapter: &HintFilteringAdapter) -> anyhow::Result<Plan> {
+    let dir = tempdir().unwrap();
+    let mut state = StateStore::load(dir.path().join("state.json")).unwrap();
+    futures::executor::block_on(build_plan(
+        adapter,
+        &ref_chain_inventory(2),
+        &mut state,
+        false,
+    ))
+}
+
+/// a held-out type comes back whole, so its key-refs can name rows of a
+/// narrowed type the hint does not: an adapter honoring the hint has to keep
+/// those too, or the host refuses the observation it built.
+#[test]
+fn honoring_the_hint_keeps_what_a_held_out_row_names() {
+    let rows = brownfield_ref_chain_rows(true);
+    let ignoring = HintFilteringAdapter {
+        rows: rows.clone(),
+        honor_hint: false,
+        close_over_held_out: false,
+    };
+    assert!(
+        plan_brownfield(&ignoring).unwrap().ops.is_empty(),
+        "a superset is always a valid answer"
+    );
+
+    let narrowing = HintFilteringAdapter {
+        rows: rows.clone(),
+        honor_hint: true,
+        close_over_held_out: false,
+    };
+    let err = plan_brownfield(&narrowing).unwrap_err().to_string();
+    assert!(
+        err.contains("as backend ids"),
+        "an unresolvable held-out row is refused, got: {err}"
+    );
+
+    let closing = HintFilteringAdapter {
+        rows,
+        honor_hint: true,
+        close_over_held_out: true,
+    };
+    assert!(
+        plan_brownfield(&closing).unwrap().ops.is_empty(),
+        "keeping the referenced rows resolves the held-out ones"
+    );
+}
+
 #[test]
 fn detect_deletes_reads_unscoped() {
     let dir = tempdir().unwrap();

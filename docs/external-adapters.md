@@ -137,6 +137,12 @@ backend can be queried in, and not the space the adapter's own rows are in until
 type is named in `unnarrowed` and in neither map, and the host asks for all of
 it (`docs/engine.md`).
 
+holding a type out does not close the batch: a held-out row's key-refs can name
+rows of a narrowed type the hint does not, so an adapter that narrows keeps
+those rows too, alongside whatever the hint names for their type. drop one and
+the held-out row it was needed for cannot resolve, and the host refuses the
+observation.
+
 `{"kind": "full"}` asks for every object of every requested type, and is what
 delete detection and `import` send, since both are defined against the full
 observation. a `narrowed` scope naming nothing for a type is not the same

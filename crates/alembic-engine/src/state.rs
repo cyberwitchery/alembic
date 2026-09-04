@@ -44,7 +44,9 @@ pub enum ReadScope {
         #[serde(default)]
         keys: BTreeMap<TypeName, Vec<ScopeKey>>,
         /// types the hint cannot narrow, to be read whole. a ref-keyed type's
-        /// declared key is in uid space, which no backend can be queried in.
+        /// declared key is in uid space, which no backend can be queried in. an
+        /// adapter narrowing the rest keeps the rows they reference
+        /// (`docs/external-adapters.md`).
         #[serde(default)]
         unnarrowed: BTreeSet<TypeName>,
     },
