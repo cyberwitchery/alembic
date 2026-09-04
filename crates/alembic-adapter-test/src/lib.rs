@@ -3,7 +3,8 @@
 use alembic_core::{key_string, uid_v5, validate_inventory, Inventory, Object, Schema, TypeName};
 use alembic_engine::{
     AppliedOp, ApplyReport, BackendId, ExternalCapabilities, ExternalObject, ExternalResponse,
-    ExternalRole, ObservedObject, ProvisionReport, ReadScope, ScopeKey, EXTERNAL_PROTOCOL_VERSION,
+    ExternalRole, ObservedObject, ProvisionReport, ReadScope, ScopeKey, StateData, StateStore,
+    EXTERNAL_PROTOCOL_VERSION,
 };
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
@@ -314,33 +315,31 @@ pub fn run_cases(adapter: &[String], timeout: Duration, cases: &[Case]) -> Vec<O
         .collect()
 }
 
-/// hold a read case to the narrowing contract. the hint has two halves and only
-/// their union is safe, so the case is read once unscoped and then once through
-/// each half alone: an adapter narrowing on `backend_ids` alone drops what only
-/// `keys` names, one narrowing on `keys` alone drops what only `backend_ids`
-/// does, and either turns an adoption into a create against a live object.
-/// every object the unscoped read returned that the scope names must come back.
-/// a superset is always a valid answer, so only a drop fails, which is why an
-/// adapter ignoring the hint passes. the runner is the host, so it canonicalizes
-/// the comparison itself -- `wants()`, the rule the engine matches by, which an
-/// external adapter has no way to reproduce from the json it is handed.
+/// hold a read case to the narrowing contract. the hint has three fields and the
+/// case is read once through each: `backend_ids` alone drops what only `keys`
+/// names, `keys` alone drops what only `backend_ids` does, and either turns an
+/// adoption into a create against a live object. the third arm sends the scope
+/// the engine builds, holding a ref-keyed type out in `unnarrowed` to be read
+/// whole. every object the unscoped read returned that the scope names must come
+/// back; a superset is always valid, so only a drop fails and an adapter ignoring
+/// the hint passes. the runner is the host, so it canonicalizes the comparison
+/// itself -- `wants()`, the rule the engine matches by, which an adapter cannot
+/// reproduce from the json it is handed.
 fn check_narrowing(adapter: &[String], timeout: Duration, case: &Case) -> Vec<Outcome> {
     let name = |half: &str| format!("case/{} narrowed on {half}", case.name);
-    let full = match read_with_scope(adapter, timeout, case, &ReadScope::Full) {
-        Ok(objects) => objects,
-        Err(reason) => {
-            return vec![
-                skipped(&name("keys"), &reason),
-                skipped(&name("backend ids"), &reason),
-            ]
-        }
-    };
-    if full.is_empty() {
-        let reason = "the unscoped read returned no object to narrow against";
-        return vec![
+    let unable = |reason: &str| {
+        vec![
             skipped(&name("keys"), reason),
             skipped(&name("backend ids"), reason),
-        ];
+            skipped(&name("unnarrowed"), reason),
+        ]
+    };
+    let full = match read_with_scope(adapter, timeout, case, &ReadScope::Full) {
+        Ok(objects) => objects,
+        Err(reason) => return unable(&reason),
+    };
+    if full.is_empty() {
+        return unable("the unscoped read returned no object to narrow against");
     }
 
     let mut keys: std::collections::BTreeMap<_, Vec<ScopeKey>> = Default::default();
@@ -368,6 +367,7 @@ fn check_narrowing(adapter: &[String], timeout: Duration, case: &Case) -> Vec<Ou
         keys: Default::default(),
         unnarrowed: Default::default(),
     };
+    let held_out_name = name("unnarrowed");
 
     vec![
         narrowing_outcome(adapter, timeout, case, &name("keys"), &full, &by_keys),
@@ -378,7 +378,32 @@ fn check_narrowing(adapter: &[String], timeout: Duration, case: &Case) -> Vec<Ou
         } else {
             narrowing_outcome(adapter, timeout, case, &ids_name, &full, &by_ids)
         },
+        match held_out_scope(case, &full) {
+            Some(scope) => narrowing_outcome(adapter, timeout, case, &held_out_name, &full, &scope),
+            None => skipped(
+                &held_out_name,
+                "the unscoped read returned no object of a type the hint holds out",
+            ),
+        },
     ]
+}
+
+/// the scope the engine itself builds for this case, holding its ref-keyed types
+/// out whole and narrowing the rest to the keys the unscoped read returned.
+/// `None` when it holds nothing the read answered with, leaving the arm nothing
+/// to certify.
+fn held_out_scope(case: &Case, full: &[ObservedObject]) -> Option<ReadScope> {
+    let schema: Schema = serde_json::from_value(case.request.get("schema")?.clone()).ok()?;
+    let types: Vec<TypeName> = serde_json::from_value(case.request.get("types")?.clone()).ok()?;
+    let scope = ReadScope::narrowed(
+        &schema,
+        &types,
+        &StateStore::new(None, StateData::default()),
+        full.iter().map(|object| (&object.type_name, &object.key)),
+    );
+    full.iter()
+        .any(|object| scope.for_type(&object.type_name).is_none())
+        .then_some(scope)
 }
 
 /// one narrowing arm: read the case under `scope` and require every object the
@@ -396,12 +421,7 @@ fn narrowing_outcome(
         Ok(narrowed) => {
             let dropped: Vec<String> = full
                 .iter()
-                .filter(|object| {
-                    scope
-                        .for_type(&object.type_name)
-                        .is_some_and(|hint| hint.wants(object))
-                        && !returned(&narrowed, object)
-                })
+                .filter(|object| named(scope, object) && !returned(&narrowed, object))
                 .map(|object| format!("{} {}", object.type_name, key_string(&object.key)))
                 .collect();
             (!dropped.is_empty()).then(|| {
@@ -421,6 +441,16 @@ fn narrowing_outcome(
             stderr: String::new(),
         }),
         skipped: None,
+    }
+}
+
+/// whether a scope names an object: `wants()` for a type it narrows, the whole
+/// type for one a narrowed hint holds out in `unnarrowed`, which `for_type`
+/// answers `None` for. a full scope answers `None` too and narrows nothing.
+fn named(scope: &ReadScope, object: &ObservedObject) -> bool {
+    match scope.for_type(&object.type_name) {
+        Some(hint) => hint.wants(object),
+        None => matches!(scope, ReadScope::Narrowed { .. }),
     }
 }
 

@@ -647,14 +647,16 @@ fn python_example_passes_cases() {
     let outcomes = run_cases(&python_adapter(), TIMEOUT, &cases);
     assert_eq!(
         outcomes.len(),
-        10,
-        "each read case adds its two narrowing arms"
+        12,
+        "each read case adds its three narrowing arms"
     );
     for outcome in &outcomes {
-        // the empty read answers with no object, so its arms certify nothing.
+        // the empty read answers with no object, and no example case declares a
+        // ref-keyed type, so those arms certify nothing.
         if outcome
             .name
             .starts_with("case/read empty inventory narrowed")
+            || outcome.name.ends_with("narrowed on unnarrowed")
         {
             assert!(outcome.skipped(), "{} certified nothing", outcome.name);
             continue;

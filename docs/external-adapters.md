@@ -481,10 +481,11 @@ alembic-adapter-test --cases tests/alembic -- ./alembic-adapter-mybackend
 ```
 
 a read case is also held to the narrowing rule above: the runner reads it once
-unscoped, then once through each half of the hint alone, and fails the case when
-an object the scope names does not come back. a superset is always valid, so an
-adapter ignoring the hint passes and only a wrong narrower fails. the comparison
-is canonical, which the host can do and an adapter cannot.
+unscoped, then once through each half of the hint alone and once under the scope
+the engine itself builds, where a ref-keyed type is held out to be read whole. it
+fails the case when an object the scope names does not come back. a superset is
+always valid, so an adapter ignoring the hint passes and only a wrong narrower
+fails. the comparison is canonical, which the host can do and an adapter cannot.
 
 a worked python adapter and its cases live in
 `crates/alembic-adapter-test/examples/`. the canonical request/response pairs in
