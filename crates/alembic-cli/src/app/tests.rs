@@ -3652,6 +3652,8 @@ fn search_for_plugins_treats_an_absent_dir_as_no_plugins() {
     let dir = tempdir().unwrap();
     let config = AppConfig {
         plugins_dir: dir.path().join("nope"),
+        chatops_backend: None,
+        machine_id_override: None,
     };
     assert!(search_for_plugins(&config).unwrap().is_empty());
 }
@@ -3666,6 +3668,8 @@ fn search_for_plugins_reports_a_dir_it_could_not_read() {
     fs::write(&blocker, "regular file").unwrap();
     let config = AppConfig {
         plugins_dir: blocker.join("plugins"),
+        chatops_backend: None,
+        machine_id_override: None,
     };
 
     let err = search_for_plugins(&config).expect_err("an unreadable dir is not an empty one");

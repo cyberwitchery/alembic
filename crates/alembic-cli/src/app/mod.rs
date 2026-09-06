@@ -1,5 +1,6 @@
 //! cli entrypoint for alembic.
 
+pub mod chatops;
 pub mod config;
 mod io;
 mod skill;
@@ -28,6 +29,7 @@ use alembic_core::TypeName;
 use self::io::warn_misleading_output_extension;
 #[cfg(test)]
 use self::state::{resolve_state_backend_config, state_path, StateBackendConfig};
+use crate::app::chatops::Notification;
 #[cfg(test)]
 use alembic_adapter_django::emit::Runner;
 #[cfg(test)]
@@ -324,8 +326,9 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
         } => {
             let inventory = load_inventory(&file)?;
             let plugins = search_for_plugins(&config)?;
+            let backend_name = backend.clone();
             let (backend, backend_identity) =
-                create_backend(&plugins, backend.as_deref(), backend_config)?;
+                create_backend(&plugins, backend.as_deref(), backend_config.clone())?;
             let mut state = load_state(
                 state_lock_for_plan(report, dry_run, provision),
                 &backend_identity,
@@ -419,6 +422,18 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                 // write); the machine-readable copy is the written plan file.
                 println!("{}", render_plan(&plan));
                 println!("\nplan written to {}", output.display());
+
+                if let Some(chatops_backend) = &config.chatops_backend {
+                    let plan_path = file.to_string_lossy();
+                    let notification = Notification::from_plan(
+                        &plan,
+                        &plan_path,
+                        backend_name,
+                        backend_config,
+                        config.machine_id_override,
+                    );
+                    chatops::notify(chatops_backend, &notification).await?;
+                }
             }
         }
         Command::Apply {

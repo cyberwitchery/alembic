@@ -1,5 +1,6 @@
 //! configuration for the cli tool
 
+use crate::app::chatops::ChatopsBackend;
 use figment::providers::{Serialized, Yaml};
 use figment::{
     providers::{Env, Format},
@@ -14,6 +15,8 @@ use std::path::PathBuf;
 #[serde(deny_unknown_fields)]
 pub struct AppConfig {
     pub plugins_dir: PathBuf,
+    pub chatops_backend: Option<ChatopsBackend>,
+    pub machine_id_override: Option<String>,
 }
 
 impl AppConfig {
@@ -23,7 +26,7 @@ impl AppConfig {
         Figment::from(Serialized::defaults(Self::default()))
             .merge(Yaml::file("alembic.yaml"))
             .merge(Yaml::file("alembic.yml"))
-            .merge(Env::prefixed("ALEMBIC_").only(&["plugins_dir"]))
+            .merge(Env::prefixed("ALEMBIC_").only(&["plugins_dir", "machine_id_override"]))
     }
 
     pub(crate) fn load() -> Result<AppConfig, AppConfigError> {
@@ -38,6 +41,8 @@ impl Default for AppConfig {
     fn default() -> AppConfig {
         AppConfig {
             plugins_dir: "./plugins".into(),
+            chatops_backend: None,
+            machine_id_override: None,
         }
     }
 }

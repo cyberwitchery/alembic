@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `chatops` feature for posting notifications to Slack
 - the nautobot adapter takes each object type's route from nautobot's api root, deriving one only where the root is unreachable or names no match (#419)
 
 ## [0.9.0] - 2026-08-28
