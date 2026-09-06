@@ -1,5 +1,6 @@
 //! helpers for implementing external adapters.
 
+use crate::state::ReadScope;
 use crate::{ApplyReport, BackendId, Op, ProvisionReport, StateData};
 use alembic_core::{JsonMap, Key, Schema, TypeName};
 use anyhow::Result;
@@ -30,6 +31,11 @@ pub enum ExternalRequest {
         schema: Schema,
         types: Vec<TypeName>,
         state: StateData,
+        /// advisory narrowing hint. defaulted so a host that predates it still
+        /// parses here; requests carry no `deny_unknown_fields`, so this costs
+        /// no typo check that ever existed.
+        #[serde(default)]
+        scope: ReadScope,
     },
     /// apply a set of operations.
     Write {
@@ -66,6 +72,7 @@ pub enum ExternalRequestRef<'a> {
         schema: &'a Schema,
         types: &'a [TypeName],
         state: StateData,
+        scope: &'a ReadScope,
     },
     /// apply a set of operations.
     Write {
@@ -187,6 +194,21 @@ pub trait ExternalAdapter {
         state: &StateData,
     ) -> Result<Vec<ExternalObject>>;
 
+    /// read objects from the backend, with the host's advisory scope hint.
+    /// the default ignores the hint and delegates to [`ExternalAdapter::read`],
+    /// so an adapter written against the older trait keeps compiling and keeps
+    /// answering with a valid superset.
+    fn read_scoped(
+        &mut self,
+        schema: &Schema,
+        types: &[TypeName],
+        state: &StateData,
+        scope: &ReadScope,
+    ) -> Result<Vec<ExternalObject>> {
+        let _ = scope;
+        self.read(schema, types, state)
+    }
+
     /// apply operations to the backend.
     fn write(&mut self, schema: &Schema, ops: &[Op], state: &StateData) -> Result<ApplyReport>;
 
@@ -246,8 +268,10 @@ pub fn run_external_adapter<A: ExternalAdapter>(
             schema,
             types,
             state,
+            scope,
         } => {
-            let response = ExternalResponse::from_result(adapter.read(&schema, &types, &state));
+            let response =
+                ExternalResponse::from_result(adapter.read_scoped(&schema, &types, &state, &scope));
             write_response(&mut writer, response)
         }
         ExternalRequest::Write { schema, ops, state } => {
@@ -300,7 +324,8 @@ mod tests {
     use crate::{
         run_external_adapter, AppliedOp, ApplyReport, ExternalAdapter, ExternalCapabilities,
         ExternalEnvelope, ExternalEnvelopeRef, ExternalObject, ExternalRequest, ExternalRequestRef,
-        ExternalRole, Op, ProvisionReport, StateData, EXTERNAL_PROTOCOL_VERSION,
+        ExternalRole, Op, ProvisionReport, ReadScope, StateData, StateStore,
+        EXTERNAL_PROTOCOL_VERSION,
     };
     use alembic_core::{Key, Object, Schema, TypeName, TypeSchema, Uid};
     use serde_json::json;
@@ -425,6 +450,43 @@ mod tests {
     }
 
     #[test]
+    fn a_request_without_a_scope_reads_unscoped() {
+        // the field is additive, so a host that predates it still parses. this
+        // is safe only because request envelopes carry no `deny_unknown_fields`
+        // — there is no typo check here for the default to erase.
+        let envelope: ExternalEnvelope = serde_json::from_value(json!({
+            "version": EXTERNAL_PROTOCOL_VERSION,
+            "setup": null,
+            "method": "read",
+            "schema": {"types": {}},
+            "types": [],
+            "state": {},
+        }))
+        .unwrap();
+        let ExternalRequest::Read { scope, .. } = envelope.request else {
+            panic!("expected a read");
+        };
+        assert!(scope.is_full());
+    }
+
+    #[test]
+    fn an_unknown_request_key_is_still_tolerated() {
+        // guards the premise the `serde(default)` above rests on: if requests
+        // ever start denying unknown keys, this fails and the default has to be
+        // re-argued rather than silently swallowing a misspelling.
+        serde_json::from_value::<ExternalEnvelope>(json!({
+            "version": EXTERNAL_PROTOCOL_VERSION,
+            "setup": null,
+            "method": "read",
+            "schema": {"types": {}},
+            "types": [],
+            "state": {},
+            "scop": {"kind": "full"},
+        }))
+        .unwrap();
+    }
+
+    #[test]
     fn ref_and_owned_request_types_serialize_identically() {
         let schema = Schema {
             types: [(
@@ -450,16 +512,19 @@ mod tests {
         }];
         let state = StateData::default();
 
+        let scope = ReadScope::narrowed(&schema, &types, &StateStore::new(None, state.clone()), []);
         let owned_read = serde_json::to_value(ExternalRequest::Read {
             schema: schema.clone(),
             types: types.clone(),
             state: state.clone(),
+            scope: scope.clone(),
         })
         .unwrap();
         let ref_read = serde_json::to_value(ExternalRequestRef::Read {
             schema: &schema,
             types: &types,
             state: state.clone(),
+            scope: &scope,
         })
         .unwrap();
         assert_eq!(owned_read, ref_read);
@@ -506,6 +571,7 @@ mod tests {
                 schema: schema.clone(),
                 types: types.clone(),
                 state: state.clone(),
+                scope: scope.clone(),
             },
         })
         .unwrap();
@@ -516,6 +582,7 @@ mod tests {
                 schema: &schema,
                 types: &types,
                 state,
+                scope: &scope,
             },
         })
         .unwrap();
@@ -535,6 +602,7 @@ mod tests {
                 schema: &schema,
                 types: &types,
                 state: state.clone(),
+                scope: &ReadScope::Full,
             },
             ExternalRequestRef::Write {
                 schema: &schema,
@@ -817,6 +885,7 @@ mod tests {
                 schema: Default::default(),
                 types: vec![],
                 state: Default::default(),
+                scope: Default::default(),
             },
         };
 
@@ -891,6 +960,7 @@ mod tests {
             schema: Default::default(),
             types: vec![],
             state: Default::default(),
+            scope: Default::default(),
         };
         const MAGIC_NUMBER: usize = 13;
 

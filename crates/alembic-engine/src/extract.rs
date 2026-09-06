@@ -38,7 +38,10 @@ pub async fn import_inventory(
     types: &[TypeName],
     state: &StateStore,
 ) -> Result<ImportReport> {
-    let observed = adapter.read(schema, types, state).await?;
+    // import converts whole types, so it reads unscoped whatever state knows.
+    let observed = adapter
+        .read(schema, types, state, &crate::state::ReadScope::Full)
+        .await?;
 
     // an inventory cannot hold two objects under one (type, key), so a key
     // named by several backend objects has no representation here. every
@@ -503,6 +506,7 @@ mod tests {
             _schema: &Schema,
             _types: &[TypeName],
             _state: &crate::state::StateStore,
+            _scope: &crate::state::ReadScope,
         ) -> anyhow::Result<ObservedState> {
             Ok(self.observed.clone())
         }
@@ -524,6 +528,7 @@ mod tests {
             _schema: &Schema,
             _types: &[TypeName],
             state: &crate::state::StateStore,
+            _scope: &crate::state::ReadScope,
         ) -> anyhow::Result<ObservedState> {
             *self.seen.lock().unwrap() = Some(state.all_mappings().clone());
             Ok(self.observed.clone())

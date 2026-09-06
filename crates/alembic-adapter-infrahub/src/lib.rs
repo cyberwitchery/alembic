@@ -604,6 +604,7 @@ impl Observer for InfrahubAdapter {
         schema: &Schema,
         types: &[TypeName],
         state_store: &StateStore,
+        _scope: &alembic_engine::ReadScope,
     ) -> Result<ObservedState> {
         let schema_info = self.load_schema_info().await?;
         validate_schema(schema, &schema_info)?;
@@ -3103,7 +3104,10 @@ schema { query: Query }
             ),
         )]);
         let state = StateStore::new(None, StateData::default());
-        let observed = adapter.read(&schema, &[], &state).await.unwrap();
+        let observed = adapter
+            .read(&schema, &[], &state, &alembic_engine::ReadScope::Full)
+            .await
+            .unwrap();
         assert_eq!(observed.len(), 1);
         let key = Key::from(BTreeMap::from([("name".to_string(), json!("Site One"))]));
         let object = observed
@@ -3431,7 +3435,12 @@ schema { query: Query }
         let adapter = InfrahubAdapter::new(&server.base_url(), "token", None).unwrap();
         let state = StateStore::new(None, StateData::default());
         let err = adapter
-            .read(&name_keyed_site_schema(), &[], &state)
+            .read(
+                &name_keyed_site_schema(),
+                &[],
+                &state,
+                &alembic_engine::ReadScope::Full,
+            )
             .await
             .unwrap_err();
 
@@ -4020,6 +4029,7 @@ schema { query: Query }
                 &two_types("dcim.site_group", "dcim.site.group"),
                 &[],
                 &state,
+                &alembic_engine::ReadScope::Full,
             )
             .await
             .unwrap_err()
@@ -4109,7 +4119,12 @@ schema { query: Query }
         let adapter = InfrahubAdapter::new(&server.base_url(), "token", None).unwrap();
         let state = StateStore::new(None, StateData::default());
         let observed = adapter
-            .read(&two_types("dcim.site", "dcim.site_group"), &[], &state)
+            .read(
+                &two_types("dcim.site", "dcim.site_group"),
+                &[],
+                &state,
+                &alembic_engine::ReadScope::Full,
+            )
             .await
             .unwrap();
 
@@ -4152,7 +4167,10 @@ schema { query: Query }
                 vec![],
             ),
         )]);
-        let observed = adapter.read(&schema, &[], &state).await.unwrap();
+        let observed = adapter
+            .read(&schema, &[], &state, &alembic_engine::ReadScope::Full)
+            .await
+            .unwrap();
 
         assert_eq!(observed.len(), 1);
         rows.assert_calls(1);

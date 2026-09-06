@@ -3,7 +3,8 @@
 use alembic_core::{key_string, uid_v5, validate_inventory, Inventory, Object, Schema, TypeName};
 use alembic_engine::{
     AppliedOp, ApplyReport, BackendId, ExternalCapabilities, ExternalObject, ExternalResponse,
-    ExternalRole, ProvisionReport, EXTERNAL_PROTOCOL_VERSION,
+    ExternalRole, ObservedObject, ProvisionReport, ReadScope, ScopeKey, StateData, StateStore,
+    EXTERNAL_PROTOCOL_VERSION,
 };
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
@@ -94,7 +95,8 @@ pub fn run_builtin_with(adapter: &[String], timeout: Duration, builtins: Builtin
             "method": "read",
             "schema": { "types": {} },
             "types": [],
-            "state": {}
+            "state": {},
+            "scope": { "kind": "narrowed", "backend_ids": {}, "keys": {}, "unnarrowed": [] }
         }),
     );
     let write_empty = (
@@ -283,17 +285,18 @@ fn probe_capabilities(adapter: &[String], timeout: Duration) -> (ExternalRole, O
     )
 }
 
-/// run adapter-specific cases against the adapter command.
+/// run adapter-specific cases against the adapter command. a read case is also
+/// held to the narrowing contract, which needs the objects the case reads.
 pub fn run_cases(adapter: &[String], timeout: Duration, cases: &[Case]) -> Vec<Outcome> {
     cases
         .iter()
-        .map(|case| {
+        .flat_map(|case| {
             let method = case
                 .request
                 .get("method")
                 .and_then(Value::as_str)
                 .unwrap_or("");
-            check(
+            let mut outcomes = vec![check(
                 adapter,
                 timeout,
                 &format!("case/{}", case.name),
@@ -303,9 +306,191 @@ pub fn run_cases(adapter: &[String], timeout: Duration, cases: &[Case]) -> Vec<O
                     expect: &case.expect,
                     request: &case.request,
                 },
-            )
+            )];
+            if method == "read" && case.expect.ok {
+                outcomes.extend(check_narrowing(adapter, timeout, case));
+            }
+            outcomes
         })
         .collect()
+}
+
+/// hold a read case to the narrowing contract. the hint has three fields and the
+/// case is read once through each: `backend_ids` alone drops what only `keys`
+/// names, `keys` alone drops what only `backend_ids` does, and either turns an
+/// adoption into a create against a live object. the third arm sends the scope
+/// the engine builds, holding a ref-keyed type out in `unnarrowed` to be read
+/// whole. every object the unscoped read returned that the scope names must come
+/// back; a superset is always valid, so only a drop fails and an adapter ignoring
+/// the hint passes. the runner is the host, so it canonicalizes the comparison
+/// itself -- `wants()`, the rule the engine matches by, which an adapter cannot
+/// reproduce from the json it is handed.
+fn check_narrowing(adapter: &[String], timeout: Duration, case: &Case) -> Vec<Outcome> {
+    let name = |half: &str| format!("case/{} narrowed on {half}", case.name);
+    let unable = |reason: &str| {
+        vec![
+            skipped(&name("keys"), reason),
+            skipped(&name("backend ids"), reason),
+            skipped(&name("unnarrowed"), reason),
+        ]
+    };
+    let full = match read_with_scope(adapter, timeout, case, &ReadScope::Full) {
+        Ok(objects) => objects,
+        Err(reason) => return unable(&reason),
+    };
+    if full.is_empty() {
+        return unable("the unscoped read returned no object to narrow against");
+    }
+
+    let mut keys: std::collections::BTreeMap<_, Vec<ScopeKey>> = Default::default();
+    let mut backend_ids: std::collections::BTreeMap<_, std::collections::BTreeSet<BackendId>> =
+        Default::default();
+    for object in &full {
+        keys.entry(object.type_name.clone())
+            .or_default()
+            .push(ScopeKey::new(object.key.clone()));
+        if let Some(id) = &object.backend_id {
+            backend_ids
+                .entry(object.type_name.clone())
+                .or_default()
+                .insert(id.clone());
+        }
+    }
+    let by_keys = ReadScope::Narrowed {
+        backend_ids: Default::default(),
+        keys,
+        unnarrowed: Default::default(),
+    };
+    let ids_name = name("backend ids");
+    let by_ids = ReadScope::Narrowed {
+        backend_ids,
+        keys: Default::default(),
+        unnarrowed: Default::default(),
+    };
+    let held_out_name = name("unnarrowed");
+
+    vec![
+        narrowing_outcome(adapter, timeout, case, &name("keys"), &full, &by_keys),
+        // an object without a backend id is nameable only by key, so a scope
+        // built from ids alone certifies nothing when the read carried none.
+        if matches!(&by_ids, ReadScope::Narrowed { backend_ids, .. } if backend_ids.is_empty()) {
+            skipped(&ids_name, "the unscoped read returned no backend id")
+        } else {
+            narrowing_outcome(adapter, timeout, case, &ids_name, &full, &by_ids)
+        },
+        match held_out_scope(case, &full) {
+            Some(scope) => narrowing_outcome(adapter, timeout, case, &held_out_name, &full, &scope),
+            None => skipped(
+                &held_out_name,
+                "the unscoped read returned no object of a type the hint holds out",
+            ),
+        },
+    ]
+}
+
+/// the scope the engine itself builds for this case, holding its ref-keyed types
+/// out whole and narrowing the rest to the keys the unscoped read returned.
+/// `None` when it holds nothing the read answered with, leaving the arm nothing
+/// to certify.
+fn held_out_scope(case: &Case, full: &[ObservedObject]) -> Option<ReadScope> {
+    let schema: Schema = serde_json::from_value(case.request.get("schema")?.clone()).ok()?;
+    let types: Vec<TypeName> = serde_json::from_value(case.request.get("types")?.clone()).ok()?;
+    let scope = ReadScope::narrowed(
+        &schema,
+        &types,
+        &StateStore::new(None, StateData::default()),
+        full.iter().map(|object| (&object.type_name, &object.key)),
+    );
+    full.iter()
+        .any(|object| scope.for_type(&object.type_name).is_none())
+        .then_some(scope)
+}
+
+/// one narrowing arm: read the case under `scope` and require every object the
+/// unscoped read returned that the scope names to still be there.
+fn narrowing_outcome(
+    adapter: &[String],
+    timeout: Duration,
+    case: &Case,
+    name: &str,
+    full: &[ObservedObject],
+    scope: &ReadScope,
+) -> Outcome {
+    let failure = match read_with_scope(adapter, timeout, case, scope) {
+        Err(message) => Some(message),
+        Ok(narrowed) => {
+            let dropped: Vec<String> = full
+                .iter()
+                .filter(|object| named(scope, object) && !returned(&narrowed, object))
+                .map(|object| format!("{} {}", object.type_name, key_string(&object.key)))
+                .collect();
+            (!dropped.is_empty()).then(|| {
+                format!(
+                    "the narrowed read dropped objects the scope names: {}",
+                    dropped.join(", ")
+                )
+            })
+        }
+    };
+    Outcome {
+        name: name.to_string(),
+        failure: failure.map(|message| Failure {
+            message,
+            status: String::new(),
+            stdout: String::new(),
+            stderr: String::new(),
+        }),
+        skipped: None,
+    }
+}
+
+/// whether a scope names an object: `wants()` for a type it narrows, the whole
+/// type for one a narrowed hint holds out in `unnarrowed`, which `for_type`
+/// answers `None` for. a full scope answers `None` too and narrows nothing.
+fn named(scope: &ReadScope, object: &ObservedObject) -> bool {
+    match scope.for_type(&object.type_name) {
+        Some(hint) => hint.wants(object),
+        None => matches!(scope, ReadScope::Narrowed { .. }),
+    }
+}
+
+/// whether a read answered with this object, matched the way the engine matches
+/// (canonically, or through the backend id state would bind it by).
+fn returned(objects: &[ObservedObject], wanted: &ObservedObject) -> bool {
+    objects.iter().any(|object| {
+        object.type_name == wanted.type_name
+            && (key_string(&object.key) == key_string(&wanted.key)
+                || (object.backend_id.is_some() && object.backend_id == wanted.backend_id))
+    })
+}
+
+/// send a read case's request under `scope` and parse what came back. an error
+/// is the reason the arm cannot certify anything.
+fn read_with_scope(
+    adapter: &[String],
+    timeout: Duration,
+    case: &Case,
+    scope: &ReadScope,
+) -> Result<Vec<ObservedObject>, String> {
+    let mut request = case.request.clone();
+    request["scope"] = serde_json::to_value(scope).map_err(|e| e.to_string())?;
+    let run = run_once(adapter, timeout, &request_bytes(&request));
+    let response = parse_response(&run)?;
+    let result = match (response.ok, response.result) {
+        (true, Some(result)) => result,
+        _ => return Err("the read did not answer with a result".to_string()),
+    };
+    let objects: Vec<ExternalObject> =
+        serde_json::from_value(result).map_err(|e| format!("bad read result: {e}"))?;
+    Ok(objects
+        .into_iter()
+        .map(|object| ObservedObject {
+            type_name: object.type_name,
+            key: object.key,
+            attrs: object.attrs,
+            backend_id: object.backend_id,
+        })
+        .collect())
 }
 
 /// load cases from a `.json` file or a directory of `.json` files (sorted).

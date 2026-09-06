@@ -645,8 +645,22 @@ fn python_example_passes_cases() {
     let dir = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/cases"));
     let cases = load_cases(&dir).expect("load example cases");
     let outcomes = run_cases(&python_adapter(), TIMEOUT, &cases);
-    assert_eq!(outcomes.len(), 6);
+    assert_eq!(
+        outcomes.len(),
+        12,
+        "each read case adds its three narrowing arms"
+    );
     for outcome in &outcomes {
+        // the empty read answers with no object, and no example case declares a
+        // ref-keyed type, so those arms certify nothing.
+        if outcome
+            .name
+            .starts_with("case/read empty inventory narrowed")
+            || outcome.name.ends_with("narrowed on unnarrowed")
+        {
+            assert!(outcome.skipped(), "{} certified nothing", outcome.name);
+            continue;
+        }
         assert!(
             outcome.passed(),
             "{} failed: {:?}",
@@ -720,7 +734,8 @@ fn case_result_pinned_against_null_reported() {
 #[test]
 fn fixtures_match_the_protocol_types() {
     use alembic_engine::{
-        ApplyReport, ExternalCapabilities, ExternalObject, ExternalResponse, ProvisionReport,
+        ApplyReport, ExternalCapabilities, ExternalEnvelope, ExternalObject, ExternalResponse,
+        ProvisionReport,
     };
     use serde_json::Value;
 
@@ -741,6 +756,8 @@ fn fixtures_match_the_protocol_types() {
         let method = fixture["request"]["method"]
             .as_str()
             .unwrap_or_else(|| panic!("{name}: request has no method"));
+        serde_json::from_value::<ExternalEnvelope>(fixture["request"].clone())
+            .unwrap_or_else(|e| panic!("{name}: request is not an envelope: {e}"));
         let response: ExternalResponse<Value> = serde_json::from_value(fixture["response"].clone())
             .unwrap_or_else(|e| panic!("{name}: response is not an envelope: {e}"));
         match (response.ok, response.result, response.error) {

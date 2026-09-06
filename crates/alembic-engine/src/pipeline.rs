@@ -1,5 +1,6 @@
 use crate::pretty_printing::bullet_list;
 use crate::sort_ops_for_apply;
+use crate::state::ReadScope;
 use crate::types::{
     ApplyReport, Backend, ObservedState, Observer, Plan, ProvisionReport, CANNOT_OBSERVE,
 };
@@ -8,10 +9,14 @@ use alembic_core::{Inventory, TypeName};
 use anyhow::{anyhow, Result};
 use std::collections::BTreeSet;
 
+/// `detect_deletes` mirrors the flag `plan` computes for the planner: a run that
+/// detects deletes classifies every backend object it does not match as extra,
+/// so it needs the full observation and reads unscoped.
 pub(crate) async fn observe(
     adapter: &(dyn Observer + '_),
     inventory: &Inventory,
     state: &mut StateStore,
+    detect_deletes: bool,
     adopt_by_key: bool,
 ) -> Result<(ObservedState, crate::types::BootstrapReport)> {
     crate::report_to_result(crate::validate(inventory))?;
@@ -26,7 +31,20 @@ pub(crate) async fn observe(
     }
     let types_vec: Vec<_> = types.into_iter().collect();
 
-    let observed = adapter.read(&inventory.schema, &types_vec, state).await?;
+    let scope = if detect_deletes {
+        ReadScope::Full
+    } else {
+        ReadScope::narrowed(
+            &inventory.schema,
+            &types_vec,
+            state,
+            inventory.objects.iter().map(|o| (&o.type_name, &o.key)),
+        )
+    };
+
+    let observed = adapter
+        .read(&inventory.schema, &types_vec, state, &scope)
+        .await?;
     crate::refs::refuse_backend_id_refs(&observed, &inventory.schema)?;
 
     let bootstrap =
