@@ -424,10 +424,11 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                 println!("\nplan written to {}", output.display());
 
                 if let Some(chatops_backend) = &config.chatops_backend {
-                    let plan_path = file.to_string_lossy();
+                    // the output of `plan` is the input `--plan` for `apply`:
+                    let apply_plan_path = output.to_string_lossy();
                     let notification = Notification::from_plan(
                         &plan,
-                        &plan_path,
+                        &apply_plan_path,
                         backend_name,
                         backend_config,
                         config.chatops_machine_id_override,
