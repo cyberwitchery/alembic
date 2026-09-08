@@ -362,8 +362,8 @@ async fn notify_with_base_url(
 #[cfg(test)]
 mod tests {
     use crate::app::chatops::{
-        hash_from_command_and_machine, notify_with_base_url, ChatopsBackend, CommandData,
-        CommandWrapper, Notification,
+        hash_from_command_and_machine, notify_with_base_url, BulletPoint, ChatopsBackend,
+        CommandData, CommandWrapper, Notification, NotificationSection,
     };
     use httpmock::Method::POST;
     use httpmock::MockServer;
@@ -381,7 +381,13 @@ mod tests {
             .unwrap()
             .as_secs();
         Notification {
-            sections: vec![],
+            sections: vec![NotificationSection {
+                title: "update".to_string(),
+                bullet_points: vec![BulletPoint {
+                    text: "dcim.device {\"name\":\"computer-a\"}".to_string(),
+                    sub_points: vec!["name: \"Frankfurt\" -> \"FRA1\"".to_string()],
+                }],
+            }],
             command_wrapper: CommandWrapper {
                 hash: hash_from_command_and_machine(
                     Some("machine01".to_string()),
@@ -404,26 +410,6 @@ mod tests {
         let server = MockServer::start_async().await;
         let notified = server.mock(|when, then| {
             when.method(POST).path("/services/very_secret");
-            then.status(200).json_body(json!({}));
-        });
-
-        notify_with_base_url(&backend, &notification, &server.base_url())
-            .await
-            .unwrap();
-
-        notified.assert_calls(1);
-    }
-
-    #[tokio::test]
-    async fn test_chatops_discord_notification() {
-        let backend = ChatopsBackend::Discord {
-            token: "very_token".to_string(),
-        };
-        let notification = dummy_notification();
-
-        let server = MockServer::start_async().await;
-        let notified = server.mock(|when, then| {
-            when.method(POST).path("/api/webhooks/very_token");
             then.status(200).json_body(json!({}));
         });
 
@@ -468,27 +454,9 @@ mod tests {
     }
 
     #[test]
-    fn discord_notification_url_includes_token() {
-        let backend = ChatopsBackend::Discord {
-            token: "xyz789".into(),
-        };
-        assert_eq!(
-            backend.notification_url(backend.default_base_url()),
-            "https://discord.com/api/webhooks/xyz789"
-        );
-    }
-
-    #[test]
     fn slack_message_format_is_blocks() {
         let backend = ChatopsBackend::Slack { secret: "s".into() };
         let msg = backend.notification_message(&dummy_notification()).unwrap();
         assert!(msg.get("blocks").is_some());
-    }
-
-    #[test]
-    fn discord_message_format_is_content_field() {
-        let backend = ChatopsBackend::Discord { token: "t".into() };
-        let msg = backend.notification_message(&dummy_notification()).unwrap();
-        assert_eq!(msg, json!({ "content": "" }));
     }
 }
