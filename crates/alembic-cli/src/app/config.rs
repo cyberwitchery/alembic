@@ -16,7 +16,7 @@ use std::path::PathBuf;
 pub struct AppConfig {
     pub plugins_dir: PathBuf,
     pub chatops_backend: Option<ChatopsBackend>,
-    pub machine_id_override: Option<String>,
+    pub chatops_machine_id_override: Option<String>,
 }
 
 impl AppConfig {
@@ -26,7 +26,7 @@ impl AppConfig {
         Figment::from(Serialized::defaults(Self::default()))
             .merge(Yaml::file("alembic.yaml"))
             .merge(Yaml::file("alembic.yml"))
-            .merge(Env::prefixed("ALEMBIC_").only(&["plugins_dir", "machine_id_override"]))
+            .merge(Env::prefixed("ALEMBIC_").only(&["plugins_dir", "chatops_machine_id_override"]))
     }
 
     pub(crate) fn load() -> Result<AppConfig, AppConfigError> {
@@ -42,7 +42,7 @@ impl Default for AppConfig {
         AppConfig {
             plugins_dir: "./plugins".into(),
             chatops_backend: None,
-            machine_id_override: None,
+            chatops_machine_id_override: None,
         }
     }
 }

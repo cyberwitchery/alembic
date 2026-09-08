@@ -430,7 +430,7 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                         &plan_path,
                         backend_name,
                         backend_config,
-                        config.machine_id_override,
+                        config.chatops_machine_id_override,
                     );
                     chatops::notify(chatops_backend, &notification).await?;
                 }
