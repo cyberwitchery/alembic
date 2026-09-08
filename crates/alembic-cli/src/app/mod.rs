@@ -433,7 +433,14 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                         backend_config,
                         config.chatops_machine_id_override,
                     );
-                    chatops::notify(chatops_backend, &notification).await?;
+
+                    if let Err(err) = chatops::notify(chatops_backend, &notification).await {
+                        tracing::warn!(
+                            "error when sending chatops notification ({}): {}",
+                            chatops_backend.name(),
+                            err
+                        )
+                    }
                 }
             }
         }

@@ -2,6 +2,7 @@
 
 use alembic_core::key_string;
 use alembic_engine::{Op, Plan};
+use anyhow::anyhow;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -15,7 +16,7 @@ pub enum ChatopsBackend {
 }
 
 impl ChatopsBackend {
-    fn name(&self) -> &'static str {
+    pub(crate) fn name(&self) -> &'static str {
         match self {
             Self::Slack { .. } => "Slack",
             Self::Discord { .. } => "Discord",
@@ -338,12 +339,16 @@ async fn notify_with_base_url(
 
     tracing::debug!("notification json: {}", notification_json);
 
+    // note: we can't display any error from `send` since it
+    // contains secrets in the url (which is shown as part of the
+    // error message by default)
     let res = client
         .post(chatops_backend.notification_url(base_url))
         .header("Content-Type", "application/json")
         .body(notification_json)
         .send()
-        .await?;
+        .await
+        .map_err(|_hide_this_error| anyhow!("client failed to send request",))?;
 
     match res.error_for_status() {
         Ok(_) => {
