@@ -14,6 +14,7 @@ const SITE: &str = "dcim.site";
 const ROLE: &str = "dcim.device_role";
 const MODEL: &str = "dcim.device_type";
 const MANUFACTURER: &str = "dcim.manufacturer";
+const INTERFACE: &str = "dcim.interface";
 
 // the devices are spread over fixed support pools, so the artifact stays linear
 // in the device count while every declared ref resolves. keep `MANUFACTURERS`
@@ -23,6 +24,7 @@ const MANUFACTURERS: u128 = 2;
 const MODELS: u128 = 4;
 const ROLES: u128 = 4;
 const SITES: u128 = 8;
+const INTERFACES: u128 = 8;
 
 /// what the generator emits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
@@ -125,6 +127,14 @@ fn objects(num_devices: u128) -> Result<Vec<Object>> {
     for i in 0..num_devices {
         objects.push(device(i)?);
     }
+    let devices = objects
+        .iter()
+        .filter(|o| o.type_name.as_str() == DEVICE)
+        .map(|o| o.clone())
+        .collect::<Vec<_>>();
+    for i in 0..num_devices.min(INTERFACES) {
+        objects.push(interface(i, &devices)?);
+    }
     Ok(objects)
 }
 
@@ -192,6 +202,27 @@ fn device(i: u128) -> Result<Object> {
 
 fn device_name(i: u128) -> String {
     format!("device_{i}")
+}
+
+/// build a single `dcim.interface`, and connect it
+fn interface(i: u128, devices: &[Object]) -> Result<Object> {
+    let name = interface_name(i);
+    let dev = json!(devices[i as usize % devices.len()].uid.to_string());
+    // `name` is declared in both `key` and `fields`, so it is carried in both.
+    object(
+        INTERFACE,
+        Key::from(BTreeMap::from([("name".to_string(), json!(name))])),
+        [
+            ("name".to_string(), json!(name)),
+            ("type".to_string(), json!("25gbase-x-sfp28")),
+            ("device".to_string(), dev),
+            ("enabled".to_string(), Value::Bool(true)),
+        ],
+    )
+}
+
+fn interface_name(i: u128) -> String {
+    format!("interface_{i}")
 }
 
 /// the support types are keyed on a slug and all carry it as an attribute too.
@@ -303,6 +334,44 @@ types:
           type: ref
           target: dcim.device_type
         status:
+          type: string
+    dcim.interface:
+      key:
+        name:
+          type: slug
+      fields:
+        name:
+          type: slug
+        device:
+          type: ref
+          target: dcim.device
+        type:
+          type: string
+        enabled:
+          type: bool
+    ipam.prefix:
+      key:
+        prefix:
+          type: prefix
+      fields:
+        prefix:
+          type: prefix
+        site:
+          type: ref
+          target: dcim.site
+        description:
+          type: string
+    ipam.ip_address:
+      key:
+        address:
+          type: ip_address
+      fields:
+        address:
+          type: ip_address
+        assigned_interface:
+          type: ref
+          target: dcim.interface
+        description:
           type: string";
 
     serde_yaml::from_str(schema_yaml).context("parsing embedded schema")
