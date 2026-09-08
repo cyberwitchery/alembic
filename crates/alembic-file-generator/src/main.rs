@@ -15,6 +15,7 @@ const ROLE: &str = "dcim.device_role";
 const MODEL: &str = "dcim.device_type";
 const MANUFACTURER: &str = "dcim.manufacturer";
 const INTERFACE: &str = "dcim.interface";
+const CABLE: &str = "dcim.cable";
 
 // the devices are spread over fixed support pools, so the artifact stays linear
 // in the device count while every declared ref resolves. keep `MANUFACTURERS`
@@ -25,6 +26,7 @@ const MODELS: u128 = 4;
 const ROLES: u128 = 4;
 const SITES: u128 = 8;
 const INTERFACES: u128 = 8;
+const CABLES: u128 = 8;
 
 /// what the generator emits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
@@ -135,6 +137,9 @@ fn objects(num_devices: u128) -> Result<Vec<Object>> {
     for i in 0..num_devices.min(INTERFACES) {
         objects.push(interface(i, &devices)?);
     }
+    for i in 0..CABLES {
+        objects.push(cable(i, &devices)?);
+    }
     Ok(objects)
 }
 
@@ -223,6 +228,16 @@ fn interface(i: u128, devices: &[Object]) -> Result<Object> {
 
 fn interface_name(i: u128) -> String {
     format!("interface_{i}")
+}
+
+/// build a single `dcim.cable`, and connect two interfaces using it
+fn cable(i: u128, _interfaces: &[Object]) -> Result<Object> {
+    let label = format!("label_{i}");
+    object(
+        CABLE,
+        Key::from(BTreeMap::from([("label".to_string(), json!(label))])),
+        [("label".to_string(), json!(label))],
+    )
 }
 
 /// the support types are keyed on a slug and all carry it as an attribute too.
@@ -372,7 +387,13 @@ types:
           type: ref
           target: dcim.interface
         description:
-          type: string";
+          type: string
+    dcim.cable:
+      key: { label: { type: string } }
+      fields:
+        label: { type: string }
+        a_terminations: { type: list_ref, target: dcim.interface }
+        b_terminations: { type: list_ref, target: dcim.interface }";
 
     serde_yaml::from_str(schema_yaml).context("parsing embedded schema")
 }
