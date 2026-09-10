@@ -140,7 +140,7 @@ fn objects(num_devices: usize) -> Result<Vec<Object>> {
         interfaces.push(interface);
     }
 
-    for a in 0..(INTERFACES / 2) {
+    for a in 0..num_devices.min(INTERFACES / 2) {
         let interface_a = interfaces[a].uid;
         let interface_b = interfaces[a + (INTERFACES / 2)].uid;
         objects.push(cable(a, interface_a, interface_b)?);
