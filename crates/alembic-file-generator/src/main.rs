@@ -21,11 +21,11 @@ const CABLE: &str = "dcim.cable";
 // in the device count while every declared ref resolves. keep `MANUFACTURERS`
 // no larger than `MODELS`: `objects` emits `min(n, pool)` of each, which only
 // covers the manufacturers the models reference while that holds.
-const MANUFACTURERS: u128 = 2;
-const MODELS: u128 = 4;
-const ROLES: u128 = 4;
-const SITES: u128 = 8;
-const INTERFACES: u128 = 8;
+const MANUFACTURERS: usize = 2;
+const MODELS: usize = 4;
+const ROLES: usize = 4;
+const SITES: usize = 8;
+const INTERFACES: usize = 8;
 
 /// what the generator emits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
@@ -48,7 +48,7 @@ impl Kind {
 struct Args {
     /// the number of devices to generate; the support objects they reference come on top.
     #[clap(short, long, alias = "num-ops", default_value = "10")]
-    num_devices: u128,
+    num_devices: usize,
     /// the kind of file to generate.
     #[clap(short, long, value_enum, default_value_t = Kind::Plan)]
     kind: Kind,
@@ -66,7 +66,7 @@ fn main() -> Result<()> {
 }
 
 /// build the requested artifact and render it as pretty json.
-fn render(kind: Kind, num_devices: u128) -> Result<String> {
+fn render(kind: Kind, num_devices: usize) -> Result<String> {
     match kind {
         Kind::Plan => serde_json::to_string_pretty(&build_plan(num_devices)?),
         Kind::Inventory => serde_json::to_string_pretty(&build_inventory(num_devices)?),
@@ -75,7 +75,7 @@ fn render(kind: Kind, num_devices: u128) -> Result<String> {
 }
 
 /// build a plan of create operations, one per generated object.
-fn build_plan(num_devices: u128) -> Result<Plan> {
+fn build_plan(num_devices: usize) -> Result<Plan> {
     let ops = objects(num_devices)?.into_iter().map(create_op).collect();
     Ok(Plan {
         schema: schema()?,
@@ -86,7 +86,7 @@ fn build_plan(num_devices: u128) -> Result<Plan> {
 }
 
 /// build an inventory of the same objects the plan creates.
-fn build_inventory(num_devices: u128) -> Result<Inventory> {
+fn build_inventory(num_devices: usize) -> Result<Inventory> {
     Ok(Inventory {
         schema: schema()?,
         scope: None,
@@ -111,7 +111,7 @@ fn write_json(json: &str, path: &Path) -> Result<()> {
 ///
 /// each pool is capped at the device count as well as its own size, so every
 /// emitted support object is referenced by at least one device.
-fn objects(num_devices: u128) -> Result<Vec<Object>> {
+fn objects(num_devices: usize) -> Result<Vec<Object>> {
     let mut objects = Vec::new();
     for i in 0..num_devices.min(MANUFACTURERS) {
         objects.push(manufacturer(i)?);
@@ -126,14 +126,14 @@ fn objects(num_devices: u128) -> Result<Vec<Object>> {
         objects.push(site(i)?);
     }
 
-    let mut devices = Vec::new();
+    let mut devices = Vec::with_capacity(num_devices);
     for i in 0..num_devices {
         let device = device(i)?;
         objects.push(device.clone());
         devices.push(device);
     }
 
-    let mut interfaces = Vec::new();
+    let mut interfaces = Vec::with_capacity(num_devices.min(INTERFACES));
     for i in 0..num_devices.min(INTERFACES) {
         let interface = interface(i, &devices)?;
         objects.push(interface.clone());
@@ -141,7 +141,6 @@ fn objects(num_devices: u128) -> Result<Vec<Object>> {
     }
 
     for a in 0..(INTERFACES / 2) {
-        println!("{a} -> {}", (a + (INTERFACES / 2)) as usize);
         let interface_a = interfaces[a as usize].uid;
         let interface_b = interfaces[(a + (INTERFACES / 2)) as usize].uid;
         objects.push(cable(a, interface_a, interface_b)?);
@@ -150,7 +149,7 @@ fn objects(num_devices: u128) -> Result<Vec<Object>> {
     Ok(objects)
 }
 
-fn manufacturer(i: u128) -> Result<Object> {
+fn manufacturer(i: usize) -> Result<Object> {
     let slug = slug_of(MANUFACTURER, i);
     slug_object(
         MANUFACTURER,
@@ -159,7 +158,7 @@ fn manufacturer(i: u128) -> Result<Object> {
     )
 }
 
-fn model(i: u128) -> Result<Object> {
+fn model(i: usize) -> Result<Object> {
     let slug = slug_of(MODEL, i);
     slug_object(
         MODEL,
@@ -174,7 +173,7 @@ fn model(i: u128) -> Result<Object> {
     )
 }
 
-fn role(i: u128) -> Result<Object> {
+fn role(i: usize) -> Result<Object> {
     let slug = slug_of(ROLE, i);
     slug_object(
         ROLE,
@@ -183,7 +182,7 @@ fn role(i: u128) -> Result<Object> {
     )
 }
 
-fn site(i: u128) -> Result<Object> {
+fn site(i: usize) -> Result<Object> {
     let slug = slug_of(SITE, i);
     slug_object(
         SITE,
@@ -196,7 +195,7 @@ fn site(i: u128) -> Result<Object> {
 }
 
 /// build a single `dcim.device`, pointing at one member of each support pool.
-fn device(i: u128) -> Result<Object> {
+fn device(i: usize) -> Result<Object> {
     let name = device_name(i);
     // `name` is declared in both `key` and `fields`, so it is carried in both.
     object(
@@ -212,12 +211,12 @@ fn device(i: u128) -> Result<Object> {
     )
 }
 
-fn device_name(i: u128) -> String {
+fn device_name(i: usize) -> String {
     format!("device_{i}")
 }
 
 /// build a single `dcim.interface`, and connect it
-fn interface(i: u128, devices: &[Object]) -> Result<Object> {
+fn interface(i: usize, devices: &[Object]) -> Result<Object> {
     let name = interface_name(i);
     let dev = json!(devices[i as usize % devices.len()].uid.to_string());
     // `name` is declared in both `key` and `fields`, so it is carried in both.
@@ -233,12 +232,12 @@ fn interface(i: u128, devices: &[Object]) -> Result<Object> {
     )
 }
 
-fn interface_name(i: u128) -> String {
+fn interface_name(i: usize) -> String {
     format!("interface_{i}")
 }
 
 /// build a single `dcim.cable`, and connect two interfaces using it
-fn cable(i: u128, interface_a: Uid, interface_b: Uid) -> Result<Object> {
+fn cable(i: usize, interface_a: Uid, interface_b: Uid) -> Result<Object> {
     let label = format!("label_{i}");
     object(
         CABLE,
@@ -280,7 +279,7 @@ fn object(
     .with_context(|| format!("building a {type_name}"))
 }
 
-fn slug_of(type_name: &str, i: u128) -> String {
+fn slug_of(type_name: &str, i: usize) -> String {
     // the type name is already a valid slug bar the dot separating its parts.
     format!("{}_{i}", type_name.replace('.', "_"))
 }
@@ -290,11 +289,11 @@ fn slug_key(slug: &str) -> Key {
 }
 
 /// the uid of support object `i`, as a ref attribute value.
-fn object_ref(type_name: &str, i: u128) -> Value {
+fn object_ref(type_name: &str, i: usize) -> Value {
     json!(support_uid(type_name, i).to_string())
 }
 
-fn support_uid(type_name: &str, i: u128) -> Uid {
+fn support_uid(type_name: &str, i: usize) -> Uid {
     uid_v5(type_name, &key_string(&slug_key(&slug_of(type_name, i))))
 }
 
@@ -665,7 +664,7 @@ mod tests {
     }
 
     /// render an artifact through the write path and read it back.
-    fn round_trip(kind: Kind, num_devices: u128) -> String {
+    fn round_trip(kind: Kind, num_devices: usize) -> String {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("out.json");
         let json = render(kind, num_devices).expect("artifact should render");
