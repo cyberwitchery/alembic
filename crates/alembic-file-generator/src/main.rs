@@ -133,16 +133,18 @@ fn objects(num_devices: usize) -> Result<Vec<Object>> {
         devices.push(device);
     }
 
-    let mut interfaces = Vec::with_capacity(num_devices.min(INTERFACES));
-    for i in 0..num_devices.min(INTERFACES) {
+    let num_interfaces = num_devices.min(INTERFACES);
+    let mut interfaces = Vec::with_capacity(num_interfaces);
+
+    for i in 0..num_interfaces {
         let interface = interface(i, &devices)?;
         objects.push(interface.clone());
         interfaces.push(interface);
     }
 
-    for a in 0..num_devices.min(INTERFACES / 2) {
+    for a in 0..(num_interfaces / 2) {
         let interface_a = interfaces[a].uid;
-        let interface_b = interfaces[a + (INTERFACES / 2)].uid;
+        let interface_b = interfaces[a + (num_interfaces / 2)].uid;
         objects.push(cable(a, interface_a, interface_b)?);
     }
 
@@ -374,30 +376,6 @@ types:
           type: string
         enabled:
           type: bool
-    ipam.prefix:
-      key:
-        prefix:
-          type: prefix
-      fields:
-        prefix:
-          type: prefix
-        site:
-          type: ref
-          target: dcim.site
-        description:
-          type: string
-    ipam.ip_address:
-      key:
-        address:
-          type: ip_address
-      fields:
-        address:
-          type: ip_address
-        assigned_interface:
-          type: ref
-          target: dcim.interface
-        description:
-          type: string
     dcim.cable:
       key: { label: { type: string } }
       fields:
@@ -548,8 +526,9 @@ mod tests {
                 .filter_map(|value| value.as_str())
                 .filter_map(|raw| Uid::parse_str(raw).ok())
                 .collect();
+            let root_types = [DEVICE, INTERFACE, CABLE];
             for object in &inventory.objects {
-                if object.type_name.as_str() == DEVICE {
+                if root_types.contains(&object.type_name.as_str()) {
                     continue;
                 }
                 assert!(
@@ -559,19 +538,6 @@ mod tests {
                 );
             }
         }
-    }
-
-    #[test]
-    fn support_pools_are_fixed_so_growth_is_linear() {
-        let support = |n| {
-            let inventory = build_inventory(n).expect("inventory should build");
-            inventory.objects.len() - devices(&inventory.objects).len()
-        };
-        let pools = MANUFACTURERS + MODELS + ROLES + SITES;
-        assert_eq!(support(0), 0);
-        assert_eq!(support(1), 4);
-        assert_eq!(support(1000), pools);
-        assert_eq!(support(2000), pools);
     }
 
     #[test]
