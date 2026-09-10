@@ -26,7 +26,6 @@ const MODELS: u128 = 4;
 const ROLES: u128 = 4;
 const SITES: u128 = 8;
 const INTERFACES: u128 = 8;
-const CABLES: u128 = 8;
 
 /// what the generator emits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
@@ -126,20 +125,28 @@ fn objects(num_devices: u128) -> Result<Vec<Object>> {
     for i in 0..num_devices.min(SITES) {
         objects.push(site(i)?);
     }
+
+    let mut devices = Vec::new();
     for i in 0..num_devices {
-        objects.push(device(i)?);
+        let device = device(i)?;
+        objects.push(device.clone());
+        devices.push(device);
     }
-    let devices = objects
-        .iter()
-        .filter(|o| o.type_name.as_str() == DEVICE)
-        .map(|o| o.clone())
-        .collect::<Vec<_>>();
+
+    let mut interfaces = Vec::new();
     for i in 0..num_devices.min(INTERFACES) {
-        objects.push(interface(i, &devices)?);
+        let interface = interface(i, &devices)?;
+        objects.push(interface.clone());
+        interfaces.push(interface);
     }
-    for i in 0..CABLES {
-        objects.push(cable(i, &devices)?);
+
+    for a in 0..(INTERFACES / 2) {
+        println!("{a} -> {}", (a + (INTERFACES / 2)) as usize);
+        let interface_a = interfaces[a as usize].uid;
+        let interface_b = interfaces[(a + (INTERFACES / 2)) as usize].uid;
+        objects.push(cable(a, interface_a, interface_b)?);
     }
+
     Ok(objects)
 }
 
@@ -231,12 +238,16 @@ fn interface_name(i: u128) -> String {
 }
 
 /// build a single `dcim.cable`, and connect two interfaces using it
-fn cable(i: u128, _interfaces: &[Object]) -> Result<Object> {
+fn cable(i: u128, interface_a: Uid, interface_b: Uid) -> Result<Object> {
     let label = format!("label_{i}");
     object(
         CABLE,
         Key::from(BTreeMap::from([("label".to_string(), json!(label))])),
-        [("label".to_string(), json!(label))],
+        [
+            ("label".to_string(), json!(label)),
+            ("a_terminations".to_string(), json!([interface_a])),
+            ("b_terminations".to_string(), json!([interface_b])),
+        ],
     )
 }
 
