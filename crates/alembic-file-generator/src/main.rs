@@ -141,8 +141,8 @@ fn objects(num_devices: usize) -> Result<Vec<Object>> {
     }
 
     for a in 0..(INTERFACES / 2) {
-        let interface_a = interfaces[a as usize].uid;
-        let interface_b = interfaces[(a + (INTERFACES / 2)) as usize].uid;
+        let interface_a = interfaces[a].uid;
+        let interface_b = interfaces[a + (INTERFACES / 2)].uid;
         objects.push(cable(a, interface_a, interface_b)?);
     }
 
@@ -218,7 +218,7 @@ fn device_name(i: usize) -> String {
 /// build a single `dcim.interface`, and connect it
 fn interface(i: usize, devices: &[Object]) -> Result<Object> {
     let name = interface_name(i);
-    let dev = json!(devices[i as usize % devices.len()].uid.to_string());
+    let dev = json!(devices[i % devices.len()].uid.to_string());
     // `name` is declared in both `key` and `fields`, so it is carried in both.
     object(
         INTERFACE,
@@ -567,7 +567,7 @@ mod tests {
             let inventory = build_inventory(n).expect("inventory should build");
             inventory.objects.len() - devices(&inventory.objects).len()
         };
-        let pools = (MANUFACTURERS + MODELS + ROLES + SITES) as usize;
+        let pools = MANUFACTURERS + MODELS + ROLES + SITES;
         assert_eq!(support(0), 0);
         assert_eq!(support(1), 4);
         assert_eq!(support(1000), pools);
