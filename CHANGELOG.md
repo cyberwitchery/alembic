@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- a read carries an advisory scope hint of state-bound ids and declared keys, unioned and canonically compared; ref-keyed types are read whole, and conformance certifies a narrowing read (#416)
 - the nautobot adapter takes each object type's route from nautobot's api root, deriving one only where the root is unreachable or names no match (#419)
 
 ## [0.9.0] - 2026-08-28

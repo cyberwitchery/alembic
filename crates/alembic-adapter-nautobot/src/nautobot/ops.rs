@@ -29,6 +29,7 @@ impl Observer for NautobotAdapter {
         schema: &Schema,
         types: &[TypeName],
         state_store: &alembic_engine::StateStore,
+        _scope: &alembic_engine::ReadScope,
     ) -> Result<ObservedState> {
         let registry: ObjectTypeRegistry = self.client.fetch_object_types().await?;
         let mut mappings = state_mappings(state_store);

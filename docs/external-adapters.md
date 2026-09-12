@@ -95,9 +95,62 @@ request:
   "method": "read",
   "schema": { "types": { /* alembic schema */ } },
   "types": ["dcim.site", "dcim.device"],
-  "state": { "mappings": { /* uid -> backend id */ } }
+  "state": { "mappings": { /* uid -> backend id */ } },
+  "scope": {
+    "kind": "narrowed",
+    "backend_ids": { "dcim.site": ["site-1"] },
+    "keys": {
+      "dcim.site": [
+        { "key": { "name": "site-a" }, "canonical": "{\"name\":\"site-a\"}" }
+      ]
+    },
+    "unnarrowed": ["dcim.device"]
+  }
 }
 ```
+
+`scope` is an advisory narrowing hint: what the host already knows it needs, in
+backend-neutral terms. an adapter that can filter may translate it into a
+backend query, one that cannot may ignore it, and the host behaves identically
+either way — returning a *superset* of what the hint names is always valid, so
+no correctness may rest on honoring it.
+
+the rule is the union of the two halves, and neither alone is safe. an object
+the host has not yet bound is named only by `keys`, so `backend_ids` alone drops
+it and turns its adoption into a create. an object whose key drifted on the
+backend since the host bound it is named only by `backend_ids`, so `keys` alone
+drops it and plans a create over a live object, on that run and every one after,
+since the host only ever binds what came back. keep an object either half names.
+
+each entry in `keys` carries the key twice: `key` for an adapter turning the
+hint into a backend query, `canonical` for one filtering in memory. the host
+matches on `canonical`, so an object read back as `{"vid": 100.0}` and a
+declared `{"vid": 100}` are one key to it and two to a structural compare of
+`key`. the canonicalization lives in the host, so an adapter that cannot
+reproduce it must **keep** an object it is unsure about: a superset is always a
+valid answer, dropping one on a key mismatch alone is not.
+
+`unnarrowed` names the types the hint cannot narrow, to be read whole. a
+ref-keyed type's declared key holds canonical uids, which is not a space any
+backend can be queried in, and not the space the adapter's own rows are in until
+`resolve_ref_keyed_identity` has run over the batch it already fetched. such a
+type is named in `unnarrowed` and in neither map, and the host asks for all of
+it (`docs/engine.md`).
+
+holding a type out does not close the batch: a held-out row's key-refs can name
+rows of a narrowed type the hint does not, so an adapter that narrows keeps
+those rows too, alongside whatever the hint names for their type. drop one and
+the held-out row it was needed for cannot resolve, and the host refuses the
+observation.
+
+`{"kind": "full"}` asks for every object of every requested type, and is what
+delete detection and `import` send, since both are defined against the full
+observation. a `narrowed` scope naming nothing for a type is not the same
+request: it says nothing of that type is needed.
+
+the field is additive. an older adapter that does not read it is unaffected, and
+the rust sdk's `read_scoped` defaults to delegating to `read`, so only an
+adapter that wants the hint overrides it.
 
 response:
 
@@ -432,6 +485,13 @@ alembic-adapter-test --cases tests/alembic -- ./alembic-adapter-mybackend
 ```yaml
 - run: alembic-adapter-test --cases tests/alembic -- ./alembic-adapter-mybackend
 ```
+
+a read case is also held to the narrowing rule above: the runner reads it once
+unscoped, then once through each half of the hint alone and once under the scope
+the engine itself builds, where a ref-keyed type is held out to be read whole. it
+fails the case when an object the scope names does not come back. a superset is
+always valid, so an adapter ignoring the hint passes and only a wrong narrower
+fails. the comparison is canonical, which the host can do and an adapter cannot.
 
 a worked python adapter and its cases live in
 `crates/alembic-adapter-test/examples/`. the canonical request/response pairs in

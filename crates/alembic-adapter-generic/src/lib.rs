@@ -383,6 +383,7 @@ impl Observer for GenericAdapter {
         schema: &Schema,
         types: &[TypeName],
         state_store: &alembic_engine::StateStore,
+        _scope: &alembic_engine::ReadScope,
     ) -> Result<ObservedState> {
         let requested: BTreeSet<TypeName> = if types.is_empty() {
             self.config

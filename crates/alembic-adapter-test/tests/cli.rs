@@ -278,6 +278,125 @@ fn a_subdirectory_holding_a_json_that_is_not_a_case_is_not_a_fixtures_error() {
     assert!(stdout.contains("case/write a create op"), "{stdout}");
 }
 
+/// the narrowing check against the four ways an adapter can answer the hint.
+/// only the union is correct, and the check has to fail each half on its own:
+/// one arm names the objects through `keys`, the other through `backend_ids`.
+#[test]
+fn a_wrongly_narrowing_adapter_fails_the_case() {
+    if !python3_available() {
+        eprintln!("skipping a_wrongly_narrowing_adapter_fails_the_case: python3 not found");
+        return;
+    }
+    let dir = tempdir().expect("create case dir");
+    // no `expect.result`: the unscoped run is the same for every mode, so only
+    // the narrowing arms discriminate.
+    std::fs::write(
+        dir.path().join("read.json"),
+        r#"{
+          "name": "read sites",
+          "request": {
+            "version": 1, "setup": {}, "method": "read",
+            "schema": { "types": { "dcim.site": {
+              "key": { "site": { "type": "slug", "required": false, "nullable": false } },
+              "fields": { "name": { "type": "string", "required": false, "nullable": false } } } } },
+            "types": ["dcim.site"],
+            "state": { "mappings": {} }
+          },
+          "expect": { "ok": true }
+        }"#,
+    )
+    .expect("write case");
+
+    for (mode, code, dropped) in [
+        ("ignore", 0, ""),
+        ("union", 0, ""),
+        // drops what only `keys` names: an object state has never bound.
+        ("ids", 1, "narrowed on keys"),
+        // drops what only `backend_ids` names: an object whose key drifted.
+        ("keys", 1, "narrowed on backend ids"),
+    ] {
+        let out = Command::new(BIN)
+            .args(["--cases"])
+            .arg(dir.path())
+            .args(["--", "python3"])
+            .arg(manifest("examples/narrowing_adapter.py"))
+            .arg(mode)
+            .output()
+            .expect("run binary");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert_eq!(out.status.code(), Some(code), "{mode}: {stdout}");
+        assert!(stdout.contains("case/read sites"), "{mode}: {stdout}");
+        if !dropped.is_empty() {
+            assert!(
+                stdout.contains(dropped) && stdout.contains("dropped objects the scope names"),
+                "{mode}: {stdout}"
+            );
+        }
+    }
+}
+
+/// a ref-keyed type is in `unnarrowed` and in neither map, so an adapter honoring
+/// the union and nothing else answers with none of it and its every plan creates
+/// over live objects. the arm driving the engine's own scope is what catches it.
+#[test]
+fn an_adapter_dropping_a_held_out_type_fails_the_case() {
+    if !python3_available() {
+        eprintln!("skipping an_adapter_dropping_a_held_out_type_fails_the_case: no python3");
+        return;
+    }
+    let dir = tempdir().expect("create case dir");
+    // the interface's key names its device by the uid the host mints, so the
+    // device has to be read too for the ref to resolve.
+    std::fs::write(
+        dir.path().join("read.json"),
+        r#"{
+          "name": "read a chain",
+          "request": {
+            "version": 1, "setup": {}, "method": "read",
+            "schema": { "types": {
+              "dcim.site": {
+                "key": { "site": { "type": "slug", "required": false, "nullable": false } },
+                "fields": { "name": { "type": "string", "required": false, "nullable": false } } },
+              "dcim.device": {
+                "key": { "name": { "type": "string", "required": false, "nullable": false } },
+                "fields": { "name": { "type": "string", "required": false, "nullable": false } } },
+              "dcim.interface": {
+                "key": {
+                  "device": { "type": "ref", "target": "dcim.device", "required": false, "nullable": false },
+                  "name": { "type": "string", "required": false, "nullable": false } },
+                "fields": { "name": { "type": "string", "required": false, "nullable": false } } } } },
+            "types": ["dcim.site", "dcim.device", "dcim.interface"],
+            "state": { "mappings": {} }
+          },
+          "expect": { "ok": true }
+        }"#,
+    )
+    .expect("write case");
+
+    for (mode, code) in [("ignore", 0), ("unnarrowed", 0), ("union", 1)] {
+        let out = Command::new(BIN)
+            .args(["--cases"])
+            .arg(dir.path())
+            .args(["--", "python3"])
+            .arg(manifest("examples/narrowing_adapter.py"))
+            .arg(mode)
+            .output()
+            .expect("run binary");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert_eq!(out.status.code(), Some(code), "{mode}: {stdout}");
+        assert!(
+            stdout.contains("case/read a chain narrowed on unnarrowed"),
+            "{mode}: {stdout}"
+        );
+        if code == 1 {
+            assert!(
+                stdout.contains("dropped objects the scope names: dcim.interface"),
+                "{mode}: {stdout}"
+            );
+        }
+    }
+}
+
 #[test]
 fn missing_adapter_argument_exits_2() {
     // with no `-- adapter`, clap rejects the usage and exits 2.

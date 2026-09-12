@@ -57,7 +57,10 @@ pub use pipeline::{guard_drift_report, guard_schema_deletes, guard_schema_provis
 pub use plan_view::render_plan;
 pub use planner::{plan, sort_ops_for_apply};
 pub use pretty_printing::bullet_list;
-pub use state::{BackendIdentity, PostgresTlsMode, StateData, StateFile, StateLock, StateStore};
+pub use state::{
+    BackendIdentity, PostgresTlsMode, ReadScope, ScopeKey, StateData, StateFile, StateLock,
+    StateStore, TypeReadScope,
+};
 pub use transform::{compile_map, eval_map_transform, load_map_spec, MapSpec, TransformsSpec};
 pub use types::{
     Adapter, Adoption, AppliedOp, ApplyReport, Backend, BackendId, BootstrapReport, Emitter,
@@ -100,7 +103,8 @@ pub async fn build_plan(
     allow_delete: bool,
     adopt_by_key: bool,
 ) -> Result<(Plan, types::BootstrapReport)> {
-    let (observed, bootstrap) = pipeline::observe(adapter, inventory, state, adopt_by_key).await?;
+    let (observed, bootstrap) =
+        pipeline::observe(adapter, inventory, state, allow_delete, adopt_by_key).await?;
     let plan = plan(
         &inventory.objects,
         &observed,

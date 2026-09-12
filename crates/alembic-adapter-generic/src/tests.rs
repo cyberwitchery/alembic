@@ -697,6 +697,7 @@ async fn test_observe_with_results_path() {
             &schema,
             &[TypeName::new("device".to_string())],
             &state_store,
+            &alembic_engine::ReadScope::Full,
         )
         .await
         .unwrap();
@@ -732,7 +733,12 @@ async fn test_observe_resolves_ref_ids_to_uids() {
     let schema = test_schema();
 
     let observed = adapter
-        .read(&schema, &[TypeName::new("device".to_string())], &state)
+        .read(
+            &schema,
+            &[TypeName::new("device".to_string())],
+            &state,
+            &alembic_engine::ReadScope::Full,
+        )
         .await
         .unwrap();
 
@@ -817,7 +823,12 @@ async fn test_observe_without_results_path() {
     let state_store = new_state_store();
 
     let state = adapter
-        .read(&schema, &[TypeName::new("site".to_string())], &state_store)
+        .read(
+            &schema,
+            &[TypeName::new("site".to_string())],
+            &state_store,
+            &alembic_engine::ReadScope::Full,
+        )
         .await
         .unwrap();
 
@@ -846,7 +857,10 @@ async fn test_observe_all_types() {
     let schema = test_schema();
     let state_store = new_state_store();
 
-    let state = adapter.read(&schema, &[], &state_store).await.unwrap();
+    let state = adapter
+        .read(&schema, &[], &state_store, &alembic_engine::ReadScope::Full)
+        .await
+        .unwrap();
 
     device_mock.assert();
     site_mock.assert();
@@ -869,7 +883,12 @@ async fn test_observe_string_id() {
     let state_store = new_state_store();
 
     let state = adapter
-        .read(&schema, &[TypeName::new("site".to_string())], &state_store)
+        .read(
+            &schema,
+            &[TypeName::new("site".to_string())],
+            &state_store,
+            &alembic_engine::ReadScope::Full,
+        )
         .await
         .unwrap();
 
@@ -893,6 +912,7 @@ async fn test_observe_unknown_type() {
             &schema,
             &[TypeName::new("unknown".to_string())],
             &state_store,
+            &alembic_engine::ReadScope::Full,
         )
         .await
         .unwrap_err();
@@ -920,6 +940,7 @@ async fn test_observe_missing_schema() {
             &empty_schema,
             &[TypeName::new("device".to_string())],
             &state_store,
+            &alembic_engine::ReadScope::Full,
         )
         .await
         .unwrap_err();
@@ -960,6 +981,7 @@ async fn test_observe_undeclared_key_field_names_the_type_and_the_field() {
             &slug_keyed_site_schema(false),
             &[TypeName::new("site".to_string())],
             &new_state_store(),
+            &alembic_engine::ReadScope::Full,
         )
         .await
         .unwrap_err();
@@ -1017,7 +1039,12 @@ async fn test_apply_create_then_observe_round_trips_the_key() {
     create.assert();
 
     let observed = adapter
-        .read(&schema, &[TypeName::new("site".to_string())], &state_store)
+        .read(
+            &schema,
+            &[TypeName::new("site".to_string())],
+            &state_store,
+            &alembic_engine::ReadScope::Full,
+        )
         .await
         .unwrap();
     list.assert();
@@ -1745,7 +1772,12 @@ async fn test_observe_invalid_id_type() {
     let state_store = new_state_store();
 
     let err = adapter
-        .read(&schema, &[TypeName::new("site".to_string())], &state_store)
+        .read(
+            &schema,
+            &[TypeName::new("site".to_string())],
+            &state_store,
+            &alembic_engine::ReadScope::Full,
+        )
         .await
         .unwrap_err();
 
@@ -1768,7 +1800,12 @@ async fn test_observe_non_object_in_results() {
     let state_store = new_state_store();
 
     let err = adapter
-        .read(&schema, &[TypeName::new("site".to_string())], &state_store)
+        .read(
+            &schema,
+            &[TypeName::new("site".to_string())],
+            &state_store,
+            &alembic_engine::ReadScope::Full,
+        )
         .await
         .unwrap_err();
 
@@ -1798,7 +1835,12 @@ async fn test_observe_non_array_response() {
     let state_store = new_state_store();
 
     let err = adapter
-        .read(&schema, &[TypeName::new("site".to_string())], &state_store)
+        .read(
+            &schema,
+            &[TypeName::new("site".to_string())],
+            &state_store,
+            &alembic_engine::ReadScope::Full,
+        )
         .await
         .unwrap_err();
 
@@ -2095,6 +2137,7 @@ async fn read_devices(config: GenericConfig) -> Result<ObservedState> {
             &test_schema(),
             &[TypeName::new("device".to_string())],
             &new_state_store(),
+            &alembic_engine::ReadScope::Full,
         )
         .await
 }

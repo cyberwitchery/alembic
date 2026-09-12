@@ -1023,6 +1023,7 @@ impl Observer for TestAdapter {
         _schema: &alembic_core::Schema,
         _types: &[TypeName],
         _state: &StateStore,
+        _scope: &crate::state::ReadScope,
     ) -> anyhow::Result<ObservedState> {
         Ok(self.observed.clone())
     }
@@ -1272,6 +1273,7 @@ impl Observer for RefChainAdapter {
         schema: &alembic_core::Schema,
         _types: &[TypeName],
         state: &StateStore,
+        _scope: &crate::state::ReadScope,
     ) -> anyhow::Result<ObservedState> {
         *self.reads.lock().unwrap() += 1;
         let raw: Vec<RawNode> = self
@@ -1726,6 +1728,7 @@ fn build_plan_names_both_backend_ids_for_a_colliding_key() {
             _schema: &alembic_core::Schema,
             _types: &[TypeName],
             _state: &StateStore,
+            _scope: &crate::state::ReadScope,
         ) -> anyhow::Result<ObservedState> {
             let mut observed = ObservedState::default();
             for id in [7u64, 9] {
@@ -1793,6 +1796,7 @@ fn build_plan_observes_once_and_bootstraps() {
             _schema: &alembic_core::Schema,
             _types: &[TypeName],
             _state: &StateStore,
+            _scope: &crate::state::ReadScope,
         ) -> anyhow::Result<ObservedState> {
             let mut states = self.states.lock().unwrap();
             Ok(states.remove(0))
@@ -1853,6 +1857,7 @@ fn build_plan_observes_all_schema_types() {
             _schema: &alembic_core::Schema,
             types: &[TypeName],
             _state: &StateStore,
+            _scope: &crate::state::ReadScope,
         ) -> anyhow::Result<ObservedState> {
             *self.seen.lock().unwrap() = types.to_vec();
             Ok(ObservedState::default())
@@ -2015,6 +2020,7 @@ impl Observer for PreviewAdapter {
         _schema: &alembic_core::Schema,
         _types: &[TypeName],
         _state: &StateStore,
+        _scope: &crate::state::ReadScope,
     ) -> anyhow::Result<ObservedState> {
         Ok(ObservedState::default())
     }
@@ -2430,6 +2436,7 @@ impl Observer for TwoPassAdapter {
         _schema: &alembic_core::Schema,
         _types: &[TypeName],
         _state: &StateStore,
+        _scope: &crate::state::ReadScope,
     ) -> anyhow::Result<ObservedState> {
         Ok(ObservedState::default())
     }
@@ -2683,6 +2690,7 @@ impl Observer for RefBackend {
         schema: &Schema,
         _types: &[TypeName],
         state: &StateStore,
+        _scope: &crate::state::ReadScope,
     ) -> anyhow::Result<ObservedState> {
         let raw = vec![
             RawNode {
@@ -2881,6 +2889,7 @@ impl Observer for RenameBackend {
         schema: &Schema,
         _types: &[TypeName],
         state: &StateStore,
+        _scope: &crate::state::ReadScope,
     ) -> anyhow::Result<ObservedState> {
         let raw = vec![
             RawNode {
@@ -3136,6 +3145,7 @@ impl Observer for AdoptionBackend {
         _schema: &Schema,
         _types: &[TypeName],
         _state: &StateStore,
+        _scope: &crate::state::ReadScope,
     ) -> anyhow::Result<ObservedState> {
         let mut observed = ObservedState::default();
         observed.insert(ObservedObject {
@@ -3287,6 +3297,7 @@ async fn unmanaged_twins_both_plan_as_deletes_by_id() {
             _schema: &alembic_core::Schema,
             _types: &[TypeName],
             _state: &StateStore,
+            _scope: &crate::state::ReadScope,
         ) -> anyhow::Result<ObservedState> {
             let mut observed = ObservedState::default();
             for id in [7u64, 9] {
@@ -3325,4 +3336,499 @@ async fn unmanaged_twins_both_plan_as_deletes_by_id() {
 
     let drift = crate::DriftReport::from_plan(&plan);
     assert_eq!(drift.extra.len(), 2, "both twins surface as extra");
+}
+
+/// records the advisory scope it was handed, so a test can assert what the
+/// engine asked for, and optionally honors it — a narrowing adapter and one
+/// that ignores the hint must leave the engine at the same outcome.
+struct ScopeRecorder {
+    observed: ObservedState,
+    honor: bool,
+    seen: std::sync::Arc<std::sync::Mutex<Option<crate::state::ReadScope>>>,
+}
+
+impl ScopeRecorder {
+    fn new(observed: ObservedState, honor: bool) -> Self {
+        Self {
+            observed,
+            honor,
+            seen: Default::default(),
+        }
+    }
+
+    fn seen(&self) -> crate::state::ReadScope {
+        self.seen.lock().unwrap().clone().expect("read never ran")
+    }
+}
+
+#[async_trait::async_trait]
+impl Observer for ScopeRecorder {
+    async fn read(
+        &self,
+        _schema: &alembic_core::Schema,
+        _types: &[TypeName],
+        _state: &StateStore,
+        scope: &crate::state::ReadScope,
+    ) -> anyhow::Result<ObservedState> {
+        *self.seen.lock().unwrap() = Some(scope.clone());
+        if !self.honor {
+            return Ok(self.observed.clone());
+        }
+        let mut narrowed = ObservedState::default();
+        for object in self.observed.clone().into_objects() {
+            let keep = match scope.for_type(&object.type_name) {
+                None => true,
+                Some(hint) => hint.wants(&object),
+            };
+            if keep {
+                narrowed.insert(object)?;
+            }
+        }
+        Ok(narrowed)
+    }
+}
+
+#[async_trait::async_trait]
+impl Emitter for ScopeRecorder {
+    async fn write(
+        &self,
+        _schema: &alembic_core::Schema,
+        _ops: &[Op],
+        _state: &StateStore,
+    ) -> anyhow::Result<ApplyReport> {
+        Ok(ApplyReport::default())
+    }
+}
+
+impl Adapter for ScopeRecorder {}
+
+/// four backend objects, one per cell of the hint: one both halves name, one
+/// only a declared key names, one the plan has no claim on at all, and one
+/// whose key drifted on the backend after state bound it, which only the
+/// backend-ids half still names.
+fn scope_backend() -> ObservedState {
+    let mut observed = ObservedState::default();
+    for (key, id, name) in [
+        ("site=fra1", 10u64, "OLD"),
+        ("site=ber1", 11, "BER1"),
+        ("site=ams1", 12, "AMS1"),
+        ("site=lon1-renamed", 13, "LON1 renamed"),
+    ] {
+        observed
+            .insert(ObservedObject {
+                type_name: t("dcim.site"),
+                key: key_str(key),
+                attrs: attrs_map(json!({ "name": name, "slug": key })),
+                backend_id: Some(BackendId::Int(id)),
+            })
+            .unwrap();
+    }
+    observed
+}
+
+fn scope_inventory() -> Inventory {
+    inv(vec![
+        obj(
+            uid(1),
+            "dcim.site",
+            "site=fra1",
+            json!({ "name": "FRA1", "slug": "site=fra1" }),
+        ),
+        obj(
+            uid(2),
+            "dcim.site",
+            "site=ber1",
+            json!({ "name": "BER1", "slug": "site=ber1" }),
+        ),
+        obj(
+            uid(4),
+            "dcim.site",
+            "site=lon1",
+            json!({ "name": "LON1", "slug": "site=lon1" }),
+        ),
+    ])
+}
+
+/// the bindings [`scope_backend`] is observed under: `uid(4)` is bound to the
+/// object whose key has since drifted, so its identity survives only through
+/// the backend id.
+const SCOPE_BOUND: [(u128, u64); 2] = [(1, 10), (4, 13)];
+
+fn scope_state(dir: &std::path::Path) -> StateStore {
+    let mut state = StateStore::load(dir.join("state.json")).unwrap();
+    for (u, id) in SCOPE_BOUND {
+        state.set_backend_id(t("dcim.site"), uid(u), BackendId::Int(id));
+    }
+    state
+}
+
+#[test]
+fn plan_hints_state_ids_and_desired_keys() {
+    let dir = tempdir().unwrap();
+    let adapter = ScopeRecorder::new(scope_backend(), false);
+    let mut state = scope_state(dir.path());
+    futures::executor::block_on(build_plan(&adapter, &scope_inventory(), &mut state, false))
+        .unwrap();
+
+    let scope = adapter.seen();
+    let hint = scope.for_type(&t("dcim.site")).expect("narrowed");
+    assert_eq!(
+        hint.backend_ids,
+        &BTreeSet::from([BackendId::Int(10), BackendId::Int(13)]),
+        "state-bound ids only"
+    );
+    assert_eq!(
+        hint.keys().cloned().collect::<Vec<_>>(),
+        vec![
+            key_str("site=ber1"),
+            key_str("site=fra1"),
+            key_str("site=lon1")
+        ],
+        "every declared key, ordered"
+    );
+}
+
+/// a ref-keyed type's declared key is in uid space, which no backend can be
+/// queried in and which the adapter's own rows only reach after
+/// `resolve_ref_keyed_identity` has run over the batch it already fetched. the
+/// hint holds such a type out whole rather than naming a key nothing matches.
+#[test]
+fn a_ref_keyed_type_is_read_whole() {
+    let dir = tempdir().unwrap();
+    let adapter = ScopeRecorder::new(ObservedState::default(), false);
+    let mut state = StateStore::load(dir.path().join("state.json")).unwrap();
+    futures::executor::block_on(build_plan(
+        &adapter,
+        &ref_chain_inventory(2),
+        &mut state,
+        false,
+    ))
+    .unwrap();
+
+    let scope = adapter.seen();
+    assert!(!scope.is_full(), "the run still narrows what it can");
+    assert!(
+        scope.for_type(&t("dcim.site")).is_some(),
+        "a string-keyed type narrows"
+    );
+    for ref_keyed in [t("dcim.device"), t("dcim.interface")] {
+        assert!(
+            scope.for_type(&ref_keyed).is_none(),
+            "{ref_keyed} is keyed on a ref, so it is read whole"
+        );
+    }
+}
+
+/// an adapter reading in the order a real one must: filter by the hint, then
+/// resolve refs over what survived. `close_over_held_out` additionally keeps
+/// the narrowed rows a held-out row's key-refs name.
+#[derive(Clone)]
+struct HintFilteringAdapter {
+    rows: Vec<(TypeName, BackendId, serde_json::Value)>,
+    honor_hint: bool,
+    close_over_held_out: bool,
+}
+
+impl HintFilteringAdapter {
+    fn keep(
+        &self,
+        raw: &[RawNode],
+        schema: &Schema,
+        scope: &crate::state::ReadScope,
+    ) -> Vec<RawNode> {
+        if !self.honor_hint {
+            return raw.to_vec();
+        }
+        let mut named: BTreeSet<(TypeName, BackendId)> = BTreeSet::new();
+        if self.close_over_held_out {
+            for node in raw
+                .iter()
+                .filter(|node| scope.for_type(&node.type_name).is_none())
+            {
+                let Some(type_schema) = schema.types.get(node.type_name.as_str()) else {
+                    continue;
+                };
+                for (field, field_schema) in &type_schema.key {
+                    let FieldType::Ref { target } = &field_schema.r#type else {
+                        continue;
+                    };
+                    if let Some(id) = node
+                        .attrs
+                        .get(field)
+                        .and_then(crate::adapter_ops::backend_id_from_value)
+                    {
+                        named.insert((t(target), id));
+                    }
+                }
+            }
+        }
+        raw.iter()
+            .filter(|node| {
+                let Some(hint) = scope.for_type(&node.type_name) else {
+                    return true;
+                };
+                named.contains(&(node.type_name.clone(), node.backend_id.clone()))
+                    || hint.backend_ids.contains(&node.backend_id)
+                    || schema
+                        .types
+                        .get(node.type_name.as_str())
+                        .and_then(|type_schema| {
+                            build_key_from_schema(type_schema, &node.attrs).ok()
+                        })
+                        .is_some_and(|key| hint.names_key(&key))
+            })
+            .cloned()
+            .collect()
+    }
+}
+
+#[async_trait::async_trait]
+impl Observer for HintFilteringAdapter {
+    async fn read(
+        &self,
+        schema: &Schema,
+        _types: &[TypeName],
+        state: &StateStore,
+        scope: &crate::state::ReadScope,
+    ) -> anyhow::Result<ObservedState> {
+        let raw: Vec<RawNode> = self
+            .rows
+            .iter()
+            .map(|(type_name, backend_id, attrs)| RawNode {
+                type_name: type_name.clone(),
+                backend_id: backend_id.clone(),
+                attrs: attrs_map(attrs.clone()),
+            })
+            .collect();
+        let mut mappings = StateMappings::from_state(state);
+        let mut observed = ObservedState::default();
+        for object in resolve_ref_keyed_identity(
+            &self.keep(&raw, schema, scope),
+            schema,
+            &mut mappings,
+            |node, type_schema, mappings| normalize_attrs_refs(&node.attrs, type_schema, mappings),
+            |_, type_schema, attrs| build_key_from_schema(type_schema, attrs),
+        )? {
+            observed.insert(object)?;
+        }
+        Ok(observed)
+    }
+}
+
+/// the chain plus a site and a device the inventory does not declare, which is
+/// what an ordinary brownfield backend holds.
+fn brownfield_ref_chain_rows(
+    undeclared_site: bool,
+) -> Vec<(TypeName, BackendId, serde_json::Value)> {
+    let mut rows = ref_chain_rows(2);
+    let site = if undeclared_site { 10 } else { 1 };
+    if undeclared_site {
+        rows.push((
+            t("dcim.site"),
+            BackendId::Int(10),
+            json!({ "slug": "ber1", "name": "BER1" }),
+        ));
+    }
+    rows.push((
+        t("dcim.device"),
+        BackendId::Int(11),
+        json!({ "site": site, "name": "leaf99" }),
+    ));
+    rows
+}
+
+fn plan_brownfield(adapter: &HintFilteringAdapter) -> anyhow::Result<Plan> {
+    let dir = tempdir().unwrap();
+    let mut state = StateStore::load(dir.path().join("state.json")).unwrap();
+    futures::executor::block_on(build_plan(
+        adapter,
+        &ref_chain_inventory(2),
+        &mut state,
+        false,
+    ))
+}
+
+/// a held-out type comes back whole, so its key-refs can name rows of a
+/// narrowed type the hint does not: an adapter honoring the hint has to keep
+/// those too, or the host refuses the observation it built.
+#[test]
+fn honoring_the_hint_keeps_what_a_held_out_row_names() {
+    let rows = brownfield_ref_chain_rows(true);
+    let ignoring = HintFilteringAdapter {
+        rows: rows.clone(),
+        honor_hint: false,
+        close_over_held_out: false,
+    };
+    assert!(
+        plan_brownfield(&ignoring).unwrap().ops.is_empty(),
+        "a superset is always a valid answer"
+    );
+
+    let narrowing = HintFilteringAdapter {
+        rows: rows.clone(),
+        honor_hint: true,
+        close_over_held_out: false,
+    };
+    let err = plan_brownfield(&narrowing).unwrap_err().to_string();
+    assert!(
+        err.contains("as backend ids"),
+        "an unresolvable held-out row is refused, got: {err}"
+    );
+
+    let closing = HintFilteringAdapter {
+        rows,
+        honor_hint: true,
+        close_over_held_out: true,
+    };
+    assert!(
+        plan_brownfield(&closing).unwrap().ops.is_empty(),
+        "keeping the referenced rows resolves the held-out ones"
+    );
+}
+
+#[test]
+fn detect_deletes_reads_unscoped() {
+    let dir = tempdir().unwrap();
+    let adapter = ScopeRecorder::new(scope_backend(), false);
+    let mut state = scope_state(dir.path());
+    futures::executor::block_on(build_plan(&adapter, &scope_inventory(), &mut state, true))
+        .unwrap();
+
+    assert!(
+        adapter.seen().is_full(),
+        "extra is defined against the full observation"
+    );
+}
+
+#[test]
+fn import_reads_unscoped() {
+    let adapter = ScopeRecorder::new(scope_backend(), false);
+    let dir = tempdir().unwrap();
+    let state = scope_state(dir.path());
+    let inventory = scope_inventory();
+    futures::executor::block_on(crate::import_inventory(
+        &adapter,
+        &inventory.schema,
+        &[t("dcim.site")],
+        &state,
+    ))
+    .unwrap();
+
+    assert!(adapter.seen().is_full(), "import converts whole types");
+}
+
+/// a numerically keyed type: the backend answers the vlan id as a float, which
+/// is the same key to the engine and a different one to a structural compare.
+fn key_num(field: &str, value: serde_json::Value) -> Key {
+    Key::from(BTreeMap::from([(field.to_string(), value)]))
+}
+
+fn vlan_backend() -> ObservedState {
+    let mut observed = ObservedState::default();
+    observed
+        .insert(ObservedObject {
+            type_name: t("ipam.vlan"),
+            key: key_num("vid", json!(100.0)),
+            attrs: attrs_map(json!({ "name": "OLD" })),
+            backend_id: Some(BackendId::Int(7)),
+        })
+        .unwrap();
+    observed
+}
+
+fn vlan_inventory() -> Inventory {
+    inv(vec![Object::new(
+        uid(3),
+        t("ipam.vlan"),
+        key_num("vid", json!(100)),
+        attrs_map(json!({ "name": "NEW" })),
+    )
+    .unwrap()])
+}
+
+/// constraint made executable: an adapter that narrows to exactly what the hint
+/// names and one that ignores it entirely must leave plan, apply and identity
+/// memory identical.
+fn narrowing_changes_nothing(
+    backend: &ObservedState,
+    inventory: &Inventory,
+    bound: &[(TypeName, Uid, BackendId)],
+) {
+    let dir = tempdir().unwrap();
+
+    let mut outcomes = Vec::new();
+    for (index, honor) in [(0, false), (1, true)] {
+        let adapter = ScopeRecorder::new(backend.clone(), honor);
+        let run = dir.path().join(index.to_string());
+        std::fs::create_dir_all(&run).unwrap();
+        let mut state = StateStore::load(run.join("state.json")).unwrap();
+        for (type_name, uid, backend_id) in bound {
+            state.set_backend_id(type_name.clone(), *uid, backend_id.clone());
+        }
+        let (plan, bootstrap) = futures::executor::block_on(crate::build_plan(
+            &adapter, inventory, &mut state, false, true,
+        ))
+        .unwrap();
+        let report = futures::executor::block_on(crate::apply_plan(
+            &Backend::Adapter(Box::new(adapter)),
+            &plan,
+            &mut state,
+            false,
+        ))
+        .unwrap();
+        outcomes.push((
+            plan.ops,
+            bootstrap.adoptions,
+            report,
+            state.all_mappings().clone(),
+        ));
+    }
+
+    let honored = outcomes.pop().unwrap();
+    let ignored = outcomes.pop().unwrap();
+    assert_eq!(ignored.0, honored.0, "plans diverge");
+    assert_eq!(ignored.1, honored.1, "adoptions diverge");
+    assert_eq!(
+        format!("{:?}", ignored.2),
+        format!("{:?}", honored.2),
+        "apply reports diverge"
+    );
+    assert_eq!(ignored.3, honored.3, "identity memory diverges");
+    assert!(
+        !honored.1.is_empty(),
+        "the fixture must exercise adoption by key"
+    );
+}
+
+#[test]
+fn narrowing_to_the_hint_changes_nothing() {
+    let bound: Vec<_> = SCOPE_BOUND
+        .iter()
+        .map(|(u, id)| (t("dcim.site"), uid(*u), BackendId::Int(*id)))
+        .collect();
+    narrowing_changes_nothing(&scope_backend(), &scope_inventory(), &bound);
+}
+
+/// the same constraint over a numerically keyed type, where the backend answers
+/// `100.0` and the inventory declares `100`. the engine matches on `key_string`
+/// and adopts across that; a filter comparing the hint's keys structurally does
+/// not, drops the object, and plans a create against one that exists.
+#[test]
+fn narrowing_to_the_hint_changes_nothing_for_a_numeric_key() {
+    narrowing_changes_nothing(&vlan_backend(), &vlan_inventory(), &[]);
+}
+
+#[test]
+fn a_narrow_hint_naming_nothing_is_not_a_full_read() {
+    let empty = crate::state::ReadScope::Narrowed {
+        backend_ids: Default::default(),
+        keys: Default::default(),
+        unnarrowed: Default::default(),
+    };
+    assert!(!empty.is_full());
+    let hint = empty.for_type(&t("dcim.site")).expect("narrowed, not full");
+    assert!(hint.is_empty());
+    assert!(crate::state::ReadScope::Full
+        .for_type(&t("dcim.site"))
+        .is_none());
 }

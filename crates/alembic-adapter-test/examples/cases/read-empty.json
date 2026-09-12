@@ -6,7 +6,8 @@
     "method": "read",
     "schema": { "types": {} },
     "types": [],
-    "state": { "mappings": {} }
+    "state": { "mappings": {} },
+    "scope": { "kind": "narrowed", "backend_ids": {}, "keys": {}, "unnarrowed": [] }
   },
   "expect": {
     "ok": true,

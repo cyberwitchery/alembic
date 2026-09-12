@@ -33,6 +33,7 @@ impl Observer for NetBoxAdapter {
         schema: &Schema,
         types: &[TypeName],
         state_store: &alembic_engine::StateStore,
+        _scope: &alembic_engine::ReadScope,
     ) -> Result<ObservedState> {
         let registry: ObjectTypeRegistry = build_registry_for_schema(self, schema).await?;
         let mut mappings = state_mappings(state_store);
