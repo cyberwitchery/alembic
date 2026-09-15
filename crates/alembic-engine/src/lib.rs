@@ -7,7 +7,6 @@ mod endpoint;
 mod errors;
 mod extract;
 mod inflect;
-pub mod journal;
 mod loader;
 pub mod mapping;
 mod pipeline;
@@ -36,6 +35,7 @@ pub use adapter_ops::{
     resolve_ref_keyed_identity, resolve_value_for_type, resolved_ids_from_state,
     resolved_ids_identity, state_mappings_by_id, RawNode, RefMappings, StateMappings,
 };
+pub use alembic_adapter_sdk::journal::Journal;
 pub use apply_retry::{
     apply_non_delete_journaled, apply_non_delete_with_retries, describe_missing_refs,
     is_missing_ref_error, JournalGuard, RetryApplyDriver, RetryApplyResult,
@@ -45,7 +45,6 @@ pub use endpoint::normalize_endpoint;
 pub use errors::AdapterApplyError;
 pub use extract::{import_inventory, ImportReport};
 pub use inflect::pluralize;
-pub use journal::Journal;
 pub use loader::{load_inventory, load_inventory_unvalidated};
 pub use pipeline::{guard_drift_report, guard_schema_deletes, guard_schema_provisioning};
 pub use plan_view::render_plan;
