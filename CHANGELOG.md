@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- a plan that adopts nothing reads only the objects state already binds, narrowing the query in the netbox, nautobot and infrahub adapters; a run detecting deletes or still adopting by key reads whole as before (#416)
 - the nautobot adapter takes each object type's route from nautobot's api root, deriving one only where the root is unreachable or names no match (#419)
 
 ## [0.9.0] - 2026-08-28

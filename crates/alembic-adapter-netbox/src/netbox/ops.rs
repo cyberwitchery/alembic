@@ -34,6 +34,65 @@ impl Observer for NetBoxAdapter {
         types: &[TypeName],
         state_store: &alembic_engine::StateStore,
     ) -> Result<ObservedState> {
+        self.read_listing(schema, types, state_store, false).await
+    }
+
+    async fn read_bound(
+        &self,
+        schema: &Schema,
+        types: &[TypeName],
+        state_store: &alembic_engine::StateStore,
+    ) -> Result<ObservedState> {
+        self.read_listing(schema, types, state_store, true).await
+    }
+}
+
+/// the ids netbox addresses a type's bound objects by. an empty vec is a type
+/// state binds nothing of, which a bound read reaches none of and so skips
+/// entirely. `None` is a type bound to at least one id that is not a netbox pk,
+/// which cannot go in `id__in`, so it falls back to the full listing rather
+/// than to a query that would silently omit it.
+fn bound_int_ids(
+    state_store: &alembic_engine::StateStore,
+    type_name: &TypeName,
+) -> Option<Vec<u64>> {
+    let Some(bound) = state_store.backend_ids().get(type_name) else {
+        return Some(Vec::new());
+    };
+    bound
+        .keys()
+        .map(|id| match id {
+            BackendId::Int(id) => Some(*id),
+            BackendId::String(_) => None,
+        })
+        .collect()
+}
+
+impl NetBoxAdapter {
+    /// list one type by primary key, in chunks, so a long id set cannot outgrow
+    /// the query string. each chunk still pages through `list_all`.
+    async fn list_by_ids(&self, resource: &Resource<Value>, ids: &[u64]) -> Result<Vec<Value>> {
+        const CHUNK: usize = 100;
+        let mut objects = Vec::new();
+        for chunk in ids.chunks(CHUNK) {
+            let filter = chunk
+                .iter()
+                .map(u64::to_string)
+                .collect::<Vec<_>>()
+                .join(",");
+            let query = QueryBuilder::new().filter("id__in", filter);
+            objects.extend(self.client.list_all(resource, Some(query)).await?);
+        }
+        Ok(objects)
+    }
+
+    async fn read_listing(
+        &self,
+        schema: &Schema,
+        types: &[TypeName],
+        state_store: &alembic_engine::StateStore,
+        bound_only: bool,
+    ) -> Result<ObservedState> {
         let registry: ObjectTypeRegistry = build_registry_for_schema(self, schema).await?;
         let mut mappings = state_mappings(state_store);
 
@@ -58,7 +117,19 @@ impl Observer for NetBoxAdapter {
                 .get(type_name.as_str())
                 .ok_or_else(|| anyhow!("missing schema for {}", type_name))?;
             let resource: Resource<Value> = self.client.resource(info.endpoint.clone());
-            let objects = match self.client.list_all(&resource, None).await {
+            // nothing bound means nothing of this type the run can reach, so the
+            // listing is skipped outright rather than fetched and discarded.
+            let bound = bound_only
+                .then(|| bound_int_ids(state_store, &type_name))
+                .flatten();
+            if bound.as_ref().is_some_and(|ids| ids.is_empty()) {
+                continue;
+            }
+            let listing = match &bound {
+                Some(ids) => self.list_by_ids(&resource, ids).await,
+                None => self.client.list_all(&resource, None).await,
+            };
+            let objects = match listing {
                 Ok(objects) => objects,
                 Err(err)
                     if is_404_anyhow(&err) && info.features.contains(CUSTOM_OBJECT_FEATURE) =>

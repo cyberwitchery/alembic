@@ -30,6 +30,53 @@ impl Observer for NautobotAdapter {
         types: &[TypeName],
         state_store: &alembic_engine::StateStore,
     ) -> Result<ObservedState> {
+        self.read_listing(schema, types, state_store, false).await
+    }
+
+    async fn read_bound(
+        &self,
+        schema: &Schema,
+        types: &[TypeName],
+        state_store: &alembic_engine::StateStore,
+    ) -> Result<ObservedState> {
+        self.read_listing(schema, types, state_store, true).await
+    }
+}
+
+/// the uuids nautobot addresses a type's bound objects by. an empty vec is a
+/// type state binds nothing of, which a bound read reaches none of and so skips
+/// entirely. `None` is a type bound to at least one id that is not a uuid, which
+/// falls back to the full listing rather than to a query that would omit it.
+fn bound_uuids(
+    state_store: &alembic_engine::StateStore,
+    type_name: &TypeName,
+) -> Option<Vec<String>> {
+    let Some(bound) = state_store.backend_ids().get(type_name) else {
+        return Some(Vec::new());
+    };
+    bound
+        .keys()
+        .map(|id| match id {
+            BackendId::String(id) => Some(id.clone()),
+            BackendId::Int(_) => None,
+        })
+        .collect()
+}
+
+/// nautobot reads repeated `id` params as an OR, so one query covers a chunk.
+fn query_for_ids(ids: &[String]) -> QueryBuilder {
+    ids.iter()
+        .fold(QueryBuilder::new(), |query, id| query.filter("id", id))
+}
+
+impl NautobotAdapter {
+    async fn read_listing(
+        &self,
+        schema: &Schema,
+        types: &[TypeName],
+        state_store: &alembic_engine::StateStore,
+        bound_only: bool,
+    ) -> Result<ObservedState> {
         let registry: ObjectTypeRegistry = self.client.fetch_object_types().await?;
         let mut mappings = state_mappings(state_store);
 
@@ -54,11 +101,33 @@ impl Observer for NautobotAdapter {
                 .types
                 .get(type_name.as_str())
                 .ok_or_else(|| anyhow!("missing schema for {}", type_name))?;
+            // nothing bound means nothing of this type the run can reach, so the
+            // listing is skipped outright rather than fetched and discarded.
+            let bound = bound_only
+                .then(|| bound_uuids(state_store, &type_name))
+                .flatten();
+            if bound.as_ref().is_some_and(|ids| ids.is_empty()) {
+                continue;
+            }
             let client = Arc::clone(&self.client);
 
             tasks.push(tokio::spawn(async move {
                 let resource: Resource<Value> = client.resource(info.endpoint.clone());
-                let objects = client.list_all(&resource, None).await?;
+                let objects = match &bound {
+                    Some(ids) => {
+                        const CHUNK: usize = 100;
+                        let mut objects = Vec::new();
+                        for chunk in ids.chunks(CHUNK) {
+                            objects.extend(
+                                client
+                                    .list_all(&resource, Some(query_for_ids(chunk)))
+                                    .await?,
+                            );
+                        }
+                        objects
+                    }
+                    None => client.list_all(&resource, None).await?,
+                };
                 let mut raw = Vec::new();
                 for object in objects {
                     let (backend_id, attrs) = extract_attrs(object)?;
