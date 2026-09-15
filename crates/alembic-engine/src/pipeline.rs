@@ -1,9 +1,8 @@
 use crate::pretty_printing::bullet_list;
 use crate::sort_ops_for_apply;
-use crate::types::{
-    ApplyReport, Backend, ObservedState, Observer, Plan, ProvisionReport, CANNOT_OBSERVE,
-};
+use crate::types::{Backend, ObservedState, Observer, Plan, CANNOT_OBSERVE};
 use crate::StateStore;
+use alembic_adapter_sdk::types::{ApplyReport, Op, ProvisionReport};
 use alembic_core::{Inventory, TypeName};
 use anyhow::{anyhow, Result};
 use std::collections::BTreeSet;
@@ -118,10 +117,7 @@ pub(crate) async fn apply(
     allow_delete: bool,
 ) -> Result<ApplyReport> {
     if !allow_delete {
-        let has_delete = plan
-            .ops
-            .iter()
-            .any(|op| matches!(op, crate::Op::Delete { .. }));
+        let has_delete = plan.ops.iter().any(|op| matches!(op, Op::Delete { .. }));
         if has_delete {
             return Err(anyhow!(
                 "plan contains delete operations; re-run with --allow-delete"

@@ -1,7 +1,8 @@
 //! diff and plan generation.
 
 use crate::state::StateStore;
-use crate::types::{FieldChange, ObservedState, Op, Plan};
+use crate::types::{ObservedState, Plan};
+use alembic_adapter_sdk::types::{FieldChange, Op};
 use alembic_core::{
     key_string, uid_v5, FieldType, JsonMap, Key, Object, Schema, Scope, TypeName, TypeSchema, Uid,
 };
@@ -431,8 +432,10 @@ pub fn sort_ops_for_apply(ops: &[Op], schema: &Schema) -> Vec<Op> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::{StateData, StateStore};
-    use crate::types::{BackendId, ObservedObject, ObservedState};
+    use crate::state::StateStore;
+    use crate::types::{ObservedObject, ObservedState};
+    use alembic_adapter_sdk::state::StateData;
+    use alembic_adapter_sdk::types::BackendId;
     use alembic_core::{
         FieldSchema, FieldType, JsonMap, Key, Object, Schema, TypeName, TypeSchema, Uid,
     };

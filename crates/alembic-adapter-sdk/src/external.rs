@@ -1,6 +1,7 @@
 //! helpers for implementing external adapters.
 
-use crate::{ApplyReport, BackendId, Op, ProvisionReport, StateData};
+use crate::state::StateData;
+use crate::types::{ApplyReport, BackendId, Op, ProvisionReport};
 use alembic_core::{JsonMap, Key, Schema, TypeName};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -296,12 +297,13 @@ macro_rules! alembic_external_main {
 
 #[cfg(test)]
 mod tests {
-    use super::ExternalResponse;
-    use crate::{
-        run_external_adapter, AppliedOp, ApplyReport, ExternalAdapter, ExternalCapabilities,
-        ExternalEnvelope, ExternalEnvelopeRef, ExternalObject, ExternalRequest, ExternalRequestRef,
-        ExternalRole, Op, ProvisionReport, StateData, EXTERNAL_PROTOCOL_VERSION,
+    use super::{
+        run_external_adapter, ExternalAdapter, ExternalCapabilities, ExternalEnvelope,
+        ExternalEnvelopeRef, ExternalObject, ExternalRequest, ExternalRequestRef, ExternalResponse,
+        ExternalRole, EXTERNAL_PROTOCOL_VERSION,
     };
+    use crate::state::StateData;
+    use crate::types::{AppliedOp, ApplyReport, Op, ProvisionReport};
     use alembic_core::{Key, Object, Schema, TypeName, TypeSchema, Uid};
     use serde_json::json;
     use serde_yaml::Value;

@@ -1,8 +1,9 @@
 //! django app generation from alembic ir.
 
 use crate::emit::{CommandRunner, DjangoConfig};
+use alembic_adapter_sdk::types::{AppliedOp, ApplyReport, Op};
 use alembic_core::{key_string, FieldFormat, FieldType, Inventory, Object, Schema, TypeSchema};
-use alembic_engine::{pluralize, AppliedOp, ApplyReport, Emitter, Op, StateStore};
+use alembic_engine::{pluralize, Emitter, StateStore};
 use anyhow::{anyhow, bail, Context, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};

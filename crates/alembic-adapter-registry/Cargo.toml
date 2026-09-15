@@ -23,6 +23,7 @@ all = ["netbox", "nautobot", "infrahub", "generic", "peeringdb", "django"]
 [dependencies]
 alembic-core.workspace = true
 alembic-engine.workspace = true
+alembic-adapter-sdk.workspace = true
 alembic-adapter-netbox = { workspace = true, optional = true }
 alembic-adapter-nautobot = { workspace = true, optional = true }
 alembic-adapter-infrahub = { workspace = true, optional = true }

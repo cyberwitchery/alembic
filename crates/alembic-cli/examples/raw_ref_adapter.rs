@@ -1,8 +1,11 @@
-use alembic_core::{JsonMap, Schema, TypeName};
-use alembic_engine::{
-    alembic_external_main, build_key_from_schema, ApplyReport, BackendId, ExternalAdapter,
-    ExternalCapabilities, ExternalObject, ExternalRole, Op, StateData,
+use alembic_adapter_sdk::alembic_external_main;
+use alembic_adapter_sdk::external::{
+    ExternalAdapter, ExternalCapabilities, ExternalObject, ExternalRole,
 };
+use alembic_adapter_sdk::state::StateData;
+use alembic_adapter_sdk::types::{ApplyReport, BackendId, Op};
+use alembic_core::{JsonMap, Schema, TypeName};
+use alembic_engine::build_key_from_schema;
 use anyhow::{anyhow, Result};
 use serde_json::json;
 

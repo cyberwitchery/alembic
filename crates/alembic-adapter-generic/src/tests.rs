@@ -1,6 +1,7 @@
 use super::*;
+use alembic_adapter_sdk::state::StateData;
 use alembic_core::{FieldSchema, FieldType, Key, TypeSchema};
-use alembic_engine::{StateData, StateStore};
+use alembic_engine::StateStore;
 use httpmock::prelude::*;
 use httpmock::Method::PATCH;
 

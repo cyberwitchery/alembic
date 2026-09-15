@@ -1,11 +1,11 @@
 //! infrahub graphql adapter for alembic.
 
+use alembic_adapter_sdk::types::{AppliedOp, ApplyReport, BackendId, Op, ProvisionReport};
 use alembic_core::{key_string, FieldType, JsonMap, Key, Schema, TypeName, Uid};
 use alembic_engine::{
     apply_non_delete_journaled, build_key_from_schema, is_missing_ref_error, normalize_attrs_refs,
-    resolve_ref_keyed_identity, resolve_value_for_type, resolved_ids_identity, Adapter, AppliedOp,
-    ApplyReport, BackendId, Emitter, ObservedState, Observer, Op, ProvisionReport, RawNode,
-    RetryApplyDriver, StateMappings, StateStore,
+    resolve_ref_keyed_identity, resolve_value_for_type, resolved_ids_identity, Adapter, Emitter,
+    ObservedState, Observer, RawNode, RetryApplyDriver, StateMappings, StateStore,
 };
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
@@ -2108,12 +2108,11 @@ fn extract_ref_uids(value: &Value) -> Vec<Uid> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alembic_adapter_sdk::state::StateData;
     use alembic_core::{
         key_string, FieldSchema, FieldType, JsonMap, Key, Object, Schema, TypeName, TypeSchema,
     };
-    use alembic_engine::{
-        backend_id_from_value, AdapterApplyError, BackendId, Op, StateData, StateStore,
-    };
+    use alembic_engine::{backend_id_from_value, AdapterApplyError, StateStore};
     use httpmock::prelude::*;
     use httpmock::Mock;
     use serde_json::json;

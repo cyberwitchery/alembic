@@ -8,7 +8,7 @@
 //! before it. a run killed without unwinding therefore still leaves every op it
 //! applied on disk.
 
-use crate::{AppliedOp, BackendId, Op};
+use alembic_adapter_sdk::types::{AppliedOp, BackendId, Op};
 use alembic_core::{TypeName, Uid};
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -94,7 +94,7 @@ fn build_pending_index(ops: &[OpWithMeta]) -> HashMap<(Uid, TypeName, u64), VecD
 
 impl Journal {
     pub fn stable_file_name(directory: &Path, adapter_name: &str, ops: &[Op]) -> PathBuf {
-        let hash = crate::types::stable_json_hash(&ops);
+        let hash = alembic_adapter_sdk::types::stable_json_hash(&ops);
         let file_name: PathBuf = format!("{}_journal_{}.yaml", adapter_name, hash).into();
         directory.join(file_name)
     }

@@ -2,8 +2,9 @@ use super::test_support::*;
 use super::*;
 use alembic_adapter_django::emit::{run_emit, DjangoConfig};
 use alembic_adapter_registry::{AdapterConfig, ExternalConfig};
+use alembic_adapter_sdk::types::{AppliedOp, BackendId};
 use alembic_core::{Inventory, Schema};
-use alembic_engine::{Op, StateData, StateLock, StateStore};
+use alembic_engine::{StateLock, StateStore};
 use std::collections::BTreeMap;
 use tempfile::tempdir;
 
@@ -162,7 +163,7 @@ fn plan_roundtrip_io() {
             uid: uuid::Uuid::from_u128(1),
             type_name: alembic_core::TypeName::new("dcim.site"),
             key: key_str("site=fra1"),
-            backend_id: Some(alembic_engine::BackendId::Int(1)),
+            backend_id: Some(BackendId::Int(1)),
         }],
         summary: None,
         schema_preview: None,
@@ -266,10 +267,10 @@ fn apply_report_json_carries_the_uid_to_backend_id_pairs() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("report.json");
     let report = ApplyReport {
-        applied: vec![alembic_engine::AppliedOp {
+        applied: vec![AppliedOp {
             uid: uuid::Uuid::from_u128(1),
             type_name: alembic_core::TypeName::new("dcim.site"),
-            backend_id: Some(alembic_engine::BackendId::Int(7)),
+            backend_id: Some(BackendId::Int(7)),
         }],
         ..Default::default()
     };
@@ -279,10 +280,7 @@ fn apply_report_json_carries_the_uid_to_backend_id_pairs() {
     let loaded: ApplyReport = serde_json::from_str(&raw).unwrap();
     assert_eq!(loaded.applied.len(), 1);
     assert_eq!(loaded.applied[0].uid, uuid::Uuid::from_u128(1));
-    assert_eq!(
-        loaded.applied[0].backend_id,
-        Some(alembic_engine::BackendId::Int(7))
-    );
+    assert_eq!(loaded.applied[0].backend_id, Some(BackendId::Int(7)));
     // absent, not null, when the apply did not resume from a journal
     assert!(
         !raw.contains("previously_applied_count"),
@@ -1183,7 +1181,7 @@ async fn run_apply_interactive_delete_requires_allow_delete() {
             uid: uuid::Uuid::from_u128(1),
             type_name: alembic_core::TypeName::new("dcim.site"),
             key: key_str("site=fra1"),
-            backend_id: Some(alembic_engine::BackendId::Int(1)),
+            backend_id: Some(BackendId::Int(1)),
         }],
         summary: None,
         schema_preview: None,
@@ -1337,7 +1335,7 @@ async fn run_apply_writes_the_report_to_output() {
     assert_eq!(report.applied[0].type_name.as_str(), "dcim.site");
     assert_eq!(
         report.applied[0].backend_id,
-        Some(alembic_engine::BackendId::Int(7)),
+        Some(BackendId::Int(7)),
         "the report must carry the backend id the create returned"
     );
     // absent, not empty, when the run resumed from nothing
@@ -1517,10 +1515,7 @@ async fn run_apply_resumes_with_the_ids_the_interrupted_run_created() {
             .iter()
             .map(|a| (a.uid, a.backend_id.clone()))
             .collect::<Vec<_>>(),
-        vec![(
-            uuid::Uuid::from_u128(1),
-            Some(alembic_engine::BackendId::Int(7))
-        )]
+        vec![(uuid::Uuid::from_u128(1), Some(BackendId::Int(7)))]
     );
     assert_eq!(report.previously_applied_count, Some(1));
 
@@ -1532,7 +1527,7 @@ async fn run_apply_resumes_with_the_ids_the_interrupted_run_created() {
             alembic_core::TypeName::new("dcim.site"),
             uuid::Uuid::from_u128(1)
         ),
-        Some(alembic_engine::BackendId::Int(7))
+        Some(BackendId::Int(7))
     );
 }
 

@@ -1,6 +1,7 @@
 use crate::mapping::{supports_feature, tags_from_value};
 use crate::types::ObservedObject;
-use crate::{AdapterApplyError, BackendId, Op, StateStore};
+use crate::{AdapterApplyError, StateStore};
+use alembic_adapter_sdk::types::{BackendId, Op};
 use alembic_core::{
     key_string, uid_v5, FieldType, JsonMap, Key, Schema, TypeName, TypeSchema, Uid,
 };
@@ -677,6 +678,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alembic_adapter_sdk::state::StateData;
     use alembic_core::{FieldSchema, FieldType, JsonMap, Key, Object, TypeSchema};
     use serde_json::json;
     use uuid::Uuid;
@@ -1124,7 +1126,6 @@ mod tests {
     // --- state projection helpers ---
 
     fn store_with_mixed_ids(type_name: &str) -> StateStore {
-        use crate::StateData;
         use alembic_core::TypeName;
 
         let mut data = StateData::default();

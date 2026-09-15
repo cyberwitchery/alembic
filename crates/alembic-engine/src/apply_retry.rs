@@ -1,5 +1,6 @@
 use crate::journal::Journal;
-use crate::{AdapterApplyError, AppliedOp, Op};
+use crate::AdapterApplyError;
+use alembic_adapter_sdk::types::{AppliedOp, Op};
 use alembic_core::Uid;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
@@ -307,7 +308,8 @@ fn collect_missing_refs<V>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::BackendId;
+    use alembic_adapter_sdk::state::StateData;
+    use alembic_adapter_sdk::types::{AppliedOp, ApplyReport, BackendId};
     use alembic_core::{JsonMap, Key, Object, TypeName, Uid};
     use anyhow::anyhow;
     use futures::executor::block_on;
@@ -684,7 +686,7 @@ mod tests {
         state: &crate::StateStore,
         ops: &[Op],
         driver: &mut impl RetryApplyDriver,
-    ) -> Result<crate::ApplyReport> {
+    ) -> Result<ApplyReport> {
         run_journaled_apply_with_deletes(state, ops, driver, Ok(())).await
     }
 
@@ -696,7 +698,7 @@ mod tests {
         ops: &[Op],
         driver: &mut impl RetryApplyDriver,
         deletes: Result<()>,
-    ) -> Result<crate::ApplyReport> {
+    ) -> Result<ApplyReport> {
         let creates_updates: Vec<Op> = ops
             .iter()
             .filter(|op| !matches!(op, Op::Delete { .. }))
@@ -713,7 +715,7 @@ mod tests {
         }
         deletes?;
         journal.finish()?;
-        Ok(crate::ApplyReport {
+        Ok(ApplyReport {
             applied: result.applied,
             resumed: result.resumed,
             previously_applied_count,
@@ -839,7 +841,7 @@ mod tests {
         let device = Uid::from_u128(2);
         let ops = vec![create_op(site), create_op_referencing(device, site)];
         let dir = tempdir().unwrap();
-        let state = crate::StateStore::new(None, crate::StateData::default())
+        let state = crate::StateStore::new(None, StateData::default())
             .with_journal_dir(dir.path().to_path_buf());
 
         // run 1 creates the site, then dies on the device that references it.
@@ -880,7 +882,7 @@ mod tests {
         let device = Uid::from_u128(2);
         let ops = vec![create_op(site), create_op_referencing(device, site)];
         let dir = tempdir().unwrap();
-        let state = crate::StateStore::new(None, crate::StateData::default())
+        let state = crate::StateStore::new(None, StateData::default())
             .with_journal_dir(dir.path().to_path_buf());
         let journal_path = crate::Journal::stable_file_name(dir.path(), "test", &ops);
 
@@ -917,7 +919,7 @@ mod tests {
         let device = Uid::from_u128(2);
         let ops = vec![update_op(site, 55), create_op_referencing(device, site)];
         let dir = tempdir().unwrap();
-        let state = crate::StateStore::new(None, crate::StateData::default())
+        let state = crate::StateStore::new(None, StateData::default())
             .with_journal_dir(dir.path().to_path_buf());
 
         let mut first = RefDriver::new(Some(device));
@@ -950,9 +952,9 @@ mod tests {
         let uid3 = Uid::from_u128(3);
         let ops = vec![create_op(uid1), create_op(uid2), create_op(uid3)];
         let dir = tempdir().unwrap();
-        let state = crate::StateStore::new(None, crate::StateData::default())
+        let state = crate::StateStore::new(None, StateData::default())
             .with_journal_dir(dir.path().to_path_buf());
-        let journal_path = crate::Journal::stable_file_name(dir.path(), "test", &ops);
+        let journal_path = Journal::stable_file_name(dir.path(), "test", &ops);
 
         // first run crashes after applying the first op; the journal persists progress.
         {
@@ -1111,7 +1113,7 @@ mod tests {
         // local journal only, so on the success path the owned one is all that may speak.
         let ops = vec![create_op(Uid::from_u128(1))];
         let dir = tempdir().unwrap();
-        let state = crate::StateStore::new(None, crate::StateData::default())
+        let state = crate::StateStore::new(None, StateData::default())
             .with_journal_dir(dir.path().to_path_buf());
 
         let logged = crate::test_log::capture(|| {
@@ -1133,7 +1135,7 @@ mod tests {
         // as the last create landed is what left a delete-phase crash with no record.
         let ops = vec![create_op(Uid::from_u128(1))];
         let dir = tempdir().unwrap();
-        let state = crate::StateStore::new(None, crate::StateData::default())
+        let state = crate::StateStore::new(None, StateData::default())
             .with_journal_dir(dir.path().to_path_buf());
         let journal_path = Journal::stable_file_name(dir.path(), "test", &ops);
 
@@ -1160,7 +1162,7 @@ mod tests {
         let _guard = journal_guard();
         let ops = vec![create_op(Uid::from_u128(1)), create_op(Uid::from_u128(2))];
         let dir = tempdir().unwrap();
-        let state = crate::StateStore::new(None, crate::StateData::default())
+        let state = crate::StateStore::new(None, StateData::default())
             .with_journal_dir(dir.path().to_path_buf());
         let journal_path = Journal::stable_file_name(dir.path(), "test", &ops);
 
@@ -1199,7 +1201,7 @@ mod tests {
         let stuck = Uid::from_u128(2);
         let ops = vec![create_op(Uid::from_u128(1)), create_op(stuck)];
         let dir = tempdir().unwrap();
-        let state = crate::StateStore::new(None, crate::StateData::default())
+        let state = crate::StateStore::new(None, StateData::default())
             .with_journal_dir(dir.path().to_path_buf());
 
         let logged = crate::test_log::capture(|| {
@@ -1303,7 +1305,7 @@ mod tests {
     #[tokio::test]
     async fn journaled_apply_without_journal_dir_reports_no_resume() {
         let ops = vec![create_op(Uid::from_u128(1))];
-        let state = crate::StateStore::new(None, crate::StateData::default());
+        let state = crate::StateStore::new(None, StateData::default());
         let mut driver = ErraticDriver {
             countdown_to_crash: 99999,
             applied_ops: vec![],
