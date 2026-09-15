@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- bump rustls to 0.23.45 for RUSTSEC-2026-0285, and move off the yanked spin and chacha20 releases
 - the nautobot adapter takes each object type's route from nautobot's api root, deriving one only where the root is unreachable or names no match (#419)
 
 ## [0.9.0] - 2026-08-28
