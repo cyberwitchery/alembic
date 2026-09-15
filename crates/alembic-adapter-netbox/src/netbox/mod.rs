@@ -81,19 +81,26 @@ mod tests {
     }
 
     /// a listing that only answers when netbox is asked for specific primary
-    /// keys, so a full listing does not satisfy it.
+    /// keys, so a full listing does not satisfy it. the ids go in repeated `id`
+    /// params, which is what netbox 4.x actually filters on; it drops an
+    /// unrecognized filter rather than refusing it, so a wrong spelling reads as
+    /// no filter and returns the whole table.
     fn mock_list_by_ids<'a>(
         server: &'a MockServer,
         path: &'a str,
-        ids: &'a str,
+        ids: &'a [&'a str],
         payload: serde_json::Value,
     ) -> Mock<'a> {
-        server.mock(|when, then| {
-            when.method(GET)
+        let ids: Vec<String> = ids.iter().map(|id| (*id).to_string()).collect();
+        server.mock(move |when, then| {
+            let mut when = when
+                .method(GET)
                 .path(path)
-                .query_param("id__in", ids)
                 .query_param("limit", "200")
                 .query_param("offset", "0");
+            for id in &ids {
+                when = when.query_param("id", id.clone());
+            }
             then.status(200).json_body(page(payload));
         })
     }
@@ -118,7 +125,7 @@ mod tests {
         let sites = mock_list_by_ids(
             &server,
             "/api/dcim/sites/",
-            "1",
+            &["1"],
             json!([{ "id": 1, "name": "FRA1", "slug": "fra1" }]),
         );
         let _custom_fields = server.mock(|when, then| {

@@ -71,16 +71,17 @@ fn bound_int_ids(
 impl NetBoxAdapter {
     /// list one type by primary key, in chunks, so a long id set cannot outgrow
     /// the query string. each chunk still pages through `list_all`.
+    ///
+    /// netbox reads a repeated `id` as an or. it is not `id__in`: netbox 4.x
+    /// drops a filter it does not recognize rather than refusing it, so
+    /// `id__in` reads as no filter at all and quietly returns the whole table.
     async fn list_by_ids(&self, resource: &Resource<Value>, ids: &[u64]) -> Result<Vec<Value>> {
         const CHUNK: usize = 100;
         let mut objects = Vec::new();
         for chunk in ids.chunks(CHUNK) {
-            let filter = chunk
-                .iter()
-                .map(u64::to_string)
-                .collect::<Vec<_>>()
-                .join(",");
-            let query = QueryBuilder::new().filter("id__in", filter);
+            let query = chunk.iter().fold(QueryBuilder::new(), |query, id| {
+                query.filter("id", id.to_string())
+            });
             objects.extend(self.client.list_all(resource, Some(query)).await?);
         }
         Ok(objects)
