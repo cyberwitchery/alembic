@@ -1042,6 +1042,145 @@ impl Emitter for TestAdapter {
 
 impl Adapter for TestAdapter {}
 
+/// records which of the two reads the engine chose, so the dispatch rule is
+/// pinned rather than inferred from what came back.
+#[derive(Clone)]
+struct ReadKindRecorder {
+    observed: ObservedState,
+    bound: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    full: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl ReadKindRecorder {
+    fn new(observed: ObservedState) -> Self {
+        Self {
+            observed,
+            bound: Default::default(),
+            full: Default::default(),
+        }
+    }
+
+    fn counts(&self) -> (usize, usize) {
+        use std::sync::atomic::Ordering::SeqCst;
+        (self.bound.load(SeqCst), self.full.load(SeqCst))
+    }
+}
+
+#[async_trait::async_trait]
+impl Observer for ReadKindRecorder {
+    async fn read(
+        &self,
+        _schema: &alembic_core::Schema,
+        _types: &[TypeName],
+        _state: &StateStore,
+    ) -> anyhow::Result<ObservedState> {
+        self.full.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(self.observed.clone())
+    }
+
+    async fn read_bound(
+        &self,
+        _schema: &alembic_core::Schema,
+        _types: &[TypeName],
+        _state: &StateStore,
+    ) -> anyhow::Result<ObservedState> {
+        self.bound.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(self.observed.clone())
+    }
+}
+
+/// the converged steady state: one declared site, already bound, observed as it
+/// is declared.
+fn bound_site() -> (Inventory, ObservedState) {
+    let inventory = inv(vec![obj(
+        uid(1),
+        "dcim.site",
+        "site=fra1",
+        json!({ "name": "FRA1", "slug": "fra1" }),
+    )]);
+    let mut observed = ObservedState::default();
+    observed
+        .insert(ObservedObject {
+            type_name: t("dcim.site"),
+            key: key_str("site=fra1"),
+            attrs: attrs_map(json!({ "name": "FRA1", "slug": "fra1" })),
+            backend_id: Some(BackendId::Int(1)),
+        })
+        .unwrap();
+    (inventory, observed)
+}
+
+fn state_binding_the_site(dir: &std::path::Path, bind: bool) -> StateStore {
+    let mut state = StateStore::load(dir.join("state.json")).unwrap();
+    if bind {
+        state.set_backend_id(t("dcim.site"), uid(1), BackendId::Int(1));
+    }
+    state
+}
+
+#[test]
+fn a_converged_run_reads_only_what_state_binds() {
+    let (inventory, observed) = bound_site();
+    let adapter = ReadKindRecorder::new(observed);
+    let dir = tempdir().unwrap();
+    let mut state = state_binding_the_site(dir.path(), true);
+
+    let plan =
+        futures::executor::block_on(build_plan(&adapter, &inventory, &mut state, false)).unwrap();
+
+    assert!(plan.ops.is_empty(), "unexpected ops: {:?}", plan.ops);
+    assert_eq!(adapter.counts(), (1, 0), "expected the bound read");
+}
+
+#[test]
+fn detecting_deletes_still_reads_the_whole_listing() {
+    let (inventory, observed) = bound_site();
+    let adapter = ReadKindRecorder::new(observed);
+    let dir = tempdir().unwrap();
+    let mut state = state_binding_the_site(dir.path(), true);
+
+    futures::executor::block_on(build_plan(&adapter, &inventory, &mut state, true)).unwrap();
+
+    assert_eq!(
+        adapter.counts(),
+        (0, 1),
+        "extra is defined against the full observation"
+    );
+}
+
+#[test]
+fn an_unbound_declared_object_still_reads_the_whole_listing() {
+    let (inventory, observed) = bound_site();
+    let adapter = ReadKindRecorder::new(observed);
+    let dir = tempdir().unwrap();
+    let mut state = state_binding_the_site(dir.path(), false);
+
+    futures::executor::block_on(build_plan(&adapter, &inventory, &mut state, false)).unwrap();
+
+    assert_eq!(
+        adapter.counts(),
+        (0, 1),
+        "key adoption needs objects not yet bound in state"
+    );
+}
+
+#[test]
+fn no_adopt_needs_only_the_bound_read() {
+    let (inventory, observed) = bound_site();
+    let adapter = ReadKindRecorder::new(observed);
+    let dir = tempdir().unwrap();
+    let mut state = state_binding_the_site(dir.path(), false);
+
+    let (plan, bootstrap) = futures::executor::block_on(crate::build_plan(
+        &adapter, &inventory, &mut state, false, false,
+    ))
+    .unwrap();
+
+    assert!(bootstrap.is_empty());
+    assert!(matches!(plan.ops.as_slice(), [Op::Create { .. }]));
+    assert_eq!(adapter.counts(), (1, 0), "no adoption means no key lookup");
+}
+
 #[test]
 fn build_plan_creates_ops() {
     let inventory = inv(vec![obj(
