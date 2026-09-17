@@ -8,7 +8,7 @@
 //! before it. a run killed without unwinding therefore still leaves every op it
 //! applied on disk.
 
-use crate::{AppliedOp, BackendId, Op};
+use crate::types::{AppliedOp, BackendId, Op};
 use alembic_core::{TypeName, Uid};
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};

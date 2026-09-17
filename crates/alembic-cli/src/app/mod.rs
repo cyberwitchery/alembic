@@ -8,8 +8,8 @@ mod state;
 use alembic_adapter_registry::{create_backend, Plugin};
 use alembic_engine::{
     apply_plan, build_plan, guard_drift_report, guard_schema_provisioning, load_inventory,
-    load_inventory_unvalidated, plan_write_only, render_plan, ApplyReport, Backend, DriftReport,
-    Plan, StateData, StateLock, StateStore, Tense,
+    load_inventory_unvalidated, plan_write_only, render_plan, Backend, DriftReport, Plan,
+    StateLock, StateStore,
 };
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
@@ -30,6 +30,8 @@ use self::io::warn_misleading_output_extension;
 use self::state::{resolve_state_backend_config, state_path, StateBackendConfig};
 #[cfg(test)]
 use alembic_adapter_django::emit::Runner;
+use alembic_adapter_sdk::state::StateData;
+use alembic_adapter_sdk::types::{ApplyReport, Op, Tense};
 #[cfg(test)]
 use alembic_engine::PostgresTlsMode;
 
@@ -438,12 +440,7 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             let plan = read_plan(&plan)?;
 
             let plan = if interactive {
-                if !allow_delete
-                    && plan
-                        .ops
-                        .iter()
-                        .any(|op| matches!(op, alembic_engine::Op::Delete { .. }))
-                {
+                if !allow_delete && plan.ops.iter().any(|op| matches!(op, Op::Delete { .. })) {
                     return Err(anyhow!(
                         "plan contains delete operations; re-run with --allow-delete"
                     ));
@@ -452,21 +449,21 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                 let mut approved = Vec::new();
                 for op in ordered {
                     let description = match &op {
-                        alembic_engine::Op::Create {
+                        Op::Create {
                             type_name, desired, ..
                         } => format!(
                             "create {} {}",
                             type_name,
                             alembic_core::key_string(&desired.key)
                         ),
-                        alembic_engine::Op::Update {
+                        Op::Update {
                             type_name, desired, ..
                         } => format!(
                             "update {} {}",
                             type_name,
                             alembic_core::key_string(&desired.key)
                         ),
-                        alembic_engine::Op::Delete { type_name, key, .. } => {
+                        Op::Delete { type_name, key, .. } => {
                             format!("delete {} {}", type_name, alembic_core::key_string(key))
                         }
                     };

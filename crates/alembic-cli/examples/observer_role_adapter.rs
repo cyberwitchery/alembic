@@ -1,8 +1,10 @@
-use alembic_core::{Schema, TypeName};
-use alembic_engine::{
-    alembic_external_main, ApplyReport, ExternalAdapter, ExternalCapabilities, ExternalObject,
-    ExternalRole, Op, ProvisionReport, StateData,
+use alembic_adapter_sdk::alembic_external_main;
+use alembic_adapter_sdk::external::{
+    ExternalAdapter, ExternalCapabilities, ExternalObject, ExternalRole,
 };
+use alembic_adapter_sdk::state::StateData;
+use alembic_adapter_sdk::types::{ApplyReport, Op, ProvisionReport};
+use alembic_core::{Schema, TypeName};
 use anyhow::Result;
 
 alembic_external_main!(ObserverRoleAdapter::default());

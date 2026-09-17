@@ -1,7 +1,10 @@
-use alembic_core::{Schema, TypeName};
-use alembic_engine::{
-    alembic_external_main, ApplyReport, ExternalAdapter, ExternalObject, Op, StateData,
+use alembic_adapter_sdk::alembic_external_main;
+use alembic_adapter_sdk::external::{
+    ExternalAdapter, ExternalObject,
 };
+use alembic_adapter_sdk::state::StateData;
+use alembic_adapter_sdk::types::{ApplyReport, Op};
+use alembic_core::{Schema, TypeName};
 use anyhow::Result;
 
 alembic_external_main!(MinimalAdapter::default());

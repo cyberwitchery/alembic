@@ -13,6 +13,8 @@ async fn build_plan(
         .await
         .map(|(plan, _)| plan)
 }
+use alembic_adapter_sdk::state::StateData;
+use alembic_adapter_sdk::types::{AppliedOp, ApplyReport, BackendId, Op, ProvisionReport};
 use alembic_core::{
     FieldSchema, FieldType, Inventory, JsonMap, Key, Object, Schema, TypeName, TypeSchema, Uid,
 };

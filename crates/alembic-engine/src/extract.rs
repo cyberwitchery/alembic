@@ -4,7 +4,8 @@ use crate::adapter_ops::{
     backend_id_from_value, build_key_from_schema, normalize_attrs_refs, StateMappings,
 };
 use crate::state::StateStore;
-use crate::types::{BackendId, ObservedObject, Observer};
+use crate::types::{ObservedObject, Observer};
+use alembic_adapter_sdk::types::BackendId;
 use alembic_core::{
     key_string, uid_v5, FieldType, Inventory, JsonMap, Key, Object, Schema, TypeName, TypeSchema,
     Uid,
@@ -456,9 +457,9 @@ fn project_attrs(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::StateData;
-    use crate::types::{BackendId, ObservedState};
+    use crate::types::ObservedState;
     use crate::Observer;
+    use alembic_adapter_sdk::state::StateData;
     use alembic_core::{
         key_string, FieldSchema, FieldType, JsonMap, Key, Schema, TypeName, TypeSchema,
     };

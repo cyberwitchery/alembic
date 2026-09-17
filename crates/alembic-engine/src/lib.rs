@@ -5,10 +5,8 @@ mod apply_retry;
 mod drift;
 mod endpoint;
 mod errors;
-pub mod external;
 mod extract;
 mod inflect;
-pub mod journal;
 mod loader;
 pub mod mapping;
 mod pipeline;
@@ -37,6 +35,7 @@ pub use adapter_ops::{
     resolve_ref_keyed_identity, resolve_value_for_type, resolved_ids_from_state,
     resolved_ids_identity, state_mappings_by_id, RawNode, RefMappings, StateMappings,
 };
+pub use alembic_adapter_sdk::journal::Journal;
 pub use apply_retry::{
     apply_non_delete_journaled, apply_non_delete_with_retries, describe_missing_refs,
     is_missing_ref_error, JournalGuard, RetryApplyDriver, RetryApplyResult,
@@ -44,25 +43,18 @@ pub use apply_retry::{
 pub use drift::{ChangedEntry, DriftEntry, DriftReport};
 pub use endpoint::normalize_endpoint;
 pub use errors::AdapterApplyError;
-pub use external::{
-    run_external_adapter, ExternalAdapter, ExternalCapabilities, ExternalEnvelope,
-    ExternalEnvelopeRef, ExternalObject, ExternalRequest, ExternalRequestRef, ExternalResponse,
-    ExternalRole, EXTERNAL_PROTOCOL_VERSION,
-};
 pub use extract::{import_inventory, ImportReport};
 pub use inflect::pluralize;
-pub use journal::Journal;
 pub use loader::{load_inventory, load_inventory_unvalidated};
 pub use pipeline::{guard_drift_report, guard_schema_deletes, guard_schema_provisioning};
 pub use plan_view::render_plan;
 pub use planner::{plan, sort_ops_for_apply};
 pub use pretty_printing::bullet_list;
-pub use state::{BackendIdentity, PostgresTlsMode, StateData, StateFile, StateLock, StateStore};
+pub use state::{BackendIdentity, PostgresTlsMode, StateFile, StateLock, StateStore};
 pub use transform::{compile_map, eval_map_transform, load_map_spec, MapSpec, TransformsSpec};
 pub use types::{
-    Adapter, Adoption, AppliedOp, ApplyReport, Backend, BackendId, BootstrapReport, Emitter,
-    FieldChange, ObservedObject, ObservedState, Observer, Op, Plan, PlanSummary, ProvisionReport,
-    SupersededBinding, Tense,
+    Adapter, Adoption, Backend, BootstrapReport, Emitter, ObservedObject, ObservedState, Observer,
+    Plan, PlanSummary, SupersededBinding,
 };
 
 /// validate an inventory and return the report.
@@ -208,6 +200,6 @@ pub async fn apply_plan(
     plan: &Plan,
     state: &mut StateStore,
     allow_delete: bool,
-) -> Result<ApplyReport> {
+) -> Result<alembic_adapter_sdk::types::ApplyReport> {
     pipeline::apply(backend, plan, state, allow_delete).await
 }

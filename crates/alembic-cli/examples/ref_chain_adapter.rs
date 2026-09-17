@@ -1,8 +1,12 @@
+use alembic_adapter_sdk::alembic_external_main;
+use alembic_adapter_sdk::external::{
+    ExternalAdapter, ExternalCapabilities, ExternalObject, ExternalRole,
+};
+use alembic_adapter_sdk::state::StateData;
+use alembic_adapter_sdk::types::{ApplyReport, BackendId, Op};
 use alembic_core::{JsonMap, Schema, TypeName};
 use alembic_engine::{
-    alembic_external_main, build_key_from_schema, normalize_attrs_refs, resolve_ref_keyed_identity,
-    ApplyReport, ExternalAdapter, ExternalCapabilities, ExternalObject, ExternalRole, Op, RawNode,
-    StateData, StateMappings,
+    build_key_from_schema, normalize_attrs_refs, resolve_ref_keyed_identity, RawNode, StateMappings,
 };
 use anyhow::{anyhow, Result};
 use serde_json::json;
@@ -72,7 +76,7 @@ impl ExternalAdapter for RefChainAdapter {
             .into_iter()
             .map(|(type_name, backend_id, attrs)| RawNode {
                 type_name: TypeName::new(type_name),
-                backend_id: alembic_engine::BackendId::Int(backend_id),
+                backend_id: BackendId::Int(backend_id),
                 attrs: attrs_of(attrs),
             })
             .collect();
