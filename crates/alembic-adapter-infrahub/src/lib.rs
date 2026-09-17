@@ -631,8 +631,7 @@ impl Observer for InfrahubAdapter {
 }
 
 /// the paginated node query for one type. `filtered` adds infrahub's `ids: [ID]`
-/// argument, which every node query accepts, narrowing the read to the nodes
-/// state already binds.
+/// argument to restrict the read to nodes already bound in state.
 fn node_query(gql_type: &str, selection: &str, filtered: bool) -> String {
     let (decl, arg) = if filtered {
         (", $ids: [ID]", "ids: $ids, ")
@@ -644,10 +643,9 @@ fn node_query(gql_type: &str, selection: &str, filtered: bool) -> String {
     )
 }
 
-/// the ids infrahub addresses a type's bound objects by. an empty vec is a type
-/// state binds nothing of, which a bound read reaches none of. `None` is a type
-/// bound to an id infrahub does not address nodes by, which falls back to the
-/// full query rather than to one that would omit it.
+/// the infrahub ids bound in state for one type. an empty vec means the type has
+/// no bindings and can be skipped. `None` means at least one binding is not an
+/// infrahub string id, so the caller must fall back to the full query.
 fn bound_ids(state_store: &StateStore, type_name: &TypeName) -> Option<Vec<String>> {
     let Some(bound) = state_store.backend_ids().get(type_name) else {
         return Some(Vec::new());
@@ -690,8 +688,7 @@ impl InfrahubAdapter {
                 .types
                 .get(type_name.as_str())
                 .ok_or_else(|| anyhow!("missing schema for {}", type_name))?;
-            // nothing bound means nothing of this type the run can reach, so the
-            // query is skipped outright rather than issued and discarded.
+            // An unbound type cannot affect this run, so skip its query.
             let bound = bound_only
                 .then(|| bound_ids(state_store, &type_name))
                 .flatten();
@@ -2202,7 +2199,7 @@ mod tests {
         let bound = TypeName::new("infra.device");
         let odd = TypeName::new("infra.other");
 
-        // a type state has never bound: nothing to fetch.
+        // A type with no state bindings needs no query.
         assert_eq!(bound_ids(&state, &bound), Some(Vec::new()));
 
         state.set_backend_id(

@@ -1072,7 +1072,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_bound_read_skips_a_type_state_binds_nothing_of() {
+    async fn a_bound_read_skips_a_type_with_no_state_bindings() {
         let server = MockServer::start();
         let dir = tempdir().unwrap();
         mock_content_types(&server);

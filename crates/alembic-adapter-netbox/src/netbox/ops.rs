@@ -47,11 +47,9 @@ impl Observer for NetBoxAdapter {
     }
 }
 
-/// the ids netbox addresses a type's bound objects by. an empty vec is a type
-/// state binds nothing of, which a bound read reaches none of and so skips
-/// entirely. `None` is a type bound to at least one id that is not a netbox pk,
-/// which cannot go in `id__in`, so it falls back to the full listing rather
-/// than to a query that would silently omit it.
+/// the netbox ids bound in state for one type. an empty vec means the type has
+/// no bindings and can be skipped. `None` means at least one binding is not a
+/// netbox integer pk, so the caller must fall back to the full listing.
 fn bound_int_ids(
     state_store: &alembic_engine::StateStore,
     type_name: &TypeName,
@@ -118,8 +116,7 @@ impl NetBoxAdapter {
                 .get(type_name.as_str())
                 .ok_or_else(|| anyhow!("missing schema for {}", type_name))?;
             let resource: Resource<Value> = self.client.resource(info.endpoint.clone());
-            // nothing bound means nothing of this type the run can reach, so the
-            // listing is skipped outright rather than fetched and discarded.
+            // An unbound type cannot affect this run, so skip its listing.
             let bound = bound_only
                 .then(|| bound_int_ids(state_store, &type_name))
                 .flatten();

@@ -43,10 +43,9 @@ impl Observer for NautobotAdapter {
     }
 }
 
-/// the uuids nautobot addresses a type's bound objects by. an empty vec is a
-/// type state binds nothing of, which a bound read reaches none of and so skips
-/// entirely. `None` is a type bound to at least one id that is not a uuid, which
-/// falls back to the full listing rather than to a query that would omit it.
+/// the nautobot uuids bound in state for one type. an empty vec means the type
+/// has no bindings and can be skipped. `None` means at least one binding is not
+/// a uuid, so the caller must fall back to the full listing.
 fn bound_uuids(
     state_store: &alembic_engine::StateStore,
     type_name: &TypeName,
@@ -101,8 +100,7 @@ impl NautobotAdapter {
                 .types
                 .get(type_name.as_str())
                 .ok_or_else(|| anyhow!("missing schema for {}", type_name))?;
-            // nothing bound means nothing of this type the run can reach, so the
-            // listing is skipped outright rather than fetched and discarded.
+            // An unbound type cannot affect this run, so skip its listing.
             let bound = bound_only
                 .then(|| bound_uuids(state_store, &type_name))
                 .flatten();

@@ -532,12 +532,11 @@ pub trait Observer: Send + Sync {
         state: &crate::state::StateStore,
     ) -> anyhow::Result<ObservedState>;
 
-    /// read where the objects `state` already binds are the only ones the run
-    /// can reach: it detects no deletes, so it classifies nothing it did not
-    /// declare, and every declared object is bound, so it adopts nothing by key.
-    /// an adapter that can address its backend by id may fetch just those and
-    /// skip the full listing; returning more stays correct, which is why the
-    /// default is to delegate to [`Observer::read`].
+    /// read only objects already bound in `state`. the engine calls this when
+    /// delete detection is disabled and key adoption is either disabled or no
+    /// longer possible. an adapter that can address its backend by id may skip
+    /// the full listing. returning more remains correct, so the default delegates
+    /// to [`Observer::read`].
     async fn read_bound(
         &self,
         schema: &Schema,

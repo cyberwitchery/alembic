@@ -162,10 +162,9 @@ mod tests {
         assert_eq!(observed.len(), 1);
     }
 
-    /// a type state binds nothing of is not fetched at all: the run cannot reach
-    /// an object it has never bound, so the listing would be discarded.
+    /// a type with no state bindings is not fetched at all.
     #[tokio::test]
-    async fn a_bound_read_skips_a_type_state_binds_nothing_of() {
+    async fn a_bound_read_skips_a_type_with_no_state_bindings() {
         let server = MockServer::start();
         let dir = tempdir().unwrap();
         let state = StateStore::load(dir.path().join("state.json")).unwrap();

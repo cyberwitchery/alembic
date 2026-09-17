@@ -1160,8 +1160,25 @@ fn an_unbound_declared_object_still_reads_the_whole_listing() {
     assert_eq!(
         adapter.counts(),
         (0, 1),
-        "adoption by key needs objects state has never bound"
+        "key adoption needs objects not yet bound in state"
     );
+}
+
+#[test]
+fn no_adopt_needs_only_the_bound_read() {
+    let (inventory, observed) = bound_site();
+    let adapter = ReadKindRecorder::new(observed);
+    let dir = tempdir().unwrap();
+    let mut state = state_binding_the_site(dir.path(), false);
+
+    let (plan, bootstrap) = futures::executor::block_on(crate::build_plan(
+        &adapter, &inventory, &mut state, false, false,
+    ))
+    .unwrap();
+
+    assert!(bootstrap.is_empty());
+    assert!(matches!(plan.ops.as_slice(), [Op::Create { .. }]));
+    assert_eq!(adapter.counts(), (1, 0), "no adoption means no key lookup");
 }
 
 #[test]

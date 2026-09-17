@@ -8,8 +8,7 @@ use alembic_core::{Inventory, TypeName};
 use anyhow::{anyhow, Result};
 use std::collections::BTreeSet;
 
-/// true when every declared object is already bound, so nothing has to be
-/// adopted by key and a read of just the bound ids answers the whole run.
+/// whether state has a backend binding for every declared object.
 fn every_declared_object_is_bound(inventory: &Inventory, state: &StateStore) -> bool {
     inventory.objects.iter().all(|object| {
         state
@@ -37,10 +36,10 @@ pub(crate) async fn observe(
     }
     let types_vec: Vec<_> = types.into_iter().collect();
 
-    // a run that detects deletes classifies every object the backend holds, and
-    // one still adopting by key has to see objects state has never bound. either
-    // way it needs the whole listing; otherwise the bound ids are the whole run.
-    let bound_is_enough = !detect_deletes && every_declared_object_is_bound(inventory, state);
+    // Delete detection needs the full listing. Key adoption does too while any
+    // declared object is unbound. Otherwise only bound objects affect the plan.
+    let bound_is_enough =
+        !detect_deletes && (!adopt_by_key || every_declared_object_is_bound(inventory, state));
     let observed = if bound_is_enough {
         adapter
             .read_bound(&inventory.schema, &types_vec, state)
