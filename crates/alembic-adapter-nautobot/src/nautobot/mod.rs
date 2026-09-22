@@ -1036,6 +1036,66 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_bound_read_asks_nautobot_only_for_the_ids_state_holds() {
+        let server = MockServer::start();
+        let dir = tempdir().unwrap();
+        mock_content_types(&server);
+        let site_id = "11111111-1111-1111-1111-111111111111";
+        // only answers when nautobot is asked for that uuid, so a full listing
+        // does not satisfy it.
+        let sites = server.mock(|when, then| {
+            when.method(GET)
+                .path("/api/dcim/sites/")
+                .query_param("id", site_id);
+            then.status(200).json_body(page(json!([{
+                "id": site_id,
+                "name": "FRA1",
+                "slug": "fra1",
+            }])));
+        });
+
+        let mut store = state(dir.path());
+        store.set_backend_id(
+            TypeName::new("dcim.site"),
+            uid(1),
+            BackendId::String(site_id.to_string()),
+        );
+
+        let adapter = NautobotAdapter::new(&server.base_url(), "token").unwrap();
+        let observed = adapter
+            .read_bound(&site_schema(), &[TypeName::new("dcim.site")], &store)
+            .await
+            .unwrap();
+
+        sites.assert();
+        assert_eq!(observed.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_bound_read_skips_a_type_with_no_state_bindings() {
+        let server = MockServer::start();
+        let dir = tempdir().unwrap();
+        mock_content_types(&server);
+        let sites = server.mock(|when, then| {
+            when.method(GET).path("/api/dcim/sites/");
+            then.status(200).json_body(page(json!([])));
+        });
+
+        let adapter = NautobotAdapter::new(&server.base_url(), "token").unwrap();
+        let observed = adapter
+            .read_bound(
+                &site_schema(),
+                &[TypeName::new("dcim.site")],
+                &state(dir.path()),
+            )
+            .await
+            .unwrap();
+
+        sites.assert_calls(0);
+        assert_eq!(observed.len(), 0);
+    }
+
+    #[tokio::test]
     async fn observe_reads_objects_and_maps_backend_id() {
         let server = MockServer::start();
         let dir = tempdir().unwrap();
