@@ -155,7 +155,32 @@ pub(super) fn write_inventory(path: &Path, inventory: &alembic_core::Inventory) 
 
 pub(super) fn read_plan(path: &Path) -> Result<Plan> {
     let raw = fs::read_to_string(path).with_context(|| format!("read plan: {}", path.display()))?;
+    // a file that parses fine but is the wrong document shape would only fail at
+    // the serde field. inventories carry `objects`, plans carry `ops`; loading as
+    // a Plan, an `objects` key with no `ops` means the IR was passed where a plan
+    // was expected, so name it here before that opaque error.
+    if let Some(hint) = looks_like_inventory(&raw) {
+        return Err(anyhow!("{hint}")).with_context(|| format!("read plan: {}", path.display()));
+    }
     serde_json::from_str(&raw).with_context(|| format!("parse plan: {}", path.display()))
+}
+
+/// when `content` parses as a json object carrying the inventory's telltale
+/// `objects` key (and no apply-plan `ops`), return a hint pointing at map/import;
+/// `None` otherwise. json only, which is every file `read_plan` reads, and both
+/// keys sit at the document top level in either shape.
+fn looks_like_inventory(content: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(content).ok()?;
+    let obj = value.as_object()?;
+    if obj.contains_key("objects") && !obj.contains_key("ops") {
+        Some(
+            "looks like an IR inventory, not an apply plan: pass this to `map` or `import`, \
+             not `apply --plan`"
+                .to_string(),
+        )
+    } else {
+        None
+    }
 }
 
 /// when an always-JSON output path carries a `.yaml`/`.yml` extension, return a

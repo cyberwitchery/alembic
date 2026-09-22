@@ -64,6 +64,13 @@ fn load_recursive(
 
     let content = fs::read_to_string(&canonical)
         .with_context(|| format!("read inventory: {}", canonical.display()))?;
+    // a file that parses fine but is the wrong document shape would only fail at
+    // the serde field. apply plans carry `ops`; inventories carry `objects`, and
+    // both shapes are plain yaml/json, so peek after parse and name the mix-up.
+    if let Some(hint) = looks_like_plan(&content) {
+        return Err(anyhow!("{hint}"))
+            .with_context(|| format!("read inventory: {}", canonical.display()));
+    }
     let inventory: InventoryFile = if canonical.extension().and_then(|s| s.to_str()) == Some("json")
     {
         serde_json::from_str(&content)
@@ -101,6 +108,26 @@ fn load_recursive(
     }
 
     Ok(())
+}
+
+/// when `content` parses as a plan (json or yaml) carrying the telltale top-level
+/// `ops` key, return a hint pointing at the command that takes a plan; `None`
+/// otherwise. tried before the loader's own serde fields so a plan fed to
+/// map/import is named here rather than failing on an unknown field. tries json
+/// first (the common case), then yaml, since neither shape is valid in both.
+fn looks_like_plan(content: &str) -> Option<String> {
+    let value = serde_json::from_str::<serde_json::Value>(content)
+        .ok()
+        .or_else(|| serde_yaml::from_str::<serde_json::Value>(content).ok())?;
+    if value.as_object()?.contains_key("ops") {
+        Some(
+            "this looks like an apply plan, not an IR inventory: pass it to `apply --plan`, \
+             not `map` or `import`"
+                .to_string(),
+        )
+    } else {
+        None
+    }
 }
 
 /// map each object's `uid` value to the 1-indexed line where it is defined (its
@@ -342,5 +369,22 @@ objects:
         let mut current = Some(schema_with_type("dcim.site"));
         let err = merge_schema(&mut current, Some(schema_with_type("dcim.site"))).unwrap_err();
         assert_eq!(err.to_string(), "duplicate schema type dcim.site");
+    }
+
+    #[test]
+    fn flags_a_plan_passed_as_an_inventory() {
+        // a plan parses fine into the loader's fields (it has no `objects`), so it
+        // would only fail at serde with an opaque error; name it here. carries its
+        // `ops` key but is written as yaml to exercise the non-json path too.
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("plan.yaml");
+        std::fs::write(
+            &path,
+            "schema: { types: {} }\nops: []\nsummary: { create: 0, update: 0, delete: 0 }\n",
+        )
+        .unwrap();
+        let err = format!("{:#}", load_inventory(&path).unwrap_err());
+        assert!(err.contains("apply plan"), "{err}");
+        assert!(err.contains("`apply --plan`"), "{err}");
     }
 }

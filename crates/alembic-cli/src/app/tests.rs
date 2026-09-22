@@ -468,6 +468,23 @@ fn read_plan_invalid_json_errors() {
 }
 
 #[test]
+fn read_plan_flags_an_inventory_passed_as_a_plan() {
+    // an inventory parses as json with no `ops` key; name it before the serde
+    // field error that would otherwise be opaque.
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("plan.json");
+    std::fs::write(
+        &path,
+        r#"{"schema":{"types":{}},"scope":{},"objects":[{"uid":"11111111-1111-1111-1111-111111111111","type":"dcim.site"}]}"#,
+    )
+    .unwrap();
+    let err = read_plan(&path).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(msg.contains("IR inventory"), "{msg}");
+    assert!(msg.contains("`map` or `import`"), "{msg}");
+}
+
+#[test]
 fn read_plan_rejects_a_misspelled_key() {
     // the plan file is the one document the host takes from someone else. a
     // misspelled `schema_preview` read as a plan carrying none, and apply's early
