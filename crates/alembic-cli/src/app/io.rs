@@ -155,7 +155,53 @@ pub(super) fn write_inventory(path: &Path, inventory: &alembic_core::Inventory) 
 
 pub(super) fn read_plan(path: &Path) -> Result<Plan> {
     let raw = fs::read_to_string(path).with_context(|| format!("read plan: {}", path.display()))?;
-    serde_json::from_str(&raw).with_context(|| format!("parse plan: {}", path.display()))
+    match serde_json::from_str::<Plan>(&raw)
+        .with_context(|| format!("parse plan: {}", path.display()))
+    {
+        Ok(plan) => Ok(plan),
+        Err(err) => {
+            // a wrong-kind file (an apply report or an inventory handed where a
+            // plan was expected) only surfaces the bare parse error; name what it
+            // looks like so the mismatch is actionable.
+            if let Some(hint) = classify_input_kind(&raw) {
+                Err(anyhow!("{hint}").context(err))
+            } else {
+                Err(err)
+            }
+        }
+    }
+}
+
+/// when `read_plan` cannot deserialize a file as a plan, inspect the top-level
+/// object for tell-tale keys and return a one-line hint naming the kind it looks
+/// like instead (an apply report vs an inventory/ir), so a wrong-kind input gets
+/// more than the bare parse error. `None` when nothing is distinctive enough to
+/// say, e.g. a plan whose fields are otherwise well-formed but typed wrong.
+fn classify_input_kind(raw: &str) -> Option<String> {
+    let value = serde_json::from_str::<serde_json::Value>(raw).ok()?;
+    let obj = value.as_object()?;
+
+    // an apply report carries `applied`; a plan always carries `ops`, so this is
+    // the only way to tell them apart when one of each was handed where the other
+    // was expected.
+    if obj.contains_key("applied") {
+        return Some(
+            "looks like an apply report (key 'applied'); read_plan expects a plan with 'ops'"
+                .to_string(),
+        );
+    }
+
+    // an inventory/ir has `objects`, or `schema` without the plan's `ops`.
+    let is_inventory =
+        obj.contains_key("objects") || (!obj.contains_key("ops") && obj.contains_key("schema"));
+    if is_inventory {
+        return Some(
+            "looks like an inventory / ir document; read_plan expects a plan with 'ops'"
+                .to_string(),
+        );
+    }
+
+    None
 }
 
 /// when an always-JSON output path carries a `.yaml`/`.yml` extension, return a
@@ -176,5 +222,44 @@ pub(super) fn warn_misleading_output_extension(path: &Path) -> Option<String> {
         ))
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::classify_input_kind;
+
+    #[test]
+    fn an_apply_report_names_itself_by_applied() {
+        let hint = classify_input_kind(r#"{ "applied": [] }"#).unwrap();
+        assert!(hint.contains("apply report"), "{hint}");
+        assert!(hint.contains("'applied'"), "{hint}");
+    }
+
+    #[test]
+    fn an_inventory_names_itself_by_objects() {
+        let hint = classify_input_kind(r#"{ "objects": [], "schema": {} }"#).unwrap();
+        assert!(hint.contains("inventory"), "{hint}");
+    }
+
+    #[test]
+    fn schema_without_ops_is_treated_as_inventory_not_plan() {
+        // a plan always has `ops`; `schema` on its own matches an inventory.
+        let hint = classify_input_kind(r#"{ "schema": {} }"#).unwrap();
+        assert!(hint.contains("inventory"), "{hint}");
+    }
+
+    #[test]
+    fn neither_nor_the_other_returns_no_hint() {
+        // a well-formed plan with the wrong types parses past this; an unknown
+        // shape has no tell-tale key, so there is nothing to say.
+        assert!(classify_input_kind(r#"{ "ops": 5 }"#).is_none());
+        assert!(classify_input_kind(r#"{ "unrelated": true }"#).is_none());
+    }
+
+    #[test]
+    fn a_non_object_is_no_hint() {
+        assert!(classify_input_kind("[1, 2, 3]").is_none());
+        assert!(classify_input_kind("not json at all").is_none());
     }
 }
