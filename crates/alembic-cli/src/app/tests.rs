@@ -468,6 +468,25 @@ fn read_plan_invalid_json_errors() {
 }
 
 #[test]
+fn read_plan_hints_when_given_an_inventory_instead_of_a_plan() {
+    // feeding an IR where a plan was expected used to surface only a bare serde
+    // error. the doc is a valid inventory (schema + objects), just not a plan.
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("ir.json");
+    std::fs::write(
+        &path,
+        r#"{"schema":{"types":{}},"objects":[{"uid":"00000000-0000-0000-0000-000000000000","type":"dcim.site","key":{"slug":"fra1"},"attrs":{"name":"FRA1"}}]}"#,
+    )
+    .unwrap();
+    let err = read_plan(&path).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(msg.contains("inventory"), "{msg}");
+    assert!(msg.contains("`objects`"), "{msg}");
+    // the raw serde reason is still chained underneath.
+    assert!(msg.contains("unknown field `objects`"), "{msg}");
+}
+
+#[test]
 fn read_plan_rejects_a_misspelled_key() {
     // the plan file is the one document the host takes from someone else. a
     // misspelled `schema_preview` read as a plan carrying none, and apply's early
