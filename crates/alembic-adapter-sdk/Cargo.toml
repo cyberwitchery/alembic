@@ -19,3 +19,5 @@ uuid.workspace = true
 anyhow.workspace = true
 tempfile.workspace = true
 tracing.workspace = true
+async-trait.workspace = true
+thiserror.workspace = true

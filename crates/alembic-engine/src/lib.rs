@@ -36,13 +36,9 @@ pub use adapter_ops::{
     resolved_ids_identity, state_mappings_by_id, RawNode, RefMappings,
 };
 pub use alembic_adapter_sdk::journal::Journal;
-pub use apply_retry::{
-    apply_non_delete_journaled, apply_non_delete_with_retries, describe_missing_refs,
-    is_missing_ref_error, JournalGuard, RetryApplyDriver, RetryApplyResult,
-};
+pub use apply_retry::apply_non_delete_journaled;
 pub use drift::{ChangedEntry, DriftEntry, DriftReport};
 pub use endpoint::normalize_endpoint;
-pub use errors::AdapterApplyError;
 pub use extract::{import_inventory, ImportReport};
 pub use inflect::pluralize;
 pub use loader::{load_inventory, load_inventory_unvalidated};

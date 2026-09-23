@@ -1,6 +1,7 @@
 use crate::mapping::{supports_feature, tags_from_value};
 use crate::types::ObservedObject;
-use crate::{AdapterApplyError, StateStore};
+use crate::StateStore;
+use alembic_adapter_sdk::errors::AdapterApplyError;
 use alembic_adapter_sdk::state_mappings::StateMappings;
 use alembic_adapter_sdk::types::{BackendId, Op};
 use alembic_core::{
