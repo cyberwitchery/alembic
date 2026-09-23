@@ -6,6 +6,9 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
+documentation = "https://docs.rs/alembic-adapter-sdk"
+description = "SDK for developing external alembic adapters."
+readme = "../../README.md"
 
 [dependencies]
 serde.workspace = true
