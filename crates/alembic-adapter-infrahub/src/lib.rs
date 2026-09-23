@@ -163,26 +163,38 @@ impl InfrahubAdapter {
         type_name: &TypeName,
         type_schema: &alembic_core::TypeSchema,
     ) -> Result<Vec<(BackendId, JsonMap)>> {
+        self.read_type_nodes(schema_info, type_name, type_schema, None)
+            .await
+    }
+
+    /// `ids` narrows the query to the nodes named, which every infrahub node
+    /// query accepts as `ids: [ID]`. `None` reads the type whole.
+    async fn read_type_nodes(
+        &self,
+        schema_info: &SchemaInfo,
+        type_name: &TypeName,
+        type_schema: &alembic_core::TypeSchema,
+        ids: Option<&[String]>,
+    ) -> Result<Vec<(BackendId, JsonMap)>> {
         let gql_type = gql_type_name(type_name);
         let fields = field_names_for_schema(type_schema);
         let field_kinds = schema_info.field_kinds(&gql_type, type_schema, &fields)?;
         let selection = build_selection(&field_kinds);
 
-        let query = format!(
-            "query($offset: Int, $limit: Int) {{ {type_name}(offset: $offset, limit: $limit) {{ count edges {{ node {{ id hfid {selection} }} }} }} }}",
-            type_name = gql_type,
-            selection = selection
-        );
+        let query = node_query(&gql_type, &selection, ids.is_some());
 
         let mut observed = Vec::new();
         let mut offset = 0usize;
         let limit = 200usize;
 
         loop {
-            let vars = json!({
+            let mut vars = json!({
                 "offset": offset,
                 "limit": limit,
             });
+            if let Some(ids) = ids {
+                vars["ids"] = json!(ids);
+            }
             let response = self
                 .client
                 .execute_raw(&query, Some(vars), None)
@@ -605,6 +617,56 @@ impl Observer for InfrahubAdapter {
         types: &[TypeName],
         state_store: &StateStore,
     ) -> Result<ObservedState> {
+        self.read_listing(schema, types, state_store, false).await
+    }
+
+    async fn read_bound(
+        &self,
+        schema: &Schema,
+        types: &[TypeName],
+        state_store: &StateStore,
+    ) -> Result<ObservedState> {
+        self.read_listing(schema, types, state_store, true).await
+    }
+}
+
+/// the paginated node query for one type. `filtered` adds infrahub's `ids: [ID]`
+/// argument to restrict the read to nodes already bound in state.
+fn node_query(gql_type: &str, selection: &str, filtered: bool) -> String {
+    let (decl, arg) = if filtered {
+        (", $ids: [ID]", "ids: $ids, ")
+    } else {
+        ("", "")
+    };
+    format!(
+        "query($offset: Int, $limit: Int{decl}) {{ {gql_type}({arg}offset: $offset, limit: $limit) {{ count edges {{ node {{ id hfid {selection} }} }} }} }}"
+    )
+}
+
+/// the infrahub ids bound in state for one type. an empty vec means the type has
+/// no bindings and can be skipped. `None` means at least one binding is not an
+/// infrahub string id, so the caller must fall back to the full query.
+fn bound_ids(state_store: &StateStore, type_name: &TypeName) -> Option<Vec<String>> {
+    let Some(bound) = state_store.backend_ids().get(type_name) else {
+        return Some(Vec::new());
+    };
+    bound
+        .keys()
+        .map(|id| match id {
+            BackendId::String(id) => Some(id.clone()),
+            BackendId::Int(_) => None,
+        })
+        .collect()
+}
+
+impl InfrahubAdapter {
+    async fn read_listing(
+        &self,
+        schema: &Schema,
+        types: &[TypeName],
+        state_store: &StateStore,
+        bound_only: bool,
+    ) -> Result<ObservedState> {
         let schema_info = self.load_schema_info().await?;
         validate_schema(schema, &schema_info)?;
 
@@ -626,8 +688,15 @@ impl Observer for InfrahubAdapter {
                 .types
                 .get(type_name.as_str())
                 .ok_or_else(|| anyhow!("missing schema for {}", type_name))?;
+            // An unbound type cannot affect this run, so skip its query.
+            let bound = bound_only
+                .then(|| bound_ids(state_store, &type_name))
+                .flatten();
+            if bound.as_ref().is_some_and(|ids| ids.is_empty()) {
+                continue;
+            }
             let nodes = self
-                .read_type_objects(&schema_info, &type_name, type_schema)
+                .read_type_nodes(&schema_info, &type_name, type_schema, bound.as_deref())
                 .await?;
             for (backend_id, attrs) in nodes {
                 raw.push(RawNode {
@@ -2107,6 +2176,48 @@ fn extract_ref_uids(value: &Value) -> Vec<Uid> {
 
 #[cfg(test)]
 mod tests {
+    use super::{bound_ids, node_query};
+
+    #[test]
+    fn a_filtered_node_query_declares_and_passes_ids() {
+        let query = node_query("InfraDevice", "name { value }", true);
+        assert!(query.contains("$ids: [ID]"), "{query}");
+        assert!(query.contains("InfraDevice(ids: $ids, offset:"), "{query}");
+    }
+
+    #[test]
+    fn an_unfiltered_node_query_mentions_no_ids() {
+        let query = node_query("InfraDevice", "name { value }", false);
+        assert!(!query.contains("ids"), "{query}");
+        assert!(query.contains("InfraDevice(offset:"), "{query}");
+    }
+
+    #[test]
+    fn bound_ids_separates_unbound_from_unaddressable() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = StateStore::load(dir.path().join("state.json")).unwrap();
+        let bound = TypeName::new("infra.device");
+        let odd = TypeName::new("infra.other");
+
+        // A type with no state bindings needs no query.
+        assert_eq!(bound_ids(&state, &bound), Some(Vec::new()));
+
+        state.set_backend_id(
+            bound.clone(),
+            Uid::parse_str("00000000-0000-0000-0000-0000000000a1").unwrap(),
+            BackendId::String("abc".to_string()),
+        );
+        assert_eq!(bound_ids(&state, &bound), Some(vec!["abc".to_string()]));
+
+        // an id infrahub does not address nodes by: fall back to the full query.
+        state.set_backend_id(
+            odd.clone(),
+            Uid::parse_str("00000000-0000-0000-0000-0000000000a2").unwrap(),
+            BackendId::Int(7),
+        );
+        assert_eq!(bound_ids(&state, &odd), None);
+    }
+
     use super::*;
     use alembic_adapter_sdk::state::StateData;
     use alembic_core::{

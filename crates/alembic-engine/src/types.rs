@@ -204,6 +204,20 @@ pub trait Observer: Send + Sync {
         types: &[TypeName],
         state: &crate::state::StateStore,
     ) -> anyhow::Result<ObservedState>;
+
+    /// read only objects already bound in `state`. the engine calls this when
+    /// delete detection is disabled and key adoption is either disabled or no
+    /// longer possible. an adapter that can address its backend by id may skip
+    /// the full listing. returning more remains correct, so the default delegates
+    /// to [`Observer::read`].
+    async fn read_bound(
+        &self,
+        schema: &Schema,
+        types: &[TypeName],
+        state: &crate::state::StateStore,
+    ) -> anyhow::Result<ObservedState> {
+        self.read(schema, types, state).await
+    }
 }
 
 /// write capability: apply a plan's operations, and provision the schema they
