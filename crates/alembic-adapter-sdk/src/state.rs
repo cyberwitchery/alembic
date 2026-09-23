@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 /// the uid -> backend id mappings. this is also the shape external adapters
-/// receive in read/write requests, so the backend stamp lives in [`StateFile`],
+/// receive in read/write requests, so the backend stamp lives in `alembic_engine::StateFile`,
 /// never here.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct StateData {
