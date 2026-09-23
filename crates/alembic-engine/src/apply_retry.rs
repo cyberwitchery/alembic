@@ -1,5 +1,5 @@
-use alembic_adapter_sdk::journal::Journal;
 use crate::AdapterApplyError;
+use alembic_adapter_sdk::journal::Journal;
 use alembic_adapter_sdk::types::{AppliedOp, Op};
 use alembic_core::Uid;
 use anyhow::{anyhow, Result};
