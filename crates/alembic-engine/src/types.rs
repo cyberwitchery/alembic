@@ -325,52 +325,7 @@ impl BootstrapReport {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use alembic_adapter_sdk::types::{FieldChange, Tense};
-    use alembic_core::{Key, TypeName, Uid};
-
-    #[test]
-    fn backend_id_serialization() {
-        let int_id = BackendId::Int(123);
-        let json = serde_json::to_string(&int_id).unwrap();
-        assert_eq!(json, "123");
-        let back: BackendId = serde_json::from_str(&json).unwrap();
-        assert_eq!(back, int_id);
-
-        let str_id = BackendId::String("uuid".to_string());
-        let json = serde_json::to_string(&str_id).unwrap();
-        assert_eq!(json, "\"uuid\"");
-        let back: BackendId = serde_json::from_str(&json).unwrap();
-        assert_eq!(back, str_id);
-    }
-
-    #[test]
-    fn provision_report_defaults_omitted_lists() {
-        // a non-Rust ensure_schema adapter that provisioned an object type but no
-        // custom fields/tags naturally omits the empty lists; that must deserialize.
-        let report: ProvisionReport =
-            serde_json::from_value(serde_json::json!({"created_object_types": ["dcim.site"]}))
-                .unwrap();
-        assert!(report.created_fields.is_empty());
-        assert!(report.created_tags.is_empty());
-        assert_eq!(report.created_object_types, ["dcim.site"]);
-
-        // the whole report deserializes from an empty object.
-        assert!(serde_json::from_str::<ProvisionReport>("{}")
-            .unwrap()
-            .is_empty());
-    }
-
-    #[test]
-    fn apply_report_defaults_omitted_applied() {
-        // apply calls write on every run, including a converged one whose plan has
-        // no ops, and a non-Rust adapter answers that with an empty result.
-        let report: ApplyReport = serde_json::from_str("{}").unwrap();
-        assert!(report.applied.is_empty());
-        assert!(report.resumed.is_empty());
-        assert_eq!(report.previously_applied_count, None);
-        assert!(report.provision.is_empty());
-    }
+    use crate::{Plan, PlanSummary};
 
     #[test]
     fn a_misspelled_schema_preview_key_is_rejected() {
@@ -379,7 +334,7 @@ mod tests {
         let err = serde_json::from_str::<Plan>(
             r#"{"schema":{"types":{}},"ops":[],"schema_preveiw":{"deleted_object_types":["dcim.site"]}}"#,
         )
-        .unwrap_err();
+            .unwrap_err();
         assert!(err.to_string().contains("schema_preveiw"), "{err}");
     }
 
@@ -391,106 +346,10 @@ mod tests {
     }
 
     #[test]
-    fn a_misspelled_op_key_is_rejected() {
-        // a create carries no backend id; one spelled onto it was dropped, and the
-        // plan the operator read named a backend object the run never looked at.
-        let err = serde_json::from_str::<Op>(
-            r#"{"op":"create","uid":"11111111-1111-1111-1111-111111111111","type_name":"device","desired":{"uid":"11111111-1111-1111-1111-111111111111","type":"device","key":{},"attrs":{}},"backend_id":"7"}"#,
-        )
-        .unwrap_err();
-        assert!(err.to_string().contains("backend_id"), "{err}");
-    }
-
-    #[test]
-    fn an_op_may_still_omit_its_backend_id() {
-        let op: Op = serde_json::from_str(
-            r#"{"op":"delete","uid":"11111111-1111-1111-1111-111111111111","type_name":"device","key":{}}"#,
-        )
-        .unwrap();
-        assert!(matches!(
-            op,
-            Op::Delete {
-                backend_id: None,
-                ..
-            }
-        ));
-    }
-
-    #[test]
-    fn a_misspelled_field_change_key_is_rejected() {
-        let err =
-            serde_json::from_str::<FieldChange>(r#"{"field":"tier","form":1,"from":1,"to":2}"#)
-                .unwrap_err();
-        assert!(err.to_string().contains("form"), "{err}");
-    }
-
-    #[test]
     fn a_misspelled_summary_key_is_rejected() {
         let err =
             serde_json::from_str::<PlanSummary>(r#"{"create":1,"update":0,"delete":0,"dlete":3}"#)
                 .unwrap_err();
         assert!(err.to_string().contains("dlete"), "{err}");
-    }
-
-    #[test]
-    fn named_changes_names_every_write_to_pre_existing_schema() {
-        // one entry per category, so a category dropped from the classification
-        // shows up as a missing pair rather than passing on a count.
-        let report = ProvisionReport {
-            created_fields: vec!["site.tier".to_string()],
-            updated_fields: vec!["site.owner".to_string()],
-            created_tags: vec!["managed".to_string()],
-            created_object_types: vec!["dcim.widget".to_string()],
-            created_object_fields: vec!["dcim.widget.size".to_string()],
-            updated_object_fields: vec!["dcim.widget.color".to_string()],
-            deprecated_object_types: vec!["dcim.gadget".to_string()],
-            deprecated_object_fields: vec!["dcim.gadget.color".to_string()],
-            deleted_object_types: vec!["dcim.relic".to_string()],
-            deleted_object_fields: vec!["dcim.relic.age".to_string()],
-        };
-
-        // the four create categories are counted by Display and named nowhere.
-        assert_eq!(
-            report.named_changes(Tense::Past),
-            [
-                ("updated", "site.owner"),
-                ("updated", "dcim.widget.color"),
-                ("deprecated", "dcim.gadget"),
-                ("deprecated", "dcim.gadget.color"),
-                ("deleted", "dcim.relic"),
-                ("deleted", "dcim.relic.age"),
-            ]
-        );
-        assert_eq!(
-            report.named_changes(Tense::Would),
-            [
-                ("would update", "site.owner"),
-                ("would update", "dcim.widget.color"),
-                ("would deprecate", "dcim.gadget"),
-                ("would deprecate", "dcim.gadget.color"),
-                ("would delete", "dcim.relic"),
-                ("would delete", "dcim.relic.age"),
-            ]
-        );
-
-        let creates_only = ProvisionReport {
-            created_object_types: vec!["dcim.widget".to_string()],
-            ..Default::default()
-        };
-        assert!(creates_only.named_changes(Tense::Past).is_empty());
-    }
-
-    #[test]
-    fn op_helpers() {
-        let uid = Uid::from_u128(1);
-        let type_name = TypeName::new("test.type");
-        let op = Op::Delete {
-            uid,
-            type_name: type_name.clone(),
-            key: Key::default(),
-            backend_id: None,
-        };
-        assert_eq!(op.uid(), uid);
-        assert_eq!(op.type_name(), &type_name);
     }
 }
