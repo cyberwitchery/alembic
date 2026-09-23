@@ -1,3 +1,4 @@
+use alembic_core::Inventory;
 use alembic_engine::{ApplyReport, DriftReport, Plan};
 use anyhow::{anyhow, Context, Result};
 use serde::Serialize;
@@ -155,7 +156,28 @@ pub(super) fn write_inventory(path: &Path, inventory: &alembic_core::Inventory) 
 
 pub(super) fn read_plan(path: &Path) -> Result<Plan> {
     let raw = fs::read_to_string(path).with_context(|| format!("read plan: {}", path.display()))?;
-    serde_json::from_str(&raw).with_context(|| format!("parse plan: {}", path.display()))
+    serde_json::from_str::<Plan>(&raw)
+        .map_err(|err| maybe_suggest_inventory(&raw, err))
+        .with_context(|| format!("parse plan: {}", path.display()))
+}
+
+/// rewrap a plan parse error when the document is an inventory/IR instead.
+///
+/// apply reads one document and expects a plan; feeding it an IR (a top-level
+/// `objects` array) deserializes as nothing and surfaces as a bare serde error
+/// that does not say why. this is the single chokepoint for the apply command's
+/// input file, so when the text still parses as an Inventory we wrap the error
+/// with a targeted hint over the raw one. anything neither a plan nor an
+/// inventory passes through untouched (the raw serde error wins).
+fn maybe_suggest_inventory(raw: &str, err: serde_json::Error) -> anyhow::Error {
+    match serde_json::from_str::<Inventory>(raw) {
+        Ok(_) => anyhow!(
+            "expected a plan but the document looks like an inventory/IR (a top-level `objects` \
+             array); apply reads a plan, use `plan` to produce one from an inventory"
+        )
+        .context(format!("{}", err)),
+        Err(_) => anyhow::Error::from(err),
+    }
 }
 
 /// when an always-JSON output path carries a `.yaml`/`.yml` extension, return a
