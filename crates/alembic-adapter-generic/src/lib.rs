@@ -1,11 +1,13 @@
 //! generic rest adapter for alembic.
 
+use alembic_adapter_sdk::state_mappings::StateMappings;
 use alembic_adapter_sdk::types::{AppliedOp, ApplyReport, BackendId, Op};
 use alembic_core::{key_string, JsonMap, Key, Schema, TypeName, TypeSchema, Uid};
+use alembic_engine::adapter_ops::state_mappings_from_state;
 use alembic_engine::{
     apply_non_delete_journaled, build_key_from_schema, bullet_list, describe_missing_refs,
     is_missing_ref_error, normalize_attrs_refs, resolve_ref_keyed_identity, resolved_ids_identity,
-    Adapter, Emitter, ObservedState, Observer, RawNode, RetryApplyDriver, StateMappings,
+    Adapter, Emitter, ObservedState, Observer, RawNode, RetryApplyDriver,
 };
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
@@ -441,7 +443,7 @@ impl Observer for GenericAdapter {
             raw.extend(result??);
         }
 
-        let mut mappings = StateMappings::from_state(state_store);
+        let mut mappings = state_mappings_from_state(state_store);
         let observed = resolve_ref_keyed_identity(
             &raw,
             schema,
@@ -489,7 +491,7 @@ impl Emitter for GenericAdapter {
                 resolved.remove(uid);
             }
         }
-        let mappings = StateMappings::from_state(state);
+        let mappings = state_mappings_from_state(state);
 
         let mut creates_updates = Vec::new();
         let mut deletes = Vec::new();

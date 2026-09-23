@@ -2,10 +2,11 @@
 
 use alembic_adapter_sdk::types::{AppliedOp, ApplyReport, BackendId, Op, ProvisionReport};
 use alembic_core::{key_string, FieldType, JsonMap, Key, Schema, TypeName, Uid};
+use alembic_engine::adapter_ops::state_mappings_from_state;
 use alembic_engine::{
     apply_non_delete_journaled, build_key_from_schema, is_missing_ref_error, normalize_attrs_refs,
     resolve_ref_keyed_identity, resolve_value_for_type, resolved_ids_identity, Adapter, Emitter,
-    ObservedState, Observer, RawNode, RetryApplyDriver, StateMappings, StateStore,
+    ObservedState, Observer, RawNode, RetryApplyDriver, StateStore,
 };
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
@@ -707,7 +708,7 @@ impl InfrahubAdapter {
             }
         }
 
-        let mut mappings = StateMappings::from_state(state_store);
+        let mut mappings = state_mappings_from_state(state_store);
         let observed = resolve_ref_keyed_identity(
             &raw,
             schema,
@@ -2220,6 +2221,7 @@ mod tests {
 
     use super::*;
     use alembic_adapter_sdk::state::StateData;
+    use alembic_adapter_sdk::state_mappings::StateMappings;
     use alembic_core::{
         key_string, FieldSchema, FieldType, JsonMap, Key, Object, Schema, TypeName, TypeSchema,
     };

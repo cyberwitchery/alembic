@@ -3,10 +3,11 @@ use alembic_adapter_sdk::external::{
     ExternalAdapter, ExternalCapabilities, ExternalObject, ExternalRole,
 };
 use alembic_adapter_sdk::state::StateData;
+use alembic_adapter_sdk::state_mappings::StateMappings;
 use alembic_adapter_sdk::types::{ApplyReport, BackendId, Op};
 use alembic_core::{JsonMap, Schema, TypeName};
 use alembic_engine::{
-    build_key_from_schema, normalize_attrs_refs, resolve_ref_keyed_identity, RawNode, StateMappings,
+    build_key_from_schema, normalize_attrs_refs, resolve_ref_keyed_identity, RawNode,
 };
 use anyhow::{anyhow, Result};
 use serde_json::json;

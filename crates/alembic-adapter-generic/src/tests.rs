@@ -498,7 +498,7 @@ fn test_normalize_attrs_refs_resolves_refs_nested_in_list() {
         site_uid,
         BackendId::Int(7),
     );
-    let mappings = StateMappings::from_state(&state);
+    let mappings = state_mappings_from_state(&state);
 
     let attrs: JsonMap = serde_json::json!({ "members": [7] })
         .as_object()
@@ -535,7 +535,7 @@ fn test_normalize_attrs_refs_resolves_refs_nested_in_map() {
         site_uid,
         BackendId::Int(7),
     );
-    let mappings = StateMappings::from_state(&state);
+    let mappings = state_mappings_from_state(&state);
 
     let attrs: JsonMap = serde_json::json!({ "links": {"primary": 7} })
         .as_object()
@@ -570,7 +570,7 @@ fn test_normalize_attrs_refs_resolves_list_ref() {
         site_uid,
         BackendId::Int(7),
     );
-    let mappings = StateMappings::from_state(&state);
+    let mappings = state_mappings_from_state(&state);
 
     let attrs: JsonMap = serde_json::json!({ "peers": [7] })
         .as_object()
@@ -605,7 +605,7 @@ fn test_normalize_attrs_refs_resolves_object_shaped_ref() {
         site_uid,
         BackendId::Int(7),
     );
-    let mappings = StateMappings::from_state(&state);
+    let mappings = state_mappings_from_state(&state);
 
     let attrs: JsonMap = serde_json::json!({ "site": {"id": 7} })
         .as_object()
