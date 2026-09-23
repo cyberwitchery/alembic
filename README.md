@@ -120,6 +120,7 @@ relationships are validated strictly by schema and `uid` references.
 ## workspace layout
 
 - `crates/alembic-core`: ir types, serde, validation primitives
+- `crates/alembic-adapter-sdk`: protocol types and helpers for external adapters
 - `crates/alembic-engine`: loader, graph validation, planning, state store
 - `crates/alembic-adapter-registry`: adapter config + registry for the cli
 - `crates/alembic-adapter-netbox`: netbox adapter

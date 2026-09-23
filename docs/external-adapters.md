@@ -39,12 +39,13 @@ answer the adapter never gave. the `key` and `attrs` maps you fill stay your own
 
 ## rust sdk
 
-`alembic-engine` ships a small helper module for external adapters that removes
-request/response boilerplate and guarantees well-formed responses:
+the `alembic-adapter-sdk` crate ships a small helper module for external
+adapters that removes request/response boilerplate and guarantees well-formed
+responses:
 
 ```rust
-use alembic_engine::external::{ExternalAdapter, ExternalObject};
-use alembic_engine::alembic_external_main;
+use alembic_adapter_sdk::external::{ExternalAdapter, ExternalObject};
+use alembic_adapter_sdk::alembic_external_main;
 
 struct MyAdapter;
 
@@ -62,7 +63,7 @@ impl ExternalAdapter for MyAdapter {
         &mut self,
         schema: &alembic_core::Schema,
         types: &[alembic_core::TypeName],
-        state: &alembic_engine::StateData,
+        state: &alembic_adapter_sdk::state::StateData,
     ) -> anyhow::Result<Vec<ExternalObject>> {
         let _ = (schema, types, state);
         Ok(Vec::new())
@@ -71,10 +72,10 @@ impl ExternalAdapter for MyAdapter {
     fn write(
         &mut self,
         _schema: &alembic_core::Schema,
-        _ops: &[alembic_engine::Op],
-        _state: &alembic_engine::StateData,
-    ) -> anyhow::Result<alembic_engine::ApplyReport> {
-        Ok(alembic_engine::ApplyReport::default())
+        _ops: &[alembic_adapter_sdk::types::Op],
+        _state: &alembic_adapter_sdk::state::StateData,
+    ) -> anyhow::Result<alembic_adapter_sdk::types::ApplyReport> {
+        Ok(alembic_adapter_sdk::types::ApplyReport::default())
     }
 }
 
