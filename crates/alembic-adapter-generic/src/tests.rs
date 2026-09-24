@@ -473,7 +473,7 @@ fn test_resolve_attrs_unresolved_nested_ref_surfaces_missing_ref() {
 
     let err = resolve_attrs(&attrs, &type_schema, &resolved).unwrap_err();
     assert!(
-        is_missing_ref_error(&err),
+        is_missing_ref_error(err.as_ref()),
         "nested unresolved ref must surface MissingRef for the retry loop, got: {err}"
     );
 }

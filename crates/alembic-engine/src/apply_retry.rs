@@ -2,18 +2,17 @@ use alembic_adapter_sdk::apply_retry::{
     apply_non_delete_with_journal, JournalGuard, RetryApplyDriver, RetryApplyResult,
 };
 use alembic_adapter_sdk::Op;
-use anyhow::Result;
 
 /// journal-wiring shared by the internal apply-adapters: build the journal from `state`,
 /// run the retry loop, and return the result, the resumed count (`None` when none) ready
 /// for `ApplyReport::previously_applied_count`, and the journal to `finish` after the
 /// caller's delete phase.
-pub async fn apply_non_delete_journaled(
+pub async fn apply_non_delete_journaled<D: RetryApplyDriver>(
     state: &crate::StateStore,
     adapter_name: &str,
     creates_updates: &[Op],
-    driver: &mut impl RetryApplyDriver,
-) -> Result<(RetryApplyResult, Option<usize>, JournalGuard<'static>)> {
+    driver: &mut D,
+) -> Result<(RetryApplyResult, Option<usize>, JournalGuard<'static>), D::Error> {
     // the journal name carries the backend instance, not just the adapter kind,
     // so two instances of one backend applied from one directory cannot resume
     // into each other's runs.
@@ -25,12 +24,13 @@ pub async fn apply_non_delete_journaled(
 mod tests {
     use super::*;
     use alembic_adapter_sdk::apply_retry::{
-        apply_non_delete_with_retries, describe_missing_refs, is_missing_ref_error,
+        apply_non_delete_with_retries, describe_missing_refs, is_missing_ref_error, RetryApplyError,
     };
     use alembic_adapter_sdk::journal::Journal;
     use alembic_adapter_sdk::{AdapterApplyError, AppliedOp, ApplyReport, BackendId, StateData};
     use alembic_core::{JsonMap, Key, Object, TypeName, Uid};
     use anyhow::anyhow;
+    use anyhow::Result;
     use async_trait::async_trait;
     use futures::executor::block_on;
     use rand::rng;
@@ -54,8 +54,17 @@ mod tests {
         let err = anyhow::Error::from(AdapterApplyError::MissingRef {
             uid: Uid::from_u128(1),
         });
-        assert!(is_missing_ref_error(&err));
-        assert!(!is_missing_ref_error(&anyhow!("some other error")));
+        assert!(is_missing_ref_error(err.as_ref()));
+        assert!(!is_missing_ref_error(anyhow!("some other error").as_ref()));
+    }
+
+    #[test]
+    fn is_missing_ref_error_looks_behind_context() {
+        let err = anyhow::Error::from(AdapterApplyError::MissingRef {
+            uid: Uid::from_u128(1),
+        })
+        .context("applying test.item");
+        assert!(is_missing_ref_error(err.as_ref()));
     }
 
     #[test]
@@ -141,6 +150,8 @@ mod tests {
 
     #[async_trait]
     impl RetryApplyDriver for TestDriver {
+        type Error = anyhow::Error;
+
         async fn apply_non_delete(&mut self, op: &Op) -> Result<AppliedOp> {
             self.attempts += 1;
             match self.mode {
@@ -163,6 +174,61 @@ mod tests {
         fn is_retryable(&self, err: &anyhow::Error) -> bool {
             err.to_string().contains("missing referenced uid")
         }
+    }
+
+    /// a driver whose error is not `anyhow`: the loop's own failures arrive through `From`.
+    #[derive(Debug, thiserror::Error)]
+    enum OwnDriverError {
+        #[error(transparent)]
+        Retry(#[from] RetryApplyError),
+        #[error("backend refused {0}")]
+        Refused(Uid),
+    }
+
+    struct OwnErrorDriver;
+
+    #[async_trait]
+    impl RetryApplyDriver for OwnErrorDriver {
+        type Error = OwnDriverError;
+
+        async fn apply_non_delete(&mut self, op: &Op) -> Result<AppliedOp, OwnDriverError> {
+            Err(OwnDriverError::Refused(op.uid()))
+        }
+
+        fn is_retryable(&self, _err: &OwnDriverError) -> bool {
+            false
+        }
+    }
+
+    #[tokio::test]
+    async fn a_drivers_own_error_is_returned_unchanged() {
+        let uid = Uid::from_u128(1);
+        let err = apply_non_delete_with_retries(&[create_op(uid)], None, &mut OwnErrorDriver)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, OwnDriverError::Refused(refused) if refused == uid));
+    }
+
+    #[test]
+    fn a_loop_failure_converts_into_the_drivers_own_error() {
+        let _guard = journal_guard();
+        let done = create_op(Uid::from_u128(1));
+        let dir = tempdir().unwrap();
+        let mut journal =
+            Journal::load_or_create(dir.path(), "test", std::slice::from_ref(&done)).unwrap();
+        journal.mark_op_as_done(&done, None).unwrap();
+
+        // the journal records an op this run was not given
+        let err = block_on(apply_non_delete_with_retries(
+            &[],
+            Some(&mut journal),
+            &mut OwnErrorDriver,
+        ))
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            OwnDriverError::Retry(RetryApplyError::UnplannedJournalOps)
+        ));
     }
 
     #[tokio::test]
@@ -247,6 +313,8 @@ mod tests {
 
     #[async_trait]
     impl RetryApplyDriver for ErraticDriver {
+        type Error = anyhow::Error;
+
         async fn apply_non_delete(&mut self, op: &Op) -> Result<AppliedOp> {
             self.countdown_to_crash -= 1;
 
@@ -406,7 +474,7 @@ mod tests {
     async fn run_journaled_apply(
         state: &crate::StateStore,
         ops: &[Op],
-        driver: &mut impl RetryApplyDriver,
+        driver: &mut impl RetryApplyDriver<Error = anyhow::Error>,
     ) -> Result<ApplyReport> {
         run_journaled_apply_with_deletes(state, ops, driver, Ok(())).await
     }
@@ -417,7 +485,7 @@ mod tests {
     async fn run_journaled_apply_with_deletes(
         state: &crate::StateStore,
         ops: &[Op],
-        driver: &mut impl RetryApplyDriver,
+        driver: &mut impl RetryApplyDriver<Error = anyhow::Error>,
         deletes: Result<()>,
     ) -> Result<ApplyReport> {
         let creates_updates: Vec<Op> = ops
@@ -469,6 +537,8 @@ mod tests {
 
     #[async_trait]
     impl RetryApplyDriver for RefDriver {
+        type Error = anyhow::Error;
+
         async fn apply_non_delete(&mut self, op: &Op) -> Result<AppliedOp> {
             assert_ne!(self.kill_on, Some(op.uid()), "killed mid-apply");
             if self.fatal_on == Some(op.uid()) {
@@ -509,7 +579,7 @@ mod tests {
         }
 
         fn is_retryable(&self, err: &anyhow::Error) -> bool {
-            is_missing_ref_error(err)
+            is_missing_ref_error(err.as_ref())
         }
 
         fn resume(&mut self, resumed: &[AppliedOp]) {

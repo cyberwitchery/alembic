@@ -222,6 +222,8 @@ impl Emitter for NautobotAdapter {
 
         #[async_trait]
         impl RetryApplyDriver for ApplyDriver<'_> {
+            type Error = anyhow::Error;
+
             async fn apply_non_delete(&mut self, op: &Op) -> Result<AppliedOp> {
                 match op {
                     Op::Create { .. } => self
@@ -259,7 +261,7 @@ impl Emitter for NautobotAdapter {
             }
 
             fn is_retryable(&self, err: &anyhow::Error) -> bool {
-                is_missing_ref_error(err)
+                is_missing_ref_error(err.as_ref())
             }
 
             fn resume(&mut self, resumed: &[AppliedOp]) {

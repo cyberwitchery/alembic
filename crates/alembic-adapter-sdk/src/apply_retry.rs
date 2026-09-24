@@ -1,12 +1,13 @@
 use crate::errors::AdapterApplyError;
-use crate::journal::Journal;
+use crate::journal::{Journal, JournalError};
 use crate::types::{AppliedOp, Op};
 use alembic_core::Uid;
-use anyhow::anyhow;
 use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
+use std::error::Error as StdError;
 use std::path::Path;
+use thiserror::Error;
 
 #[derive(Debug)]
 pub struct RetryApplyResult {
@@ -16,20 +17,36 @@ pub struct RetryApplyResult {
     pub resumed: Vec<AppliedOp>,
 }
 
+/// a failure of the retry loop itself, rather than of an op the driver applied.
+#[derive(Debug, Error)]
+pub enum RetryApplyError {
+    #[error(transparent)]
+    Journal(#[from] JournalError),
+    #[error(
+        "journal contained duplicated ops (same uid, typename and hash) which is not supported"
+    )]
+    DuplicateJournalOps,
+    #[error("journal contains done ops that are not present in the provided ops")]
+    UnplannedJournalOps,
+}
+
 #[async_trait]
 pub trait RetryApplyDriver {
-    async fn apply_non_delete(&mut self, op: &Op) -> anyhow::Result<AppliedOp>;
-    fn is_retryable(&self, err: &anyhow::Error) -> bool;
+    /// error `apply_non_delete` fails with; the retry loop's own failures convert into it.
+    type Error: From<RetryApplyError>;
+
+    async fn apply_non_delete(&mut self, op: &Op) -> Result<AppliedOp, Self::Error>;
+    fn is_retryable(&self, err: &Self::Error) -> bool;
     /// handed the ops an earlier run applied, before this run's first op, so the
     /// driver can resolve references into objects it is not going to create again.
     fn resume(&mut self, _resumed: &[AppliedOp]) {}
 }
 
-pub async fn apply_non_delete_with_retries<'a>(
+pub async fn apply_non_delete_with_retries<'a, D: RetryApplyDriver>(
     ops: &[Op],
     mut journal: Option<&'a mut Journal>,
-    driver: &mut impl RetryApplyDriver,
-) -> anyhow::Result<(RetryApplyResult, JournalGuard<'a>)> {
+    driver: &mut D,
+) -> Result<(RetryApplyResult, JournalGuard<'a>), D::Error> {
     let mut applied = Vec::new();
     let mut resumed = Vec::new();
     let mut pending: Vec<Op> = ops
@@ -49,15 +66,13 @@ pub async fn apply_non_delete_with_retries<'a>(
         if done.len() != done_ops_len {
             // the use of a hash set here is an optimization, but it rules out ops with
             // exactly the same uid, typename and hash.
-            return Err(anyhow!("journal contained duplicated ops (same uid, typename and hash) which is not supported"));
+            return Err(RetryApplyError::DuplicateJournalOps.into());
         }
 
         pending.retain(|op| !done.remove(&(op.uid(), op.type_name().clone(), op.hashed())));
 
         if !done.is_empty() {
-            return Err(anyhow!(
-                "journal contains done ops that are not present in the provided ops"
-            ));
+            return Err(RetryApplyError::UnplannedJournalOps.into());
         }
 
         resumed = journal.done_applied_ops();
@@ -74,7 +89,9 @@ pub async fn apply_non_delete_with_retries<'a>(
                     // the journal is append-only, so marking is the persist: the record
                     // is on disk before the next op is applied against it
                     if let Some(journal) = journal.as_mut() {
-                        journal.mark_op_as_done(&op, applied_op.backend_id.as_ref())?;
+                        journal
+                            .mark_op_as_done(&op, applied_op.backend_id.as_ref())
+                            .map_err(RetryApplyError::from)?;
                     }
                     applied.push(applied_op);
                 }
@@ -116,14 +133,16 @@ pub async fn apply_non_delete_with_retries<'a>(
 /// run the retry loop over a journal loaded from `dir` under `scope` (none when `dir` is
 /// `None`), returning the result, the resumed count (`None` when none) ready for
 /// `ApplyReport::previously_applied_count`, and the journal to `finish` after the deletes.
-pub async fn apply_non_delete_with_journal(
+pub async fn apply_non_delete_with_journal<D: RetryApplyDriver>(
     dir: Option<&Path>,
     scope: &str,
     creates_updates: &[Op],
-    driver: &mut impl RetryApplyDriver,
-) -> anyhow::Result<(RetryApplyResult, Option<usize>, JournalGuard<'static>)> {
+    driver: &mut D,
+) -> Result<(RetryApplyResult, Option<usize>, JournalGuard<'static>), D::Error> {
     let mut journal = match dir {
-        Some(dir) => Some(Journal::load_or_create(dir, scope, creates_updates)?),
+        Some(dir) => Some(
+            Journal::load_or_create(dir, scope, creates_updates).map_err(RetryApplyError::from)?,
+        ),
         None => None,
     };
     let (result, borrowed) =
@@ -202,9 +221,9 @@ impl<'a> JournalGuard<'a> {
     }
 
     /// the apply is through, deletes included: there is nothing left to resume.
-    pub fn finish(mut self) -> anyhow::Result<()> {
+    pub fn finish(mut self) -> Result<(), JournalError> {
         match self.0.take() {
-            Some(mut journal) => Ok(journal.get_mut().delete_backing_file()?),
+            Some(mut journal) => journal.get_mut().delete_backing_file(),
             None => Ok(()),
         }
     }
@@ -248,10 +267,12 @@ fn report_unfinished_deletes(journal: &Journal) {
     );
 }
 
-/// true when `err` is a retryable missing-ref apply error.
-pub fn is_missing_ref_error(err: &anyhow::Error) -> bool {
-    err.downcast_ref::<AdapterApplyError>()
-        .is_some_and(|e| matches!(e, AdapterApplyError::MissingRef { .. }))
+/// true when `err`, or an error in its source chain, is a retryable missing-ref apply error.
+pub fn is_missing_ref_error(err: &(dyn StdError + 'static)) -> bool {
+    std::iter::successors(Some(err), |&err| err.source()).any(|err| {
+        err.downcast_ref::<AdapterApplyError>()
+            .is_some_and(|e| matches!(e, AdapterApplyError::MissingRef { .. }))
+    })
 }
 
 /// comma-joined referenced uids in `ops` that are absent from `resolved`.

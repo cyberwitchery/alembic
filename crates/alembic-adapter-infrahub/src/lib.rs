@@ -759,6 +759,8 @@ impl Emitter for InfrahubAdapter {
 
         #[async_trait]
         impl RetryApplyDriver for ApplyDriver<'_> {
+            type Error = anyhow::Error;
+
             async fn apply_non_delete(&mut self, op: &Op) -> Result<AppliedOp> {
                 match op {
                     Op::Create { .. } => {
@@ -776,7 +778,7 @@ impl Emitter for InfrahubAdapter {
             }
 
             fn is_retryable(&self, err: &anyhow::Error) -> bool {
-                is_missing_ref_error(err)
+                is_missing_ref_error(err.as_ref())
             }
 
             fn resume(&mut self, resumed: &[AppliedOp]) {
@@ -2971,7 +2973,7 @@ schema { query: Query }
         );
 
         let err = anyhow::Error::new(AdapterApplyError::MissingRef { uid: uid_missing });
-        assert!(is_missing_ref_error(&err));
+        assert!(is_missing_ref_error(err.as_ref()));
     }
 
     #[test]
