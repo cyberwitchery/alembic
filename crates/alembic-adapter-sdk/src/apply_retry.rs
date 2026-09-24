@@ -6,6 +6,7 @@ use anyhow::anyhow;
 use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 
 #[derive(Debug)]
 pub struct RetryApplyResult {
@@ -112,6 +113,31 @@ pub async fn apply_non_delete_with_retries<'a>(
     ))
 }
 
+/// run the retry loop over a journal loaded from `dir` under `scope` (none when `dir` is
+/// `None`), returning the result, the resumed count (`None` when none) ready for
+/// `ApplyReport::previously_applied_count`, and the journal to `finish` after the deletes.
+pub async fn apply_non_delete_with_journal(
+    dir: Option<&Path>,
+    scope: &str,
+    creates_updates: &[Op],
+    driver: &mut impl RetryApplyDriver,
+) -> anyhow::Result<(RetryApplyResult, Option<usize>, JournalGuard<'static>)> {
+    let mut journal = match dir {
+        Some(dir) => Some(Journal::load_or_create(dir, scope, creates_updates)?),
+        None => None,
+    };
+    let (result, borrowed) =
+        apply_non_delete_with_retries(creates_updates, journal.as_mut(), driver).await?;
+    // the borrow guard covers the local only; the owned one below is what the caller keeps
+    borrowed.disarm();
+    let previously_applied = result.resumed.len();
+    Ok((
+        result,
+        (previously_applied > 0).then_some(previously_applied),
+        JournalGuard::owned(journal),
+    ))
+}
+
 /// tell the user what the interrupted apply left behind. resuming is automatic and
 /// silent, so this is the only place the journal is ever named; warn-level so the
 /// cli's default filter shows it.
@@ -171,7 +197,7 @@ impl<'a> JournalGuard<'a> {
         Self(journal.map(JournalRef::Borrowed))
     }
 
-    pub fn owned(journal: Option<Journal>) -> Self {
+    fn owned(journal: Option<Journal>) -> Self {
         Self(journal.map(JournalRef::Owned))
     }
 
@@ -185,7 +211,7 @@ impl<'a> JournalGuard<'a> {
 
     /// this guard is not the one that outlives the apply: give it up without reporting,
     /// leaving that to the caller's own guard. also ends the borrow it held.
-    pub fn disarm(mut self) {
+    fn disarm(mut self) {
         self.0 = None;
     }
 }

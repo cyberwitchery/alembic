@@ -1,7 +1,6 @@
 use alembic_adapter_sdk::apply_retry::{
-    apply_non_delete_with_retries, JournalGuard, RetryApplyDriver, RetryApplyResult,
+    apply_non_delete_with_journal, JournalGuard, RetryApplyDriver, RetryApplyResult,
 };
-use alembic_adapter_sdk::journal::Journal;
 use alembic_adapter_sdk::types::Op;
 use anyhow::Result;
 
@@ -19,27 +18,17 @@ pub async fn apply_non_delete_journaled(
     // so two instances of one backend applied from one directory cannot resume
     // into each other's runs.
     let scope = state.journal_scope(adapter_name);
-    let mut journal = match state.journal_dir() {
-        Some(dir) => Some(Journal::load_or_create(dir, &scope, creates_updates)?),
-        None => None,
-    };
-    let (result, borrowed) =
-        apply_non_delete_with_retries(creates_updates, journal.as_mut(), driver).await?;
-    // the borrow guard covers the local only; the owned one below is what the caller keeps
-    borrowed.disarm();
-    let previously_applied = result.resumed.len();
-    Ok((
-        result,
-        (previously_applied > 0).then_some(previously_applied),
-        JournalGuard::owned(journal),
-    ))
+    apply_non_delete_with_journal(state.journal_dir(), &scope, creates_updates, driver).await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alembic_adapter_sdk::apply_retry::{describe_missing_refs, is_missing_ref_error};
+    use alembic_adapter_sdk::apply_retry::{
+        apply_non_delete_with_retries, describe_missing_refs, is_missing_ref_error,
+    };
     use alembic_adapter_sdk::errors::AdapterApplyError;
+    use alembic_adapter_sdk::journal::Journal;
     use alembic_adapter_sdk::state::StateData;
     use alembic_adapter_sdk::types::{AppliedOp, ApplyReport, BackendId};
     use alembic_core::{JsonMap, Key, Object, TypeName, Uid};
