@@ -10,14 +10,15 @@
 
 use crate::types::{AppliedOp, BackendId, Op};
 use alembic_core::{TypeName, Uid};
-use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::fs::{File, OpenOptions};
+use std::io;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use tempfile::NamedTempFile;
+use thiserror::Error;
 
 /// bumped when a record shape changes. an unknown version is refused by name
 /// rather than read as this one.
@@ -25,6 +26,73 @@ const FORMAT_VERSION: u32 = 1;
 
 /// every line carries it, so a stray line is never mistaken for a record.
 const DOCUMENT_PREFIX: &str = "--- ";
+
+#[derive(Debug, Error)]
+pub enum JournalError {
+    #[error("failed to access the journal at `{}`", path.display())]
+    Io {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
+    #[error("failed to append to the journal at {}", path.display())]
+    Append {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
+    #[error("failed to read the journal file `{}`", path.display())]
+    Json {
+        path: PathBuf,
+        #[source]
+        source: serde_json::Error,
+    },
+    #[error("failed to read the journal file `{}`", path.display())]
+    Yaml {
+        path: PathBuf,
+        #[source]
+        source: serde_yaml::Error,
+    },
+    #[error("failed to encode a journal record")]
+    Encode(#[source] serde_json::Error),
+    #[error("the journal file `{}` has no version line", path.display())]
+    MissingVersion { path: PathBuf },
+    #[error(
+        "the journal file `{}` is format version {found}, but this alembic writes version {FORMAT_VERSION}; remove it to start a fresh apply",
+        path.display()
+    )]
+    UnsupportedVersion { path: PathBuf, found: u32 },
+    #[error("failed to read the journal file `{}`: line {line} is not a journal record", path.display())]
+    NotARecord { path: PathBuf, line: usize },
+    #[error("failed to read the journal file `{}`: line {line}", path.display())]
+    BadRecord {
+        path: PathBuf,
+        line: usize,
+        #[source]
+        source: serde_json::Error,
+    },
+    #[error("the journal file `{}` records op {op} as done, but only declares {declared}", path.display())]
+    DoneOutOfRange {
+        path: PathBuf,
+        op: usize,
+        declared: usize,
+    },
+    #[error("the ops in the loaded journal file `{}` don't match the expected ops", path.display())]
+    OpsMismatch { path: PathBuf },
+    #[error("no matching op found in journal, can't mark any as done")]
+    NotPlanned,
+    #[error("journal path `{}` has no parent directory", path.display())]
+    NoParent { path: PathBuf },
+}
+
+type Result<T, E = JournalError> = std::result::Result<T, E>;
+
+fn io_at(path: &Path) -> impl FnOnce(io::Error) -> JournalError + '_ {
+    move |source| JournalError::Io {
+        path: path.to_owned(),
+        source,
+    }
+}
 
 #[derive(Debug)]
 pub struct Journal {
@@ -75,7 +143,7 @@ struct LegacyJournal {
 fn record_line<T: Serialize>(value: &T) -> Result<String> {
     Ok(format!(
         "{DOCUMENT_PREFIX}{}\n",
-        serde_json::to_string(value)?
+        serde_json::to_string(value).map_err(JournalError::Encode)?
     ))
 }
 
@@ -105,7 +173,7 @@ impl Journal {
     pub fn load_or_create(directory: &Path, adapter_name: &str, ops: &[Op]) -> Result<Self> {
         // apply writes the journal before any state save, so `directory` (e.g. `.alembic/`)
         // may not exist yet on a fresh checkout.
-        fs::create_dir_all(directory)?;
+        fs::create_dir_all(directory).map_err(io_at(directory))?;
         let file_name = Self::stable_file_name(directory, adapter_name, ops);
         if fs::metadata(&file_name).is_ok() {
             Self::new_from_existing_file(directory, adapter_name, ops)
@@ -121,7 +189,7 @@ impl Journal {
         expected_ops: &[Op],
     ) -> Result<Self> {
         let file_name = Self::stable_file_name(directory, adapter_name, expected_ops);
-        let contents = fs::read_to_string(&file_name)?;
+        let contents = fs::read_to_string(&file_name).map_err(io_at(&file_name))?;
 
         let (ops, rewrite) = match contents.starts_with(DOCUMENT_PREFIX) {
             true => parse_records(&contents, &file_name)?,
@@ -152,10 +220,7 @@ impl Journal {
             .map(|op| (op.uid(), op.type_name(), op.hashed()))
             .collect::<Vec<(Uid, &TypeName, u64)>>();
         if journal_keys != expected_keys {
-            return Err(anyhow!(
-                "the ops in the loaded journal file `{}` don't match the expected ops",
-                file_name.display()
-            ));
+            return Err(JournalError::OpsMismatch { path: file_name });
         }
 
         // neither a legacy whole-document journal nor one whose torn tail the parse
@@ -246,7 +311,7 @@ impl Journal {
             .pending_index
             .get_mut(&key)
             .and_then(VecDeque::pop_front)
-            .ok_or_else(|| anyhow!("no matching op found in journal, can't mark any as done"))?;
+            .ok_or(JournalError::NotPlanned)?;
         // the position came from the pending index, so it is in range and not yet done
         self.ops[op_index].done = true;
         self.ops[op_index].backend_id = backend_id.cloned();
@@ -264,13 +329,16 @@ impl Journal {
         // survive a power cut rather than only a killed process.
         file.write_all(line.as_bytes())
             .and_then(|()| file.sync_data())
-            .with_context(|| format!("failed to append to the journal at {}", path.display()))
+            .map_err(|source| JournalError::Append {
+                path: path.clone(),
+                source,
+            })
     }
 
     pub fn delete_backing_file(&mut self) -> Result<()> {
         if let Some((file, file_path)) = self.file.take() {
             drop(file);
-            fs::remove_file(file_path)?;
+            fs::remove_file(&file_path).map_err(io_at(&file_path))?;
         }
         Ok(())
     }
@@ -297,20 +365,26 @@ fn write_whole_file(path: &Path, ops: &[OpWithMeta]) -> Result<File> {
         }))?);
     }
 
-    let dir = path
-        .parent()
-        .ok_or_else(|| anyhow!("file path has no parent directory"))?;
-    let mut temp_file = NamedTempFile::new_in(dir)?;
-    temp_file.write_all(body.as_bytes())?;
-    temp_file.as_file().sync_all()?; // fsync data + metadata before it can become visible
-    temp_file.persist(path)?;
-    File::open(dir)?.sync_all()?;
+    let dir = path.parent().ok_or_else(|| JournalError::NoParent {
+        path: path.to_owned(),
+    })?;
+    let mut temp_file = NamedTempFile::new_in(dir).map_err(io_at(dir))?;
+    temp_file.write_all(body.as_bytes()).map_err(io_at(path))?;
+    // fsync data + metadata before it can become visible
+    temp_file.as_file().sync_all().map_err(io_at(path))?;
+    temp_file.persist(path).map_err(|e| io_at(path)(e.error))?;
+    File::open(dir)
+        .and_then(|dir| dir.sync_all())
+        .map_err(io_at(dir))?;
 
     open_for_append(path)
 }
 
 fn open_for_append(path: &Path) -> Result<File> {
-    Ok(OpenOptions::new().append(true).open(path)?)
+    OpenOptions::new()
+        .append(true)
+        .open(path)
+        .map_err(io_at(path))
 }
 
 /// rebuilds the ops from the record stream, and reports whether a torn final line was
@@ -328,16 +402,19 @@ fn parse_records(contents: &str, path: &Path) -> Result<(Vec<OpWithMeta>, bool)>
     let version_line = lines
         .first()
         .and_then(|line| line.trim_end().strip_prefix(DOCUMENT_PREFIX))
-        .ok_or_else(|| anyhow!("the journal file `{}` has no version line", path.display()))?;
-    let version: Version = serde_json::from_str(version_line)
-        .with_context(|| format!("failed to read the journal file `{}`", path.display()))?;
+        .ok_or_else(|| JournalError::MissingVersion {
+            path: path.to_owned(),
+        })?;
+    let version: Version =
+        serde_json::from_str(version_line).map_err(|source| JournalError::Json {
+            path: path.to_owned(),
+            source,
+        })?;
     if version.version != FORMAT_VERSION {
-        return Err(anyhow!(
-            "the journal file `{}` is format version {}, but this alembic writes version {}; remove it to start a fresh apply",
-            path.display(),
-            version.version,
-            FORMAT_VERSION
-        ));
+        return Err(JournalError::UnsupportedVersion {
+            path: path.to_owned(),
+            found: version.version,
+        });
     }
 
     let mut ops: Vec<OpWithMeta> = Vec::new();
@@ -346,8 +423,17 @@ fn parse_records(contents: &str, path: &Path) -> Result<(Vec<OpWithMeta>, bool)>
         let record: Result<Record> = line
             .trim_end()
             .strip_prefix(DOCUMENT_PREFIX)
-            .ok_or_else(|| anyhow!("line {} is not a journal record", index + 1))
-            .and_then(|body| Ok(serde_json::from_str(body)?));
+            .ok_or_else(|| JournalError::NotARecord {
+                path: path.to_owned(),
+                line: index + 1,
+            })
+            .and_then(|body| {
+                serde_json::from_str(body).map_err(|source| JournalError::BadRecord {
+                    path: path.to_owned(),
+                    line: index + 1,
+                    source,
+                })
+            });
         let record = match record {
             Ok(record) => record,
             // a power cut can leave the tail of an appended line unwritten even where
@@ -361,12 +447,7 @@ fn parse_records(contents: &str, path: &Path) -> Result<(Vec<OpWithMeta>, bool)>
                 truncated = true;
                 break;
             }
-            Err(err) => {
-                return Err(err.context(format!(
-                    "failed to read the journal file `{}`",
-                    path.display()
-                )))
-            }
+            Err(err) => return Err(err),
         };
 
         match record {
@@ -379,13 +460,13 @@ fn parse_records(contents: &str, path: &Path) -> Result<(Vec<OpWithMeta>, bool)>
             }),
             Record::Done(done) => {
                 let declared = ops.len();
-                let op = ops.get_mut(done.op).ok_or_else(|| {
-                    anyhow!(
-                        "the journal file `{}` records op {} as done, but only declares {declared}",
-                        path.display(),
-                        done.op,
-                    )
-                })?;
+                let op = ops
+                    .get_mut(done.op)
+                    .ok_or_else(|| JournalError::DoneOutOfRange {
+                        path: path.to_owned(),
+                        op: done.op,
+                        declared,
+                    })?;
                 op.done = true;
                 op.backend_id = done.backend_id;
             }
@@ -396,8 +477,11 @@ fn parse_records(contents: &str, path: &Path) -> Result<(Vec<OpWithMeta>, bool)>
 }
 
 fn parse_legacy(contents: &str, path: &Path) -> Result<Vec<OpWithMeta>> {
-    let journal: LegacyJournal = serde_yaml::from_str(contents)
-        .with_context(|| format!("failed to read the journal file `{}`", path.display()))?;
+    let journal: LegacyJournal =
+        serde_yaml::from_str(contents).map_err(|source| JournalError::Yaml {
+            path: path.to_owned(),
+            source,
+        })?;
     Ok(journal.ops)
 }
 

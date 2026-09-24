@@ -16,7 +16,9 @@ serde_json.workspace = true
 serde_yaml.workspace = true
 alembic-core.workspace = true
 uuid.workspace = true
-anyhow.workspace = true
 tempfile.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+anyhow.workspace = true

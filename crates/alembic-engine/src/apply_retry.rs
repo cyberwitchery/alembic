@@ -177,7 +177,7 @@ impl<'a> JournalGuard<'a> {
     /// the apply is through, deletes included: there is nothing left to resume.
     pub fn finish(mut self) -> Result<()> {
         match self.0.take() {
-            Some(mut journal) => journal.get_mut().delete_backing_file(),
+            Some(mut journal) => Ok(journal.get_mut().delete_backing_file()?),
             None => Ok(()),
         }
     }
