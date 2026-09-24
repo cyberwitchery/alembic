@@ -4,7 +4,7 @@
 use crate::adapter_ops::backend_id_from_value;
 use crate::pretty_printing::bullet_list;
 use crate::types::ObservedState;
-use alembic_adapter_sdk::types::BackendId;
+use alembic_adapter_sdk::BackendId;
 use alembic_core::{FieldType, JsonMap, Key, Schema, TypeName, TypeSchema, Uid};
 use anyhow::{anyhow, Result};
 use serde_json::Value;

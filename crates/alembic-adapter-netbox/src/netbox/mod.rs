@@ -30,8 +30,7 @@ impl NetBoxAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alembic_adapter_sdk::state::StateData;
-    use alembic_adapter_sdk::types::{BackendId, FieldChange, Op};
+    use alembic_adapter_sdk::{BackendId, FieldChange, Op, StateData};
     use alembic_core::{key_string, JsonMap, Key, TypeName, Uid};
     use httpmock::Method::{GET, PATCH, POST};
     use httpmock::{Mock, MockServer};

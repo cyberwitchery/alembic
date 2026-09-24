@@ -1,9 +1,10 @@
 //! conformance checks for external adapter executables.
 
-use alembic_adapter_sdk::external::{
-    ExternalCapabilities, ExternalObject, ExternalResponse, ExternalRole, EXTERNAL_PROTOCOL_VERSION,
+use alembic_adapter_sdk::external::{ExternalResponse, EXTERNAL_PROTOCOL_VERSION};
+use alembic_adapter_sdk::{
+    AppliedOp, ApplyReport, BackendId, ExternalCapabilities, ExternalObject, ExternalRole,
+    ProvisionReport,
 };
-use alembic_adapter_sdk::types::{AppliedOp, ApplyReport, BackendId, ProvisionReport};
 use alembic_core::{key_string, uid_v5, validate_inventory, Inventory, Object, Schema, TypeName};
 use anyhow::Context;
 use serde::{Deserialize, Serialize};

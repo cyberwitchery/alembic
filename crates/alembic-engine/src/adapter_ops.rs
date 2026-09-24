@@ -1,9 +1,7 @@
 use crate::mapping::{supports_feature, tags_from_value};
 use crate::types::ObservedObject;
 use crate::StateStore;
-use alembic_adapter_sdk::errors::AdapterApplyError;
-use alembic_adapter_sdk::state_mappings::StateMappings;
-use alembic_adapter_sdk::types::{BackendId, Op};
+use alembic_adapter_sdk::{AdapterApplyError, BackendId, Op, StateMappings};
 use alembic_core::{
     key_string, uid_v5, FieldType, JsonMap, Key, Schema, TypeName, TypeSchema, Uid,
 };
@@ -655,7 +653,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alembic_adapter_sdk::state::StateData;
+    use alembic_adapter_sdk::StateData;
     use alembic_core::{FieldSchema, FieldType, JsonMap, Key, Object, TypeSchema};
     use serde_json::json;
     use uuid::Uuid;

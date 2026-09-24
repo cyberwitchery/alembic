@@ -1,7 +1,7 @@
 //! infrahub graphql adapter for alembic.
 
 use alembic_adapter_sdk::apply_retry::{is_missing_ref_error, RetryApplyDriver};
-use alembic_adapter_sdk::types::{AppliedOp, ApplyReport, BackendId, Op, ProvisionReport};
+use alembic_adapter_sdk::{AppliedOp, ApplyReport, BackendId, Op, ProvisionReport};
 use alembic_core::{key_string, FieldType, JsonMap, Key, Schema, TypeName, Uid};
 use alembic_engine::{
     apply_non_delete_journaled, build_key_from_schema, normalize_attrs_refs,
@@ -2220,9 +2220,7 @@ mod tests {
     }
 
     use super::*;
-    use alembic_adapter_sdk::errors::AdapterApplyError;
-    use alembic_adapter_sdk::state::StateData;
-    use alembic_adapter_sdk::state_mappings::StateMappings;
+    use alembic_adapter_sdk::{AdapterApplyError, StateData, StateMappings};
     use alembic_core::{
         key_string, FieldSchema, FieldType, JsonMap, Key, Object, Schema, TypeName, TypeSchema,
     };

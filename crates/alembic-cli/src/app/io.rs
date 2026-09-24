@@ -1,4 +1,4 @@
-use alembic_adapter_sdk::types::ApplyReport;
+use alembic_adapter_sdk::ApplyReport;
 use alembic_core::Inventory;
 use alembic_engine::{DriftReport, Plan};
 use anyhow::{anyhow, Context, Result};

@@ -1,8 +1,7 @@
 //! uid -> backend id state store: identity memory, scoped to one backend
 //! instance.
 
-use alembic_adapter_sdk::state::StateData;
-use alembic_adapter_sdk::types::BackendId;
+use alembic_adapter_sdk::{BackendId, StateData};
 use alembic_core::{uid_v5, TypeName, Uid};
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};

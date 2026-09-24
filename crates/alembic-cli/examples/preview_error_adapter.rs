@@ -1,7 +1,7 @@
 use alembic_adapter_sdk::alembic_external_main;
-use alembic_adapter_sdk::external::{ExternalAdapter, ExternalObject};
-use alembic_adapter_sdk::state::StateData;
-use alembic_adapter_sdk::types::{ApplyReport, Op, ProvisionReport};
+use alembic_adapter_sdk::{
+    ApplyReport, ExternalAdapter, ExternalObject, Op, ProvisionReport, StateData,
+};
 use alembic_core::{Schema, TypeName};
 use anyhow::Result;
 

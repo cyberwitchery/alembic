@@ -1,5 +1,5 @@
-use alembic_adapter_sdk::external::{ExternalCapabilities, ExternalObject, ExternalResponse};
-use alembic_adapter_sdk::types::{ApplyReport, ProvisionReport};
+use alembic_adapter_sdk::external::ExternalResponse;
+use alembic_adapter_sdk::{ApplyReport, ExternalCapabilities, ExternalObject, ProvisionReport};
 use alembic_adapter_test::{
     load_cases, run_builtin, run_builtin_with, run_cases, Builtins, Case, Expect, Outcome,
 };

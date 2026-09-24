@@ -27,7 +27,7 @@ impl NautobotAdapter {
 #[cfg(test)]
 mod tests {
     use super::NautobotAdapter;
-    use alembic_adapter_sdk::types::{BackendId, FieldChange, Op};
+    use alembic_adapter_sdk::{BackendId, FieldChange, Op};
     use alembic_core::{
         FieldSchema, FieldType, JsonMap, Key, Object, Schema, TypeName, TypeSchema, Uid,
     };

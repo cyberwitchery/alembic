@@ -7,7 +7,7 @@
 //! store. there is deliberately no "adopt observed" mode.
 
 use crate::types::{Adoption, BootstrapReport, Plan, SupersededBinding};
-use alembic_adapter_sdk::types::{FieldChange, Op, ProvisionReport};
+use alembic_adapter_sdk::{FieldChange, Op, ProvisionReport};
 use alembic_core::{key_string, Key, TypeName};
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -182,7 +182,7 @@ impl fmt::Display for DriftReport {
 mod tests {
     use super::*;
     use crate::types::Plan;
-    use alembic_adapter_sdk::types::BackendId;
+    use alembic_adapter_sdk::BackendId;
     use alembic_core::{JsonMap, Key, Object, Schema, TypeName, Uid};
     use serde_json::json;
     use std::collections::BTreeMap;

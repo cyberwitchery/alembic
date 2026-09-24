@@ -2,7 +2,7 @@
 //! bug the suite exists to catch. it refuses `read` for role reasons, so a probe
 //! sent as a read would answer the check without reaching that bug.
 
-use alembic_adapter_sdk::types::{ApplyReport, ProvisionReport};
+use alembic_adapter_sdk::{ApplyReport, ProvisionReport};
 use serde_json::{json, Value};
 use std::io::Read;
 

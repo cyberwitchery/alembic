@@ -1,9 +1,9 @@
 //! adapter registry and config loading for alembic.
 
 use alembic_adapter_sdk::external::{
-    ExternalCapabilities, ExternalEnvelopeRef, ExternalObject, ExternalRequestRef,
-    ExternalResponse, ExternalRole, EXTERNAL_PROTOCOL_VERSION,
+    ExternalEnvelopeRef, ExternalRequestRef, ExternalResponse, EXTERNAL_PROTOCOL_VERSION,
 };
+use alembic_adapter_sdk::{ExternalCapabilities, ExternalObject, ExternalRole};
 use alembic_engine::{
     Adapter, Backend, BackendIdentity, Emitter, ObservedObject, ObservedState, Observer, StateStore,
 };
@@ -21,8 +21,7 @@ use tokio::time::timeout;
 
 #[cfg(feature = "django")]
 use alembic_adapter_django::emit::DjangoConfig;
-use alembic_adapter_sdk::state::StateData;
-use alembic_adapter_sdk::types::{ApplyReport, Op, ProvisionReport};
+use alembic_adapter_sdk::{ApplyReport, Op, ProvisionReport, StateData};
 
 const SUPPORTED_BACKENDS: &[&str] = &[
     #[cfg(feature = "netbox")]
@@ -728,8 +727,7 @@ mod tests {
     use super::InfrahubSchemaConfig;
     #[cfg(unix)]
     use super::ProcessAdapter;
-    use alembic_adapter_sdk::state::StateData;
-    use alembic_adapter_sdk::types::{BackendId, Op};
+    use alembic_adapter_sdk::{BackendId, Op, StateData};
     use alembic_core::{JsonMap, Key, Object, Schema, TypeName, Uid};
     use alembic_engine::{Backend, StateStore};
     use serde_json::json;

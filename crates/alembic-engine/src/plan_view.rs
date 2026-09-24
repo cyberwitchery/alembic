@@ -7,7 +7,7 @@
 //! is the operations apply will perform.
 
 use crate::types::Plan;
-use alembic_adapter_sdk::types::Op;
+use alembic_adapter_sdk::Op;
 use alembic_core::key_string;
 use std::fmt::Write;
 
@@ -143,7 +143,7 @@ fn retype_pairs(
 mod tests {
     use super::*;
     use crate::types::Plan;
-    use alembic_adapter_sdk::types::FieldChange;
+    use alembic_adapter_sdk::FieldChange;
     use alembic_core::{Key, Object, Schema, TypeName, Uid};
     use std::collections::BTreeMap;
 

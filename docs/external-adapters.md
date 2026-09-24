@@ -44,7 +44,7 @@ adapters that removes request/response boilerplate and guarantees well-formed
 responses:
 
 ```rust
-use alembic_adapter_sdk::external::{ExternalAdapter, ExternalObject};
+use alembic_adapter_sdk::{ExternalAdapter, ExternalObject};
 use alembic_adapter_sdk::alembic_external_main;
 
 struct MyAdapter;
@@ -63,7 +63,7 @@ impl ExternalAdapter for MyAdapter {
         &mut self,
         schema: &alembic_core::Schema,
         types: &[alembic_core::TypeName],
-        state: &alembic_adapter_sdk::state::StateData,
+        state: &alembic_adapter_sdk::StateData,
     ) -> anyhow::Result<Vec<ExternalObject>> {
         let _ = (schema, types, state);
         Ok(Vec::new())
@@ -72,10 +72,10 @@ impl ExternalAdapter for MyAdapter {
     fn write(
         &mut self,
         _schema: &alembic_core::Schema,
-        _ops: &[alembic_adapter_sdk::types::Op],
-        _state: &alembic_adapter_sdk::state::StateData,
-    ) -> anyhow::Result<alembic_adapter_sdk::types::ApplyReport> {
-        Ok(alembic_adapter_sdk::types::ApplyReport::default())
+        _ops: &[alembic_adapter_sdk::Op],
+        _state: &alembic_adapter_sdk::StateData,
+    ) -> anyhow::Result<alembic_adapter_sdk::ApplyReport> {
+        Ok(alembic_adapter_sdk::ApplyReport::default())
     }
 }
 

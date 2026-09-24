@@ -5,8 +5,7 @@ use crate::adapter_ops::{
 };
 use crate::state::StateStore;
 use crate::types::{ObservedObject, Observer};
-use alembic_adapter_sdk::state_mappings::StateMappings;
-use alembic_adapter_sdk::types::BackendId;
+use alembic_adapter_sdk::{BackendId, StateMappings};
 use alembic_core::{
     key_string, uid_v5, FieldType, Inventory, JsonMap, Key, Object, Schema, TypeName, TypeSchema,
     Uid,
@@ -460,7 +459,7 @@ mod tests {
     use super::*;
     use crate::types::ObservedState;
     use crate::Observer;
-    use alembic_adapter_sdk::state::StateData;
+    use alembic_adapter_sdk::StateData;
     use alembic_core::{
         key_string, FieldSchema, FieldType, JsonMap, Key, Schema, TypeName, TypeSchema,
     };

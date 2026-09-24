@@ -1,7 +1,7 @@
 use alembic_adapter_sdk::apply_retry::{
     apply_non_delete_with_journal, JournalGuard, RetryApplyDriver, RetryApplyResult,
 };
-use alembic_adapter_sdk::types::Op;
+use alembic_adapter_sdk::Op;
 use anyhow::Result;
 
 /// journal-wiring shared by the internal apply-adapters: build the journal from `state`,
@@ -27,10 +27,8 @@ mod tests {
     use alembic_adapter_sdk::apply_retry::{
         apply_non_delete_with_retries, describe_missing_refs, is_missing_ref_error,
     };
-    use alembic_adapter_sdk::errors::AdapterApplyError;
     use alembic_adapter_sdk::journal::Journal;
-    use alembic_adapter_sdk::state::StateData;
-    use alembic_adapter_sdk::types::{AppliedOp, ApplyReport, BackendId};
+    use alembic_adapter_sdk::{AdapterApplyError, AppliedOp, ApplyReport, BackendId, StateData};
     use alembic_core::{JsonMap, Key, Object, TypeName, Uid};
     use anyhow::anyhow;
     use async_trait::async_trait;

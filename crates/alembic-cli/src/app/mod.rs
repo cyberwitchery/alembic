@@ -30,8 +30,7 @@ use self::io::warn_misleading_output_extension;
 use self::state::{resolve_state_backend_config, state_path, StateBackendConfig};
 #[cfg(test)]
 use alembic_adapter_django::emit::Runner;
-use alembic_adapter_sdk::state::StateData;
-use alembic_adapter_sdk::types::{ApplyReport, Op, Tense};
+use alembic_adapter_sdk::{ApplyReport, Op, StateData, Tense};
 #[cfg(test)]
 use alembic_engine::PostgresTlsMode;
 

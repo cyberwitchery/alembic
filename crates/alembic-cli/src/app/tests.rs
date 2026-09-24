@@ -2,7 +2,7 @@ use super::test_support::*;
 use super::*;
 use alembic_adapter_django::emit::{run_emit, DjangoConfig};
 use alembic_adapter_registry::{AdapterConfig, ExternalConfig};
-use alembic_adapter_sdk::types::{AppliedOp, BackendId};
+use alembic_adapter_sdk::{AppliedOp, BackendId};
 use alembic_core::{Inventory, Schema};
 use alembic_engine::{StateLock, StateStore};
 use std::collections::BTreeMap;

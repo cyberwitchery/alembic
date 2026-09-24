@@ -9,7 +9,7 @@ use super::NautobotAdapter;
 use alembic_adapter_sdk::apply_retry::{
     describe_missing_refs, is_missing_ref_error, RetryApplyDriver,
 };
-use alembic_adapter_sdk::types::{AppliedOp, ApplyReport, BackendId, Op, ProvisionReport};
+use alembic_adapter_sdk::{AppliedOp, ApplyReport, BackendId, Op, ProvisionReport};
 use alembic_core::{
     key_string, FieldSchema, FieldType, JsonMap, Key, Schema, TypeName, TypeSchema, Uid,
 };

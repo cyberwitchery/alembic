@@ -1,6 +1,6 @@
 //! core engine types and adapter contract.
 
-use alembic_adapter_sdk::types::{ApplyReport, BackendId, Op, ProvisionReport};
+use alembic_adapter_sdk::{ApplyReport, BackendId, Op, ProvisionReport};
 use alembic_core::{key_string, JsonMap, Key, Schema, TypeName, Uid};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;

@@ -14,8 +14,7 @@ async fn build_plan(
         .map(|(plan, _)| plan)
 }
 use crate::adapter_ops::state_mappings_from_state;
-use alembic_adapter_sdk::state::StateData;
-use alembic_adapter_sdk::types::{AppliedOp, ApplyReport, BackendId, Op, ProvisionReport};
+use alembic_adapter_sdk::{AppliedOp, ApplyReport, BackendId, Op, ProvisionReport, StateData};
 use alembic_core::{
     FieldSchema, FieldType, Inventory, JsonMap, Key, Object, Schema, TypeName, TypeSchema, Uid,
 };

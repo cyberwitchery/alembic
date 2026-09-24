@@ -3,8 +3,7 @@
 use alembic_adapter_sdk::apply_retry::{
     describe_missing_refs, is_missing_ref_error, RetryApplyDriver,
 };
-use alembic_adapter_sdk::state_mappings::StateMappings;
-use alembic_adapter_sdk::types::{AppliedOp, ApplyReport, BackendId, Op};
+use alembic_adapter_sdk::{AppliedOp, ApplyReport, BackendId, Op, StateMappings};
 use alembic_core::{key_string, JsonMap, Key, Schema, TypeName, TypeSchema, Uid};
 use alembic_engine::{
     apply_non_delete_journaled, build_key_from_schema, bullet_list, normalize_attrs_refs,

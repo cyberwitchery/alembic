@@ -2,7 +2,7 @@ use crate::pretty_printing::bullet_list;
 use crate::sort_ops_for_apply;
 use crate::types::{Backend, ObservedState, Observer, Plan, CANNOT_OBSERVE};
 use crate::StateStore;
-use alembic_adapter_sdk::types::{ApplyReport, Op, ProvisionReport};
+use alembic_adapter_sdk::{ApplyReport, Op, ProvisionReport};
 use alembic_core::{Inventory, TypeName};
 use anyhow::{anyhow, Result};
 use std::collections::BTreeSet;

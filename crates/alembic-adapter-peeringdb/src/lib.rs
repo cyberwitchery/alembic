@@ -3,7 +3,7 @@
 //! uses the peeringdb-rs crate to fetch data from PeeringDB.
 //! set the `PEERINGDB_API_KEY` environment variable to authenticate.
 
-use alembic_adapter_sdk::types::BackendId;
+use alembic_adapter_sdk::BackendId;
 use alembic_core::{JsonMap, Schema, TypeName};
 use alembic_engine::{build_key_from_schema, ObservedObject, ObservedState, Observer};
 use anyhow::{anyhow, Context, Result};
@@ -204,7 +204,7 @@ fn to_observed_objects<T: Serialize + HasId>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alembic_adapter_sdk::state::StateData;
+    use alembic_adapter_sdk::StateData;
     use alembic_core::{FieldSchema, FieldType, TypeSchema};
 
     fn ix_schema() -> TypeSchema {
