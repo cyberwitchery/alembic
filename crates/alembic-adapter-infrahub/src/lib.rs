@@ -3,11 +3,10 @@
 use alembic_adapter_sdk::apply_retry::{is_missing_ref_error, RetryApplyDriver};
 use alembic_adapter_sdk::types::{AppliedOp, ApplyReport, BackendId, Op, ProvisionReport};
 use alembic_core::{key_string, FieldType, JsonMap, Key, Schema, TypeName, Uid};
-use alembic_engine::adapter_ops::state_mappings_from_state;
 use alembic_engine::{
     apply_non_delete_journaled, build_key_from_schema, normalize_attrs_refs,
-    resolve_ref_keyed_identity, resolve_value_for_type, resolved_ids_identity, Adapter, Emitter,
-    ObservedState, Observer, RawNode, StateStore,
+    resolve_ref_keyed_identity, resolve_value_for_type, resolved_ids_identity,
+    state_mappings_from_state, Adapter, Emitter, ObservedState, Observer, RawNode, StateStore,
 };
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;

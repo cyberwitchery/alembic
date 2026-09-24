@@ -1,10 +1,9 @@
 //! engine orchestration: load, validate, plan, apply.
 
-pub mod adapter_ops;
+mod adapter_ops;
 mod apply_retry;
 mod drift;
 mod endpoint;
-mod errors;
 mod extract;
 mod inflect;
 mod loader;
@@ -23,6 +22,7 @@ mod state;
 mod test_log;
 mod transform;
 mod types;
+use alembic_adapter_sdk::types::ApplyReport;
 use alembic_core::{key_string, validate_inventory, Inventory, Object, ValidationReport};
 use anyhow::{anyhow, Context, Result};
 
@@ -33,7 +33,7 @@ pub use adapter_ops::{
     backend_id_from_value, build_key_from_schema, build_request_body, collect_tag_names,
     normalize_attrs_refs, query_filters_from_key, resolve_nested_ref_uid,
     resolve_ref_keyed_identity, resolve_value_for_type, resolved_ids_from_state,
-    resolved_ids_identity, state_mappings_by_id, RawNode, RefMappings,
+    resolved_ids_identity, state_mappings_by_id, state_mappings_from_state, RawNode, RefMappings,
 };
 pub use alembic_adapter_sdk::journal::Journal;
 pub use apply_retry::apply_non_delete_journaled;
@@ -197,6 +197,6 @@ pub async fn apply_plan(
     plan: &Plan,
     state: &mut StateStore,
     allow_delete: bool,
-) -> Result<alembic_adapter_sdk::types::ApplyReport> {
+) -> Result<ApplyReport> {
     pipeline::apply(backend, plan, state, allow_delete).await
 }
