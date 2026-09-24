@@ -248,7 +248,7 @@ pub fn run_external_adapter<A: ExternalAdapter>(
     }
 
     if let Err(e) = adapter.setup(&envelope.setup) {
-        return write_error(&mut writer, format!("invalid setup: {e}"));
+        return write_error(&mut writer, format!("invalid setup: {e:#}"));
     }
 
     match envelope.request {
@@ -594,7 +594,7 @@ mod tests {
                 .and_then(serde_yaml::Value::as_bool)
                 == Some(true)
             {
-                anyhow::bail!("rejected by test adapter");
+                return Err(anyhow::anyhow!("rejected by test adapter").context("parsing setup"));
             }
             if let Some(x) = configuration.get("x").and_then(serde_yaml::Value::as_i64) {
                 self.x = x;
@@ -849,7 +849,9 @@ mod tests {
         let response: ExternalResponse<Vec<ExternalObject>> =
             serde_json::from_str(&response).unwrap();
         assert!(!response.ok);
-        assert!(response.error.unwrap().contains("invalid setup"));
+        let error = response.error.unwrap();
+        assert!(error.contains("invalid setup: parsing setup"));
+        assert!(error.contains("rejected by test adapter"));
 
         t.join().unwrap();
     }
