@@ -16,6 +16,8 @@ alembic_external_main!(SdkEmitter::default());
 pub struct SdkEmitter {}
 
 impl ExternalAdapter for SdkEmitter {
+    type Error = anyhow::Error;
+
     fn setup(&mut self, _configuration: &serde_yaml::Value) -> Result<()> {
         Ok(())
     }

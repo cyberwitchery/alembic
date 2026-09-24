@@ -50,7 +50,9 @@ use alembic_adapter_sdk::alembic_external_main;
 struct MyAdapter;
 
 impl ExternalAdapter for MyAdapter {
-    fn setup(&mut self, configuration: &serde_yaml::Value) -> Result<()> {
+    type Error = anyhow::Error;
+
+    fn setup(&mut self, configuration: &serde_yaml::Value) -> anyhow::Result<()> {
         if let Some(x) = configuration
             .get("my_backend_variable_x")
             .and_then(serde_yaml::Value::as_f64) {
@@ -84,6 +86,32 @@ alembic_external_main!(MyAdapter);
 
 for more control, call `run_external_adapter()` directly and build custom
 `ExternalResponse` values.
+
+### errors
+
+`type Error` is whatever the adapter's methods fail with, and any `Display` type
+works. a failed call becomes a response with `"ok": false` and the error's text,
+formatted with `{:#}`, as `error`; nothing else about the error reaches alembic.
+
+- `anyhow::Error` renders its whole context chain
+  (`reading inventory: connecting to backend: connection refused`)
+- an enum of your own, e.g. with `thiserror`, suits an adapter that matches on
+  its failures before returning them
+- `String` is enough for a small adapter:
+
+```rust
+impl ExternalAdapter for MyAdapter {
+    type Error = String;
+
+    fn setup(&mut self, configuration: &serde_yaml::Value) -> Result<(), String> {
+        configuration
+            .get("my_backend_variable_x")
+            .ok_or_else(|| "setup needs `my_backend_variable_x`".to_string())?;
+        Ok(())
+    }
+    // read, write, ...
+}
+```
 
 ### read
 

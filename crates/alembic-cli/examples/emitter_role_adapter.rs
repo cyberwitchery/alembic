@@ -11,6 +11,8 @@ alembic_external_main!(EmitterRoleAdapter::default());
 pub struct EmitterRoleAdapter {}
 
 impl ExternalAdapter for EmitterRoleAdapter {
+    type Error = anyhow::Error;
+
     fn setup(&mut self, _configuration: &serde_yaml::Value) -> Result<()> {
         Ok(())
     }

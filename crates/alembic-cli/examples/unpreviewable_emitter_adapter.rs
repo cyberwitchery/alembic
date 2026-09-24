@@ -14,6 +14,8 @@ alembic_external_main!(UnpreviewableEmitterAdapter::default());
 pub struct UnpreviewableEmitterAdapter {}
 
 impl ExternalAdapter for UnpreviewableEmitterAdapter {
+    type Error = anyhow::Error;
+
     fn setup(&mut self, _configuration: &serde_yaml::Value) -> Result<()> {
         Ok(())
     }

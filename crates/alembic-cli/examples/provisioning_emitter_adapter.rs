@@ -14,6 +14,8 @@ alembic_external_main!(ProvisioningEmitterAdapter::default());
 pub struct ProvisioningEmitterAdapter {}
 
 impl ExternalAdapter for ProvisioningEmitterAdapter {
+    type Error = anyhow::Error;
+
     fn setup(&mut self, _configuration: &serde_yaml::Value) -> Result<()> {
         Ok(())
     }
