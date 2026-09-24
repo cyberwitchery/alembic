@@ -333,9 +333,7 @@ pub fn resolved_ids_from_state<I>(
 
 /// project the whole state store into per-type backend-id -> uid mappings.
 pub fn state_mappings_from_state(state: &StateStore) -> StateMappings {
-    StateMappings {
-        by_type: state_mappings_by_id(state, |b| Some(b.clone())),
-    }
+    StateMappings::from_by_type(state_mappings_by_id(state, |b| Some(b.clone())))
 }
 
 /// the per-type `backend-id -> uid` map an adapter resolves refs through, so

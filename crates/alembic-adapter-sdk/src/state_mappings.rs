@@ -5,10 +5,15 @@ use std::collections::BTreeMap;
 /// per-type `backend-id -> uid` map for read-side ref normalization.
 #[derive(Debug, Default, Clone)]
 pub struct StateMappings {
-    pub by_type: BTreeMap<String, BTreeMap<BackendId, Uid>>,
+    by_type: BTreeMap<String, BTreeMap<BackendId, Uid>>,
 }
 
 impl StateMappings {
+    /// wrap a per-type `backend-id -> uid` map.
+    pub fn from_by_type(by_type: BTreeMap<String, BTreeMap<BackendId, Uid>>) -> Self {
+        StateMappings { by_type }
+    }
+
     /// the canonical uid a backend id maps to for `type_name`, if known.
     pub fn uid_for(&self, type_name: &str, backend_id: &BackendId) -> Option<Uid> {
         self.by_type
