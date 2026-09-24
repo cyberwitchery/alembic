@@ -19,6 +19,7 @@ pub struct RetryApplyResult {
 
 /// a failure of the retry loop itself, rather than of an op the driver applied.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum RetryApplyError {
     #[error(transparent)]
     Journal(#[from] JournalError),

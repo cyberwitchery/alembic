@@ -28,6 +28,7 @@ const FORMAT_VERSION: u32 = 1;
 const DOCUMENT_PREFIX: &str = "--- ";
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum JournalError {
     #[error("failed to access the journal at `{}`", path.display())]
     Io {
