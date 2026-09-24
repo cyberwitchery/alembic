@@ -1,10 +1,11 @@
 //! import of canonical inventory from backend state.
 
 use crate::adapter_ops::{
-    backend_id_from_value, build_key_from_schema, normalize_attrs_refs, StateMappings,
+    backend_id_from_value, build_key_from_schema, normalize_attrs_refs, state_mappings_from_state,
 };
 use crate::state::StateStore;
-use crate::types::{BackendId, ObservedObject, Observer};
+use crate::types::{ObservedObject, Observer};
+use alembic_adapter_sdk::{BackendId, StateMappings};
 use alembic_core::{
     key_string, uid_v5, FieldType, Inventory, JsonMap, Key, Object, Schema, TypeName, TypeSchema,
     Uid,
@@ -47,7 +48,7 @@ pub async fn import_inventory(
 
     let objects: Vec<ObservedObject> = observed.into_objects();
     let observed_ids = observed_backend_ids(&objects);
-    let mut mappings = StateMappings::from_state(state);
+    let mut mappings = state_mappings_from_state(state);
     bootstrap_mappings(schema, &objects, &observed_ids, &mut mappings);
 
     let mut inventory_objects = Vec::new();
@@ -456,9 +457,9 @@ fn project_attrs(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::StateData;
-    use crate::types::{BackendId, ObservedState};
+    use crate::types::ObservedState;
     use crate::Observer;
+    use alembic_adapter_sdk::StateData;
     use alembic_core::{
         key_string, FieldSchema, FieldType, JsonMap, Key, Schema, TypeName, TypeSchema,
     };

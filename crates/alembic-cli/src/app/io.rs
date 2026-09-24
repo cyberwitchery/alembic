@@ -1,5 +1,6 @@
+use alembic_adapter_sdk::ApplyReport;
 use alembic_core::Inventory;
-use alembic_engine::{ApplyReport, DriftReport, Plan};
+use alembic_engine::{DriftReport, Plan};
 use anyhow::{anyhow, Context, Result};
 use serde::Serialize;
 use std::fs;

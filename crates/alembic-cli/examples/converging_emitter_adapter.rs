@@ -1,8 +1,9 @@
-use alembic_core::{Schema, TypeName};
-use alembic_engine::{
-    alembic_external_main, ApplyReport, ExternalAdapter, ExternalCapabilities, ExternalObject,
-    ExternalRole, Op, ProvisionReport, StateData,
+use alembic_adapter_sdk::alembic_external_main;
+use alembic_adapter_sdk::{
+    ApplyReport, ExternalAdapter, ExternalCapabilities, ExternalObject, ExternalRole, Op,
+    ProvisionReport, StateData,
 };
+use alembic_core::{Schema, TypeName};
 use anyhow::Result;
 
 alembic_external_main!(ConvergingEmitterAdapter::default());
@@ -24,6 +25,8 @@ fn converged() -> ProvisionReport {
 }
 
 impl ExternalAdapter for ConvergingEmitterAdapter {
+    type Error = anyhow::Error;
+
     fn setup(&mut self, _configuration: &serde_yaml::Value) -> Result<()> {
         Ok(())
     }

@@ -18,6 +18,7 @@ path = "src/main.rs"
 
 [dependencies]
 alembic-core.workspace = true
+alembic-adapter-sdk.workspace = true
 alembic-engine = { workspace = true, features = ["starlark"] }
 alembic-adapter-registry = { workspace = true, features = ["all"] }
 alembic-adapter-django.workspace = true

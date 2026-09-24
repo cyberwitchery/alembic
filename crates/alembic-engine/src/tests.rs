@@ -13,6 +13,8 @@ async fn build_plan(
         .await
         .map(|(plan, _)| plan)
 }
+use crate::adapter_ops::state_mappings_from_state;
+use alembic_adapter_sdk::{AppliedOp, ApplyReport, BackendId, Op, ProvisionReport, StateData};
 use alembic_core::{
     FieldSchema, FieldType, Inventory, JsonMap, Key, Object, Schema, TypeName, TypeSchema, Uid,
 };
@@ -1422,7 +1424,7 @@ impl Observer for RefChainAdapter {
                 attrs: attrs_map(attrs.clone()),
             })
             .collect();
-        let mut mappings = StateMappings::from_state(state);
+        let mut mappings = state_mappings_from_state(state);
         let mut observed = ObservedState::default();
         for object in resolve_ref_keyed_identity(
             &raw,
@@ -2835,7 +2837,7 @@ impl Observer for RefBackend {
                 attrs: attrs_map(json!({ "name": "leaf01", "site": 1 })),
             },
         ];
-        let mut mappings = StateMappings::from_state(state);
+        let mut mappings = state_mappings_from_state(state);
         let resolved = resolve_ref_keyed_identity(
             &raw,
             schema,
@@ -3033,7 +3035,7 @@ impl Observer for RenameBackend {
                 attrs: attrs_map(json!({ "name": "leaf01", "site": 1 })),
             },
         ];
-        let mut mappings = StateMappings::from_state(state);
+        let mut mappings = state_mappings_from_state(state);
         let resolved = resolve_ref_keyed_identity(
             &raw,
             schema,

@@ -1,7 +1,7 @@
 //! uid -> backend id state store: identity memory, scoped to one backend
 //! instance.
 
-use crate::types::BackendId;
+use alembic_adapter_sdk::{BackendId, StateData};
 use alembic_core::{uid_v5, TypeName, Uid};
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -12,15 +12,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio_postgres::Client;
-
-/// the uid -> backend id mappings. this is also the shape external adapters
-/// receive in read/write requests, so the backend stamp lives in [`StateFile`],
-/// never here.
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
-pub struct StateData {
-    #[serde(default)]
-    pub mappings: BTreeMap<TypeName, BTreeMap<Uid, BackendId>>,
-}
 
 /// the backend instance a state store binds identities to: the adapter kind
 /// plus a stable instance identifier (a normalized endpoint, an output path,

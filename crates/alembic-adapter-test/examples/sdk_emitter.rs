@@ -3,11 +3,11 @@
 //! unsupported version before setup and before method dispatch, so the version
 //! probe is answered whichever method it rides.
 
-use alembic_core::{Schema, TypeName};
-use alembic_engine::{
-    alembic_external_main, ApplyReport, ExternalAdapter, ExternalCapabilities, ExternalObject,
-    ExternalRole, Op, StateData,
+use alembic_adapter_sdk::alembic_external_main;
+use alembic_adapter_sdk::{
+    ApplyReport, ExternalAdapter, ExternalCapabilities, ExternalObject, ExternalRole, Op, StateData,
 };
+use alembic_core::{Schema, TypeName};
 use anyhow::Result;
 
 alembic_external_main!(SdkEmitter::default());
@@ -16,6 +16,8 @@ alembic_external_main!(SdkEmitter::default());
 pub struct SdkEmitter {}
 
 impl ExternalAdapter for SdkEmitter {
+    type Error = anyhow::Error;
+
     fn setup(&mut self, _configuration: &serde_yaml::Value) -> Result<()> {
         Ok(())
     }

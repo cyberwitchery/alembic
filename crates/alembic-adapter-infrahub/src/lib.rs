@@ -1,11 +1,12 @@
 //! infrahub graphql adapter for alembic.
 
+use alembic_adapter_sdk::apply_retry::{is_missing_ref_error, RetryApplyDriver};
+use alembic_adapter_sdk::{AppliedOp, ApplyReport, BackendId, Op, ProvisionReport};
 use alembic_core::{key_string, FieldType, JsonMap, Key, Schema, TypeName, Uid};
 use alembic_engine::{
-    apply_non_delete_journaled, build_key_from_schema, is_missing_ref_error, normalize_attrs_refs,
-    resolve_ref_keyed_identity, resolve_value_for_type, resolved_ids_identity, Adapter, AppliedOp,
-    ApplyReport, BackendId, Emitter, ObservedState, Observer, Op, ProvisionReport, RawNode,
-    RetryApplyDriver, StateMappings, StateStore,
+    apply_non_delete_journaled, build_key_from_schema, normalize_attrs_refs,
+    resolve_ref_keyed_identity, resolve_value_for_type, resolved_ids_identity,
+    state_mappings_from_state, Adapter, Emitter, ObservedState, Observer, RawNode, StateStore,
 };
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
@@ -707,7 +708,7 @@ impl InfrahubAdapter {
             }
         }
 
-        let mut mappings = StateMappings::from_state(state_store);
+        let mut mappings = state_mappings_from_state(state_store);
         let observed = resolve_ref_keyed_identity(
             &raw,
             schema,
@@ -758,6 +759,8 @@ impl Emitter for InfrahubAdapter {
 
         #[async_trait]
         impl RetryApplyDriver for ApplyDriver<'_> {
+            type Error = anyhow::Error;
+
             async fn apply_non_delete(&mut self, op: &Op) -> Result<AppliedOp> {
                 match op {
                     Op::Create { .. } => {
@@ -775,7 +778,7 @@ impl Emitter for InfrahubAdapter {
             }
 
             fn is_retryable(&self, err: &anyhow::Error) -> bool {
-                is_missing_ref_error(err)
+                is_missing_ref_error(err.as_ref())
             }
 
             fn resume(&mut self, resumed: &[AppliedOp]) {
@@ -2219,12 +2222,11 @@ mod tests {
     }
 
     use super::*;
+    use alembic_adapter_sdk::{AdapterApplyError, StateData, StateMappings};
     use alembic_core::{
         key_string, FieldSchema, FieldType, JsonMap, Key, Object, Schema, TypeName, TypeSchema,
     };
-    use alembic_engine::{
-        backend_id_from_value, AdapterApplyError, BackendId, Op, StateData, StateStore,
-    };
+    use alembic_engine::{backend_id_from_value, StateStore};
     use httpmock::prelude::*;
     use httpmock::Mock;
     use serde_json::json;
@@ -2971,7 +2973,7 @@ schema { query: Query }
         );
 
         let err = anyhow::Error::new(AdapterApplyError::MissingRef { uid: uid_missing });
-        assert!(is_missing_ref_error(&err));
+        assert!(is_missing_ref_error(err.as_ref()));
     }
 
     #[test]

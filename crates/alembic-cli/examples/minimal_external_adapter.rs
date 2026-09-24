@@ -1,7 +1,6 @@
+use alembic_adapter_sdk::alembic_external_main;
+use alembic_adapter_sdk::{ApplyReport, ExternalAdapter, ExternalObject, Op, StateData};
 use alembic_core::{Schema, TypeName};
-use alembic_engine::{
-    alembic_external_main, ApplyReport, ExternalAdapter, ExternalObject, Op, StateData,
-};
 use anyhow::Result;
 
 alembic_external_main!(MinimalAdapter::default());
@@ -12,6 +11,8 @@ pub struct MinimalAdapter {}
 impl MinimalAdapter {}
 
 impl ExternalAdapter for MinimalAdapter {
+    type Error = anyhow::Error;
+
     fn setup(&mut self, _configuration: &serde_yaml::Value) -> Result<()> {
         Ok(())
     }

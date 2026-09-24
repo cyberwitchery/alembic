@@ -1,8 +1,10 @@
-use alembic_core::{JsonMap, Schema, TypeName};
-use alembic_engine::{
-    alembic_external_main, build_key_from_schema, ApplyReport, BackendId, ExternalAdapter,
-    ExternalCapabilities, ExternalObject, ExternalRole, Op, StateData,
+use alembic_adapter_sdk::alembic_external_main;
+use alembic_adapter_sdk::{
+    ApplyReport, BackendId, ExternalAdapter, ExternalCapabilities, ExternalObject, ExternalRole,
+    Op, StateData,
 };
+use alembic_core::{JsonMap, Schema, TypeName};
+use alembic_engine::build_key_from_schema;
 use anyhow::{anyhow, Result};
 use serde_json::json;
 
@@ -31,6 +33,8 @@ fn attrs_of(value: serde_json::Value) -> JsonMap {
 }
 
 impl ExternalAdapter for RawRefAdapter {
+    type Error = anyhow::Error;
+
     fn setup(&mut self, _configuration: &serde_yaml::Value) -> Result<()> {
         Ok(())
     }

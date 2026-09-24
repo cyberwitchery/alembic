@@ -1,6 +1,7 @@
 use super::*;
+use alembic_adapter_sdk::StateData;
 use alembic_core::{FieldSchema, FieldType, Key, TypeSchema};
-use alembic_engine::{StateData, StateStore};
+use alembic_engine::StateStore;
 use httpmock::prelude::*;
 use httpmock::Method::PATCH;
 
@@ -472,7 +473,7 @@ fn test_resolve_attrs_unresolved_nested_ref_surfaces_missing_ref() {
 
     let err = resolve_attrs(&attrs, &type_schema, &resolved).unwrap_err();
     assert!(
-        is_missing_ref_error(&err),
+        is_missing_ref_error(err.as_ref()),
         "nested unresolved ref must surface MissingRef for the retry loop, got: {err}"
     );
 }
@@ -497,7 +498,7 @@ fn test_normalize_attrs_refs_resolves_refs_nested_in_list() {
         site_uid,
         BackendId::Int(7),
     );
-    let mappings = StateMappings::from_state(&state);
+    let mappings = state_mappings_from_state(&state);
 
     let attrs: JsonMap = serde_json::json!({ "members": [7] })
         .as_object()
@@ -534,7 +535,7 @@ fn test_normalize_attrs_refs_resolves_refs_nested_in_map() {
         site_uid,
         BackendId::Int(7),
     );
-    let mappings = StateMappings::from_state(&state);
+    let mappings = state_mappings_from_state(&state);
 
     let attrs: JsonMap = serde_json::json!({ "links": {"primary": 7} })
         .as_object()
@@ -569,7 +570,7 @@ fn test_normalize_attrs_refs_resolves_list_ref() {
         site_uid,
         BackendId::Int(7),
     );
-    let mappings = StateMappings::from_state(&state);
+    let mappings = state_mappings_from_state(&state);
 
     let attrs: JsonMap = serde_json::json!({ "peers": [7] })
         .as_object()
@@ -604,7 +605,7 @@ fn test_normalize_attrs_refs_resolves_object_shaped_ref() {
         site_uid,
         BackendId::Int(7),
     );
-    let mappings = StateMappings::from_state(&state);
+    let mappings = state_mappings_from_state(&state);
 
     let attrs: JsonMap = serde_json::json!({ "site": {"id": 7} })
         .as_object()

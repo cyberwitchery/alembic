@@ -30,8 +30,8 @@ impl NetBoxAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alembic_adapter_sdk::{BackendId, FieldChange, Op, StateData};
     use alembic_core::{key_string, JsonMap, Key, TypeName, Uid};
-    use alembic_engine::Op;
     use httpmock::Method::{GET, PATCH, POST};
     use httpmock::{Mock, MockServer};
     use serde_json::json;
@@ -72,11 +72,7 @@ mod tests {
 
     fn state_with_mappings(path: &std::path::Path) -> StateStore {
         let mut store = StateStore::load(path).unwrap();
-        store.set_backend_id(
-            TypeName::new("dcim.site"),
-            uid(1),
-            alembic_engine::BackendId::Int(1),
-        );
+        store.set_backend_id(TypeName::new("dcim.site"), uid(1), BackendId::Int(1));
         store
     }
 
@@ -451,7 +447,7 @@ mod tests {
         schema: &alembic_core::Schema,
         site_key: Key,
     ) {
-        let stateless = alembic_engine::StateStore::new(None, alembic_engine::StateData::default());
+        let stateless = alembic_engine::StateStore::new(None, StateData::default());
         let report = alembic_engine::import_inventory(adapter, schema, &[], &stateless)
             .await
             .unwrap();
@@ -1338,17 +1334,12 @@ mod tests {
 
     #[tokio::test]
     async fn apply_handles_update_operation() {
-        use alembic_engine::FieldChange;
         use httpmock::Method::PATCH;
 
         let server = MockServer::start();
         let dir = tempdir().unwrap();
         let mut state = StateStore::load(dir.path().join("state.json")).unwrap();
-        state.set_backend_id(
-            TypeName::new("dcim.site"),
-            uid(1),
-            alembic_engine::BackendId::Int(1),
-        );
+        state.set_backend_id(TypeName::new("dcim.site"), uid(1), BackendId::Int(1));
         let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
 
         let _object_types = mock_list(
@@ -1379,7 +1370,7 @@ mod tests {
         let ops = vec![Op::Update {
             uid: uid(1),
             type_name: TypeName::new("dcim.site"),
-            backend_id: Some(alembic_engine::BackendId::Int(1)),
+            backend_id: Some(BackendId::Int(1)),
             desired: alembic_core::Object {
                 uid: uid(1),
                 type_name: TypeName::new("dcim.site"),
@@ -1434,11 +1425,7 @@ mod tests {
         let server = MockServer::start();
         let dir = tempdir().unwrap();
         let mut state = StateStore::load(dir.path().join("state.json")).unwrap();
-        state.set_backend_id(
-            TypeName::new("dcim.site"),
-            uid(1),
-            alembic_engine::BackendId::Int(1),
-        );
+        state.set_backend_id(TypeName::new("dcim.site"), uid(1), BackendId::Int(1));
         let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
 
         let _object_types = mock_list(
@@ -1464,7 +1451,7 @@ mod tests {
             uid: uid(1),
             type_name: TypeName::new("dcim.site"),
             key: key("slug", json!("fra1")),
-            backend_id: Some(alembic_engine::BackendId::Int(1)),
+            backend_id: Some(BackendId::Int(1)),
         }];
 
         let schema = alembic_core::Schema {
@@ -1498,11 +1485,7 @@ mod tests {
         let server = MockServer::start();
         let dir = tempdir().unwrap();
         let mut state = StateStore::load(dir.path().join("state.json")).unwrap();
-        state.set_backend_id(
-            TypeName::new("dcim.site"),
-            uid(1),
-            alembic_engine::BackendId::Int(1),
-        );
+        state.set_backend_id(TypeName::new("dcim.site"), uid(1), BackendId::Int(1));
         let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
 
         let _object_types = mock_list(
@@ -1528,7 +1511,7 @@ mod tests {
             uid: uid(1),
             type_name: TypeName::new("dcim.site"),
             key: key("slug", json!("fra1")),
-            backend_id: Some(alembic_engine::BackendId::Int(1)),
+            backend_id: Some(BackendId::Int(1)),
         }];
 
         let schema = alembic_core::Schema {
@@ -1612,7 +1595,7 @@ mod tests {
                 uid: uid(2),
                 type_name: TypeName::new("dcim.site"),
                 key: key("slug", json!("ber1")),
-                backend_id: Some(alembic_engine::BackendId::Int(2)),
+                backend_id: Some(BackendId::Int(2)),
             },
         ];
         let creates: Vec<Op> = ops
@@ -1675,7 +1658,7 @@ mod tests {
                 .iter()
                 .map(|op| (op.uid, op.backend_id.clone()))
                 .collect::<Vec<_>>(),
-            vec![(uid(1), Some(alembic_engine::BackendId::Int(1)))],
+            vec![(uid(1), Some(BackendId::Int(1)))],
         );
         drop(journal);
 

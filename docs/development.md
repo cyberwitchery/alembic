@@ -6,6 +6,7 @@
 alembic/
   crates/
     alembic-core
+    alembic-adapter-sdk
     alembic-engine
     alembic-adapter-registry
     alembic-adapter-netbox

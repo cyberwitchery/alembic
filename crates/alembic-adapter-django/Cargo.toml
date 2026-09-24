@@ -13,6 +13,7 @@ readme = "../../README.md"
 [dependencies]
 alembic-engine.workspace = true
 alembic-core.workspace = true
+alembic-adapter-sdk.workspace = true
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true

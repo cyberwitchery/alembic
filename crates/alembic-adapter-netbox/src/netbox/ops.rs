@@ -7,14 +7,17 @@ use super::mapping::{
 use super::registry::ObjectTypeRegistry;
 use super::state::{resolved_from_state, state_mappings};
 use super::NetBoxAdapter;
+use alembic_adapter_sdk::apply_retry::{
+    describe_missing_refs, is_missing_ref_error, RetryApplyDriver,
+};
+use alembic_adapter_sdk::{AppliedOp, ApplyReport, BackendId, Op, ProvisionReport};
 use alembic_core::{
     key_string, FieldSchema, FieldType, JsonMap, Key, Schema, TypeName, TypeSchema, Uid,
 };
 use alembic_engine::{
-    apply_non_delete_journaled, build_key_from_schema, collect_tag_names, describe_missing_refs,
-    is_missing_ref_error, query_filters_from_key, resolve_nested_ref_uid,
-    resolve_ref_keyed_identity, Adapter, AppliedOp, ApplyReport, BackendId, Emitter, ObservedState,
-    Observer, Op, ProvisionReport, RawNode, RetryApplyDriver,
+    apply_non_delete_journaled, build_key_from_schema, collect_tag_names, query_filters_from_key,
+    resolve_nested_ref_uid, resolve_ref_keyed_identity, Adapter, Emitter, ObservedState, Observer,
+    RawNode,
 };
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
@@ -224,6 +227,8 @@ impl Emitter for NetBoxAdapter {
 
         #[async_trait]
         impl RetryApplyDriver for ApplyDriver<'_> {
+            type Error = anyhow::Error;
+
             async fn apply_non_delete(&mut self, op: &Op) -> Result<AppliedOp> {
                 match op {
                     Op::Create { .. } => self
@@ -261,7 +266,7 @@ impl Emitter for NetBoxAdapter {
             }
 
             fn is_retryable(&self, err: &anyhow::Error) -> bool {
-                is_missing_ref_error(err)
+                is_missing_ref_error(err.as_ref())
             }
 
             fn resume(&mut self, resumed: &[AppliedOp]) {

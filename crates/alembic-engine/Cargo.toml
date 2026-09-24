@@ -17,6 +17,7 @@ starlark = ["dep:starlark"]
 
 [dependencies]
 alembic-core.workspace = true
+alembic-adapter-sdk.workspace = true
 starlark = { workspace = true, optional = true }
 anyhow.workspace = true
 async-trait.workspace = true

@@ -1,6 +1,7 @@
 use crate::mapping::{supports_feature, tags_from_value};
 use crate::types::ObservedObject;
-use crate::{AdapterApplyError, BackendId, Op, StateStore};
+use crate::StateStore;
+use alembic_adapter_sdk::{AdapterApplyError, BackendId, Op, StateMappings};
 use alembic_core::{
     key_string, uid_v5, FieldType, JsonMap, Key, Schema, TypeName, TypeSchema, Uid,
 };
@@ -328,34 +329,9 @@ pub fn resolved_ids_from_state<I>(
     resolved
 }
 
-/// per-type `backend-id -> uid` map for read-side ref normalization.
-#[derive(Debug, Default, Clone)]
-pub struct StateMappings {
-    by_type: BTreeMap<String, BTreeMap<BackendId, Uid>>,
-}
-
-impl StateMappings {
-    /// the canonical uid a backend id maps to for `type_name`, if known.
-    pub fn uid_for(&self, type_name: &str, backend_id: &BackendId) -> Option<Uid> {
-        self.by_type
-            .get(type_name)
-            .and_then(|mapping| mapping.get(backend_id).copied())
-    }
-
-    /// record a `backend-id -> uid` mapping for `type_name`.
-    pub fn insert(&mut self, type_name: &str, backend_id: BackendId, uid: Uid) {
-        self.by_type
-            .entry(type_name.to_string())
-            .or_default()
-            .insert(backend_id, uid);
-    }
-
-    /// project the whole state store into per-type backend-id -> uid mappings.
-    pub fn from_state(state: &StateStore) -> Self {
-        StateMappings {
-            by_type: state_mappings_by_id(state, |b| Some(b.clone())),
-        }
-    }
+/// project the whole state store into per-type backend-id -> uid mappings.
+pub fn state_mappings_from_state(state: &StateStore) -> StateMappings {
+    StateMappings::from_by_type(state_mappings_by_id(state, |b| Some(b.clone())))
 }
 
 /// the per-type `backend-id -> uid` map an adapter resolves refs through, so
@@ -677,6 +653,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alembic_adapter_sdk::StateData;
     use alembic_core::{FieldSchema, FieldType, JsonMap, Key, Object, TypeSchema};
     use serde_json::json;
     use uuid::Uuid;
@@ -1124,7 +1101,6 @@ mod tests {
     // --- state projection helpers ---
 
     fn store_with_mixed_ids(type_name: &str) -> StateStore {
-        use crate::StateData;
         use alembic_core::TypeName;
 
         let mut data = StateData::default();
@@ -1301,7 +1277,7 @@ mod tests {
     #[test]
     fn from_state_and_resolved_ids_identity_roundtrip() {
         let store = store_with_mixed_ids("dcim.site");
-        let m = StateMappings::from_state(&store);
+        let m = state_mappings_from_state(&store);
         assert_eq!(
             m.uid_for("dcim.site", &BackendId::Int(5)),
             Some(Uid::from_u128(1))
