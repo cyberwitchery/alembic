@@ -1,6 +1,5 @@
 //! protocol types and helpers for external alembic adapters.
 
-pub mod apply_retry;
 pub mod errors;
 pub mod external;
 pub mod journal;
