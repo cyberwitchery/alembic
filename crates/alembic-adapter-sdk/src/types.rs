@@ -88,7 +88,7 @@ impl Op {
 /// identity is built on. journal identity (file names, per-op hashes) is
 /// persisted to disk and compared across runs, so it must not depend on
 /// `DefaultHasher`, whose algorithm is not stable across rust releases.
-pub fn stable_json_hash<T: Serialize>(value: &T) -> u64 {
+pub(crate) fn stable_json_hash<T: Serialize>(value: &T) -> u64 {
     // serializing engine types cannot fail: plain structs and enums whose only
     // maps are string-keyed.
     let bytes = serde_json::to_vec(value).expect("engine value serializes to json");
