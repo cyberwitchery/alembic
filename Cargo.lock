@@ -158,6 +158,7 @@ version = "0.9.0"
 dependencies = [
  "alembic-core",
  "anyhow",
+ "async-trait",
  "serde",
  "serde_json",
  "serde_yaml_ng",

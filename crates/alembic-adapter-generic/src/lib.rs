@@ -1,12 +1,14 @@
 //! generic rest adapter for alembic.
 
+use alembic_adapter_sdk::apply_retry::{
+    describe_missing_refs, is_missing_ref_error, RetryApplyDriver,
+};
 use alembic_adapter_sdk::{AppliedOp, ApplyReport, BackendId, Op, StateMappings};
 use alembic_core::{key_string, JsonMap, Key, Schema, TypeName, TypeSchema, Uid};
 use alembic_engine::{
-    apply_non_delete_journaled, build_key_from_schema, bullet_list, describe_missing_refs,
-    is_missing_ref_error, normalize_attrs_refs, resolve_ref_keyed_identity, resolved_ids_identity,
-    state_mappings_from_state, Adapter, Emitter, ObservedState, Observer, RawNode,
-    RetryApplyDriver,
+    apply_non_delete_journaled, build_key_from_schema, bullet_list, normalize_attrs_refs,
+    resolve_ref_keyed_identity, resolved_ids_identity, state_mappings_from_state, Adapter, Emitter,
+    ObservedState, Observer, RawNode,
 };
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
