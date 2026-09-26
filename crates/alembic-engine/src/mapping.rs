@@ -591,7 +591,7 @@ mod tests {
         assert_eq!(desired.get("description"), Some(&json!("owned")));
     }
 
-    /// the first divergent property is one of the converged managed properties.
+    /// a converged property diverges, and the value agreed first is kept.
     #[test]
     fn test_merge_reports_divergence_on_a_converged_property() {
         let mut desired = serde_json::Map::new();
@@ -603,9 +603,10 @@ mod tests {
             merge_shared_field_properties(&mut desired, &json!({"required": false})),
             Some("required")
         );
+        assert_eq!(desired.get("required"), Some(&json!(true)));
     }
 
-    /// the second divergent property is another of the converged managed ones.
+    /// `validation_regex` diverges the same way.
     #[test]
     fn test_merge_reports_divergence_on_validation_regex() {
         let mut desired = serde_json::Map::new();
@@ -617,6 +618,7 @@ mod tests {
             merge_shared_field_properties(&mut desired, &json!({"validation_regex": "^[0-9]+$"})),
             Some("validation_regex")
         );
+        assert_eq!(desired.get("validation_regex"), Some(&json!("^[a-z]+$")));
     }
 
     /// the agreement-only property is checked too: a `type` mismatch diverges even
@@ -632,12 +634,13 @@ mod tests {
             merge_shared_field_properties(&mut desired, &json!({"type": "integer"})),
             Some("type")
         );
+        assert_eq!(desired.get("type"), Some(&json!("text")));
     }
 
-    /// a payload that agrees on the divergent property but also carries another one
-    /// still inserts the agreeing value and does not report divergence.
+    /// a payload that agrees on a property already set and carries a new one is no
+    /// divergence, and the new property is inserted beside the agreed one.
     #[test]
-    fn test_merge_inserts_agreeing_value_and_ignores_extra_properties() {
+    fn test_merge_agreeing_payload_inserts_its_new_properties() {
         let mut desired = serde_json::Map::new();
         assert_eq!(
             merge_shared_field_properties(&mut desired, &json!({"required": true})),
