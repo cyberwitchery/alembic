@@ -119,17 +119,50 @@ fn probe_path(path: &Path) -> PathBuf {
     }
 }
 
-/// every `-o` write: warn on a misleading extension, then write `value` as
-/// pretty json. one call so a new output cannot keep the write and silently
-/// lose the warning; unlike the preflight, the warning has no `output_path` to
-/// gate it. announcing stays with the caller, which is per-site and interleaved.
+/// every `-o` write: serialize `value` as json or yaml, chosen by the output
+/// path extension (`-o out.yaml` → yaml; anything else stays json). one call so
+/// a new output cannot keep the write and silently lose it; unlike the preflight
+/// there is no `output_path` to gate it. callers announce what they wrote with
+/// `announce_written`, which reports the same extension-derived format so a
+/// `.yaml` output never reads as json.
 fn write_output<T: Serialize>(path: &Path, what: &str, value: &T) -> Result<()> {
-    if let Some(msg) = warn_misleading_output_extension(path) {
-        eprintln!("{msg}");
-    }
     ensure_parent_dir(path)?;
-    let raw = serde_json::to_string_pretty(value)?;
+    let raw = match output_kind(path) {
+        OutputKind::Yaml => serde_yaml::to_string(value)?.into_bytes(),
+        OutputKind::Json => serde_json::to_string_pretty(value)?.into_bytes(),
+    };
     fs::write(path, raw).with_context(|| format!("write {what}: {}", path.display()))
+}
+
+/// the serialization an output path maps to. only `.yaml`/`.yml` are yaml;
+/// anything else (including no extension) stays json, which is also how the
+/// loader reads: non-json inventories parse as yaml on input and these writes
+/// round-trip by the same extension rule.
+enum OutputKind {
+    Json,
+    Yaml,
+}
+
+fn output_kind(path: &Path) -> OutputKind {
+    match path.extension().and_then(|s| s.to_str()) {
+        Some(ext) if ext.eq_ignore_ascii_case("yaml") || ext.eq_ignore_ascii_case("yml") => {
+            OutputKind::Yaml
+        }
+        _ => OutputKind::Json,
+    }
+}
+
+/// announce that `what` was written to `path`, naming the format chosen by its
+/// extension so a `.yaml` output does not read as json. per-site so callers keep
+/// their own human noun (plan, ir, drift report, ...); the format is shared here
+/// so every write reports it consistently.
+pub(super) fn announce_written(path: &Path, what: &str) -> Result<()> {
+    let kind = match output_kind(path) {
+        OutputKind::Yaml => "yaml",
+        OutputKind::Json => "json",
+    };
+    println!("{what} ({kind}) written to {}", path.display());
+    Ok(())
 }
 
 pub(super) fn write_plan(path: &Path, plan: &Plan) -> Result<()> {
@@ -171,26 +204,5 @@ fn maybe_suggest_inventory(raw: &str, err: serde_json::Error) -> anyhow::Error {
         )
         .context(format!("{}", err)),
         Err(_) => anyhow::Error::from(err),
-    }
-}
-
-/// when an always-JSON output path carries a `.yaml`/`.yml` extension, return a
-/// warning that the file is written as JSON despite its name; `None` otherwise
-/// (any other extension, or none).
-///
-/// it returns the message rather than printing it so it stays unit-testable;
-/// `write_output` is the only caller and puts it on stderr. this is a gentle
-/// nudge, never an error: the file is still written and existing workflows keep
-/// working.
-pub(super) fn warn_misleading_output_extension(path: &Path) -> Option<String> {
-    let ext = path.extension().and_then(|s| s.to_str())?;
-    if ext.eq_ignore_ascii_case("yaml") || ext.eq_ignore_ascii_case("yml") {
-        Some(format!(
-            "warning: --output `{}` is written as JSON despite the .{} extension",
-            path.display(),
-            ext
-        ))
-    } else {
-        None
     }
 }

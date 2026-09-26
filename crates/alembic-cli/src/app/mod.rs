@@ -17,15 +17,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use self::io::{
-    read_plan, write_apply_report, write_drift_report, write_inventory, write_plan,
-    write_validation_report,
+    announce_written, read_plan, write_apply_report, write_drift_report, write_inventory,
+    write_plan, write_validation_report,
 };
 use self::state::load_state;
 use crate::app::config::AppConfig;
 use alembic_core::TypeName;
 
-#[cfg(test)]
-use self::io::warn_misleading_output_extension;
 #[cfg(test)]
 use self::state::{resolve_state_backend_config, state_path, StateBackendConfig};
 #[cfg(test)]
@@ -303,7 +301,7 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             // and an absent file would be indistinguishable from a crash.
             if let Some(output) = &output {
                 write_validation_report(output, &located)?;
-                println!("validation report written to {}", output.display());
+                announce_written(output, "validation report")?;
             }
             // after the write, so `ok` means the whole command succeeded
             if located.errors.is_empty() {
@@ -405,7 +403,7 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                 // never a plan, and still no state save
                 if let Some(output) = &output {
                     write_drift_report(output, &drift)?;
-                    println!("\ndrift report written to {}", output.display());
+                    announce_written(output, "drift report")?;
                 }
             } else if dry_run {
                 let raw = serde_json::to_string_pretty(&plan)?;
@@ -419,7 +417,7 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                 // human-readable, per-op view of what apply would do (see before
                 // write); the machine-readable copy is the written plan file.
                 println!("{}", render_plan(&plan));
-                println!("\nplan written to {}", output.display());
+                announce_written(&output, "plan")?;
             }
         }
         Command::Apply {
@@ -487,7 +485,7 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             // path only: state.json is cumulative and the journal is gone by now.
             if let Some(output) = output {
                 write_apply_report(&output, &report)?;
-                println!("apply report written to {}", output.display());
+                announce_written(&output, "apply report")?;
             }
         }
         Command::Map {
@@ -531,7 +529,7 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                 let spec = alembic_engine::load_map_spec(&spec)?;
                 let inventory = alembic_engine::compile_map(&input, &spec)?;
                 write_inventory(&output, &inventory)?;
-                println!("ir written to {}", output.display());
+                announce_written(&output, "ir")?;
             }
         },
         Command::Import {
@@ -564,7 +562,7 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             )
             .await?;
             write_inventory(&output, &report.inventory)?;
-            println!("inventory written to {}", output.display());
+            announce_written(&output, "inventory")?;
         }
         // no backend, no state, no inventory: the text is in the binary
         Command::Skill { action } => match action {

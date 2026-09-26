@@ -199,6 +199,36 @@ fn write_apply_report_creates_missing_parent_dirs() {
 }
 
 #[test]
+fn write_inventory_to_yaml_path_serializes_as_yaml() {
+    // a `.yaml` output is hand-editable yaml, not json; the point of issue #440.
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("ir.yaml");
+    let inventory = Inventory {
+        schema: Schema {
+            types: BTreeMap::new(),
+        },
+        scope: None,
+        objects: vec![],
+    };
+    write_inventory(&path, &inventory).unwrap();
+    // valid yaml that is not the pretty json form; a `.json` sibling would parse
+    // as an inventory too, so this only proves the extension drove serialization.
+    let raw = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        serde_yaml::from_str::<Inventory>(&raw).is_ok(),
+        "not yaml: {raw}"
+    );
+    assert!(!raw.contains("\"objects\""), "{raw}");
+
+    // the same inventory to a `.json` path stays json and round-trips.
+    let json_path = dir.path().join("ir.json");
+    write_inventory(&json_path, &inventory).unwrap();
+    let read_back: Inventory =
+        serde_json::from_str(&std::fs::read_to_string(&json_path).unwrap()).unwrap();
+    assert_eq!(read_back, inventory);
+}
+
+#[test]
 fn write_validation_report_creates_missing_parent_dirs() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("nested/out/validation.json");
@@ -498,32 +528,6 @@ fn read_plan_rejects_a_misspelled_key() {
     .unwrap();
     let err = read_plan(&path).unwrap_err();
     assert!(format!("{err:#}").contains("schema_preveiw"), "{err:#}");
-}
-
-#[test]
-fn warn_misleading_output_extension_flags_yaml() {
-    // always-JSON outputs named like yaml get a (non-fatal) heads-up that mentions
-    // the path and the actual format.
-    let msg = warn_misleading_output_extension(Path::new("plan.yaml"))
-        .expect("a .yaml output path should warn");
-    assert!(msg.contains("plan.yaml"));
-    assert!(msg.contains("JSON"));
-    assert!(
-        warn_misleading_output_extension(Path::new("out.yml")).is_some(),
-        ".yml should warn too"
-    );
-    // detection is case-insensitive on the extension.
-    assert!(warn_misleading_output_extension(Path::new("out.YAML")).is_some());
-}
-
-#[test]
-fn warn_misleading_output_extension_allows_json() {
-    assert!(warn_misleading_output_extension(Path::new("plan.json")).is_none());
-}
-
-#[test]
-fn warn_misleading_output_extension_allows_no_extension() {
-    assert!(warn_misleading_output_extension(Path::new("plan")).is_none());
 }
 
 #[test]
