@@ -7,7 +7,11 @@ and supported feature set.
 ## supported versions
 
 the adapter is built for netbox 4.x. ci runs against `docker.io/netboxcommunity/netbox:v4.6.2`,
-which is the version it is validated against -- use that pin when reporting a compatibility issue.
+which is the version it is validated against. use that pin when reporting a compatibility issue.
+
+- the contract that pins a version is the `object_types.rest_api_endpoint` mapping documented below: every object type resolves to exactly one endpoint, so an endpoint rename or removal breaks observe and plan against this pin.
+- a netbox release that adds a required field for any supported type, renames or removes an existing rest endpoint, or drops a feature advertised in the `features` set is incompatible with v4.6.2. report it as such rather than assuming it works.
+- validate the change against `docker.io/netboxcommunity/netbox:v4.6.2` before filing the report; only call it an incompatibility once it fails there too, so a local setup difference does not masquerade as a netbox regression.
 
 ## object types and endpoints
 
