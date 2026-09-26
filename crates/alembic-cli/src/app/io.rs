@@ -2,6 +2,7 @@ use alembic_adapter_sdk::ApplyReport;
 use alembic_core::Inventory;
 use alembic_engine::{DriftReport, Plan};
 use anyhow::{anyhow, Context, Result};
+use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -135,9 +136,8 @@ fn write_output<T: Serialize>(path: &Path, what: &str, value: &T) -> Result<()> 
 }
 
 /// the serialization an output path maps to. only `.yaml`/`.yml` are yaml;
-/// anything else (including no extension) stays json, which is also how the
-/// loader reads: non-json inventories parse as yaml on input and these writes
-/// round-trip by the same extension rule.
+/// anything else (including no extension) stays json. `read_plan` reads by the
+/// same rule, so a plan written by `plan -o` always reads back in `apply`.
 enum OutputKind {
     Json,
     Yaml,
@@ -190,19 +190,27 @@ pub(super) fn write_inventory(path: &Path, inventory: &alembic_core::Inventory) 
 
 pub(super) fn read_plan(path: &Path) -> Result<Plan> {
     let raw = fs::read_to_string(path).with_context(|| format!("read plan: {}", path.display()))?;
-    serde_json::from_str::<Plan>(&raw)
-        .map_err(|err| maybe_suggest_inventory(&raw, err))
+    let kind = output_kind(path);
+    parse_as::<Plan>(&kind, &raw)
+        .map_err(|err| maybe_suggest_inventory(&kind, &raw, err))
         .with_context(|| format!("parse plan: {}", path.display()))
 }
 
+fn parse_as<T: DeserializeOwned>(kind: &OutputKind, raw: &str) -> Result<T> {
+    Ok(match kind {
+        OutputKind::Yaml => serde_yaml::from_str(raw)?,
+        OutputKind::Json => serde_json::from_str(raw)?,
+    })
+}
+
 /// rewrap a plan parse error when the document is an inventory/IR instead.
-fn maybe_suggest_inventory(raw: &str, err: serde_json::Error) -> anyhow::Error {
-    match serde_json::from_str::<Inventory>(raw) {
+fn maybe_suggest_inventory(kind: &OutputKind, raw: &str, err: anyhow::Error) -> anyhow::Error {
+    match parse_as::<Inventory>(kind, raw) {
         Ok(_) => anyhow!(
             "expected a plan but the document looks like an inventory/IR (a top-level `objects` \
              array); apply reads a plan, use `plan` to produce one from an inventory"
         )
         .context(format!("{}", err)),
-        Err(_) => anyhow::Error::from(err),
+        Err(_) => err,
     }
 }

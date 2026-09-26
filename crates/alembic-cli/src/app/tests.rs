@@ -175,6 +175,49 @@ fn plan_roundtrip_io() {
 }
 
 #[test]
+fn plan_roundtrip_io_yaml() {
+    // `plan -o plan.yaml` writes yaml, so `apply --plan plan.yaml` must read yaml.
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("plan.yaml");
+    let plan = Plan {
+        schema: alembic_core::Schema {
+            types: BTreeMap::new(),
+        },
+        ops: vec![Op::Delete {
+            uid: uuid::Uuid::from_u128(1),
+            type_name: alembic_core::TypeName::new("dcim.site"),
+            key: key_str("site=fra1"),
+            backend_id: Some(BackendId::Int(1)),
+        }],
+        summary: None,
+        schema_preview: None,
+    };
+
+    write_plan(&path, &plan).unwrap();
+    let raw = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        serde_json::from_str::<serde_json::Value>(&raw).is_err(),
+        "{raw}"
+    );
+    let loaded = read_plan(&path).unwrap();
+    assert_eq!(loaded.ops, plan.ops);
+}
+
+#[test]
+fn read_plan_hints_when_given_a_yaml_inventory_instead_of_a_plan() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("ir.yaml");
+    std::fs::write(
+        &path,
+        "schema:\n  types: {}\nobjects:\n  - uid: 00000000-0000-0000-0000-000000000000\n    type: dcim.site\n    key:\n      slug: fra1\n    attrs:\n      name: FRA1\n",
+    )
+    .unwrap();
+    let msg = format!("{:#}", read_plan(&path).unwrap_err());
+    assert!(msg.contains("inventory"), "{msg}");
+    assert!(msg.contains("unknown field `objects`"), "{msg}");
+}
+
+#[test]
 fn write_plan_creates_missing_parent_dirs() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("nested/out/plan.json");

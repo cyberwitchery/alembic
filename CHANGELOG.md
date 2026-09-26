@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **breaking** every `-o`/`--output` written to a `.yaml`/`.yml` path is yaml, where it used to be json under a yaml name with a warning; `apply --plan` reads a `.yaml`/`.yml` plan as yaml, so `plan -o plan.yaml` still feeds `apply --plan plan.yaml` (#440)
 - the rust sdk for external adapters moves out of `alembic-engine` into the new `alembic-adapter-sdk` crate, which carries the protocol types, the apply journal and the retry driver; `ExternalAdapter` and `RetryApplyDriver` declare their own `type Error`, and no signature in the crate names `anyhow`
 - a plan that does not need key adoption reads only objects already bound in state, narrowing the query in the netbox, nautobot and infrahub adapters; a delete-detecting run or one that can still adopt by key reads the whole listing as before (#416)
 - the nautobot adapter takes each object type's route from nautobot's api root, deriving one only where the root is unreachable or names no match (#419)
