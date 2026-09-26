@@ -138,6 +138,7 @@ fn write_output<T: Serialize>(path: &Path, what: &str, value: &T) -> Result<()> 
 /// the serialization an output path maps to. only `.yaml`/`.yml` are yaml;
 /// anything else (including no extension) stays json. `read_plan` reads by the
 /// same rule, so a plan written by `plan -o` always reads back in `apply`.
+#[derive(Debug, PartialEq)]
 enum OutputKind {
     Json,
     Yaml,
@@ -212,5 +213,45 @@ fn maybe_suggest_inventory(kind: &OutputKind, raw: &str, err: anyhow::Error) -> 
         )
         .context(format!("{}", err)),
         Err(_) => err,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn output_kind_maps_yaml_extensions_to_yaml() {
+        assert_eq!(output_kind(Path::new("plan.yaml")), OutputKind::Yaml);
+        assert_eq!(output_kind(Path::new("plan.yml")), OutputKind::Yaml);
+    }
+
+    #[test]
+    fn output_kind_is_case_insensitive_on_extension() {
+        assert_eq!(output_kind(Path::new("PLAN.YAML")), OutputKind::Yaml);
+    }
+
+    #[test]
+    fn output_kind_defaults_to_json_without_yaml_extension() {
+        // no extension and a non-yaml extension both stay json.
+        assert_eq!(output_kind(Path::new("plan")), OutputKind::Json);
+        assert_eq!(output_kind(Path::new("plan.txt")), OutputKind::Json);
+    }
+
+    #[test]
+    fn read_plan_hints_when_given_a_yml_inventory_instead_of_a_plan() {
+        // the .yml branch of output_kind never ran before this; a plan parsed
+        // off an inventory must still be rejected with the same hint.
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("ir.yml");
+        std::fs::write(
+            &path,
+            "schema:\n  types: {}\nobjects:\n  - uid: 00000000-0000-0000-0000-000000000000\n    type: dcim.site\n    key:\n      slug: fra1\n    attrs:\n      name: FRA1\n",
+        )
+        .unwrap();
+        let msg = format!("{:#}", read_plan(&path).unwrap_err());
+        assert!(msg.contains("inventory"), "{msg}");
+        assert!(msg.contains("unknown field `objects`"), "{msg}");
     }
 }
