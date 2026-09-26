@@ -524,4 +524,133 @@ mod tests {
             "an empty patch describes nothing"
         );
     }
+
+    /// the payload is not an object (a bare string), so there is nothing to fold
+    /// in and no property can diverge.
+    #[test]
+    fn test_merge_returns_none_when_payload_is_not_an_object() {
+        let mut desired = serde_json::Map::new();
+        assert_eq!(
+            merge_shared_field_properties(&mut desired, &json!("text")),
+            None
+        );
+        assert!(desired.is_empty());
+    }
+
+    /// the payload is null, which `as_object` treats the same as not an object.
+    #[test]
+    fn test_merge_returns_none_when_payload_is_null() {
+        let mut desired = serde_json::Map::new();
+        assert_eq!(
+            merge_shared_field_properties(&mut desired, &json!(null)),
+            None
+        );
+        assert!(desired.is_empty());
+    }
+
+    /// a payload with no converged or agreement-only properties adds nothing and
+    /// diverges on none.
+    #[test]
+    fn test_merge_none_when_payload_carries_no_managed_property() {
+        let mut desired = serde_json::Map::new();
+        assert_eq!(
+            merge_shared_field_properties(&mut desired, &json!({"label": "x"})),
+            None
+        );
+        assert!(
+            desired.is_empty(),
+            "properties outside the managed set are not copied"
+        );
+    }
+
+    /// a property present in only one payload is taken as declared and lands in
+    /// `desired`; the silent declaration is opposed to nothing.
+    #[test]
+    fn test_merge_inserts_a_property_carried_by_the_first_payload() {
+        let mut desired = serde_json::Map::new();
+        assert_eq!(
+            merge_shared_field_properties(&mut desired, &json!({"required": true})),
+            None
+        );
+        assert_eq!(desired.get("required"), Some(&json!(true)));
+    }
+
+    /// two payloads that agree on every managed property produce no divergence and
+    /// a `desired` carrying the agreed value once.
+    #[test]
+    fn test_merge_agreeing_payloads_insert_once() {
+        let mut desired = serde_json::Map::new();
+        assert_eq!(
+            merge_shared_field_properties(&mut desired, &json!({"description": "owned"})),
+            None
+        );
+        assert_eq!(
+            merge_shared_field_properties(&mut desired, &json!({"description": "owned"})),
+            None
+        );
+        assert_eq!(desired.get("description"), Some(&json!("owned")));
+    }
+
+    /// the first divergent property is one of the converged managed properties.
+    #[test]
+    fn test_merge_reports_divergence_on_a_converged_property() {
+        let mut desired = serde_json::Map::new();
+        assert_eq!(
+            merge_shared_field_properties(&mut desired, &json!({"required": true})),
+            None
+        );
+        assert_eq!(
+            merge_shared_field_properties(&mut desired, &json!({"required": false})),
+            Some("required")
+        );
+    }
+
+    /// the second divergent property is another of the converged managed ones.
+    #[test]
+    fn test_merge_reports_divergence_on_validation_regex() {
+        let mut desired = serde_json::Map::new();
+        assert_eq!(
+            merge_shared_field_properties(&mut desired, &json!({"validation_regex": "^[a-z]+$"})),
+            None
+        );
+        assert_eq!(
+            merge_shared_field_properties(&mut desired, &json!({"validation_regex": "^[0-9]+$"})),
+            Some("validation_regex")
+        );
+    }
+
+    /// the agreement-only property is checked too: a `type` mismatch diverges even
+    /// though no create would ever rewrite it.
+    #[test]
+    fn test_merge_reports_divergence_on_the_agreement_only_type() {
+        let mut desired = serde_json::Map::new();
+        assert_eq!(
+            merge_shared_field_properties(&mut desired, &json!({"type": "text"})),
+            None
+        );
+        assert_eq!(
+            merge_shared_field_properties(&mut desired, &json!({"type": "integer"})),
+            Some("type")
+        );
+    }
+
+    /// a payload that agrees on the divergent property but also carries another one
+    /// still inserts the agreeing value and does not report divergence.
+    #[test]
+    fn test_merge_inserts_agreeing_value_and_ignores_extra_properties() {
+        let mut desired = serde_json::Map::new();
+        assert_eq!(
+            merge_shared_field_properties(&mut desired, &json!({"required": true})),
+            None
+        );
+        assert_eq!(
+            merge_shared_field_properties(
+                &mut desired,
+                &json!({"required": true, "description": "owned"})
+            ),
+            None
+        );
+        assert_eq!(desired.get("required"), Some(&json!(true)));
+        assert_eq!(desired.get("description"), Some(&json!("owned")));
+    }
 }
