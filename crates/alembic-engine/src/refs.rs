@@ -207,3 +207,28 @@ fn classify(
         _ => BackendIdCause::Rewritable,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    // a null is not a backend id to report.
+    #[test]
+    fn null_value_is_none() {
+        assert_eq!(unrewritten_backend_id(&json!(null)), None);
+    }
+
+    // a value already in uid space is not a backend id to report.
+    #[test]
+    fn valid_uid_string_is_none() {
+        let uid = Uid::parse_str("0198d3f0-0000-8000-8000-000000000000").unwrap();
+        assert_eq!(unrewritten_backend_id(&json!(uid.to_string())), None);
+    }
+
+    // an id-shaped backend id like 42 is a real backend id.
+    #[test]
+    fn int_shaped_value_is_some() {
+        assert_eq!(unrewritten_backend_id(&json!(42)), Some(BackendId::Int(42)));
+    }
+}
