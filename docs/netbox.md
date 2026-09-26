@@ -4,6 +4,11 @@ the netbox adapter maps alembic ir objects to netbox endpoints dynamically. it u
 `core/object-types` endpoint to resolve a `type` like `dcim.site` into its REST endpoint
 and supported feature set.
 
+## supported versions
+
+the adapter is built for netbox 4.x. ci runs against `docker.io/netboxcommunity/netbox:v4.6.2`,
+which is the version it is validated against -- use that pin when reporting a compatibility issue.
+
 ## object types and endpoints
 
 - the adapter uses `object_types.rest_api_endpoint` for each type.
