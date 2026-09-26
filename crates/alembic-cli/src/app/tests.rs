@@ -175,6 +175,49 @@ fn plan_roundtrip_io() {
 }
 
 #[test]
+fn plan_roundtrip_io_yaml() {
+    // `plan -o plan.yaml` writes yaml, so `apply --plan plan.yaml` must read yaml.
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("plan.yaml");
+    let plan = Plan {
+        schema: alembic_core::Schema {
+            types: BTreeMap::new(),
+        },
+        ops: vec![Op::Delete {
+            uid: uuid::Uuid::from_u128(1),
+            type_name: alembic_core::TypeName::new("dcim.site"),
+            key: key_str("site=fra1"),
+            backend_id: Some(BackendId::Int(1)),
+        }],
+        summary: None,
+        schema_preview: None,
+    };
+
+    write_plan(&path, &plan).unwrap();
+    let raw = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        serde_json::from_str::<serde_json::Value>(&raw).is_err(),
+        "{raw}"
+    );
+    let loaded = read_plan(&path).unwrap();
+    assert_eq!(loaded.ops, plan.ops);
+}
+
+#[test]
+fn read_plan_hints_when_given_a_yaml_inventory_instead_of_a_plan() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("ir.yaml");
+    std::fs::write(
+        &path,
+        "schema:\n  types: {}\nobjects:\n  - uid: 00000000-0000-0000-0000-000000000000\n    type: dcim.site\n    key:\n      slug: fra1\n    attrs:\n      name: FRA1\n",
+    )
+    .unwrap();
+    let msg = format!("{:#}", read_plan(&path).unwrap_err());
+    assert!(msg.contains("inventory"), "{msg}");
+    assert!(msg.contains("unknown field `objects`"), "{msg}");
+}
+
+#[test]
 fn write_plan_creates_missing_parent_dirs() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("nested/out/plan.json");
@@ -196,6 +239,36 @@ fn write_apply_report_creates_missing_parent_dirs() {
     let path = dir.path().join("nested/out/report.json");
     write_apply_report(&path, &ApplyReport::default()).unwrap();
     assert!(path.exists());
+}
+
+#[test]
+fn write_inventory_to_yaml_path_serializes_as_yaml() {
+    // a `.yaml` output is hand-editable yaml, not json; the point of issue #440.
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("ir.yaml");
+    let inventory = Inventory {
+        schema: Schema {
+            types: BTreeMap::new(),
+        },
+        scope: None,
+        objects: vec![],
+    };
+    write_inventory(&path, &inventory).unwrap();
+    // valid yaml that is not the pretty json form; a `.json` sibling would parse
+    // as an inventory too, so this only proves the extension drove serialization.
+    let raw = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        serde_yaml::from_str::<Inventory>(&raw).is_ok(),
+        "not yaml: {raw}"
+    );
+    assert!(!raw.contains("\"objects\""), "{raw}");
+
+    // the same inventory to a `.json` path stays json and round-trips.
+    let json_path = dir.path().join("ir.json");
+    write_inventory(&json_path, &inventory).unwrap();
+    let read_back: Inventory =
+        serde_json::from_str(&std::fs::read_to_string(&json_path).unwrap()).unwrap();
+    assert_eq!(read_back, inventory);
 }
 
 #[test]
@@ -498,32 +571,6 @@ fn read_plan_rejects_a_misspelled_key() {
     .unwrap();
     let err = read_plan(&path).unwrap_err();
     assert!(format!("{err:#}").contains("schema_preveiw"), "{err:#}");
-}
-
-#[test]
-fn warn_misleading_output_extension_flags_yaml() {
-    // always-JSON outputs named like yaml get a (non-fatal) heads-up that mentions
-    // the path and the actual format.
-    let msg = warn_misleading_output_extension(Path::new("plan.yaml"))
-        .expect("a .yaml output path should warn");
-    assert!(msg.contains("plan.yaml"));
-    assert!(msg.contains("JSON"));
-    assert!(
-        warn_misleading_output_extension(Path::new("out.yml")).is_some(),
-        ".yml should warn too"
-    );
-    // detection is case-insensitive on the extension.
-    assert!(warn_misleading_output_extension(Path::new("out.YAML")).is_some());
-}
-
-#[test]
-fn warn_misleading_output_extension_allows_json() {
-    assert!(warn_misleading_output_extension(Path::new("plan.json")).is_none());
-}
-
-#[test]
-fn warn_misleading_output_extension_allows_no_extension() {
-    assert!(warn_misleading_output_extension(Path::new("plan")).is_none());
 }
 
 #[test]

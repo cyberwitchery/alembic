@@ -17,15 +17,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use self::io::{
-    read_plan, write_apply_report, write_drift_report, write_inventory, write_plan,
-    write_validation_report,
+    announce_written, read_plan, write_apply_report, write_drift_report, write_inventory,
+    write_plan, write_validation_report,
 };
 use self::state::load_state;
 use crate::app::config::AppConfig;
 use alembic_core::TypeName;
 
-#[cfg(test)]
-use self::io::warn_misleading_output_extension;
 #[cfg(test)]
 use self::state::{resolve_state_backend_config, state_path, StateBackendConfig};
 #[cfg(test)]
@@ -38,7 +36,7 @@ use alembic_engine::PostgresTlsMode;
 #[derive(Parser)]
 #[command(name = "alembic", version)]
 #[command(
-    about = "Data-model-first converger + loader for DCIM/IPAM (YAML/JSON inventories in, JSON plans out)"
+    about = "Data-model-first converger + loader for DCIM/IPAM (YAML/JSON inventories in, plans out)"
 )]
 #[command(long_about = "\
 Data-model-first converger + loader for DCIM/IPAM.
@@ -49,9 +47,10 @@ File formats are chosen by file extension:
     inventory carries a schema block plus optional include/imports.
   - plans (plan --output), the validation report (validate --output), the drift
     report (plan --report --output), observed or transformed IR (import --output
-    and map --output), and the apply report (apply --output) are always written
-    as JSON, regardless of the path extension.
-  - apply --plan consumes a JSON plan file as produced by alembic plan.")]
+    and map --output), and the apply report (apply --output) are written as YAML
+    to a .yaml or .yml path and as JSON to anything else.
+  - apply --plan reads a plan by the same rule: YAML from a .yaml or .yml path,
+    JSON otherwise.")]
 pub(crate) struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -65,19 +64,20 @@ enum Command {
         /// inventory file to validate (yaml or json).
         #[arg(short = 'f', long)]
         file: PathBuf,
-        /// where to write the json validation report; written on both outcomes,
-        /// with an empty `errors` list when the inventory validates.
+        /// where to write the validation report (yaml or json by extension);
+        /// written on both outcomes, with an empty `errors` list when the
+        /// inventory validates.
         #[arg(short = 'o', long)]
         output: Option<PathBuf>,
     },
-    /// compute a deterministic plan (desired vs observed) and write it as json.
+    /// compute a deterministic plan (desired vs observed) and write it to a file.
     Plan {
         /// inventory file to plan from (yaml or json).
         #[arg(short = 'f', long)]
         file: PathBuf,
-        /// where to write the json plan, or the json drift report under
-        /// --report; required unless --report or --dry-run, and rejected with
-        /// --dry-run, which prints the plan instead of writing it.
+        /// where to write the plan, or the drift report under --report (yaml or
+        /// json by extension); required unless --report or --dry-run, and
+        /// rejected with --dry-run, which prints the plan instead of writing it.
         #[arg(
             short = 'o',
             long,
@@ -101,7 +101,7 @@ enum Command {
         dry_run: bool,
         /// print a read-only drift report (desired vs observed) and exit without
         /// writing a plan file or saving state; --output writes the same report
-        /// as json. mutually exclusive with --dry-run.
+        /// to a file. mutually exclusive with --dry-run.
         #[arg(long, default_value_t = false, conflicts_with = "dry_run")]
         report: bool,
         /// allow the plan to include deletes (objects, and destructive schema
@@ -116,12 +116,12 @@ enum Command {
         #[arg(long, default_value_t = false, conflicts_with = "allow_delete")]
         no_adopt: bool,
     },
-    /// apply a json plan to a backend (the only command that writes).
+    /// apply a plan to a backend (the only command that writes).
     Apply {
-        /// json plan file produced by `alembic plan`.
+        /// plan file produced by `alembic plan` (yaml or json by extension).
         #[arg(short = 'p', long)]
         plan: PathBuf,
-        /// where to write the json apply report (uid -> backend id per applied
+        /// where to write the apply report (uid -> backend id per applied
         /// op); written only when the apply succeeds.
         #[arg(short = 'o', long)]
         output: Option<PathBuf>,
@@ -152,13 +152,13 @@ enum Command {
         /// map specification (target schema + rules).
         #[arg(long)]
         spec: Option<PathBuf>,
-        /// where to write the transformed json inventory.
+        /// where to write the transformed inventory (yaml or json by extension).
         #[arg(short = 'o', long)]
         output: Option<PathBuf>,
     },
     /// observe a backend's live state into the data model.
     Import {
-        /// where to write the observed json inventory.
+        /// where to write the observed inventory (yaml or json by extension).
         #[arg(short = 'o', long)]
         output: PathBuf,
         /// inventory whose schema selects which types to observe.
@@ -303,7 +303,7 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             // and an absent file would be indistinguishable from a crash.
             if let Some(output) = &output {
                 write_validation_report(output, &located)?;
-                println!("validation report written to {}", output.display());
+                announce_written(output, "validation report")?;
             }
             // after the write, so `ok` means the whole command succeeded
             if located.errors.is_empty() {
@@ -405,7 +405,8 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                 // never a plan, and still no state save
                 if let Some(output) = &output {
                     write_drift_report(output, &drift)?;
-                    println!("\ndrift report written to {}", output.display());
+                    println!();
+                    announce_written(output, "drift report")?;
                 }
             } else if dry_run {
                 let raw = serde_json::to_string_pretty(&plan)?;
@@ -419,7 +420,8 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                 // human-readable, per-op view of what apply would do (see before
                 // write); the machine-readable copy is the written plan file.
                 println!("{}", render_plan(&plan));
-                println!("\nplan written to {}", output.display());
+                println!();
+                announce_written(&output, "plan")?;
             }
         }
         Command::Apply {
@@ -487,7 +489,7 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             // path only: state.json is cumulative and the journal is gone by now.
             if let Some(output) = output {
                 write_apply_report(&output, &report)?;
-                println!("apply report written to {}", output.display());
+                announce_written(&output, "apply report")?;
             }
         }
         Command::Map {
@@ -531,7 +533,7 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                 let spec = alembic_engine::load_map_spec(&spec)?;
                 let inventory = alembic_engine::compile_map(&input, &spec)?;
                 write_inventory(&output, &inventory)?;
-                println!("ir written to {}", output.display());
+                announce_written(&output, "ir")?;
             }
         },
         Command::Import {
@@ -564,7 +566,7 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             )
             .await?;
             write_inventory(&output, &report.inventory)?;
-            println!("inventory written to {}", output.display());
+            announce_written(&output, "inventory")?;
         }
         // no backend, no state, no inventory: the text is in the binary
         Command::Skill { action } => match action {
