@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- the nautobot adapter reads each type's native fields from the endpoint's OPTIONS metadata, so a native field on a type with no objects yet (a location type's `content_types` on a fresh nautobot) is written as the field it is, not provisioned as a custom field
+- a map spec takes an `objects:` list of target objects no source models, emitted once each and referenced by uid from rules, such as a location type every mapped site shares (`docs/map.md`)
 - **breaking** every `-o`/`--output` written to a `.yaml`/`.yml` path is yaml, where it used to be json under a yaml name with a warning; `apply --plan` reads a `.yaml`/`.yml` plan as yaml, so `plan -o plan.yaml` still feeds `apply --plan plan.yaml` (#440)
 - the rust sdk for external adapters moves out of `alembic-engine` into the new `alembic-adapter-sdk` crate, which carries the protocol types, the apply journal and the retry driver; `ExternalAdapter` and `RetryApplyDriver` declare their own `type Error`, and no signature in the crate names `anyhow`
 - a plan that does not need key adoption reads only objects already bound in state, narrowing the query in the netbox, nautobot and infrahub adapters; a delete-detecting run or one that can still adopt by key reads the whole listing as before (#416)
