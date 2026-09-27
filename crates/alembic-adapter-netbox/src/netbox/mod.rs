@@ -3783,6 +3783,14 @@ mod tests {
     }
 
     fn mock_prefix_backend(server: &MockServer, custom_fields: serde_json::Value) {
+        mock_prefix_backend_with_features(server, custom_fields, &["custom-fields", "tags"]);
+    }
+
+    fn mock_prefix_backend_with_features(
+        server: &MockServer,
+        custom_fields: serde_json::Value,
+        features: &[&str],
+    ) {
         mock_list(
             server,
             "/api/core/object-types/",
@@ -3791,13 +3799,13 @@ mod tests {
                     "app_label": "ipam",
                     "model": "prefix",
                     "rest_api_endpoint": "/api/ipam/prefixes/",
-                    "features": ["custom-fields", "tags"]
+                    "features": features
                 },
                 {
                     "app_label": "dcim",
                     "model": "site",
                     "rest_api_endpoint": "/api/dcim/sites/",
-                    "features": ["custom-fields", "tags"]
+                    "features": features
                 }
             ]),
         );
@@ -3922,5 +3930,31 @@ mod tests {
             "{:?}",
             preview.created_fields
         );
+    }
+
+    // netbox 4.x names its model features with underscores (`custom_fields`),
+    // as its object-types api reports them; a declared field the type lacks is
+    // still provisioned as a custom field.
+    #[tokio::test]
+    async fn preview_reads_netbox_feature_names() {
+        let server = MockServer::start();
+        mock_prefix_backend_with_features(&server, json!([]), &["custom_fields", "tags"]);
+        mock_prefix_options(&server, &["prefix", "description"]);
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
+
+        let schema: alembic_core::Schema = serde_json::from_value(json!({
+            "types": {
+                "ipam.prefix": {
+                    "key": { "prefix": { "type": "prefix" } },
+                    "fields": {
+                        "prefix": { "type": "prefix" },
+                        "tier": { "type": "string" }
+                    }
+                }
+            }
+        }))
+        .unwrap();
+        let preview = adapter.preview_schema(&schema).await.unwrap().unwrap();
+        assert_eq!(preview.created_fields, vec!["ipam.prefix.tier".to_string()]);
     }
 }
