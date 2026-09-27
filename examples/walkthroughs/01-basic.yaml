@@ -85,9 +85,6 @@ schema:
       fields:
         prefix:
           type: prefix
-        site:
-          type: ref
-          target: dcim.site
         description:
           type: string
     ipam.ip_address:
@@ -175,7 +172,6 @@ objects:
       prefix: "10.0.0.0/24"
     attrs:
       prefix: "10.0.0.0/24"
-      site: "a4d6a0c3-4e73-4a76-b216-4d38f8c55f3d"
       description: "FRA1 leaf subnet"
 
   - uid: "c4a0c0f0-ef8a-4c7f-9b0a-2ff3a4d14fd1"

@@ -6,7 +6,8 @@ and supported feature set.
 
 ## supported versions
 
-the adapter is built for netbox 4.x. ci runs against `docker.io/netboxcommunity/netbox:v4.6.2`,
+the adapter is built for netbox 4.x. the weekly e2e workflow (`.github/workflows/e2e.yml`,
+`scripts/e2e_netbox_infrahub.sh`) runs against `docker.io/netboxcommunity/netbox:v4.6.2`,
 which is the version it is validated against. use that pin when reporting a compatibility issue.
 
 - the contract that pins a version is the `object_types.rest_api_endpoint` mapping documented below: every object type resolves to exactly one endpoint, so an endpoint rename or removal breaks observe and plan against this pin.

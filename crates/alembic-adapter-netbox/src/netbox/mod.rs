@@ -3760,4 +3760,201 @@ mod tests {
             vec!["custom.legacy".to_string()]
         );
     }
+
+    /// an `ipam.prefix` that declares a `site` ref, the relation netbox 4.2
+    /// replaced with `scope` (#459).
+    fn prefix_with_site_schema() -> alembic_core::Schema {
+        serde_json::from_value(json!({
+            "types": {
+                "ipam.prefix": {
+                    "key": { "prefix": { "type": "prefix" } },
+                    "fields": {
+                        "prefix": { "type": "prefix" },
+                        "site": { "type": "ref", "target": "dcim.site" }
+                    }
+                },
+                "dcim.site": {
+                    "key": { "slug": { "type": "slug" } },
+                    "fields": { "slug": { "type": "slug" } }
+                }
+            }
+        }))
+        .unwrap()
+    }
+
+    fn mock_prefix_backend(server: &MockServer, custom_fields: serde_json::Value) {
+        mock_prefix_backend_with_features(server, custom_fields, &["custom-fields", "tags"]);
+    }
+
+    fn mock_prefix_backend_with_features(
+        server: &MockServer,
+        custom_fields: serde_json::Value,
+        features: &[&str],
+    ) {
+        mock_list(
+            server,
+            "/api/core/object-types/",
+            json!([
+                {
+                    "app_label": "ipam",
+                    "model": "prefix",
+                    "rest_api_endpoint": "/api/ipam/prefixes/",
+                    "features": features
+                },
+                {
+                    "app_label": "dcim",
+                    "model": "site",
+                    "rest_api_endpoint": "/api/dcim/sites/",
+                    "features": features
+                }
+            ]),
+        );
+        // any query: the listing pages at 200, the native-field sample at 1.
+        server.mock(|when, then| {
+            when.method(GET).path("/api/ipam/prefixes/");
+            then.status(200).json_body(page(json!([])));
+        });
+        server.mock(|when, then| {
+            when.method(GET).path("/api/extras/custom-fields/");
+            then.status(200).json_body(page(custom_fields));
+        });
+    }
+
+    fn mock_prefix_options(server: &MockServer, fields: &[&str]) {
+        let post: serde_json::Map<String, serde_json::Value> = fields
+            .iter()
+            .map(|field| ((*field).to_string(), json!({})))
+            .collect();
+        server.mock(|when, then| {
+            when.method(httpmock::Method::OPTIONS)
+                .path("/api/ipam/prefixes/");
+            then.status(200)
+                .json_body(json!({ "name": "Prefix List", "actions": { "POST": post } }));
+        });
+    }
+
+    async fn read_prefixes(adapter: &NetBoxAdapter) -> anyhow::Result<()> {
+        let dir = tempdir().unwrap();
+        let state = StateStore::load(dir.path().join("state.json")).unwrap();
+        adapter
+            .read(
+                &prefix_with_site_schema(),
+                &[TypeName::new("ipam.prefix")],
+                &state,
+            )
+            .await
+            .map(|_| ())
+    }
+
+    #[tokio::test]
+    async fn read_refuses_a_declared_ref_the_type_does_not_have() {
+        let server = MockServer::start();
+        mock_prefix_backend(&server, json!([]));
+        mock_prefix_options(
+            &server,
+            &["prefix", "scope", "scope_type", "scope_id", "vrf"],
+        );
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
+
+        let err = read_prefixes(&adapter).await.unwrap_err();
+        let message = format!("{err:#}");
+        assert!(message.contains("ipam.prefix"), "{message}");
+        assert!(message.contains("site"), "{message}");
+    }
+
+    #[tokio::test]
+    async fn read_accepts_a_declared_ref_the_type_has() {
+        let server = MockServer::start();
+        mock_prefix_backend(&server, json!([]));
+        mock_prefix_options(&server, &["prefix", "site"]);
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
+
+        read_prefixes(&adapter).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn read_accepts_a_declared_ref_held_by_a_custom_field() {
+        let server = MockServer::start();
+        mock_prefix_backend(
+            &server,
+            json!([{
+                "id": 3,
+                "name": "site",
+                "object_types": ["ipam.prefix"],
+                "type": {"value": "object", "label": "Object"},
+            }]),
+        );
+        mock_prefix_options(&server, &["prefix", "scope"]);
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
+
+        read_prefixes(&adapter).await.unwrap();
+    }
+
+    // without OPTIONS metadata the adapter cannot know the type's fields, so it
+    // reads as before rather than refusing a field it cannot judge.
+    #[tokio::test]
+    async fn read_without_options_metadata_does_not_judge_fields() {
+        let server = MockServer::start();
+        mock_prefix_backend(&server, json!([]));
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
+
+        read_prefixes(&adapter).await.unwrap();
+    }
+
+    // a native column the fixed list does not name, on a type with no objects
+    // to sample, is still netbox's: provisioning must not create a custom field
+    // for it.
+    #[tokio::test]
+    async fn preview_takes_native_fields_from_options_on_an_empty_endpoint() {
+        let server = MockServer::start();
+        mock_prefix_backend(&server, json!([]));
+        mock_prefix_options(&server, &["prefix", "comments", "is_pool"]);
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
+
+        let schema: alembic_core::Schema = serde_json::from_value(json!({
+            "types": {
+                "ipam.prefix": {
+                    "key": { "prefix": { "type": "prefix" } },
+                    "fields": {
+                        "prefix": { "type": "prefix" },
+                        "comments": { "type": "string" },
+                        "is_pool": { "type": "bool" }
+                    }
+                }
+            }
+        }))
+        .unwrap();
+        let preview = adapter.preview_schema(&schema).await.unwrap().unwrap();
+        assert!(
+            preview.created_fields.is_empty(),
+            "{:?}",
+            preview.created_fields
+        );
+    }
+
+    // netbox 4.x names its model features with underscores (`custom_fields`),
+    // as its object-types api reports them; a declared field the type lacks is
+    // still provisioned as a custom field.
+    #[tokio::test]
+    async fn preview_reads_netbox_feature_names() {
+        let server = MockServer::start();
+        mock_prefix_backend_with_features(&server, json!([]), &["custom_fields", "tags"]);
+        mock_prefix_options(&server, &["prefix", "description"]);
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
+
+        let schema: alembic_core::Schema = serde_json::from_value(json!({
+            "types": {
+                "ipam.prefix": {
+                    "key": { "prefix": { "type": "prefix" } },
+                    "fields": {
+                        "prefix": { "type": "prefix" },
+                        "tier": { "type": "string" }
+                    }
+                }
+            }
+        }))
+        .unwrap();
+        let preview = adapter.preview_schema(&schema).await.unwrap().unwrap();
+        assert_eq!(preview.created_fields, vec!["ipam.prefix.tier".to_string()]);
+    }
 }

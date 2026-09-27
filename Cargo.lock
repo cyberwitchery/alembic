@@ -108,6 +108,7 @@ dependencies = [
  "async-trait",
  "httpmock",
  "netbox",
+ "reqwest 0.13.5",
  "serde",
  "serde_json",
  "tempfile",

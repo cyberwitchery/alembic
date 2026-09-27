@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- the netbox adapter reads netbox's feature names as netbox spells them (`custom_fields`), so a declared non-native field is provisioned as a custom field; against netbox 4.6 and 4.7 none was, and the field was dropped on write
+- the netbox adapter reads each type's fields from the endpoint's OPTIONS metadata, and `plan` fails on a declared ref the type has neither as a field nor as a custom field, naming it; netbox ignores unknown keys, so such a field was dropped on write and diffed forever (#459)
+- the shipped examples declare an ip's interface as netbox's `assigned_object` and drop the prefix `site` netbox replaced with `scope` in 4.2, so they converge against netbox 4.2+ (#458)
 - the nautobot adapter reads each type's native fields from the endpoint's OPTIONS metadata, so a native field on a type with no objects yet (a location type's `content_types` on a fresh nautobot) is written as the field it is, not provisioned as a custom field
 - a map spec takes an `objects:` list of target objects no source models, emitted once each and referenced by uid from rules, such as a location type every mapped site shares (`docs/map.md`)
 - **breaking** every `-o`/`--output` written to a `.yaml`/`.yml` path is yaml, where it used to be json under a yaml name with a warning; `apply --plan` reads a `.yaml`/`.yml` plan as yaml, so `plan -o plan.yaml` still feeds `apply --plan plan.yaml` (#440)
