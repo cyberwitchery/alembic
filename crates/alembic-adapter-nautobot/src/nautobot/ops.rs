@@ -1198,6 +1198,26 @@ async fn native_fields_for_type(
         native.insert(field.to_string());
     }
 
+    // what a create accepts, from the endpoint's own metadata: this holds on
+    // an endpoint with no objects yet, where a sample below has nothing to show.
+    match adapter
+        .client
+        .request_raw(reqwest::Method::OPTIONS, &info.endpoint, None)
+        .await
+    {
+        Ok(metadata) => {
+            if let Some(Value::Object(post)) = metadata.pointer("/actions/POST") {
+                native.extend(post.keys().cloned());
+            }
+        }
+        // an older server or a proxy can refuse OPTIONS; the sample still counts.
+        Err(err) => tracing::debug!(
+            endpoint = %info.endpoint,
+            error = %err,
+            "no OPTIONS metadata; reading native fields from a sample object"
+        ),
+    }
+
     let resource: Resource<Value> = adapter.client.resource(info.endpoint.clone());
     let page = resource
         .list(Some(QueryBuilder::default().limit(1)))
@@ -1976,6 +1996,80 @@ mod tests {
 
         assert!(!created);
         choices.assert_calls(0);
+    }
+
+    // an endpoint with no objects yet still names its fields: nautobot's
+    // OPTIONS metadata lists what a create accepts, so a native field such as a
+    // location type's `content_types` is never provisioned as a custom field.
+    #[tokio::test]
+    async fn test_native_fields_come_from_options_on_an_empty_endpoint() {
+        use httpmock::Method::{GET, OPTIONS};
+        use httpmock::MockServer;
+
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/api/dcim/location-types/");
+            then.status(200).json_body(json!({
+                "count": 0, "next": null, "previous": null, "results": [],
+            }));
+        });
+        server.mock(|when, then| {
+            when.method(OPTIONS).path("/api/dcim/location-types/");
+            then.status(200).json_body(json!({
+                "name": "Location Type List",
+                "actions": { "POST": {
+                    "name": {}, "content_types": {}, "nestable": {}, "parent": {},
+                } },
+            }));
+        });
+
+        let adapter = NautobotAdapter::new(&server.base_url(), "token").unwrap();
+        let info = super::super::registry::ObjectTypeInfo {
+            type_name: TypeName::new("dcim.locationtype"),
+            endpoint: "dcim/location-types/".to_string(),
+            features: BTreeSet::new(),
+        };
+        let type_schema = TypeSchema {
+            key: BTreeMap::new(),
+            fields: BTreeMap::new(),
+        };
+        let native = native_fields_for_type(&adapter, &info, &type_schema)
+            .await
+            .unwrap();
+        assert!(native.contains("content_types"), "{native:?}");
+        assert!(native.contains("nestable"), "{native:?}");
+    }
+
+    // without OPTIONS metadata (an older server, a proxy that refuses the
+    // method), a sample object's fields are still read.
+    #[tokio::test]
+    async fn test_native_fields_fall_back_to_a_sample_object() {
+        use httpmock::Method::GET;
+        use httpmock::MockServer;
+
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/api/dcim/location-types/");
+            then.status(200).json_body(json!({
+                "count": 1, "next": null, "previous": null,
+                "results": [{ "id": "1", "name": "Site", "content_types": [] }],
+            }));
+        });
+
+        let adapter = NautobotAdapter::new(&server.base_url(), "token").unwrap();
+        let info = super::super::registry::ObjectTypeInfo {
+            type_name: TypeName::new("dcim.locationtype"),
+            endpoint: "dcim/location-types/".to_string(),
+            features: BTreeSet::new(),
+        };
+        let type_schema = TypeSchema {
+            key: BTreeMap::new(),
+            fields: BTreeMap::new(),
+        };
+        let native = native_fields_for_type(&adapter, &info, &type_schema)
+            .await
+            .unwrap();
+        assert!(native.contains("content_types"), "{native:?}");
     }
 
     #[test]
