@@ -70,6 +70,69 @@ fn bound_int_ids(
 }
 
 impl NetBoxAdapter {
+    /// fail on a declared ref the type has neither as a field nor as a custom
+    /// field: netbox ignores unknown keys on write, so it would be dropped and
+    /// diff forever. without OPTIONS metadata the fields are unknown and nothing
+    /// is judged. plain fields are not checked here, since a missing one is
+    /// provisioned as a custom field.
+    async fn check_declared_refs(
+        &self,
+        type_name: &TypeName,
+        info: &super::registry::ObjectTypeInfo,
+        type_schema: &TypeSchema,
+        registry: &ObjectTypeRegistry,
+        custom_fields: &mut Option<BTreeMap<String, BTreeSet<String>>>,
+    ) -> Result<()> {
+        let declared_refs: Vec<&String> = type_schema
+            .fields
+            .iter()
+            .filter(|(_, field)| {
+                matches!(
+                    field.r#type,
+                    FieldType::Ref { .. } | FieldType::ListRef { .. }
+                )
+            })
+            .map(|(name, _)| name)
+            .collect();
+        if declared_refs.is_empty() {
+            return Ok(());
+        }
+        let Some(fields) = self.client.endpoint_fields(&info.endpoint).await else {
+            return Ok(());
+        };
+        let unknown: Vec<&String> = declared_refs
+            .into_iter()
+            .filter(|name| !fields.contains(*name))
+            .collect();
+        if unknown.is_empty() {
+            return Ok(());
+        }
+        if custom_fields.is_none() {
+            *custom_fields = Some(self.client.fetch_custom_fields().await?);
+        }
+        let content_type = content_type_of(registry, type_name.as_str());
+        let custom = custom_fields
+            .as_ref()
+            .and_then(|by_type| by_type.get(&content_type));
+        let missing: Vec<&str> = unknown
+            .into_iter()
+            .filter(|name| !custom.is_some_and(|custom| custom.contains(*name)))
+            .map(String::as_str)
+            .collect();
+        if missing.is_empty() {
+            return Ok(());
+        }
+        Err(anyhow!(
+            "{type_name} has no field {}: netbox would drop it on write. its fields are {}",
+            missing.join(", "),
+            fields
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))
+    }
+
     /// list one type by primary key, in chunks, so a long id set cannot outgrow
     /// the query string. each chunk still pages through `list_all`.
     ///
@@ -110,14 +173,25 @@ impl NetBoxAdapter {
         };
 
         let mut raw = Vec::new();
+        let mut custom_fields = None;
         for type_name in requested {
             let info = registry
                 .info_for(&type_name)
                 .ok_or_else(|| anyhow!("unsupported type {}", type_name))?;
-            schema
+            let type_schema = schema
                 .types
                 .get(type_name.as_str())
                 .ok_or_else(|| anyhow!("missing schema for {}", type_name))?;
+            if !info.features.contains(CUSTOM_OBJECT_FEATURE) {
+                self.check_declared_refs(
+                    &type_name,
+                    &info,
+                    type_schema,
+                    &registry,
+                    &mut custom_fields,
+                )
+                .await?;
+            }
             let resource: Resource<Value> = self.client.resource(info.endpoint.clone());
             // An unbound type cannot affect this run, so skip its listing.
             let bound = bound_only
@@ -1801,23 +1875,29 @@ async fn native_fields_for_type(
     type_schema: &TypeSchema,
 ) -> Result<BTreeSet<String>> {
     let mut native: BTreeSet<String> = type_schema.key.keys().cloned().collect();
-    for field in [
-        "name",
-        "slug",
-        "description",
-        "status",
-        "role",
-        "type",
-        "site",
-        "tenant",
-        "device",
-        "tags",
-        "custom_fields",
-        "local_context_data",
-        "created",
-        "last_updated",
-    ] {
-        native.insert(field.to_string());
+    match adapter.client.endpoint_fields(&info.endpoint).await {
+        Some(fields) => native.extend(fields),
+        // without OPTIONS metadata, fall back to the columns most types carry.
+        None => {
+            for field in [
+                "name",
+                "slug",
+                "description",
+                "status",
+                "role",
+                "type",
+                "site",
+                "tenant",
+                "device",
+                "tags",
+                "custom_fields",
+                "local_context_data",
+                "created",
+                "last_updated",
+            ] {
+                native.insert(field.to_string());
+            }
+        }
     }
 
     let resource: Resource<Value> = adapter.client.resource(info.endpoint.clone());
