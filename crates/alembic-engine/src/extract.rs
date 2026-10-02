@@ -52,10 +52,10 @@ pub async fn import_inventory(
     bootstrap_mappings(schema, &objects, &observed_ids, &mut mappings);
 
     let mut inventory_objects = Vec::new();
-    let mut warned: BTreeSet<(String, String)> = BTreeSet::new();
+    let mut dropped = DroppedAttrs::new();
     for object in objects {
         let (key, mut attrs) = materialize(schema, &object, &mappings);
-        project_attrs(schema, &object.type_name, &mut attrs, &mut warned);
+        project_attrs(schema, &object.type_name, &mut attrs, &mut dropped);
         let uid = object
             .backend_id
             .as_ref()
@@ -69,6 +69,8 @@ pub async fn import_inventory(
             source: None,
         });
     }
+    // summarize the drops once, after every object has been projected.
+    dropped.report();
     // sort on the final key: normalizing a ref-typed key field moves it.
     inventory_objects
         .sort_by_cached_key(|o| (o.type_name.as_str().to_string(), key_string(&o.key)));
@@ -423,35 +425,70 @@ fn classify_ref(
 /// project observed attrs onto the schema by dropping any attr key that is not
 /// declared in the type's `fields`.
 ///
-/// backends return server-computed fields (e.g. `dcim.cable.last_updated`) that
-/// are not in the schema and could never be managed. left in place they make the
-/// imported inventory fail `validate_inventory` with `ExtraAttrField`, so we
-/// mirror that check here (validation.rs: `type_schema.fields.contains_key`) and
-/// drop the offending keys, warning once per key for the import. types absent
-/// from the schema are left untouched, since import refuses the whole object as
-/// an undeclared type and projecting its attrs would say nothing more. key fields
-/// are never touched; they validate separately against `type_schema.key`.
+/// a backend returns fields the import schema does not declare, whether the kind
+/// came back server-computed (`dcim.cable.last_updated`) or is an ordinary field
+/// the `-f` simply leaves out. left in place they make the imported inventory fail
+/// `validate_inventory` with `ExtraAttrField`, so we mirror that check here
+/// (validation.rs: `type_schema.fields.contains_key`) and drop the offending keys.
+/// types absent from the schema are left untouched, since import refuses the whole
+/// object as an undeclared type and projecting its attrs would say nothing more.
+/// key fields are never touched; they validate separately against `type_schema.key`.
 fn project_attrs(
     schema: &Schema,
     type_name: &TypeName,
     attrs: &mut JsonMap,
-    warned: &mut BTreeSet<(String, String)>,
+    dropped: &mut DroppedAttrs,
 ) {
     let Some(type_schema) = schema.types.get(type_name.as_str()) else {
         return;
     };
 
+    // a field that is not declared here would fail validation as extra, so drop it
+    // and record where it came from.
     attrs.retain(|field, _| {
-        let declared = type_schema.fields.contains_key(field);
-        if !declared && warned.insert((type_name.as_str().to_string(), field.clone())) {
-            tracing::warn!(
-                "import: dropping undeclared attr {}.{}; server-computed field is not in the schema and cannot be managed",
-                type_name.as_str(),
-                field
-            );
+        if type_schema.fields.contains_key(field) {
+            true
+        } else {
+            dropped.record(type_name.as_str(), field);
+            false
         }
-        declared
     });
+}
+
+/// collects the attrs `project_attrs` drops across an import so one warning can
+/// summarize them instead of one per key. records each (type, field) once.
+struct DroppedAttrs {
+    by_key: BTreeSet<(String, String)>,
+}
+
+impl DroppedAttrs {
+    fn new() -> Self {
+        DroppedAttrs {
+            by_key: BTreeSet::new(),
+        }
+    }
+
+    fn record(&mut self, type_name: &str, field: &str) {
+        self.by_key
+            .insert((type_name.to_string(), field.to_string()));
+    }
+
+    /// emit the summary: one warn line with the totals, and a debug line naming
+    /// each dropped attr. no warning at all when nothing was dropped.
+    fn report(&self) {
+        if self.by_key.is_empty() {
+            return;
+        }
+        let type_names: BTreeSet<&str> = self.by_key.iter().map(|(t, _)| t.as_str()).collect();
+        tracing::warn!(
+            "import: dropped {} undeclared attr(s) across {} type(s); RUST_LOG=debug lists them",
+            self.by_key.len(),
+            type_names.len()
+        );
+        for (type_name, field) in &self.by_key {
+            tracing::debug!("import: dropping undeclared attr {}.{}", type_name, field);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1326,7 +1363,7 @@ mod tests {
     }
 
     #[test]
-    fn import_warns_once_per_undeclared_attr_across_objects() {
+    fn import_warns_once_with_an_aggregate_summary() {
         let observed = observed_of(&[
             (
                 "dcim.cable",
@@ -1354,19 +1391,56 @@ mod tests {
             crate::test_log::capture(|| import_unlocked(&MockAdapter { observed }, &schema));
 
         assert_eq!(report.inventory.objects.len(), 3);
-        assert_eq!(
-            logged
-                .matches("dropping undeclared attr dcim.cable.last_updated")
-                .count(),
-            1,
-            "the same undeclared attr warns once for the whole import, not once per object"
+        // one warn line names both dropped attrs across both types, not one per field.
+        assert!(
+            logged.contains("import: dropped 2 undeclared attr(s) across 2 type(s)"),
+            "{logged}"
         );
-        assert_eq!(
-            logged
-                .matches("dropping undeclared attr dcim.site.last_updated")
-                .count(),
-            1,
-            "each undeclared (type, field) warns once for the whole import, across types"
+    }
+
+    #[test]
+    fn import_lists_each_dropped_attr_at_debug() {
+        let observed = observed_of(&[
+            (
+                "dcim.cable",
+                "cable=c1",
+                json!({ "label": "uplink", "last_updated": "t" }),
+            ),
+            (
+                "dcim.site",
+                "site=s1",
+                json!({ "name": "hq", "created": "t" }),
+            ),
+        ]);
+        let schema = schema_of(&[
+            ("dcim.cable", &["cable"], &["label"]),
+            ("dcim.site", &["site"], &["name"]),
+        ]);
+
+        let _guard = IMPORT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (_report, logged) =
+            crate::test_log::capture(|| import_unlocked(&MockAdapter { observed }, &schema));
+
+        // the per-field detail moves to debug so a real error line is not buried.
+        assert!(
+            logged.contains("import: dropping undeclared attr dcim.cable.last_updated"),
+            "{logged}"
         );
+        assert!(
+            logged.contains("import: dropping undeclared attr dcim.site.created"),
+            "{logged}"
+        );
+    }
+
+    #[test]
+    fn import_warns_nothing_when_all_attrs_are_declared() {
+        let observed = observed_of(&[("dcim.cable", "cable=c1", json!({ "label": "uplink" }))]);
+        let schema = schema_of(&[("dcim.cable", &["cable"], &["label"])]);
+
+        let _guard = IMPORT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (_report, logged) =
+            crate::test_log::capture(|| import_unlocked(&MockAdapter { observed }, &schema));
+
+        assert!(!logged.contains("dropping undeclared attr"), "{logged}");
     }
 }
