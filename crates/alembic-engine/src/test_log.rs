@@ -9,12 +9,9 @@ static LOG_LOCK: Mutex<()> = Mutex::new(());
 /// runs `f` under a capturing subscriber and returns its value plus everything logged.
 pub(crate) fn capture<T>(f: impl FnOnce() -> T) -> (T, String) {
     let buffer = LogBuffer::default();
-    // keep the per-field drop detail at debug without losing warn+; capturing must see
-    // past info for that line to show up here.
     let subscriber = tracing_subscriber::fmt()
         .with_writer(buffer.clone())
         .with_ansi(false)
-        .with_max_level(tracing::Level::TRACE)
         .finish();
     let _guard = LOG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let value = tracing::subscriber::with_default(subscriber, || {

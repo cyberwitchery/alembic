@@ -1,5 +1,9 @@
 # changelog
 
+## Unreleased
+
+- `import` warns once per type, naming every undeclared attr it dropped from that type, instead of once per field; the old line called every dropped field server-computed, though most are ordinary fields the `-f` does not declare
+
 ## [0.10.0] - 2026-09-27
 
 - the netbox adapter reads netbox's feature names as netbox spells them (`custom_fields`), so a declared non-native field is provisioned as a custom field; against netbox 4.6 and 4.7 none was, and the field was dropped on write
