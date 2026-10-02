@@ -21,7 +21,7 @@ use alembic_engine::{
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use nautobot::{QueryBuilder, Resource};
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -153,6 +153,11 @@ impl NautobotAdapter {
             &mut mappings,
             |node, type_schema, mappings| {
                 let mut attrs = node.attrs.clone();
+                // decode generic foreign keys before normalize: nautobot returns a
+                // cable's terminations as nested `{ object_type, object_id }` pairs,
+                // which otherwise never resolve back to uids and the plan diffs them
+                // forever. this mirrors the netbox read path.
+                decode_generic_fks(&mut attrs, &node.type_name, schema, &registry, mappings);
                 normalize_attrs(&mut attrs, type_schema, schema, &registry, mappings);
                 attrs
             },
@@ -655,6 +660,7 @@ impl NautobotAdapter {
             resolved,
             &custom_fields,
             &info.features,
+            registry,
         )?;
         let response: Value = match resource.create(&body).await {
             Ok(response) => response,
@@ -746,6 +752,7 @@ impl NautobotAdapter {
             resolved,
             &custom_fields,
             &info.features,
+            registry,
         )?;
         let _response = resource.patch(&id, &body).await?;
         Ok(id)
@@ -1102,6 +1109,227 @@ fn resolve_ref_uid(
     )
 }
 
+/// a generic foreign key's wire encoding. nautobot models these the same way
+/// netbox does -- a single nested `{ object_type, object_id }`, an array of
+/// those for a `list_ref`, or a split `<field>_type` / `<field>_id` pair -- but
+/// its openapi crate exposes no table of them, so each field is declared here.
+#[derive(Debug, Clone, Copy)]
+// all three encodings are kept even though only NestedList is used by the
+// fields declared below: Split and Nested are valid nautobot generic-FK shapes
+// that will be needed once more list_ref/Split fields are added, mirroring
+// netbox's GenericFkEncoding which exercises all three.
+#[allow(dead_code)]
+pub(super) enum GenericFkEncoding {
+    Nested,
+    NestedList,
+    Split,
+}
+
+/// generic foreign keys nautobot accepts per content type, keyed by the
+/// `app_label.model` content type (e.g. `dcim.cable`) and field name. a cable's
+/// terminations are generic FKs: nautobot ignores them as ordinary refs, so with
+/// no encoding they round-trip to null and every plan diffs forever. this mirrors
+/// the netbox table in the `netbox` crate (see `GENERIC_FK_FIELDS`).
+fn generic_fk_fields() -> &'static [(&'static str, &'static str, GenericFkEncoding)] {
+    &[
+        (
+            "dcim.cable",
+            "a_terminations",
+            GenericFkEncoding::NestedList,
+        ),
+        (
+            "dcim.cable",
+            "b_terminations",
+            GenericFkEncoding::NestedList,
+        ),
+        (
+            "dcim.bulkcable",
+            "a_terminations",
+            GenericFkEncoding::NestedList,
+        ),
+        (
+            "dcim.bulkcable",
+            "b_terminations",
+            GenericFkEncoding::NestedList,
+        ),
+    ]
+}
+
+/// the generic-FK encoding for `field` on a content type, if any.
+fn generic_fk_encoding(content_type: &str, field: &str) -> Option<GenericFkEncoding> {
+    generic_fk_fields()
+        .iter()
+        .find(|(model, name, _)| *model == content_type && *name == field)
+        .map(|(_, _, encoding)| *encoding)
+}
+
+/// resolves a `(content_type, backend_id)` pair to the alembic uid it maps to,
+/// using the recorded id->uid mappings. nautobot ids are uuid strings; netbox's
+/// are integers, so both string and numeric ids are accepted here.
+fn resolve_generic_uid(
+    content_type: &str,
+    id: &Value,
+    registry: &ObjectTypeRegistry,
+    mappings: &super::state::StateMappings,
+) -> Option<String> {
+    let BackendId::String(id) = from_backend_value(id)? else {
+        return None;
+    };
+    let type_name = registry
+        .info_for(&TypeName::new(content_type))
+        .map(|info| info.type_name.as_str().to_string())
+        .unwrap_or_else(|| content_type.to_string());
+    mappings.uid_for(&type_name, &id).map(|uid| uid.to_string())
+}
+
+/// turns a `Value` holding a backend id into the string nautobot stores it as.
+fn from_backend_value(value: &Value) -> Option<BackendId> {
+    match value {
+        Value::String(id) => Some(BackendId::String(id.clone())),
+        Value::Number(n) => Some(BackendId::String(n.to_string())),
+        _ => None,
+    }
+}
+
+/// resolves a nested generic FK payload (`{ object_type, object_id }`) to a uid.
+/// like a normal reference it recomputes the uid from an embedded `object` brief's
+/// key fields when present (so it round-trips without prior state), falling back
+/// to the recorded id->uid mappings; a reference alembic does not manage is
+/// dropped rather than surfaced as an opaque id. mirrors netbox's decoder exactly.
+fn decode_nested_generic_ref(
+    value: &Value,
+    schema: &Schema,
+    registry: &ObjectTypeRegistry,
+    mappings: &super::state::StateMappings,
+) -> Option<String> {
+    let content_type = value.get("object_type")?.as_str()?;
+    let type_name = registry
+        .info_for(&TypeName::new(content_type))
+        .map(|info| info.type_name.as_str().to_string())
+        .unwrap_or_else(|| content_type.to_string());
+    if let Some(Value::Object(brief)) = value.get("object") {
+        if let Some(uid) = resolve_ref_uid(brief, Some(&type_name), schema, registry, mappings) {
+            return Some(uid.to_string());
+        }
+    }
+    resolve_generic_uid(content_type, value.get("object_id")?, registry, mappings)
+}
+
+/// decodes every generic foreign key on `type_name` from its nautobot read shape
+/// into the alembic uid(s) it references. both wire forms expose a content type
+/// and a backend id -- a nested `{ object_type, object_id }` (single or array) or
+/// a split `<field>_type` / `<field>_id` pair -- which the recorded id->uid
+/// mappings turn back into uids.
+fn decode_generic_fks(
+    attrs: &mut JsonMap,
+    type_name: &TypeName,
+    schema: &Schema,
+    registry: &ObjectTypeRegistry,
+    mappings: &super::state::StateMappings,
+) {
+    let content_type = registry.content_type_of(type_name.as_str());
+    for (field, encoding) in generic_fk_fields()
+        .iter()
+        .filter(|(model, _, _)| *model == content_type)
+        .map(|(_, field, encoding)| (*field, *encoding))
+    {
+        match encoding {
+            GenericFkEncoding::Split => {
+                let kind = attrs.remove(&format!("{field}_type"));
+                let id = attrs.remove(&format!("{field}_id"));
+                if let (Some(Value::String(kind)), Some(id)) = (kind, id) {
+                    if let Some(uid) = resolve_generic_uid(&kind, &id, registry, mappings) {
+                        attrs.insert(field.to_string(), Value::String(uid));
+                    }
+                }
+            }
+            GenericFkEncoding::Nested => {
+                if let Some(value) = attrs.get(field).cloned() {
+                    match decode_nested_generic_ref(&value, schema, registry, mappings) {
+                        Some(uid) => {
+                            attrs.insert(field.to_string(), Value::String(uid));
+                        }
+                        None => {
+                            attrs.remove(field);
+                        }
+                    }
+                }
+            }
+            GenericFkEncoding::NestedList => {
+                if let Some(Value::Array(items)) = attrs.get(field).cloned() {
+                    let uids = items
+                        .iter()
+                        .filter_map(|item| {
+                            decode_nested_generic_ref(item, schema, registry, mappings)
+                        })
+                        .map(Value::String)
+                        .collect();
+                    attrs.insert(field.to_string(), Value::Array(uids));
+                }
+            }
+        }
+    }
+}
+
+/// encodes a generic foreign key into `body` per its [`GenericFkEncoding`]. the
+/// referenced object's content type comes from the schema field's target; its id
+/// from the resolved uid->id map. null clears it (empty array / null).
+fn encode_generic_fk(
+    body: &mut Map<String, Value>,
+    key: &str,
+    encoding: GenericFkEncoding,
+    field_type: &FieldType,
+    value: Value,
+    resolved: &BTreeMap<Uid, String>,
+    registry: &ObjectTypeRegistry,
+) -> Result<()> {
+    if value.is_null() {
+        match encoding {
+            GenericFkEncoding::Split => {
+                body.insert(format!("{key}_type"), Value::Null);
+                body.insert(format!("{key}_id"), Value::Null);
+            }
+            GenericFkEncoding::Nested | GenericFkEncoding::NestedList => {
+                body.insert(key.to_string(), Value::Null);
+            }
+        }
+        return Ok(());
+    }
+    let target = match field_type {
+        FieldType::Ref { target } | FieldType::ListRef { target } => target.as_str(),
+        other => {
+            return Err(anyhow!(
+                "generic foreign key {key} must be a ref, got {other:?}"
+            ))
+        }
+    };
+    let object_type = registry.content_type_of(target);
+    let id = resolve_value_for_type(field_type, value, resolved)?;
+    match encoding {
+        GenericFkEncoding::Split => {
+            body.insert(format!("{key}_type"), Value::String(object_type));
+            body.insert(format!("{key}_id"), id);
+        }
+        GenericFkEncoding::Nested => {
+            body.insert(
+                key.to_string(),
+                json!({ "object_type": object_type, "object_id": id }),
+            );
+        }
+        GenericFkEncoding::NestedList => {
+            let ids = id
+                .as_array()
+                .ok_or_else(|| anyhow!("generic foreign key {key} expected an array of ids"))?;
+            let wrapped = ids
+                .iter()
+                .map(|id| json!({ "object_type": object_type, "object_id": id }))
+                .collect();
+            body.insert(key.to_string(), Value::Array(wrapped));
+        }
+    }
+    Ok(())
+}
+
 fn build_request_body(
     type_name: &TypeName,
     type_schema: &TypeSchema,
@@ -1109,6 +1337,7 @@ fn build_request_body(
     resolved: &BTreeMap<Uid, String>,
     custom_fields: &BTreeSet<String>,
     features: &BTreeSet<String>,
+    registry: &ObjectTypeRegistry,
 ) -> Result<Value> {
     let mut body = Map::new();
     let mut custom = Map::new();
@@ -1128,8 +1357,24 @@ fn build_request_body(
             .fields
             .get(key)
             .ok_or_else(|| anyhow!("missing schema for field {key}"))?;
-        // a null clears the field
-        let encoded = if value.is_null() {
+        // generic foreign keys are encoded from the schema-derived metadata: a
+        // nested `{ object_type, object_id }` (single or array), depending on how
+        // nautobot models it. without this a declared list_ref like a cable's
+        // terminations is written as null and every plan diffs forever.
+        let encoded = if let Some(encoding) =
+            generic_fk_encoding(&registry.content_type_of(type_name.as_str()), key)
+        {
+            encode_generic_fk(
+                &mut body,
+                key,
+                encoding,
+                &field_schema.r#type,
+                value.clone(),
+                resolved,
+                registry,
+            )?;
+            continue;
+        } else if value.is_null() {
             Value::Null
         } else {
             resolve_value_for_type(&field_schema.r#type, value.clone(), resolved)?
@@ -1586,6 +1831,7 @@ mod tests {
             &resolved,
             &BTreeSet::new(),
             &BTreeSet::new(),
+            &ObjectTypeRegistry::default(),
         )
         .unwrap();
         assert_eq!(body.get("site").unwrap(), &json!("site-uuid"));
@@ -1621,6 +1867,7 @@ mod tests {
             &BTreeMap::new(),
             &BTreeSet::new(),
             &BTreeSet::new(),
+            &ObjectTypeRegistry::default(),
         )
         .unwrap();
         assert_eq!(body.get("rack").unwrap(), &json!(null));
@@ -1656,6 +1903,7 @@ mod tests {
             &BTreeMap::new(),
             &BTreeSet::from(["owner".to_string()]),
             &BTreeSet::from(["custom-fields".to_string()]),
+            &ObjectTypeRegistry::default(),
         )
         .unwrap();
         let custom = body
@@ -1705,10 +1953,116 @@ mod tests {
             &BTreeMap::new(),
             &BTreeSet::new(),
             &BTreeSet::new(),
+            &registry,
         )
         .unwrap();
         assert_eq!(body.get("type").unwrap(), &json!("1000base-t"));
         assert!(body.get("if_type").is_none());
+    }
+
+    #[test]
+    fn test_cable_terminations_round_trip_through_build_and_extract() {
+        // a cable's terminations are declared as list_ref to dcim.interface. the
+        // bug (#463): without generic-fk encoding build_request_body passed this
+        // through as-is and nautobot wrote nulls, so every plan read them back
+        // as null. here they encode to nested {object_type, object_id} pairs and
+        // decode back to the uids the terminations were bound to.
+        let registry = ObjectTypeRegistry::default();
+        let interface_uid = Uid::from_u128(7);
+        let mut mappings = super::super::state::StateMappings::default();
+        mappings.by_type.insert(
+            "dcim.interface".to_string(),
+            BTreeMap::from([("cable-if-uuid".to_string(), interface_uid)]),
+        );
+        let resolved = BTreeMap::from([(interface_uid, "cable-if-uuid".to_string())]);
+
+        // declare a cable with both termination lists populated.
+        let mut fields = BTreeMap::new();
+        fields.insert(
+            "a_terminations".to_string(),
+            FieldSchema {
+                r#type: alembic_core::FieldType::ListRef {
+                    target: "dcim.interface".to_string(),
+                },
+                required: false,
+                nullable: false,
+                description: None,
+                format: None,
+                pattern: None,
+            },
+        );
+        fields.insert(
+            "b_terminations".to_string(),
+            FieldSchema {
+                r#type: alembic_core::FieldType::ListRef {
+                    target: "dcim.interface".to_string(),
+                },
+                required: false,
+                nullable: false,
+                description: None,
+                format: None,
+                pattern: None,
+            },
+        );
+        let type_schema = TypeSchema {
+            key: BTreeMap::new(),
+            fields,
+        };
+        let mut attrs = JsonMap::default();
+        attrs.insert(
+            "a_terminations".to_string(),
+            json!([interface_uid.to_string()]),
+        );
+        attrs.insert(
+            "b_terminations".to_string(),
+            json!([interface_uid.to_string()]),
+        );
+
+        // write: each termination list becomes nested object_type/object_id pairs.
+        let body = build_request_body(
+            &TypeName::new("dcim.cable"),
+            &type_schema,
+            &attrs,
+            &resolved,
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+            &registry,
+        )
+        .unwrap();
+        assert_eq!(
+            body.get("a_terminations").unwrap(),
+            &json!([{ "object_type": "dcim.interface", "object_id": "cable-if-uuid" }])
+        );
+        assert_eq!(
+            body.get("b_terminations").unwrap(),
+            &json!([{ "object_type": "dcim.interface", "object_id": "cable-if-uuid" }])
+        );
+
+        // read: extract_attrs pulls the pairs out of the payload...
+        let Value::Object(mut map) = body.clone() else {
+            panic!("body is not an object");
+        };
+        map.insert("id".to_string(), json!("cable-uuid"));
+        map.insert(
+            "url".to_string(),
+            json!("https://nautobot.local/api/dcim/cables/1/"),
+        );
+        let (backend_id, mut attrs) = extract_attrs(Value::Object(map)).unwrap();
+        assert_eq!(backend_id, "cable-uuid");
+
+        // ...and decode_generic_fks resolves each pair back to the interface uid.
+        let schema = Schema {
+            types: BTreeMap::new(),
+        };
+        decode_generic_fks(
+            &mut attrs,
+            &TypeName::new("dcim.cable"),
+            &schema,
+            &registry,
+            &mappings,
+        );
+        assert_eq!(attrs["a_terminations"], json!([interface_uid.to_string()]));
+        assert_eq!(attrs["b_terminations"], json!([interface_uid.to_string()]));
     }
 
     #[test]

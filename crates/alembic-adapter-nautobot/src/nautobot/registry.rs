@@ -90,6 +90,18 @@ impl ObjectTypeRegistry {
         self.by_type.get(type_name.as_str()).cloned()
     }
 
+    /// the nautobot content type (`app_label.model`, e.g. `dcim.cable`) for an
+    /// alembic `type_name` (`dcim.cable`), used to key generic-FK metadata and to
+    /// fill a generic FK's `object_type`. falls back to the input when the type
+    /// is not in the registry (it is then already a content type, e.g.
+    /// `dcim.interface`).
+    pub(super) fn content_type_of(&self, type_name: &str) -> String {
+        self.by_type
+            .get(type_name)
+            .map(|info| info.type_name.as_str().to_string())
+            .unwrap_or_else(|| type_name.to_string())
+    }
+
     pub(super) fn type_names(&self) -> Vec<TypeName> {
         self.by_type
             .values()
