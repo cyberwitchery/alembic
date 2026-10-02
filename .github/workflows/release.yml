@@ -195,9 +195,9 @@ jobs:
           # both mac targets build on the apple-silicon runner (it cross-compiles
           # x86_64 fine); the intel macos-13 runner is unreliable to schedule.
           - target: x86_64-apple-darwin
-            os: macos-14
+            os: macos-15
           - target: aarch64-apple-darwin
-            os: macos-14
+            os: macos-15
     steps:
       - name: checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
