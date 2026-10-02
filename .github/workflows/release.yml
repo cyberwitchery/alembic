@@ -25,13 +25,15 @@ jobs:
       CARGO_TARGET_DIR: target/ci
     steps:
       - name: checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: set up rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # v1
+        with:
+          toolchain: stable
 
       - name: cache cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           prefix-key: v0-rust-release
           cache-targets: true
@@ -48,7 +50,7 @@ jobs:
       # the large generated netbox-openapi dependency).
 
       - name: install sbom tool
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
         with:
           tool: cargo-cyclonedx
 
@@ -95,14 +97,14 @@ jobs:
           fi
 
       - name: upload sbom
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: sbom-${{ github.ref_name }}
           path: "/tmp/alembic-sbom/sbom-${{ github.ref_name }}-*.cdx.json"
           if-no-files-found: error
 
       - name: attach sbom to release
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           body_path: ${{ runner.temp }}/release-notes.md
           files: /tmp/alembic-sbom/sbom-${{ github.ref_name }}-*.cdx.json
@@ -198,7 +200,7 @@ jobs:
             os: macos-14
     steps:
       - name: checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ env.REF }}
 
@@ -214,12 +216,13 @@ jobs:
           free -h
 
       - name: set up rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # v1
         with:
+          toolchain: stable
           targets: ${{ matrix.target }}
 
       - name: cache cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           prefix-key: v0-rust-binaries
           key: ${{ matrix.target }}
@@ -241,7 +244,7 @@ jobs:
           done
 
       - name: attach binaries to release
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           tag_name: ${{ env.REF }}
           files: "*-${{ env.REF }}-${{ matrix.target }}.tar.gz"
