@@ -17,16 +17,26 @@ permissions: {}
 jobs:
   sbom:
     name: sbom
-    # gates the release on the approved sboms and attests every crate. a manual
+    # gates the release on the approved sboms; attest then attests every crate. a manual
     # binaries rebuild skips it.
     if: github.event_name == 'push'
-    uses: cyberwitchery/.github/.github/workflows/sbom.yml@d8cdf87f9048c369e1ab49281da13e7e72a782fb # main
+    uses: cyberwitchery/.github/.github/workflows/sbom.yml@64ffd6a08c3e9626a681c8be1c8ad056765f3b85 # main
+    permissions:
+      contents: read
+    with:
+      mode: release
+
+  attest:
+    name: attest
+    needs: sbom
+    if: github.event_name == 'push'
+    uses: cyberwitchery/.github/.github/workflows/attest.yml@64ffd6a08c3e9626a681c8be1c8ad056765f3b85 # main
     permissions:
       contents: read
       id-token: write
       attestations: write
     with:
-      mode: release
+      names: ${{ needs.sbom.outputs.names }}
 
   publish:
     # crates are published only on the tag push, never on a manual binaries rebuild.
