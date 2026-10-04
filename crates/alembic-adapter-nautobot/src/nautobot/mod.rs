@@ -1096,6 +1096,48 @@ mod tests {
         assert_eq!(observed.len(), 0);
     }
 
+    // a declared ref the type has no field for fails the read itself, before
+    // anything is listed, so a plan never diffs on it.
+    #[tokio::test]
+    async fn read_refuses_a_declared_ref_the_type_has_no_field_for() {
+        let server = MockServer::start();
+        let dir = tempdir().unwrap();
+        mock_content_types(&server);
+        let _options = server.mock(|when, then| {
+            when.method(httpmock::Method::OPTIONS)
+                .path("/api/dcim/sites/");
+            then.status(200)
+                .json_body(json!({ "actions": { "POST": { "name": {}, "slug": {} } } }));
+        });
+        let _custom_fields = server.mock(|when, then| {
+            when.method(GET).path("/api/extras/custom-fields/");
+            then.status(200).json_body(page(json!([])));
+        });
+        let sites = server.mock(|when, then| {
+            when.method(GET).path("/api/dcim/sites/");
+            then.status(200).json_body(page(json!([])));
+        });
+
+        let mut schema = site_schema();
+        schema.types.get_mut("dcim.site").unwrap().fields.insert(
+            "region".to_string(),
+            field(FieldType::Ref {
+                target: "dcim.region".to_string(),
+            }),
+        );
+        let adapter = NautobotAdapter::new(&server.base_url(), "token").unwrap();
+        let err = adapter
+            .read(&schema, &[TypeName::new("dcim.site")], &state(dir.path()))
+            .await
+            .unwrap_err();
+
+        assert!(
+            format!("{err:#}").contains("dcim.site has no field region"),
+            "{err:#}"
+        );
+        sites.assert_calls(0);
+    }
+
     #[tokio::test]
     async fn observe_reads_objects_and_maps_backend_id() {
         let server = MockServer::start();
