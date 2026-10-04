@@ -99,10 +99,11 @@ impl NautobotAdapter {
                 .info_for(&type_name)
                 .ok_or_else(|| anyhow!("unsupported type {}", type_name))?
                 .clone();
-            schema
+            let type_schema = schema
                 .types
                 .get(type_name.as_str())
                 .ok_or_else(|| anyhow!("missing schema for {}", type_name))?;
+            check_declared_refs(self, &type_name, &info, type_schema).await?;
             // An unbound type cannot affect this run, so skip its listing.
             let bound = bound_only
                 .then(|| bound_uuids(state_store, &type_name))
@@ -1200,22 +1201,11 @@ async fn native_fields_for_type(
 
     // what a create accepts, from the endpoint's own metadata: this holds on
     // an endpoint with no objects yet, where a sample below has nothing to show.
-    match adapter
-        .client
-        .request_raw(reqwest::Method::OPTIONS, &info.endpoint, None)
-        .await
-    {
-        Ok(metadata) => {
-            if let Some(Value::Object(post)) = metadata.pointer("/actions/POST") {
-                native.extend(post.keys().cloned());
-            }
-        }
+    if let Some(fields) = adapter.client.create_accepts(&info.endpoint).await {
+        native.extend(fields);
+    } else {
         // an older server or a proxy can refuse OPTIONS; the sample still counts.
-        Err(err) => tracing::debug!(
-            endpoint = %info.endpoint,
-            error = %err,
-            "no OPTIONS metadata; reading native fields from a sample object"
-        ),
+        tracing::debug!(endpoint = %info.endpoint, "no OPTIONS metadata");
     }
 
     let resource: Resource<Value> = adapter.client.resource(info.endpoint.clone());
@@ -1229,6 +1219,62 @@ async fn native_fields_for_type(
     }
 
     Ok(native)
+}
+
+/// fail on a declared ref the type has neither as a field nor as a custom field:
+/// nautobot ignores unknown keys on write, so it would be dropped and diff
+/// forever. without OPTIONS metadata the fields are unknown and nothing is
+/// judged; plain fields are not checked here, since a missing one is provisioned
+/// as a custom field.
+async fn check_declared_refs(
+    adapter: &NautobotAdapter,
+    type_name: &TypeName,
+    info: &super::registry::ObjectTypeInfo,
+    type_schema: &TypeSchema,
+) -> Result<()> {
+    let declared_refs: Vec<&String> = type_schema
+        .fields
+        .iter()
+        .filter(|(_, field)| {
+            matches!(
+                field.r#type,
+                FieldType::Ref { .. } | FieldType::ListRef { .. }
+            )
+        })
+        .map(|(name, _)| name)
+        .collect();
+    if declared_refs.is_empty() {
+        return Ok(());
+    }
+    let Some(fields) = adapter.client.create_accepts(&info.endpoint).await else {
+        return Ok(());
+    };
+    let unknown: Vec<&String> = declared_refs
+        .into_iter()
+        .filter(|name| !fields.contains(*name))
+        .collect();
+    if unknown.is_empty() {
+        return Ok(());
+    }
+    let custom_fields = adapter.client.fetch_custom_fields().await?;
+    let custom = custom_fields.get(type_name.as_str());
+    let missing: Vec<&str> = unknown
+        .into_iter()
+        .filter(|name| !custom.is_some_and(|custom| custom.contains(*name)))
+        .map(String::as_str)
+        .collect();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    Err(anyhow!(
+        "{type_name} has no field {}: nautobot would drop it on write. its fields are {}",
+        missing.join(", "),
+        fields
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .join(", ")
+    ))
 }
 
 fn is_404_error(err: &nautobot::Error) -> bool {
@@ -2070,6 +2116,114 @@ mod tests {
             .await
             .unwrap();
         assert!(native.contains("content_types"), "{native:?}");
+    }
+
+    // a minimal field, like mod.rs `field()` but scoped to these tests.
+    fn ref_field(target: TypeName) -> FieldSchema {
+        FieldSchema {
+            r#type: FieldType::Ref {
+                target: target.to_string(),
+            },
+            required: true,
+            nullable: false,
+            description: None,
+            format: None,
+            pattern: None,
+        }
+    }
+
+    // a declared ref the type's OPTIONS metadata lists is accepted.
+    #[tokio::test]
+    async fn check_declared_refs_passes_a_ref_the_endpoint_accepts() {
+        use httpmock::Method::{GET, OPTIONS};
+        use httpmock::MockServer;
+
+        let server = MockServer::start();
+        // empty listing: the check only needs a custom-fields list to consult.
+        server.mock(|when, then| {
+            when.method(GET).path("/api/extras/custom-fields/");
+            then.status(200).json_body(json!({
+                "count": 0, "next": null, "previous": null, "results": [],
+            }));
+        });
+        server.mock(|when, then| {
+            when.method(OPTIONS).path("/api/dcim/location-types/");
+            then.status(200).json_body(json!({
+                "name": "Location Type List",
+                "actions": { "POST": {
+                    "name": {}, "parent": {},
+                } },
+            }));
+        });
+
+        let adapter = NautobotAdapter::new(&server.base_url(), "token").unwrap();
+        let info = super::super::registry::ObjectTypeInfo {
+            type_name: TypeName::new("dcim.locationtype"),
+            endpoint: "dcim/location-types/".to_string(),
+            features: BTreeSet::new(),
+        };
+        let type_schema = TypeSchema {
+            key: BTreeMap::new(),
+            fields: BTreeMap::from([(
+                "parent".to_string(),
+                ref_field(TypeName::new("dcim.locationtype")),
+            )]),
+        };
+        check_declared_refs(
+            &adapter,
+            &TypeName::new("dcim.locationtype"),
+            &info,
+            &type_schema,
+        )
+        .await
+        .unwrap();
+    }
+
+    // a declared ref the endpoint does not accept and that no custom field holds is
+    // refused with its name: it would be dropped on write and diff forever.
+    #[tokio::test]
+    async fn check_declared_refs_refuses_a_ref_the_endpoint_does_not_have() {
+        use httpmock::Method::{GET, OPTIONS};
+        use httpmock::MockServer;
+
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/api/extras/custom-fields/");
+            then.status(200).json_body(json!({
+                "count": 0, "next": null, "previous": null, "results": [],
+            }));
+        });
+        server.mock(|when, then| {
+            when.method(OPTIONS).path("/api/dcim/location-types/");
+            then.status(200).json_body(json!({
+                "name": "Location Type List",
+                "actions": { "POST": { "name": {} } },
+            }));
+        });
+
+        let adapter = NautobotAdapter::new(&server.base_url(), "token").unwrap();
+        let info = super::super::registry::ObjectTypeInfo {
+            type_name: TypeName::new("dcim.locationtype"),
+            endpoint: "dcim/location-types/".to_string(),
+            features: BTreeSet::new(),
+        };
+        let type_schema = TypeSchema {
+            key: BTreeMap::new(),
+            fields: BTreeMap::from([(
+                "parent".to_string(),
+                ref_field(TypeName::new("dcim.locationtype")),
+            )]),
+        };
+        let err = check_declared_refs(
+            &adapter,
+            &TypeName::new("dcim.locationtype"),
+            &info,
+            &type_schema,
+        )
+        .await
+        .unwrap_err();
+        let message = format!("{err:#}");
+        assert!(message.contains("parent"), "{message}");
     }
 
     #[test]
