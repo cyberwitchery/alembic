@@ -1,0 +1,54 @@
+name: tmp-482-format
+
+on:
+  pull_request:
+    branches: ["main"]
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  format:
+    if: github.head_ref == 'tmp/482-review-fixes'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # v1
+        with:
+          toolchain: stable
+          components: rustfmt
+
+      - name: Add changelog entry and format
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("CHANGELOG.md")
+          text = path.read_text()
+          bullet = "- schema provisioning output names created fields, tags, object types and object fields; read-only `schema preview:` summaries say what would be created, updated, deprecated or deleted instead of using past tense (#478)"
+          if bullet not in text:
+              marker = "## Unreleased\n\n"
+              if marker not in text:
+                  raise SystemExit("Unreleased changelog section not found")
+              text = text.replace(marker, marker + bullet + "\n", 1)
+              path.write_text(text)
+          PY
+          cargo fmt --all
+
+      - name: Commit formatter output
+        run: |
+          if git diff --quiet; then
+            echo "already formatted"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -u
+          git commit -m "chore: format 482 review fixes"
+          git push origin HEAD:${{ github.event.pull_request.head.ref }}
