@@ -3,6 +3,8 @@ name: review-482
 on:
   push:
     branches: ["scratch/482-review-fmt"]
+  pull_request:
+    branches: ["scratch/482-review-fmt"]
 
 permissions:
   contents: read
