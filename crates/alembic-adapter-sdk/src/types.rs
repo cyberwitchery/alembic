@@ -415,10 +415,9 @@ mod tests {
 
     #[test]
     fn a_misspelled_field_change_key_is_rejected() {
-        let err = serde_json::from_str::<FieldChange>(
-            r#"{"field":"tier","form":1,"from":1,"to":2}"#,
-        )
-        .unwrap_err();
+        let err =
+            serde_json::from_str::<FieldChange>(r#"{"field":"tier","form":1,"from":1,"to":2}"#)
+                .unwrap_err();
         assert!(err.to_string().contains("form"), "{err}");
     }
 
