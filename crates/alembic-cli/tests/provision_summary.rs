@@ -148,6 +148,14 @@ fn plan_previews_what_provisioning_would_change() {
 
     assert!(ok, "plan failed; stdout:\n{stdout}\nstderr:\n{stderr}");
     // the read-only preview: nothing was written, and it is not the plan's stdout.
+    assert!(
+        stderr.contains("1 object types would be created"),
+        "preview count must be prospective; stderr:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("1 object types created"),
+        "read-only preview must not claim the type was already created; stderr:\n{stderr}"
+    );
     for line in [
         "  would create dcim.widget",
         "  would update dcim.gadget.color",
