@@ -423,7 +423,8 @@ alembic skill install alembic
 alembic skill install alembic --dir /srv/intent/.agents/skills
 ```
 
-- `list` prints one `name<tab>summary` line per embedded skill
+- `list` prints a `name  summary` header and one aligned line per embedded skill;
+  `show` or `install` without a name fails and names them
 - `show` prints the skill's markdown to stdout, for a host that reads no skills
   directory
 - `install` writes it atomically to `<dir>/<name>/SKILL.md`, `--dir` defaulting

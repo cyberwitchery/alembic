@@ -3747,7 +3747,7 @@ async fn run_skill_install_writes_the_skill_under_the_given_root() {
     let cli = Cli {
         command: Command::Skill {
             action: SkillAction::Install {
-                name: "alembic".to_string(),
+                name: Some("alembic".to_string()),
                 dir: root.clone(),
                 force: false,
             },
@@ -3784,7 +3784,7 @@ async fn run_skill_install_touches_no_state() {
     let cli = Cli {
         command: Command::Skill {
             action: SkillAction::Install {
-                name: "alembic".to_string(),
+                name: Some("alembic".to_string()),
                 dir: dir.path().join("skills"),
                 force: false,
             },
@@ -3807,7 +3807,7 @@ async fn run_skill_show_and_list_write_no_files() {
     for action in [
         SkillAction::List,
         SkillAction::Show {
-            name: "alembic".to_string(),
+            name: Some("alembic".to_string()),
         },
     ] {
         run(
@@ -3833,7 +3833,7 @@ async fn run_skill_show_rejects_a_name_this_binary_does_not_carry() {
         Cli {
             command: Command::Skill {
                 action: SkillAction::Show {
-                    name: "netbox".to_string(),
+                    name: Some("netbox".to_string()),
                 },
             },
         },
@@ -3861,7 +3861,27 @@ fn skill_install_defaults_to_the_documented_skills_root() {
     else {
         panic!("expected a skill install command");
     };
-    assert_eq!(name, "alembic");
+    assert_eq!(name.as_deref(), Some("alembic"));
     assert_eq!(dir, PathBuf::from(".agents/skills"));
     assert!(!force);
+}
+
+/// clap's own missing-argument error names no candidates, so a bare `show` or
+/// `install` reaches the command and is refused there, with the list.
+#[tokio::test]
+async fn run_skill_without_a_name_lists_what_this_binary_carries() {
+    use clap::Parser;
+    for args in [
+        ["alembic", "skill", "show"].as_slice(),
+        ["alembic", "skill", "install"].as_slice(),
+    ] {
+        let cli = Cli::try_parse_from(args).expect("a bare skill command parses");
+        let err = run(cli, AppConfig::load().unwrap())
+            .await
+            .expect_err("a missing name is an error");
+        assert!(
+            format!("{err:#}").contains("this binary carries: alembic"),
+            "{err:#}"
+        );
+    }
 }

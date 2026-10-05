@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `skill list` prints a `name  summary` header over aligned columns instead of tab-separated lines, and `skill show` or `skill install` without a name names the skills the binary carries
 - `import` warns once per type, naming every undeclared attr it dropped from that type, instead of once per field; the old line called every dropped field server-computed, though most are ordinary fields the `-f` does not declare
 
 ## [0.10.0] - 2026-09-27

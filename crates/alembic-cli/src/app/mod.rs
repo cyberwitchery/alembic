@@ -192,12 +192,12 @@ enum SkillAction {
     /// print a skill to stdout, for a host that reads no skills directory.
     Show {
         /// skill name, as `list` reports it.
-        name: String,
+        name: Option<String>,
     },
     /// write a skill to a skills directory.
     Install {
         /// skill name, as `list` reports it.
-        name: String,
+        name: Option<String>,
         /// skills root to install under; the file lands at `<dir>/<name>/SKILL.md`.
         #[arg(long, default_value = skill::DEFAULT_SKILLS_DIR)]
         dir: PathBuf,
@@ -573,9 +573,9 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
         // no backend, no state, no inventory: the text is in the binary
         Command::Skill { action } => match action {
             SkillAction::List => skill::list(),
-            SkillAction::Show { name } => skill::show(&name)?,
+            SkillAction::Show { name } => skill::show(name.as_deref())?,
             SkillAction::Install { name, dir, force } => {
-                let path = skill::install(&name, &dir, force)?;
+                let path = skill::install(name.as_deref(), &dir, force)?;
                 println!("skill written to {}", path.display());
             }
         },
