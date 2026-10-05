@@ -104,4 +104,4 @@ json is supported when the file extension is `.json`.
   backend scopes uniqueness (an interface is `(device, name)`, not `name`).
 - keys are canonicalized as JSON for matching and sorting.
 - never include backend ids in `attrs`.
-- `import` writes only schema-declared attrs; any field the schema does not declare, server-computed (e.g. `last_updated`) or not, is dropped with a warning per type.
+- `import` writes only schema-declared attrs; any field the schema does not declare, server-computed (e.g. `last_updated`) or not, is dropped. one warning summarizes the total and affected types; `RUST_LOG=debug` lists each dropped field.
