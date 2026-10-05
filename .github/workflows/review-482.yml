@@ -1,13 +1,11 @@
-name: review-482
+name: review-484
 
 on:
   push:
     branches: ["scratch/482-review-fmt"]
-  pull_request:
-    branches: ["scratch/482-review-fmt"]
 
 permissions:
-  contents: read
+  contents: write
 
 env:
   CARGO_TERM_COLOR: always
@@ -16,31 +14,41 @@ jobs:
   fmt-and-test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Checkout review tools
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: tools
+      - name: Checkout PR branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: fix/442-apply-stdin
+          path: work
+          fetch-depth: 0
       - name: Apply review fixes
-        run: python scripts/review_482.py
+        working-directory: work
+        run: python ../tools/scripts/review_484.py .
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # v1
         with:
           toolchain: stable
           components: rustfmt
       - name: Format
+        working-directory: work
         run: |
           cargo fmt --all
           cargo fmt --all -- --check
-      - name: SDK summary test
-        run: cargo test -p alembic-adapter-sdk provision_report_summary_honors_tense
-      - name: CLI provisioning summary tests
-        run: cargo test -p alembic-cli --test provision_summary
-      - name: Package formatted files
+          git diff --check
+      - name: Build examples used by integration tests
+        working-directory: work
+        run: cargo build -p alembic-cli --examples
+      - name: Test stdin apply path
+        working-directory: work
+        run: cargo test -p alembic-cli --test apply_stdin
+      - name: Commit reviewed changes
+        working-directory: work
         run: |
-          mkdir -p /tmp/review-482/crates/alembic-adapter-sdk/src
-          mkdir -p /tmp/review-482/crates/alembic-cli/src/app
-          cp crates/alembic-adapter-sdk/src/types.rs /tmp/review-482/crates/alembic-adapter-sdk/src/types.rs
-          cp crates/alembic-cli/src/app/mod.rs /tmp/review-482/crates/alembic-cli/src/app/mod.rs
-          cp CHANGELOG.md /tmp/review-482/CHANGELOG.md
-      - name: Upload formatted files
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: review-482-formatted
-          path: /tmp/review-482
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add CHANGELOG.md docs/cli.md crates/alembic-cli/src/app/mod.rs crates/alembic-cli/src/app/io.rs crates/alembic-cli/tests/apply_stdin.rs
+          git commit -m "cli: finish stdin apply support"
+          git push origin HEAD:fix/442-apply-stdin
