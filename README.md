@@ -11,13 +11,13 @@ under the hood it is a data-model-first converger and loader: you describe your 
 alembic is data-model-first: you describe the model once, and the same four steps run every time.
 
 - **describe**: the shape your data takes as it moves. vendor-neutral, set once.
-- **pull**: read straight from a system you already run, through its adapter.
+- **import**: read straight from a system you already run, through its adapter.
 - **map**: reshape each source to fit the model, with the transformation made explicit.
-- **apply**: see the plan, then write. pull, map, and plan never write to the backend; apply is the only step that does, and a plan that binds declared objects to existing backend ones says so (`adopted ... by key`), so nothing changes by surprise.
+- **apply**: see the plan, then write. import, map, and plan never write to the backend; apply is the only step that does, and a plan that binds declared objects to existing backend ones says so (`adopted ... by key`), so nothing changes by surprise.
 
 ## when not to use alembic
 
-alembic is built to converge a vendor-neutral data model onto one or more dcim/ipam backends, and to migrate between them. it is probably the wrong tool when:
+alembic is built to converge a vendor-neutral data model onto one or more backends, and to migrate between them. it is probably the wrong tool when:
 
 - **you have a single backend and a simple one-off load.** a pynetbox script or csv import is less machinery for the same result.
 - **your infrastructure is ephemeral or event-driven.** alembic reconciles batches against a known desired state; it is not an event processor or a real-time sync daemon.

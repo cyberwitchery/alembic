@@ -35,11 +35,13 @@ use alembic_engine::PostgresTlsMode;
 /// top-level cli definition.
 #[derive(Parser)]
 #[command(name = "alembic", version)]
-#[command(
-    about = "Data-model-first converger + loader for DCIM/IPAM (YAML/JSON inventories in, plans out)"
-)]
+#[command(about = "move network data between the systems that hold it and the ones that need it")]
 #[command(long_about = "\
-Data-model-first converger + loader for DCIM/IPAM.
+move network data between the systems that hold it and the ones that need it.
+
+import reads a system through its adapter, map reshapes it into a vendor-neutral
+model you define, and plan diffs that model against a backend. none of them
+write; apply is the only command that does.
 
 File formats are chosen by file extension:
   - inventories (IR) are authored as YAML or JSON: a .json extension is parsed as
