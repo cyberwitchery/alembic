@@ -455,36 +455,38 @@ fn project_attrs(
     });
 }
 
-/// collects the attrs `project_attrs` drops across an import so each type warns
-/// once, naming its fields, instead of once per field. records each (type, field)
-/// once.
+/// collects the attrs `project_attrs` drops across an import so one warning can
+/// summarize them instead of one per key. records each (type, field) once.
 struct DroppedAttrs {
-    by_type: BTreeMap<String, BTreeSet<String>>,
+    by_key: BTreeSet<(String, String)>,
 }
 
 impl DroppedAttrs {
     fn new() -> Self {
         DroppedAttrs {
-            by_type: BTreeMap::new(),
+            by_key: BTreeSet::new(),
         }
     }
 
     fn record(&mut self, type_name: &str, field: &str) {
-        self.by_type
-            .entry(type_name.to_string())
-            .or_default()
-            .insert(field.to_string());
+        self.by_key
+            .insert((type_name.to_string(), field.to_string()));
     }
 
-    /// one warn line per type naming every field dropped from it; nothing when no
-    /// attr was dropped.
+    /// emit the summary: one warn line with the totals, and a debug line naming
+    /// each dropped attr. no warning at all when nothing was dropped.
     fn report(&self) {
-        for (type_name, fields) in &self.by_type {
-            let fields: Vec<&str> = fields.iter().map(String::as_str).collect();
-            tracing::warn!(
-                "import: dropped undeclared attrs from {type_name}: {}",
-                fields.join(", ")
-            );
+        if self.by_key.is_empty() {
+            return;
+        }
+        let type_names: BTreeSet<&str> = self.by_key.iter().map(|(t, _)| t.as_str()).collect();
+        tracing::warn!(
+            "import: dropped {} undeclared attr(s) across {} type(s); RUST_LOG=debug lists them",
+            self.by_key.len(),
+            type_names.len()
+        );
+        for (type_name, field) in &self.by_key {
+            tracing::debug!("import: dropping undeclared attr {}.{}", type_name, field);
         }
     }
 }
@@ -1361,7 +1363,7 @@ mod tests {
     }
 
     #[test]
-    fn import_warns_once_per_type_naming_its_dropped_attrs() {
+    fn import_warns_once_with_an_aggregate_summary() {
         let observed = observed_of(&[
             (
                 "dcim.cable",
@@ -1371,7 +1373,7 @@ mod tests {
             (
                 "dcim.cable",
                 "cable=c2",
-                json!({ "label": "downlink", "last_updated": "t", "created": "t" }),
+                json!({ "label": "downlink", "last_updated": "t" }),
             ),
             (
                 "dcim.site",
@@ -1389,20 +1391,43 @@ mod tests {
             crate::test_log::capture(|| import_unlocked(&MockAdapter { observed }, &schema));
 
         assert_eq!(report.inventory.objects.len(), 3);
-        // one line per type, each field named once however many objects carry it.
-        assert_eq!(
-            logged.matches("dropped undeclared attrs from").count(),
-            2,
+        // one warn line names both dropped attrs across both types, not one per field.
+        assert!(
+            logged.contains("import: dropped 2 undeclared attr(s) across 2 type(s)"),
             "{logged}"
         );
-        assert!(
-            logged.contains(
-                "import: dropped undeclared attrs from dcim.cable: created, last_updated\n"
+    }
+
+    #[test]
+    fn import_lists_each_dropped_attr_at_debug() {
+        let observed = observed_of(&[
+            (
+                "dcim.cable",
+                "cable=c1",
+                json!({ "label": "uplink", "last_updated": "t" }),
             ),
+            (
+                "dcim.site",
+                "site=s1",
+                json!({ "name": "hq", "created": "t" }),
+            ),
+        ]);
+        let schema = schema_of(&[
+            ("dcim.cable", &["cable"], &["label"]),
+            ("dcim.site", &["site"], &["name"]),
+        ]);
+
+        let _guard = IMPORT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (_report, logged) =
+            crate::test_log::capture(|| import_unlocked(&MockAdapter { observed }, &schema));
+
+        // the per-field detail moves to debug so a real error line is not buried.
+        assert!(
+            logged.contains("import: dropping undeclared attr dcim.cable.last_updated"),
             "{logged}"
         );
         assert!(
-            logged.contains("import: dropped undeclared attrs from dcim.site: last_updated\n"),
+            logged.contains("import: dropping undeclared attr dcim.site.created"),
             "{logged}"
         );
     }
@@ -1416,6 +1441,6 @@ mod tests {
         let (_report, logged) =
             crate::test_log::capture(|| import_unlocked(&MockAdapter { observed }, &schema));
 
-        assert!(!logged.contains("undeclared attr"), "{logged}");
+        assert!(!logged.contains("dropping undeclared attr"), "{logged}");
     }
 }
