@@ -5,6 +5,7 @@ use anyhow::{anyhow, Context, Result};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -190,11 +191,21 @@ pub(super) fn write_inventory(path: &Path, inventory: &alembic_core::Inventory) 
 }
 
 pub(super) fn read_plan(path: &Path) -> Result<Plan> {
-    let raw = fs::read_to_string(path).with_context(|| format!("read plan: {}", path.display()))?;
-    let kind = output_kind(path);
+    let (raw, kind, source) = if path == Path::new("-") {
+        let mut raw = String::new();
+        std::io::stdin()
+            .lock()
+            .read_to_string(&mut raw)
+            .context("read plan: stdin")?;
+        (raw, OutputKind::Json, "stdin".to_string())
+    } else {
+        let raw =
+            fs::read_to_string(path).with_context(|| format!("read plan: {}", path.display()))?;
+        (raw, output_kind(path), path.display().to_string())
+    };
     parse_as::<Plan>(&kind, &raw)
         .map_err(|err| maybe_suggest_inventory(&kind, &raw, err))
-        .with_context(|| format!("parse plan: {}", path.display()))
+        .with_context(|| format!("parse plan: {source}"))
 }
 
 fn parse_as<T: DeserializeOwned>(kind: &OutputKind, raw: &str) -> Result<T> {
@@ -234,9 +245,11 @@ mod tests {
 
     #[test]
     fn output_kind_defaults_to_json_without_yaml_extension() {
-        // no extension and a non-yaml extension both stay json.
+        // no extension and a non-yaml extension both stay json; stdin uses the
+        // same json representation emitted by `plan --dry-run`.
         assert_eq!(output_kind(Path::new("plan")), OutputKind::Json);
         assert_eq!(output_kind(Path::new("plan.txt")), OutputKind::Json);
+        assert_eq!(output_kind(Path::new("-")), OutputKind::Json);
     }
 
     #[test]
