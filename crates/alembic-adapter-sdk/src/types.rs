@@ -212,29 +212,36 @@ impl ProvisionReport {
         self.deleted_object_fields.extend(deleted_object_fields);
     }
 
-    /// the changes a run made to schema it did not create, labelled for the
-    /// operator. a create is new, so its count is the whole story; everything
-    /// else reaches into state that was already there, so name what it wrote.
+    /// the schema changes a run made, labelled for the operator.
     pub fn named_changes(&self, tense: Tense) -> Vec<(&'static str, &str)> {
         // destructured without `..`, like the folds above: a category added later
         // has to answer whether it names what it touched.
         let ProvisionReport {
-            created_fields: _,
+            created_fields,
             updated_fields,
-            created_tags: _,
-            created_object_types: _,
-            created_object_fields: _,
+            created_tags,
+            created_object_types,
+            created_object_fields,
             updated_object_fields,
             deprecated_object_types,
             deprecated_object_fields,
             deleted_object_types,
             deleted_object_fields,
         } = self;
-        let (updated, deprecated, deleted) = match tense {
-            Tense::Past => ("updated", "deprecated", "deleted"),
-            Tense::Would => ("would update", "would deprecate", "would delete"),
+        let (created, updated, deprecated, deleted) = match tense {
+            Tense::Past => ("created", "updated", "deprecated", "deleted"),
+            Tense::Would => (
+                "would create",
+                "would update",
+                "would deprecate",
+                "would delete",
+            ),
         };
         [
+            (created, created_fields),
+            (created, created_tags),
+            (created, created_object_types),
+            (created, created_object_fields),
             (updated, updated_fields),
             (updated, updated_object_fields),
             (deprecated, deprecated_object_types),
@@ -411,7 +418,7 @@ mod tests {
     }
 
     #[test]
-    fn named_changes_names_every_write_to_pre_existing_schema() {
+    fn named_changes_names_every_schema_change() {
         // one entry per category, so a category dropped from the classification
         // shows up as a missing pair rather than passing on a count.
         let report = ProvisionReport {
@@ -427,10 +434,13 @@ mod tests {
             deleted_object_fields: vec!["dcim.relic.age".to_string()],
         };
 
-        // the four create categories are counted by Display and named nowhere.
         assert_eq!(
             report.named_changes(Tense::Past),
             [
+                ("created", "site.tier"),
+                ("created", "managed"),
+                ("created", "dcim.widget"),
+                ("created", "dcim.widget.size"),
                 ("updated", "site.owner"),
                 ("updated", "dcim.widget.color"),
                 ("deprecated", "dcim.gadget"),
@@ -442,6 +452,10 @@ mod tests {
         assert_eq!(
             report.named_changes(Tense::Would),
             [
+                ("would create", "site.tier"),
+                ("would create", "managed"),
+                ("would create", "dcim.widget"),
+                ("would create", "dcim.widget.size"),
                 ("would update", "site.owner"),
                 ("would update", "dcim.widget.color"),
                 ("would deprecate", "dcim.gadget"),
@@ -455,7 +469,10 @@ mod tests {
             created_object_types: vec!["dcim.widget".to_string()],
             ..Default::default()
         };
-        assert!(creates_only.named_changes(Tense::Past).is_empty());
+        assert_eq!(
+            creates_only.named_changes(Tense::Past),
+            [("created", "dcim.widget")]
+        );
     }
 
     #[test]
