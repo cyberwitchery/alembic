@@ -28,7 +28,7 @@ use alembic_core::TypeName;
 use self::state::{resolve_state_backend_config, state_path, StateBackendConfig};
 #[cfg(test)]
 use alembic_adapter_django::emit::Runner;
-use alembic_adapter_sdk::{ApplyReport, Op, StateData, Tense};
+use alembic_adapter_sdk::{ApplyReport, Op, ProvisionReport, StateData, Tense};
 #[cfg(test)]
 use alembic_engine::PostgresTlsMode;
 
@@ -264,6 +264,46 @@ fn state_lock_for_plan(report: bool, dry_run: bool, provision: bool) -> StateLoc
     }
 }
 
+/// format the count summary for a read-only schema preview. the report's
+/// `Display` is intentionally past-tense because it also backs real provisioning
+/// output; previews need to say what would happen instead of what already did.
+fn schema_preview_summary(report: &ProvisionReport) -> String {
+    if report.is_empty() {
+        return "no schema changes".to_string();
+    }
+
+    let ProvisionReport {
+        created_fields,
+        updated_fields,
+        created_tags,
+        created_object_types,
+        created_object_fields,
+        updated_object_fields,
+        deprecated_object_types,
+        deprecated_object_fields,
+        deleted_object_types,
+        deleted_object_fields,
+    } = report;
+
+    [
+        ("fields would be created", created_fields),
+        ("fields would be updated", updated_fields),
+        ("tags would be created", created_tags),
+        ("object types would be created", created_object_types),
+        ("object fields would be created", created_object_fields),
+        ("object fields would be updated", updated_object_fields),
+        ("object types would be deprecated", deprecated_object_types),
+        ("object fields would be deprecated", deprecated_object_fields),
+        ("object types would be deleted", deleted_object_types),
+        ("object fields would be deleted", deleted_object_fields),
+    ]
+    .into_iter()
+    .filter(|(_, items)| !items.is_empty())
+    .map(|(label, items)| format!("{} {label}", items.len()))
+    .collect::<Vec<_>>()
+    .join(", ")
+}
+
 /// the `-o`/`--output` path a command will write, if any. the one place that
 /// knows, so every write site is preflighted by construction; matching
 /// exhaustively means a new *variant* has to answer this. a new `-o` on an
@@ -368,7 +408,7 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                 match emitter.preview_schema(&inventory.schema).await {
                     Ok(Some(report)) => {
                         if !report.is_empty() {
-                            eprintln!("schema preview: {report}");
+                            eprintln!("schema preview: {}", schema_preview_summary(&report));
                             for (label, name) in report.named_changes(Tense::Would) {
                                 eprintln!("  {label} {name}");
                             }
