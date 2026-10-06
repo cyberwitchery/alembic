@@ -20,4 +20,4 @@ jobs:
       - name: Format
         run: cargo fmt --all -- --check
       - name: Test spec object v5 refs
-        run: cargo test -p alembic-engine spec_objects_can_reference_each_other_by_v5_expression
+        run: cargo test -p alembic-engine spec_object
