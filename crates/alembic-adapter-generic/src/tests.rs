@@ -1329,6 +1329,78 @@ async fn test_apply_update_of_an_object_created_in_the_same_write() {
 }
 
 #[tokio::test]
+async fn test_resumed_apply_updates_an_object_an_earlier_run_created() {
+    // the create of a deferred-ref pair is journaled as done and the update is
+    // still pending: the re-run must not create again, and the update must reach
+    // the object the first run made through the id the journal recorded.
+    let server = MockServer::start();
+    let create = server.mock(|when, then| {
+        when.method(POST).path("/api/devices");
+        then.status(201)
+            .header("content-type", "application/json")
+            .json_body(serde_json::json!({"id": 99, "name": "leaf01"}));
+    });
+    let update = server.mock(|when, then| {
+        when.method(PATCH).path("/api/devices/22");
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(serde_json::json!({"id": 22, "name": "leaf01"}));
+    });
+
+    let config = test_config(&server.base_url());
+    let adapter = GenericAdapter::new(config).unwrap();
+    let schema = test_schema();
+
+    let uid = Uid::new_v4();
+    let mut key = BTreeMap::new();
+    key.insert("name".to_string(), serde_json::json!("leaf01"));
+    let mut attrs = BTreeMap::new();
+    attrs.insert("name".to_string(), serde_json::json!("leaf01"));
+    let desired = alembic_core::Object {
+        uid,
+        type_name: TypeName::new("device".to_string()),
+        key: Key::from(key),
+        attrs: attrs.into(),
+        source: None,
+    };
+    let ops = vec![
+        Op::Create {
+            uid,
+            type_name: TypeName::new("device".to_string()),
+            desired: desired.clone(),
+        },
+        Op::Update {
+            uid,
+            type_name: TypeName::new("device".to_string()),
+            desired,
+            backend_id: None,
+            changes: vec![],
+        },
+    ];
+
+    // a fresh directory per run; the completed apply deletes the journal in it.
+    let dir = std::env::temp_dir().join(format!("alembic-generic-resume-{}", Uid::new_v4()));
+    let state = new_state_store().with_journal_dir(dir.clone());
+    let mut journal = alembic_adapter_sdk::journal::Journal::load_or_create(
+        &dir,
+        &state.journal_scope("generic"),
+        &ops,
+    )
+    .unwrap();
+    journal
+        .mark_op_as_done(&ops[0], Some(&BackendId::Int(22)))
+        .unwrap();
+    drop(journal);
+
+    let report = adapter.write(&schema, &ops, &state).await.unwrap();
+    create.assert_hits(0);
+    update.assert();
+    assert_eq!(report.applied.len(), 1);
+    assert_eq!(report.previously_applied_count, Some(1));
+    let _ = std::fs::remove_dir_all(&dir); // best-effort cleanup of the empty dir
+}
+
+#[tokio::test]
 async fn test_apply_update_put() {
     let server = MockServer::start();
     let mock = server.mock(|when, then| {
