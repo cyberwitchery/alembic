@@ -8,7 +8,7 @@ mod state;
 use alembic_adapter_registry::{create_backend, Plugin};
 use alembic_engine::{
     apply_plan, build_plan, guard_drift_report, guard_schema_provisioning, load_inventory,
-    load_inventory_unvalidated, plan_write_only, render_plan, Backend, DriftReport, Plan,
+    load_inventory_unvalidated, plan_write_only, render_plan, Backend, DriftReport, Effects, Plan,
     StateLock, StateStore,
 };
 use anyhow::{anyhow, Context, Result};
@@ -399,6 +399,11 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<ExitCode> {
                 .await?
             };
             plan.schema_preview = schema_preview;
+            plan.effects = match &backend {
+                Backend::Emitter(_) => Some(Effects::Emit),
+                Backend::Adapter(_) => Some(Effects::Drive),
+                Backend::Observer(_) => None,
+            };
             // identity memory changed: say so before anything persists it.
             print_bootstrap(&bootstrap);
             if report {
@@ -490,6 +495,7 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<ExitCode> {
                     ops: approved,
                     summary: None,
                     schema_preview: None,
+                    effects: plan.effects,
                 }
             } else {
                 plan
