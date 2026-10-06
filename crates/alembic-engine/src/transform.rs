@@ -897,12 +897,7 @@ fn resolve_spec_object_ref_value(
         FieldType::Map { value: inner } => {
             if let JsonValue::Object(entries) = value {
                 for (key, entry) in entries {
-                    resolve_spec_object_ref_value(
-                        inner,
-                        entry,
-                        ctx,
-                        &format!("{context}.{key}"),
-                    )?;
+                    resolve_spec_object_ref_value(inner, entry, ctx, &format!("{context}.{key}"))?;
                 }
             }
         }
