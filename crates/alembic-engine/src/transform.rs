@@ -841,8 +841,14 @@ fn render_spec_object_key(
             })?;
             JsonValue::String(resolve_uid_spec(&spec, ctx, &context)?.to_string())
         } else {
-            render_yaml_value(value, ctx, &context, false, crate::render::TransformedOutput::String)?
-                .ok_or_else(|| anyhow!("rule {}: missing value for {context}", ctx.rule))?
+            render_yaml_value(
+                value,
+                ctx,
+                &context,
+                false,
+                crate::render::TransformedOutput::String,
+            )?
+            .ok_or_else(|| anyhow!("rule {}: missing value for {context}", ctx.rule))?
         };
         rendered.insert(field.clone(), value);
     }
