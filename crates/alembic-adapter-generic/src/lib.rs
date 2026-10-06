@@ -259,7 +259,10 @@ impl GenericAdapter {
             .get(type_name.as_str())
             .ok_or_else(|| anyhow!("missing schema for {}", type_name))?;
 
-        let id = backend_id.ok_or_else(|| anyhow!("update requires backend id"))?;
+        // no backend id: the object was created earlier in this write
+        let id = backend_id
+            .or_else(|| resolved.get(&uid))
+            .ok_or_else(|| anyhow!("update requires backend id"))?;
         let url = self.backend_id_to_url(endpoint, id);
         let body = resolve_attrs(&desired.attrs, type_schema, resolved)?;
 

@@ -1272,6 +1272,63 @@ async fn test_apply_update_patch() {
 }
 
 #[tokio::test]
+async fn test_apply_update_of_an_object_created_in_the_same_write() {
+    // a create with a deferred ref is followed by an update of the same uid, which
+    // carries no backend id: it targets the object the create just made.
+    let server = MockServer::start();
+    let create = server.mock(|when, then| {
+        when.method(POST).path("/api/devices");
+        then.status(201)
+            .header("content-type", "application/json")
+            .json_body(serde_json::json!({"id": 22, "name": "leaf01"}));
+    });
+    let update = server.mock(|when, then| {
+        when.method(PATCH).path("/api/devices/22");
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(serde_json::json!({"id": 22, "name": "leaf01"}));
+    });
+
+    let config = test_config(&server.base_url());
+    let adapter = GenericAdapter::new(config).unwrap();
+    let schema = test_schema();
+
+    let uid = Uid::new_v4();
+    let mut key = BTreeMap::new();
+    key.insert("name".to_string(), serde_json::json!("leaf01"));
+    let mut attrs = BTreeMap::new();
+    attrs.insert("name".to_string(), serde_json::json!("leaf01"));
+    let desired = alembic_core::Object {
+        uid,
+        type_name: TypeName::new("device".to_string()),
+        key: Key::from(key),
+        attrs: attrs.into(),
+        source: None,
+    };
+
+    let ops = vec![
+        Op::Create {
+            uid,
+            type_name: TypeName::new("device".to_string()),
+            desired: desired.clone(),
+        },
+        Op::Update {
+            uid,
+            type_name: TypeName::new("device".to_string()),
+            desired,
+            backend_id: None,
+            changes: vec![],
+        },
+    ];
+
+    let state = new_state_store();
+    let report = adapter.write(&schema, &ops, &state).await.unwrap();
+    create.assert();
+    update.assert();
+    assert_eq!(report.applied.len(), 2);
+}
+
+#[tokio::test]
 async fn test_apply_update_put() {
     let server = MockServer::start();
     let mock = server.mock(|when, then| {

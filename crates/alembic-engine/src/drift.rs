@@ -8,8 +8,9 @@
 
 use crate::types::{Adoption, BootstrapReport, Plan, SupersededBinding};
 use alembic_adapter_sdk::{FieldChange, Op, ProvisionReport};
-use alembic_core::{key_string, Key, TypeName};
+use alembic_core::{key_string, Key, TypeName, Uid};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use std::fmt;
 
 /// an object present in both intent and backend, but with diverging fields.
@@ -74,8 +75,17 @@ impl DriftReport {
     /// backend/state, honoring the one-way invariant.
     pub fn from_plan(plan: &Plan) -> Self {
         let mut report = DriftReport::default();
+        // an update of a uid the plan also creates sets a ref the create deferred
+        // to break a cycle: the object is missing, and that is the whole drift.
+        let created: BTreeSet<Uid> = plan
+            .ops
+            .iter()
+            .filter(|op| matches!(op, Op::Create { .. }))
+            .map(Op::uid)
+            .collect();
         for op in &plan.ops {
             match op {
+                Op::Update { uid, .. } if created.contains(uid) => {}
                 Op::Update {
                     type_name,
                     desired,
@@ -296,6 +306,19 @@ mod tests {
         assert_eq!(entry.changes[0].field, "name");
         assert_eq!(entry.changes[0].from, json!("old"));
         assert_eq!(entry.changes[0].to, json!("new"));
+    }
+
+    #[test]
+    fn an_update_completing_a_create_is_not_drift_of_its_own() {
+        // a create with a deferred ref plans as a create plus an update of the
+        // same uid; the object is missing, not also changed.
+        let report = DriftReport::from_plan(&plan_with(vec![
+            create_op(1, "dcim.device", "leaf01"),
+            update_op(1, "dcim.device", "leaf01", vec![name_change()]),
+        ]));
+        assert_eq!(report.len(), 1);
+        assert_eq!(report.missing.len(), 1);
+        assert!(report.changed.is_empty());
     }
 
     #[test]
