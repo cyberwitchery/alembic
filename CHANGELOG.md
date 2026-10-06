@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **breaking** `plan --report` exits `2` when it finds drift and `0` when it finds none; an error still exits `1`
 - cli: `apply -p -` reads a json plan from stdin, so `plan --dry-run` can pipe directly into apply; `--interactive` with a stdin plan is rejected before backend setup (#442)
 - schema provisioning output names created fields, tags, object types and object fields; read-only `schema preview:` summaries say what would be created, updated, deprecated or deleted instead of using past tense (#478)
 - `skill list` prints a `name  summary` header over aligned columns instead of tab-separated lines, and `skill show` or `skill install` without a name names the skills the binary carries

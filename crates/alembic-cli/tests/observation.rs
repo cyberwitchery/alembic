@@ -161,7 +161,7 @@ fn unmanaged_twins_are_deletable_and_reportable() {
         .arg("--backend-config")
         .arg(&config);
     let output = command.output().unwrap();
-    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
     let out = String::from_utf8_lossy(&output.stdout);
     let extras = out.matches("dcim.site {\"slug\":\"dup\"}").count();
     assert_eq!(extras, 2, "both twins surface as extra: {out}");

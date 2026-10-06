@@ -15,6 +15,7 @@ use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::ExitCode;
 
 use self::io::{
     announce_written, read_plan, write_apply_report, write_drift_report, write_inventory,
@@ -103,7 +104,7 @@ enum Command {
         dry_run: bool,
         /// print a read-only drift report (desired vs observed) and exit without
         /// writing a plan file or saving state; --output writes the same report
-        /// to a file. mutually exclusive with --dry-run.
+        /// to a file. exits 2 on drift. mutually exclusive with --dry-run.
         #[arg(long, default_value_t = false, conflicts_with = "dry_run")]
         report: bool,
         /// allow the plan to include deletes (objects, and destructive schema
@@ -288,7 +289,7 @@ fn output_path(command: &Command) -> Option<&Path> {
     }
 }
 
-pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
+pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<ExitCode> {
     // before anything expensive: a command that writes an output file pays for a
     // load, a backend observation or an apply first, so a bad -o must not surface
     // at the write. the write path recreates what the probe removed.
@@ -411,6 +412,9 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                     write_drift_report(output, &drift)?;
                     println!();
                     announce_written(output, "drift report")?;
+                }
+                if !drift.is_empty() {
+                    return Ok(ExitCode::from(2));
                 }
             } else if dry_run {
                 let raw = serde_json::to_string_pretty(&plan)?;
@@ -588,7 +592,7 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
         },
     }
 
-    Ok(())
+    Ok(ExitCode::SUCCESS)
 }
 
 /// say what bootstrapping wrote into identity memory: adoptions bind a
