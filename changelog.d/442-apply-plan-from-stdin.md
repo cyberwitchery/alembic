@@ -1,0 +1,1 @@
+- cli: `apply -p -` reads a json plan from stdin, so `plan --dry-run` can pipe directly into apply; `--interactive` with a stdin plan is rejected before backend setup (#442)
