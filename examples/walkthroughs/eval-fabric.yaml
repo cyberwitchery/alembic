@@ -1,6 +1,7 @@
 # a trimmed vendor-neutral fabric for docs/case-studies/01-evaluate-dcim-systems.md:
-# one site, one device, one interface, one ip. the case study stands this same
-# model up into netbox and nautobot from one source of truth.
+# one site, one device with its role and type, one interface, one ip. the case
+# study stands this same model up into netbox and nautobot from one source of
+# truth.
 schema:
   types:
     dcim.site:
@@ -81,4 +82,5 @@ objects:
     type: dcim.device_role
     key: {slug: "leaf"}
     attrs:
+      name: "Leaf"
       slug: "leaf"
