@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- map: a ref-typed attr on an `objects:` entry accepts `{ v5: { type, stable } }`, so spec objects can reference each other without hand-computing the derived uuid; literal uuid refs are unchanged (#465)
 - cli: `apply -p -` reads a json plan from stdin, so `plan --dry-run` can pipe directly into apply; `--interactive` with a stdin plan is rejected before backend setup (#442)
 - schema provisioning output names created fields, tags, object types and object fields; read-only `schema preview:` summaries say what would be created, updated, deprecated or deleted instead of using past tense (#478)
 - `skill list` prints a `name  summary` header over aligned columns instead of tab-separated lines, and `skill show` or `skill install` without a name names the skills the binary carries
