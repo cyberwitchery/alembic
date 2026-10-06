@@ -368,7 +368,7 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                 match emitter.preview_schema(&inventory.schema).await {
                     Ok(Some(report)) => {
                         if !report.is_empty() {
-                            eprintln!("schema preview: {report}");
+                            eprintln!("schema preview: {}", report.summary(Tense::Would));
                             for (label, name) in report.named_changes(Tense::Would) {
                                 eprintln!("  {label} {name}");
                             }

@@ -212,29 +212,36 @@ impl ProvisionReport {
         self.deleted_object_fields.extend(deleted_object_fields);
     }
 
-    /// the changes a run made to schema it did not create, labelled for the
-    /// operator. a create is new, so its count is the whole story; everything
-    /// else reaches into state that was already there, so name what it wrote.
+    /// the schema changes a run made, labelled for the operator.
     pub fn named_changes(&self, tense: Tense) -> Vec<(&'static str, &str)> {
         // destructured without `..`, like the folds above: a category added later
         // has to answer whether it names what it touched.
         let ProvisionReport {
-            created_fields: _,
+            created_fields,
             updated_fields,
-            created_tags: _,
-            created_object_types: _,
-            created_object_fields: _,
+            created_tags,
+            created_object_types,
+            created_object_fields,
             updated_object_fields,
             deprecated_object_types,
             deprecated_object_fields,
             deleted_object_types,
             deleted_object_fields,
         } = self;
-        let (updated, deprecated, deleted) = match tense {
-            Tense::Past => ("updated", "deprecated", "deleted"),
-            Tense::Would => ("would update", "would deprecate", "would delete"),
+        let (created, updated, deprecated, deleted) = match tense {
+            Tense::Past => ("created", "updated", "deprecated", "deleted"),
+            Tense::Would => (
+                "would create",
+                "would update",
+                "would deprecate",
+                "would delete",
+            ),
         };
         [
+            (created, created_fields),
+            (created, created_tags),
+            (created, created_object_types),
+            (created, created_object_fields),
             (updated, updated_fields),
             (updated, updated_object_fields),
             (deprecated, deprecated_object_types),
@@ -245,6 +252,52 @@ impl ProvisionReport {
         .into_iter()
         .flat_map(|(label, names)| names.iter().map(move |name| (label, name.as_str())))
         .collect()
+    }
+
+    /// count summary for provisioning output, phrased for an applied run or a preview.
+    pub fn summary(&self, tense: Tense) -> String {
+        if self.is_empty() {
+            return "no schema changes".to_string();
+        }
+
+        let ProvisionReport {
+            created_fields,
+            updated_fields,
+            created_tags,
+            created_object_types,
+            created_object_fields,
+            updated_object_fields,
+            deprecated_object_types,
+            deprecated_object_fields,
+            deleted_object_types,
+            deleted_object_fields,
+        } = self;
+        let (created, updated, deprecated, deleted) = match tense {
+            Tense::Past => ("created", "updated", "deprecated", "deleted"),
+            Tense::Would => (
+                "would be created",
+                "would be updated",
+                "would be deprecated",
+                "would be deleted",
+            ),
+        };
+        [
+            ("fields", created_fields, created),
+            ("fields", updated_fields, updated),
+            ("tags", created_tags, created),
+            ("object types", created_object_types, created),
+            ("object fields", created_object_fields, created),
+            ("object fields", updated_object_fields, updated),
+            ("object types", deprecated_object_types, deprecated),
+            ("object fields", deprecated_object_fields, deprecated),
+            ("object types", deleted_object_types, deleted),
+            ("object fields", deleted_object_fields, deleted),
+        ]
+        .into_iter()
+        .filter(|(_, items, _)| !items.is_empty())
+        .map(|(kind, items, verb)| format!("{} {kind} {verb}", items.len()))
+        .collect::<Vec<_>>()
+        .join(", ")
     }
 
     pub fn is_empty(&self) -> bool {
@@ -275,53 +328,11 @@ impl ProvisionReport {
 
 impl fmt::Display for ProvisionReport {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.is_empty() {
-            return write!(f, "no schema changes");
-        }
-
-        let ProvisionReport {
-            created_fields,
-            updated_fields,
-            created_tags,
-            created_object_types,
-            created_object_fields,
-            updated_object_fields,
-            deprecated_object_types,
-            deprecated_object_fields,
-            deleted_object_types,
-            deleted_object_fields,
-        } = self;
-
-        let mut first = true;
-        let sections: &[(&str, &[String])] = &[
-            ("fields created", created_fields),
-            ("fields updated", updated_fields),
-            ("tags created", created_tags),
-            ("object types created", created_object_types),
-            ("object fields created", created_object_fields),
-            ("object fields updated", updated_object_fields),
-            ("object types deprecated", deprecated_object_types),
-            ("object fields deprecated", deprecated_object_fields),
-            ("object types deleted", deleted_object_types),
-            ("object fields deleted", deleted_object_fields),
-        ];
-
-        for (label, items) in sections {
-            if items.is_empty() {
-                continue;
-            }
-            if !first {
-                write!(f, ", ")?;
-            }
-            write!(f, "{} {label}", items.len())?;
-            first = false;
-        }
-
-        Ok(())
+        write!(f, "{}", self.summary(Tense::Past))
     }
 }
 
-/// how `named_changes` words a change: what a run did, or what a preview says
+/// how provisioning output words a change: what a run did, or what a preview says
 /// it would do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tense {
@@ -383,7 +394,7 @@ mod tests {
         let err = serde_json::from_str::<Op>(
             r#"{"op":"create","uid":"11111111-1111-1111-1111-111111111111","type_name":"device","desired":{"uid":"11111111-1111-1111-1111-111111111111","type":"device","key":{},"attrs":{}},"backend_id":"7"}"#,
         )
-            .unwrap_err();
+        .unwrap_err();
         assert!(err.to_string().contains("backend_id"), "{err}");
     }
 
@@ -392,7 +403,7 @@ mod tests {
         let op: Op = serde_json::from_str(
             r#"{"op":"delete","uid":"11111111-1111-1111-1111-111111111111","type_name":"device","key":{}}"#,
         )
-            .unwrap();
+        .unwrap();
         assert!(matches!(
             op,
             Op::Delete {
@@ -411,7 +422,7 @@ mod tests {
     }
 
     #[test]
-    fn named_changes_names_every_write_to_pre_existing_schema() {
+    fn named_changes_names_every_schema_change() {
         // one entry per category, so a category dropped from the classification
         // shows up as a missing pair rather than passing on a count.
         let report = ProvisionReport {
@@ -427,10 +438,13 @@ mod tests {
             deleted_object_fields: vec!["dcim.relic.age".to_string()],
         };
 
-        // the four create categories are counted by Display and named nowhere.
         assert_eq!(
             report.named_changes(Tense::Past),
             [
+                ("created", "site.tier"),
+                ("created", "managed"),
+                ("created", "dcim.widget"),
+                ("created", "dcim.widget.size"),
                 ("updated", "site.owner"),
                 ("updated", "dcim.widget.color"),
                 ("deprecated", "dcim.gadget"),
@@ -442,6 +456,10 @@ mod tests {
         assert_eq!(
             report.named_changes(Tense::Would),
             [
+                ("would create", "site.tier"),
+                ("would create", "managed"),
+                ("would create", "dcim.widget"),
+                ("would create", "dcim.widget.size"),
                 ("would update", "site.owner"),
                 ("would update", "dcim.widget.color"),
                 ("would deprecate", "dcim.gadget"),
@@ -455,7 +473,33 @@ mod tests {
             created_object_types: vec!["dcim.widget".to_string()],
             ..Default::default()
         };
-        assert!(creates_only.named_changes(Tense::Past).is_empty());
+        assert_eq!(
+            creates_only.named_changes(Tense::Past),
+            [("created", "dcim.widget")]
+        );
+    }
+
+    #[test]
+    fn provision_summary_respects_tense() {
+        let report = ProvisionReport {
+            updated_fields: vec!["site.owner".to_string()],
+            created_object_types: vec!["dcim.widget".to_string()],
+            ..Default::default()
+        };
+
+        assert_eq!(
+            report.summary(Tense::Past),
+            "1 fields updated, 1 object types created"
+        );
+        assert_eq!(
+            report.summary(Tense::Would),
+            "1 fields would be updated, 1 object types would be created"
+        );
+        assert_eq!(report.to_string(), report.summary(Tense::Past));
+        assert_eq!(
+            ProvisionReport::default().summary(Tense::Would),
+            "no schema changes"
+        );
     }
 
     #[test]
