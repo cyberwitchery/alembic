@@ -252,9 +252,13 @@ alembic apply -p plan.json \
 alembic apply -p plan.json -o apply-report.json \
   --backend-config examples/backend-infrahub.yaml \
   --allow-delete
+
+alembic plan -f examples/inventory.yaml --dry-run \
+  --backend-config examples/backend-netbox.yaml | \
+  alembic apply -p - --backend-config examples/backend-netbox.yaml
 ```
 
-- applies a plan file
+- applies a plan file; `-p -` reads a json plan from stdin, matching the json emitted by `plan --dry-run`
 - an applied update re-asserts every declared field of its object, not only the changes the plan listed: a backend edit to a declared field between plan and apply is converged back, and approving an update under `--interactive` approves that full write. undeclared fields stay untouched (`docs/engine.md`, diff rules)
 - deletes are blocked unless `--allow-delete` is provided; this covers both object deletes and destructive schema provisioning (deleting custom object types/fields the inventory no longer declares, which cascades to their objects)
 - `--interactive` prompts per operation and applies only approved ops
@@ -262,7 +266,9 @@ alembic apply -p plan.json -o apply-report.json \
   from stdin per operation, so scripted answers work (`printf 'y\nn\ny\n' |
   alembic apply -i ...`); if stdin ends before every operation has been answered
   the run returns an error naming that operation, rather than declining the rest
-  on your behalf. drop `--interactive` to apply the whole plan
+  on your behalf. because `-p -` already consumes stdin for the plan, it cannot
+  be combined with `--interactive`; that combination is rejected before backend
+  setup. drop `--interactive` to apply the whole plan
 - the `peeringdb` backend is read-only; apply will return an error
 - apply runs adapter provisioning (`ensure_schema`) before writes on any backend
   that can write, read+write or write-only; for netbox this can create custom
