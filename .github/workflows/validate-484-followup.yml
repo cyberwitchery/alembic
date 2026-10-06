@@ -1,0 +1,25 @@
+name: validate-484-followup
+
+on:
+  push:
+    branches: ["scratch/484-followup-validate"]
+
+permissions:
+  contents: read
+
+jobs:
+  fmt-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # v1
+        with:
+          toolchain: stable
+          components: rustfmt
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Build test adapter
+        run: cargo build -p alembic-cli --example applied_ops_adapter
+      - name: Test stdin apply path
+        run: cargo test -p alembic-cli --test apply_stdin
