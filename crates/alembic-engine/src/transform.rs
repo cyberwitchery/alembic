@@ -574,8 +574,8 @@ pub fn compile_map(input: &Inventory, spec: &MapSpec) -> Result<Inventory> {
         rule: "objects",
     };
     for object in &spec.objects {
-        let key = render_key(&object.key, &ctx)?;
         let type_name = TypeName::new(render_template(&object.type_name, &ctx, "type")?);
+        let key = render_spec_object_key(&type_name, &object.key, &spec.schema, &ctx)?;
         let uid = resolve_emit_uid(&object.uid, &ctx, type_name.as_str(), &key, None)?;
         let mut attrs = render_attrs(&object.attrs, &ctx, "attrs")?;
         resolve_spec_object_refs(&type_name, &mut attrs, &spec.schema, &ctx)?;
@@ -815,8 +815,42 @@ fn resolve_uid_spec(spec: &EmitUid, ctx: &RenderCtx, context: &str) -> Result<Ui
     }
 }
 
-/// resolve `v5: {type, stable}` expressions carried by ref-typed attrs on
-/// top-level `objects:` entries. unlike ordinary rule attrs, these have no
+/// render a top-level `objects:` key, resolving a `v5: {type, stable}`
+/// expression before the ordinary scalar key renderer sees it when the schema
+/// declares that key field as a ref. key fields cannot contain composite types,
+/// so ref is the only reference-bearing case here.
+fn render_spec_object_key(
+    type_name: &TypeName,
+    key: &BTreeMap<String, YamlValue>,
+    schema: &Schema,
+    ctx: &RenderCtx,
+) -> Result<Key> {
+    let Some(type_schema) = schema.types.get(type_name.as_str()) else {
+        return render_key(key, ctx);
+    };
+    let mut rendered = BTreeMap::new();
+    for (field, value) in key {
+        let context = format!("key.{field}");
+        let value = if matches!(
+            type_schema.key.get(field).map(|schema| &schema.r#type),
+            Some(FieldType::Ref { .. })
+        ) && matches!(value, YamlValue::Mapping(_))
+        {
+            let spec: EmitUid = serde_yaml::from_value(value.clone()).with_context(|| {
+                format!("rule {}: invalid uid expression in {context}", ctx.rule)
+            })?;
+            JsonValue::String(resolve_uid_spec(&spec, ctx, &context)?.to_string())
+        } else {
+            render_yaml_value(value, ctx, &context, false, crate::render::TransformedOutput::String)?
+                .ok_or_else(|| anyhow!("rule {}: missing value for {context}", ctx.rule))?
+        };
+        rendered.insert(field.clone(), value);
+    }
+    Ok(Key::from(rendered))
+}
+
+/// resolve `v5: {type, stable}` expressions carried by reference-typed attrs
+/// on top-level `objects:` entries. unlike ordinary rule attrs, these have no
 /// source vars to name; the expression gives two spec objects a shared way to
 /// spell the same uid without precomputing the uuid by hand. interpretation is
 /// schema-aware so a json field containing a literal `{"v5": ...}` object is
@@ -3668,6 +3702,148 @@ objects:
             device_type.attrs.get("manufacturer").unwrap(),
             &json!(manufacturer.uid.to_string())
         );
+    }
+
+    #[test]
+    fn a_spec_object_ref_key_accepts_a_v5_expression() {
+        let out = compile_map(
+            &input_inventory(json!([])),
+            &spec(
+                r#"
+schema:
+  types:
+    dcim.device:
+      key:
+        name: { type: slug }
+    dcim.interface:
+      key:
+        device: { type: ref, target: dcim.device }
+        name: { type: string }
+objects:
+  - type: dcim.device
+    key: { name: leaf01 }
+    uid: { v5: { type: dcim.device, stable: leaf01 } }
+  - type: dcim.interface
+    key:
+      device: { v5: { type: dcim.device, stable: leaf01 } }
+      name: eth0
+    uid: { v5: { type: dcim.interface, stable: leaf01:eth0 } }
+"#,
+            ),
+        )
+        .unwrap();
+
+        let device = out
+            .objects
+            .iter()
+            .find(|o| o.type_name.as_str() == "dcim.device")
+            .unwrap();
+        let interface = out
+            .objects
+            .iter()
+            .find(|o| o.type_name.as_str() == "dcim.interface")
+            .unwrap();
+        assert_eq!(
+            interface.key.get("device").unwrap(),
+            &json!(device.uid.to_string())
+        );
+    }
+
+    #[test]
+    fn spec_object_nested_reference_fields_accept_v5_expressions() {
+        let out = compile_map(
+            &input_inventory(json!([])),
+            &spec(
+                r#"
+schema:
+  types:
+    extras.status:
+      key:
+        name: { type: string }
+    catalog.bundle:
+      key:
+        name: { type: string }
+      fields:
+        statuses: { type: list_ref, target: extras.status }
+        ordered:
+          type: list
+          item: { type: ref, target: extras.status }
+        named:
+          type: map
+          value: { type: ref, target: extras.status }
+objects:
+  - type: extras.status
+    key: { name: Active }
+    uid: { v5: { type: extras.status, stable: active } }
+  - type: catalog.bundle
+    key: { name: default }
+    attrs:
+      statuses:
+        - { v5: { type: extras.status, stable: active } }
+      ordered:
+        - { v5: { type: extras.status, stable: active } }
+      named:
+        primary: { v5: { type: extras.status, stable: active } }
+    uid: { v5: { type: catalog.bundle, stable: default } }
+"#,
+            ),
+        )
+        .unwrap();
+
+        let status = out
+            .objects
+            .iter()
+            .find(|o| o.type_name.as_str() == "extras.status")
+            .unwrap();
+        let bundle = out
+            .objects
+            .iter()
+            .find(|o| o.type_name.as_str() == "catalog.bundle")
+            .unwrap();
+        let uid = status.uid.to_string();
+        assert_eq!(bundle.attrs.get("statuses").unwrap(), &json!([uid.clone()]));
+        assert_eq!(bundle.attrs.get("ordered").unwrap(), &json!([uid.clone()]));
+        assert_eq!(
+            bundle.attrs.get("named").unwrap(),
+            &json!({ "primary": uid })
+        );
+    }
+
+    #[test]
+    fn invalid_spec_object_ref_expression_names_the_field() {
+        let err = compile_map(
+            &input_inventory(json!([])),
+            &spec(
+                r#"
+schema:
+  types:
+    dcim.manufacturer:
+      key:
+        slug: { type: slug }
+    dcim.device_type:
+      key:
+        slug: { type: slug }
+      fields:
+        manufacturer: { type: ref, target: dcim.manufacturer }
+objects:
+  - type: dcim.manufacturer
+    key: { slug: nokia }
+    uid: { v5: { type: dcim.manufacturer, stable: nokia } }
+  - type: dcim.device_type
+    key: { slug: srlinux }
+    attrs:
+      manufacturer: { v5: { type: dcim.manufacturer, stabel: nokia } }
+    uid: { v5: { type: dcim.device_type, stable: srlinux } }
+"#,
+            ),
+        )
+        .unwrap_err();
+        let message = format!("{err:#}");
+        assert!(
+            message.contains("invalid uid expression in attrs.manufacturer"),
+            "{message}"
+        );
+        assert!(message.contains("stabel"), "{message}");
     }
 
     #[test]
