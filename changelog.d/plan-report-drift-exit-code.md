@@ -1,0 +1,1 @@
+- **breaking** `plan --report` exits `2` when it finds drift and `0` when it finds none; an error still exits `1`
