@@ -131,6 +131,27 @@ holds literal values. it needs a `uid:`, since rules reach it only through a uid
 they can spell: a `v5:` pair both sides derive the same way, as above, or a
 literal uuid. its type must be in the target `schema`, like any emit's.
 
+two `objects:` entries can reference each other without hand-deriving that uuid:
+on a schema-declared `ref` (or nested ref) attr, the same
+`{ v5: { type, stable } }` expression is resolved to the uid string before the
+output inventory is validated. literal uuid ref values keep working. the
+interpretation is ref-typed only, so a `json` attr whose value happens to contain
+a `v5` key stays ordinary json:
+
+```yaml
+objects:
+  - type: dcim.manufacturer
+    key: { slug: nokia }
+    attrs: { name: Nokia }
+    uid: { v5: { type: dcim.manufacturer, stable: nokia } }
+  - type: dcim.device_type
+    key: { slug: srlinux }
+    attrs:
+      model: SR Linux
+      manufacturer: { v5: { type: dcim.manufacturer, stable: nokia } }
+    uid: { v5: { type: dcim.device_type, stable: srlinux } }
+```
+
 ## vars
 
 an emit's templates draw on a fixed set of vars derived from the matched source
