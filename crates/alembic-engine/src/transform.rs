@@ -840,12 +840,7 @@ fn resolve_spec_object_refs(
             // output validation reports undeclared attrs.
             continue;
         };
-        resolve_spec_object_ref_value(
-            &field_schema.r#type,
-            value,
-            ctx,
-            &format!("attrs.{field}"),
-        )?;
+        resolve_spec_object_ref_value(&field_schema.r#type, value, ctx, &format!("attrs.{field}"))?;
     }
     Ok(())
 }
