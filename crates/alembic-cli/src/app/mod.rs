@@ -5,7 +5,14 @@ mod io;
 mod skill;
 mod state;
 
+use self::io::{
+    announce_written, read_plan, write_apply_report, write_drift_report, write_inventory,
+    write_plan, write_validation_report,
+};
+use self::state::load_state;
+use crate::app::config::AppConfig;
 use alembic_adapter_registry::{create_backend, Plugin};
+use alembic_core::TypeName;
 use alembic_engine::{
     apply_plan, build_plan, guard_drift_report, guard_schema_provisioning, load_inventory,
     load_inventory_unvalidated, plan_write_only, render_plan, Backend, DriftReport, Plan,
@@ -15,14 +22,7 @@ use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
 use std::fs;
 use std::path::{Path, PathBuf};
-
-use self::io::{
-    announce_written, read_plan, write_apply_report, write_drift_report, write_inventory,
-    write_plan, write_validation_report,
-};
-use self::state::load_state;
-use crate::app::config::AppConfig;
-use alembic_core::TypeName;
+use std::process::ExitCode;
 
 #[cfg(test)]
 use self::state::{resolve_state_backend_config, state_path, StateBackendConfig};
@@ -286,7 +286,7 @@ fn output_path(command: &Command) -> Option<&Path> {
     }
 }
 
-pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
+pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<ExitCode> {
     // before anything expensive: a command that writes an output file pays for a
     // load, a backend observation or an apply first, so a bad -o must not surface
     // at the write. the write path recreates what the probe removed.
@@ -409,6 +409,9 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                     write_drift_report(output, &drift)?;
                     println!();
                     announce_written(output, "drift report")?;
+                }
+                if !drift.is_empty() {
+                    return Ok(ExitCode::from(2));
                 }
             } else if dry_run {
                 let raw = serde_json::to_string_pretty(&plan)?;
@@ -581,7 +584,7 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
         },
     }
 
-    Ok(())
+    Ok(ExitCode::SUCCESS)
 }
 
 /// say what bootstrapping wrote into identity memory: adoptions bind a
