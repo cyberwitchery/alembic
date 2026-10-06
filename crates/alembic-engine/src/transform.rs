@@ -828,31 +828,20 @@ fn render_spec_object_key(
     let Some(type_schema) = schema.types.get(type_name.as_str()) else {
         return render_key(key, ctx);
     };
-    let mut rendered = BTreeMap::new();
-    for (field, value) in key {
-        let context = format!("key.{field}");
-        let value = if matches!(
-            type_schema.key.get(field).map(|schema| &schema.r#type),
-            Some(FieldType::Ref { .. })
-        ) && matches!(value, YamlValue::Mapping(_))
-        {
-            let spec: EmitUid = serde_yaml::from_value(value.clone()).with_context(|| {
-                format!("rule {}: invalid uid expression in {context}", ctx.rule)
-            })?;
-            JsonValue::String(resolve_uid_spec(&spec, ctx, &context)?.to_string())
-        } else {
-            crate::render::render_yaml_value(
-                value,
-                ctx,
-                &context,
-                false,
-                crate::render::TransformedOutput::String,
-            )?
-            .ok_or_else(|| anyhow!("rule {}: missing value for {context}", ctx.rule))?
+    let mut resolved = key.clone();
+    for (field, field_schema) in &type_schema.key {
+        if !matches!(field_schema.r#type, FieldType::Ref { .. }) {
+            continue;
+        }
+        let Some(value @ YamlValue::Mapping(_)) = resolved.get_mut(field) else {
+            continue;
         };
-        rendered.insert(field.clone(), value);
+        let context = format!("key.{field}");
+        let spec: EmitUid = serde_yaml::from_value(value.clone())
+            .with_context(|| format!("rule {}: invalid uid expression in {context}", ctx.rule))?;
+        *value = YamlValue::String(resolve_uid_spec(&spec, ctx, &context)?.to_string());
     }
-    Ok(Key::from(rendered))
+    render_key(&resolved, ctx)
 }
 
 /// resolve `v5: {type, stable}` expressions carried by reference-typed attrs
