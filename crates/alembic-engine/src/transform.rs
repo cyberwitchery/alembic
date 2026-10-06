@@ -815,10 +815,7 @@ fn resolve_uid_spec(spec: &EmitUid, ctx: &RenderCtx, context: &str) -> Result<Ui
     }
 }
 
-/// render a top-level `objects:` key, resolving a `v5: {type, stable}`
-/// expression before the ordinary scalar key renderer sees it when the schema
-/// declares that key field as a ref. key fields cannot contain composite types,
-/// so ref is the only reference-bearing case here.
+/// render an `objects:` key, resolving `v5:` expressions in its ref fields first.
 fn render_spec_object_key(
     type_name: &TypeName,
     key: &BTreeMap<String, YamlValue>,
@@ -828,6 +825,7 @@ fn render_spec_object_key(
     let Some(type_schema) = schema.types.get(type_name.as_str()) else {
         return render_key(key, ctx);
     };
+    // a key field is a scalar, so a plain ref is the only reference it can hold.
     let mut resolved = key.clone();
     for (field, field_schema) in &type_schema.key {
         if !matches!(field_schema.r#type, FieldType::Ref { .. }) {
@@ -844,12 +842,7 @@ fn render_spec_object_key(
     render_key(&resolved, ctx)
 }
 
-/// resolve `v5: {type, stable}` expressions carried by reference-typed attrs
-/// on top-level `objects:` entries. unlike ordinary rule attrs, these have no
-/// source vars to name; the expression gives two spec objects a shared way to
-/// spell the same uid without precomputing the uuid by hand. interpretation is
-/// schema-aware so a json field containing a literal `{"v5": ...}` object is
-/// left alone.
+/// resolve `v5:` expressions in an `objects:` entry's ref-typed attrs.
 fn resolve_spec_object_refs(
     type_name: &TypeName,
     attrs: &mut serde_json::Map<String, JsonValue>,
@@ -860,6 +853,9 @@ fn resolve_spec_object_refs(
         // output validation reports an undeclared type after all emits are built.
         return Ok(());
     };
+    // an entry has no source vars, so this is how two entries spell a shared uid.
+    // only ref-typed fields are read this way: a json attr holding a `v5` key
+    // stays json.
     for (field, value) in attrs {
         let Some(field_schema) = type_schema
             .fields
