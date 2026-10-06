@@ -67,7 +67,6 @@ dependencies = [
  "graphql-parser",
  "httpmock",
  "infrahub",
- "reqwest 0.13.5",
  "serde",
  "serde_json",
  "serde_yaml_ng",
@@ -2044,9 +2043,9 @@ dependencies = [
 
 [[package]]
 name = "infrahub"
-version = "0.4.4"
+version = "0.4.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4173af1dae97bac1e5d9115a928f978ea3534ba74ec3335c39f90920254695e9"
+checksum = "b5adf4080942123a4e4807dd38515b55d0c4859f919b8eb743ddd4f020b53412"
 dependencies = [
  "graphql-parser",
  "reqwest 0.13.5",
