@@ -841,7 +841,7 @@ fn render_spec_object_key(
             })?;
             JsonValue::String(resolve_uid_spec(&spec, ctx, &context)?.to_string())
         } else {
-            render_yaml_value(
+            crate::render::render_yaml_value(
                 value,
                 ctx,
                 &context,
