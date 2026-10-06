@@ -259,7 +259,8 @@ impl GenericAdapter {
             .get(type_name.as_str())
             .ok_or_else(|| anyhow!("missing schema for {}", type_name))?;
 
-        // no backend id: the object was created earlier in this write
+        // an update without a backend id follows a create of the same object in this
+        // write (a ref deferred to break a cycle), so the id is the one it just got
         let id = backend_id
             .or_else(|| resolved.get(&uid))
             .ok_or_else(|| anyhow!("update requires backend id"))?;
