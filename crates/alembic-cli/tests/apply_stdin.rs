@@ -15,7 +15,10 @@ fn backend_config(dir: &Path) -> PathBuf {
     std::fs::write(
         &config,
         format!(
-            "backend: external\\ncommand: \\"{}\\"\\ntimeout_seconds: 5\\n",
+            r#"backend: external
+command: "{}"
+timeout_seconds: 5
+"#,
             example_binary("applied_ops_adapter").display()
         ),
     )
