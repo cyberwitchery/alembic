@@ -120,8 +120,8 @@ rules:
       attrs:
         model: "${attrs.model}"
         manufacturer: "${attrs.manufacturer}"
-  # the device's `site` relation becomes `location`; the 1:1 rules above let
-  # map rewire each ref from the old uid to the new one.
+  # the device's `site` relation becomes `location`; each 1:1 rule above keeps
+  # its source uid, so the device's refs stay valid.
   - name: devices
     match: dcim.device
     emit:

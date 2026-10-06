@@ -143,9 +143,10 @@ source object models that type, so the location reaches it by deriving the same
 `v5` uid. the `Active` status is nautobot's own: declared by key alone, plan
 adopts it rather than creating one, and its literal uid lets both the rules and
 the prefix, which renders with no vars, point at it. the device's `site`
-relation becomes `location`. the site, role and type rules are 1:1, so map
-rewires the device's relations to the renamed objects. the ip rule emits two objects, so it names
-each uid: the ip keeps its own, and the link derives one from it. the ip names
+relation becomes `location`. the site, role and type rules are 1:1 and keep
+their source uids, so the device's refs stay valid. the ip rule emits two
+objects, so it names each uid: the ip keeps its own, and the link derives one
+from it. the ip names
 the prefix as its `parent`, reached through the prefix's `v5` uid.
 
 ```bash
