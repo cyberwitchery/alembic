@@ -863,8 +863,9 @@ fn resolve_spec_object_ref_value(
                 // output validation.
                 return Ok(());
             };
-            let spec: EmitUid = serde_json::from_value(value.clone())
-                .with_context(|| format!("rule {}: invalid uid expression in {context}", ctx.rule))?;
+            let spec: EmitUid = serde_json::from_value(value.clone()).with_context(|| {
+                format!("rule {}: invalid uid expression in {context}", ctx.rule)
+            })?;
             let uid = resolve_uid_spec(&spec, ctx, context)?;
             *value = JsonValue::String(uid.to_string());
         }
