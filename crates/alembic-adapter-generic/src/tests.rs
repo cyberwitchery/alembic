@@ -1393,7 +1393,7 @@ async fn test_resumed_apply_updates_an_object_an_earlier_run_created() {
     drop(journal);
 
     let report = adapter.write(&schema, &ops, &state).await.unwrap();
-    create.assert_hits(0);
+    create.assert_calls(0);
     update.assert();
     assert_eq!(report.applied.len(), 1);
     assert_eq!(report.previously_applied_count, Some(1));
