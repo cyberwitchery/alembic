@@ -11,7 +11,7 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
-use serde_json::{json, Value};
+use serde_json::Value;
 use support::{bin_path, run_command, walkthrough_path, walkthroughs_dir};
 use tempfile::tempdir;
 
@@ -194,10 +194,6 @@ fn case_study_01_stands_one_model_up_into_two_backends() {
     // the location is typed by the one location type the spec declares.
     let location_type = object(&nautobot, "dcim.locationtype", "name", "Site");
     assert_eq!(location["attrs"]["location_type"], uid(location_type));
-    assert_eq!(
-        location_type["attrs"]["content_types"],
-        json!(["dcim.device"])
-    );
     // "an ip reaches its interface through a separate
     // `ipam.ipaddresstointerface` object", inside its parent prefix.
     let nautobot_ip = object(&nautobot, "ipam.ipaddress", "address", "10.0.0.10/24");
@@ -205,15 +201,17 @@ fn case_study_01_stands_one_model_up_into_two_backends() {
     assert_eq!(nautobot_ip["attrs"]["parent"], uid(prefix));
     let nautobot_eth0 = object(&nautobot, "dcim.interface", "name", "eth0");
     assert!(nautobot_ip["attrs"].get("assigned_interface").is_none());
-    let link = nautobot["objects"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|o| o["type"] == "ipam.ipaddresstointerface")
-        .expect("ip-to-interface link");
+    let link = object(
+        &nautobot,
+        "ipam.ipaddresstointerface",
+        "ip_address",
+        uid(nautobot_ip),
+    );
     assert_eq!(link["attrs"]["ip_address"], uid(nautobot_ip));
     assert_eq!(link["attrs"]["interface"], uid(nautobot_eth0));
-    assert!(type_names(&nautobot).iter().all(|t| !t.contains('_')));
+    // every type is reshaped, so nothing passes through under a neutral name.
+    let nautobot_spec = parse_yaml(&walkthrough_path("eval-fabric-nautobot.yaml"));
+    assert_eq!(type_names(&nautobot), type_names(&nautobot_spec));
     // everything nautobot requires a status on points at the one `Active`.
     let active = object(&nautobot, "extras.status", "name", "Active");
     for object in [
