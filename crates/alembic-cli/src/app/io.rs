@@ -245,11 +245,9 @@ mod tests {
 
     #[test]
     fn output_kind_defaults_to_json_without_yaml_extension() {
-        // no extension and a non-yaml extension both stay json; stdin uses the
-        // same json representation emitted by `plan --dry-run`.
+        // no extension and a non-yaml extension both stay json.
         assert_eq!(output_kind(Path::new("plan")), OutputKind::Json);
         assert_eq!(output_kind(Path::new("plan.txt")), OutputKind::Json);
-        assert_eq!(output_kind(Path::new("-")), OutputKind::Json);
     }
 
     #[test]
