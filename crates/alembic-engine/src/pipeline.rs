@@ -48,8 +48,33 @@ pub(crate) async fn observe(
     };
     crate::refs::refuse_backend_id_refs(&observed, &inventory.schema)?;
 
-    let bootstrap =
+    // refs to an object unbound at read time carry the uid its key derives.
+    // adoption binds declared uids, so point those refs at them, and adopt again
+    // while that re-keys objects: a ref-keyed child only matches its declared key
+    // once its parent's ref does.
+    let read_uids = crate::refs::read_uids(&observed, state);
+    let mut observed = observed;
+    let mut bootstrap =
         crate::bootstrap_state_from_observed(state, &inventory.objects, &observed, adopt_by_key)?;
+    loop {
+        let (rebound, keys_changed) =
+            crate::refs::rebind_adopted_refs(observed, &read_uids, &inventory.schema, state)?;
+        observed = rebound;
+        if !keys_changed {
+            break;
+        }
+        let more = crate::bootstrap_state_from_observed(
+            state,
+            &inventory.objects,
+            &observed,
+            adopt_by_key,
+        )?;
+        if more.adoptions.is_empty() {
+            break;
+        }
+        bootstrap.adoptions.extend(more.adoptions);
+        bootstrap.superseded.extend(more.superseded);
+    }
     Ok((observed, bootstrap))
 }
 
