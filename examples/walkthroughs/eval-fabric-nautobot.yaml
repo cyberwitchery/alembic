@@ -1,28 +1,127 @@
 # nautobot map for docs/case-studies/01-evaluate-dcim-systems.md.
 # nautobot 2.x models a site as `dcim.location` keyed by its human name (no slug),
-# and a device points at `location`, not `site`. the interface and ip pass
-# through under their neutral names.
+# typed by a `dcim.locationtype` that allows devices, and a device points at
+# `location`, not `site`. a device role is a generic `extras.role`, and
+# manufacturers and device types are keyed by name and model. an ip is
+# `ipam.ipaddress`, tied to its interface by a separate
+# `ipam.ipaddresstointerface` object, and needs a parent prefix. locations,
+# devices, interfaces, prefixes and ips all carry nautobot's `Active` status.
 schema:
   types:
+    extras.status:
+      key: {name: {type: string}}
+    dcim.locationtype:
+      key: {name: {type: string}}
+      fields:
+        name: {type: string}
+        content_types: {type: json}
     dcim.location:
       key: {name: {type: string}}
+      fields:
+        name: {type: string}
+        location_type: {type: ref, target: dcim.locationtype}
+        status: {type: ref, target: extras.status}
+    extras.role:
+      key: {name: {type: string}}
+      fields:
+        name: {type: string}
+        content_types: {type: json}
+    dcim.manufacturer:
+      key: {name: {type: string}}
       fields: {name: {type: string}}
+    dcim.devicetype:
+      key: {model: {type: string}}
+      fields:
+        model: {type: string}
+        manufacturer: {type: ref, target: dcim.manufacturer}
     dcim.device:
       key: {name: {type: slug}}
       fields:
         name: {type: slug}
         location: {type: ref, target: dcim.location}
-        role: {type: string}
+        role: {type: ref, target: extras.role}
+        device_type: {type: ref, target: dcim.devicetype}
+        status: {type: ref, target: extras.status}
+    dcim.interface:
+      key:
+        device: {type: ref, target: dcim.device}
+        name: {type: slug}
+      fields:
+        name: {type: slug}
+        device: {type: ref, target: dcim.device}
+        type: {type: string}
+        status: {type: ref, target: extras.status}
+    ipam.prefix:
+      key: {prefix: {type: prefix}}
+      fields:
+        prefix: {type: prefix}
+        status: {type: ref, target: extras.status}
+    ipam.ipaddress:
+      key: {address: {type: ip_address}}
+      fields:
+        address: {type: ip_address}
+        status: {type: ref, target: extras.status}
+        parent: {type: ref, target: ipam.prefix}
+    ipam.ipaddresstointerface:
+      key:
+        ip_address: {type: ref, target: ipam.ipaddress}
+        interface: {type: ref, target: dcim.interface}
+      fields:
+        ip_address: {type: ref, target: ipam.ipaddress}
+        interface: {type: ref, target: dcim.interface}
+objects:
+  # nautobot ships an `Active` status; declaring only its key adopts it as is.
+  # the uid is literal so the prefix below, which renders with no vars, can
+  # reach it as well as the rules.
+  - type: extras.status
+    key: {name: Active}
+    uid: "3915bcde-33d3-4332-9930-9e3684a9d859"
+  # no source object models the location type; every location shares this one.
+  - type: dcim.locationtype
+    key: {name: Site}
+    attrs: {name: Site, content_types: ["dcim.device"]}
+    uid: {v5: {type: dcim.locationtype, stable: site}}
+  # the ip's parent, in nautobot's default `Global` namespace.
+  - type: ipam.prefix
+    key: {prefix: "10.0.0.0/24"}
+    attrs: {prefix: "10.0.0.0/24", status: "3915bcde-33d3-4332-9930-9e3684a9d859"}
+    uid: {v5: {type: ipam.prefix, stable: "10.0.0.0/24"}}
 rules:
   # site -> location: nautobot keys a location by its human name, not a slug.
   - name: sites-to-locations
     match: dcim.site
+    uids:
+      location_type: {v5: {type: dcim.locationtype, stable: site}}
     emit:
       type: dcim.location
       key: {name: "${attrs.name}"}
+      attrs:
+        name: "${attrs.name}"
+        location_type: "${uids.location_type}"
+        status: "3915bcde-33d3-4332-9930-9e3684a9d859"
+  # device role -> extras.role, scoped to devices.
+  - name: device-roles-to-roles
+    match: dcim.device_role
+    emit:
+      type: extras.role
+      key: {name: "${attrs.name}"}
+      attrs: {name: "${attrs.name}", content_types: ["dcim.device"]}
+  - name: manufacturers
+    match: dcim.manufacturer
+    emit:
+      type: dcim.manufacturer
+      key: {name: "${attrs.name}"}
       attrs: {name: "${attrs.name}"}
-  # the device's `site` relation becomes `location`; the 1:1 site rule above lets
-  # map rewire the ref from the old site uid to the new location uid.
+  - name: device-types
+    match: dcim.device_type
+    emit:
+      type: dcim.devicetype
+      key: {model: "${attrs.model}"}
+      attrs:
+        model: "${attrs.model}"
+        manufacturer: "${attrs.manufacturer}"
+  # the device's `site` relation becomes `location`; the 1:1 rules above let
+  # map rewire each ref from the old uid to the new one.
   - name: devices
     match: dcim.device
     emit:
@@ -32,7 +131,33 @@ rules:
         name: "${attrs.name}"
         location: "${attrs.site}"
         role: "${attrs.role}"
-  # interface and ip pass through under their neutral names.
-  - name: rest
-    match: "*"
-    emit: passthrough
+        device_type: "${attrs.device_type}"
+        status: "3915bcde-33d3-4332-9930-9e3684a9d859"
+  - name: interfaces
+    match: dcim.interface
+    emit:
+      type: dcim.interface
+      key: {device: "${key.device}", name: "${key.name}"}
+      attrs:
+        name: "${attrs.name}"
+        device: "${attrs.device}"
+        type: "${attrs.type}"
+        status: "3915bcde-33d3-4332-9930-9e3684a9d859"
+  # the ip keeps its identity, sits under the declared prefix, and its interface
+  # assignment becomes a link object.
+  - name: ip-addresses
+    match: ipam.ip_address
+    uids:
+      parent: {v5: {type: ipam.prefix, stable: "10.0.0.0/24"}}
+    emit:
+      - type: ipam.ipaddress
+        uid: "${uid}"
+        key: {address: "${key.address}"}
+        attrs:
+          address: "${attrs.address}"
+          status: "3915bcde-33d3-4332-9930-9e3684a9d859"
+          parent: "${uids.parent}"
+      - type: ipam.ipaddresstointerface
+        uid: {v5: {type: ipam.ipaddresstointerface, stable: "${uid}#interface"}}
+        key: {ip_address: "${uid}", interface: "${attrs.assigned_interface}"}
+        attrs: {ip_address: "${uid}", interface: "${attrs.assigned_interface}"}
