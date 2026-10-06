@@ -80,6 +80,7 @@ fn build_plan(num_devices: u128) -> Result<Plan> {
         ops,
         summary: None,
         schema_preview: None,
+        effects: None,
     })
 }
 
