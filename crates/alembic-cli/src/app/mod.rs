@@ -53,7 +53,7 @@ File formats are chosen by file extension:
     and map --output), and the apply report (apply --output) are written as YAML
     to a .yaml or .yml path and as JSON to anything else.
   - apply --plan reads a plan by the same rule: YAML from a .yaml or .yml path,
-    JSON otherwise.")]
+    JSON otherwise; pass - to read a JSON plan from stdin.")]
 pub(crate) struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -121,7 +121,8 @@ enum Command {
     },
     /// apply a plan to a backend (the only command that writes).
     Apply {
-        /// plan file produced by `alembic plan` (yaml or json by extension).
+        /// plan file produced by `alembic plan` (yaml or json by extension);
+        /// pass `-` to read a json plan from stdin.
         #[arg(short = 'p', long)]
         plan: PathBuf,
         /// where to write the apply report (uid -> backend id per applied
@@ -137,7 +138,8 @@ enum Command {
         /// allow delete ops (object and destructive schema deletes) in the plan.
         #[arg(long, default_value_t = false)]
         allow_delete: bool,
-        /// prompt for confirmation per operation, applying only approved ops.
+        /// prompt for confirmation per operation, applying only approved ops;
+        /// cannot be combined with `--plan -`, since stdin carries the plan.
         #[arg(short = 'i', long, default_value_t = false)]
         interactive: bool,
     },
@@ -369,7 +371,7 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<ExitCode> {
                 match emitter.preview_schema(&inventory.schema).await {
                     Ok(Some(report)) => {
                         if !report.is_empty() {
-                            eprintln!("schema preview: {report}");
+                            eprintln!("schema preview: {}", report.summary(Tense::Would));
                             for (label, name) in report.named_changes(Tense::Would) {
                                 eprintln!("  {label} {name}");
                             }
@@ -438,6 +440,11 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<ExitCode> {
             allow_delete,
             interactive,
         } => {
+            if interactive && plan == Path::new("-") {
+                return Err(anyhow!(
+                    "--interactive cannot be used with --plan -: stdin is already used for the plan"
+                ));
+            }
             let plugins = search_for_plugins(&config)?;
             let (backend, backend_identity) =
                 create_backend(&plugins, backend.as_deref(), backend_config)?;
