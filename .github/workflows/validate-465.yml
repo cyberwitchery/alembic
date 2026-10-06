@@ -1,0 +1,23 @@
+name: validate-465
+
+on:
+  push:
+    branches: ["scratch/465-validate"]
+
+permissions:
+  contents: read
+
+jobs:
+  fmt-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # v1
+        with:
+          toolchain: stable
+          components: rustfmt
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Test spec object v5 refs
+        run: cargo test -p alembic-engine spec_objects_can_reference_each_other_by_v5_expression
