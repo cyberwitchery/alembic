@@ -1,3 +1,5 @@
+use alembic_adapter_sdk::external::ExternalResponse;
+use alembic_adapter_sdk::{ApplyReport, ExternalCapabilities, ExternalObject, ProvisionReport};
 use alembic_adapter_test::{
     load_cases, run_builtin, run_builtin_with, run_cases, Builtins, Case, Expect, Outcome,
 };
@@ -604,7 +606,7 @@ fn version_mismatch_follows_the_declared_role() {
 
 #[test]
 fn version_mismatch_uses_the_next_protocol_version() {
-    use alembic_engine::EXTERNAL_PROTOCOL_VERSION;
+    use alembic_adapter_sdk::external::EXTERNAL_PROTOCOL_VERSION;
     // this adapter answers ok only to EXTERNAL_PROTOCOL_VERSION + 1, so the must-error
     // check fails iff the runner sent exactly that valid-but-unsupported version (and
     // not a hardcoded, u8-overflowing 999, which this adapter would have rejected).
@@ -719,9 +721,6 @@ fn case_result_pinned_against_null_reported() {
 // real envelope and payload types. nothing else loads them, so guard them here.
 #[test]
 fn fixtures_match_the_protocol_types() {
-    use alembic_engine::{
-        ApplyReport, ExternalCapabilities, ExternalObject, ExternalResponse, ProvisionReport,
-    };
     use serde_json::Value;
 
     let dir = PathBuf::from(concat!(

@@ -13,6 +13,7 @@ members = [
     "crates/alembic-adapter-django",
     "crates/alembic-adapter-test",
     "crates/alembic-file-generator",
+    "crates/alembic-adapter-sdk",
 ]
 
 [workspace.package]
@@ -23,15 +24,16 @@ repository = "https://github.com/cyberwitchery/alembic"
 homepage = "https://github.com/cyberwitchery/alembic"
 
 [workspace.dependencies]
-alembic-core = { version = "0.9.0", path = "crates/alembic-core" }
-alembic-engine = { version = "0.9.0", path = "crates/alembic-engine" }
-alembic-adapter-registry = { version = "0.9.0", path = "crates/alembic-adapter-registry" }
-alembic-adapter-netbox = { version = "0.9.0", path = "crates/alembic-adapter-netbox" }
-alembic-adapter-nautobot = { version = "0.9.0", path = "crates/alembic-adapter-nautobot" }
-alembic-adapter-infrahub = { version = "0.9.0", path = "crates/alembic-adapter-infrahub" }
-alembic-adapter-generic = { version = "0.9.0", path = "crates/alembic-adapter-generic" }
-alembic-adapter-peeringdb = { version = "0.9.0", path = "crates/alembic-adapter-peeringdb" }
-alembic-adapter-django = { version = "0.9.0", path = "crates/alembic-adapter-django" }
+alembic-core = { version = "0.10.0", path = "crates/alembic-core" }
+alembic-adapter-sdk = { version = "0.10.0", path = "crates/alembic-adapter-sdk" }
+alembic-engine = { version = "0.10.0", path = "crates/alembic-engine" }
+alembic-adapter-registry = { version = "0.10.0", path = "crates/alembic-adapter-registry" }
+alembic-adapter-netbox = { version = "0.10.0", path = "crates/alembic-adapter-netbox" }
+alembic-adapter-nautobot = { version = "0.10.0", path = "crates/alembic-adapter-nautobot" }
+alembic-adapter-infrahub = { version = "0.10.0", path = "crates/alembic-adapter-infrahub" }
+alembic-adapter-generic = { version = "0.10.0", path = "crates/alembic-adapter-generic" }
+alembic-adapter-peeringdb = { version = "0.10.0", path = "crates/alembic-adapter-peeringdb" }
+alembic-adapter-django = { version = "0.10.0", path = "crates/alembic-adapter-django" }
 anyhow = "1"
 async-trait = "0.1"
 clap = { version = "4", features = ["derive"] }
@@ -42,8 +44,8 @@ starlark = { version = "0.14.2", default-features = false }
 thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 uuid = { version = "1", features = ["serde", "v4", "v5"] }
-netbox = "0.8.0"
-nautobot = "0.5.0"
+netbox = "0.9.0"
+nautobot = "0.8.0"
 infrahub = "0.4.0"
 reqwest = { version = "0.13", features = ["json"] }
 regex = "1"

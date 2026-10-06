@@ -1,7 +1,8 @@
 //! generate files for testing (a huge plan.json or inventory.json)
 
+use alembic_adapter_sdk::Op;
 use alembic_core::{key_string, uid_v5, Inventory, JsonMap, Key, Object, Schema, TypeName, Uid};
-use alembic_engine::{Op, Plan};
+use alembic_engine::Plan;
 use anyhow::{Context, Result};
 use clap::{Parser, ValueEnum};
 use serde_json::{json, Value};

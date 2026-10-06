@@ -90,6 +90,10 @@ pub struct MapSpec {
     pub schema: Schema,
     #[serde(default)]
     pub rules: Vec<MapRule>,
+    /// objects the target needs that no source object models, emitted once
+    /// each; rules reference them through the uid they declare.
+    #[serde(default)]
+    pub objects: Vec<MapEmit>,
     /// user-defined starlark transforms, consulted by `${var|name}` pipelines
     /// before the built-ins (requires the `starlark` feature).
     #[serde(default)]
@@ -386,6 +390,17 @@ struct Emitted {
 /// identity to inherit, and a one-element list stays in the explicit regime so
 /// reshaping `emit:` into a list cannot silently change identity.
 fn validate_emit_identity(spec: &MapSpec) -> Result<()> {
+    // a spec object has no source to inherit from, and rules can only reach it
+    // through a uid they can spell.
+    for (index, object) in spec.objects.iter().enumerate() {
+        if object.uid.is_none() {
+            return Err(anyhow!(
+                "objects: entry {} ({}) has no uid:; declare one (e.g. a `v5:` pair) so rules can reference it",
+                index + 1,
+                object.type_name
+            ));
+        }
+    }
     for rule in &spec.rules {
         let EmitSpec::Multi(emits) = &rule.emit else {
             continue;
@@ -548,6 +563,26 @@ pub fn compile_map(input: &Inventory, spec: &MapSpec) -> Result<Inventory> {
                 uid_from_key: false,
             });
         }
+    }
+
+    // spec objects: rendered without source vars, so a template in one fails
+    // naming the var it reached for.
+    let no_vars = BTreeMap::new();
+    let ctx = RenderCtx {
+        vars: &no_vars,
+        transforms: &run.transforms,
+        rule: "objects",
+    };
+    for object in &spec.objects {
+        let key = render_key(&object.key, &ctx)?;
+        let type_name = TypeName::new(render_template(&object.type_name, &ctx, "type")?);
+        let uid = resolve_emit_uid(&object.uid, &ctx, type_name.as_str(), &key, None)?;
+        let attrs = render_attrs(&object.attrs, &ctx, "attrs")?;
+        let attrs = JsonMap::from(attrs.into_iter().collect::<BTreeMap<_, _>>());
+        emitted.push(Emitted {
+            object: Object::new(uid, type_name, key, attrs)?,
+            uid_from_key: matches!(object.uid, Some(EmitUid::Target)),
+        });
     }
 
     // the output schema is the target schema, plus the source schema for every
@@ -3410,5 +3445,160 @@ rules:
                 .contains("`target` is only meaningful as an emit's uid:"),
             "{err:#}"
         );
+    }
+
+    const STATUS_SPEC: &str = r#"
+schema:
+  types:
+    extras.status:
+      key:
+        name: { type: string }
+    dcim.location:
+      key:
+        name: { type: string }
+      fields:
+        status: { type: ref, target: extras.status }
+objects:
+  - type: extras.status
+    key: { name: Active }
+    uid: { v5: { type: extras.status, stable: active } }
+  - type: extras.status
+    key: { name: Planned }
+    uid: { v5: { type: extras.status, stable: planned } }
+rules:
+  - name: sites
+    match: dcim.site
+    uids:
+      status: { v5: { type: extras.status, stable: "${attrs.status}" } }
+    emit:
+      type: dcim.location
+      key: { name: "${key.slug}" }
+      attrs: { status: "${uids.status}" }
+"#;
+
+    fn two_sites() -> Inventory {
+        input_inventory(json!([
+            { "uid": Uuid::from_u128(1).to_string(), "type": "dcim.site",
+              "key": { "slug": "fra1" }, "attrs": { "status": "active" } },
+            { "uid": Uuid::from_u128(2).to_string(), "type": "dcim.site",
+              "key": { "slug": "ber1" }, "attrs": { "status": "active" } }
+        ]))
+    }
+
+    #[test]
+    fn spec_objects_are_emitted_once_and_referenced_by_rules() {
+        // two sites share one status object the source does not model; the
+        // spec declares it once and both locations reference it.
+        let out = compile_map(&two_sites(), &spec(STATUS_SPEC)).unwrap();
+        let statuses: Vec<_> = out
+            .objects
+            .iter()
+            .filter(|o| o.type_name.as_str() == "extras.status")
+            .collect();
+        assert_eq!(statuses.len(), 2);
+        let active = uid_v5("extras.status", "active");
+        assert!(statuses.iter().any(|o| o.uid == active));
+        for location in out
+            .objects
+            .iter()
+            .filter(|o| o.type_name.as_str() == "dcim.location")
+        {
+            assert_eq!(
+                location.attrs.get("status").unwrap(),
+                &json!(active.to_string())
+            );
+        }
+    }
+
+    #[test]
+    fn spec_objects_are_emitted_with_no_matching_source() {
+        let out = compile_map(&input_inventory(json!([])), &spec(STATUS_SPEC)).unwrap();
+        assert_eq!(out.objects.len(), 2);
+    }
+
+    #[test]
+    fn a_spec_object_needs_a_uid() {
+        let err = compile_map(
+            &input_inventory(json!([])),
+            &spec(
+                r#"
+schema:
+  types:
+    extras.status:
+      key:
+        name: { type: string }
+objects:
+  - type: extras.status
+    key: { name: Active }
+"#,
+            ),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("uid"), "{err}");
+    }
+
+    #[test]
+    fn a_spec_object_has_no_source_vars() {
+        let err = compile_map(
+            &input_inventory(json!([])),
+            &spec(
+                r#"
+schema:
+  types:
+    extras.status:
+      key:
+        name: { type: string }
+objects:
+  - type: extras.status
+    key: { name: "${key.name}" }
+    uid: { v5: { type: extras.status, stable: x } }
+"#,
+            ),
+        )
+        .unwrap_err();
+        assert!(format!("{err:#}").contains("key.name"), "{err:#}");
+    }
+
+    #[test]
+    fn a_spec_object_colliding_with_a_rule_emit_fails_validation() {
+        let err = compile_map(
+            &two_sites(),
+            &spec(
+                r#"
+schema:
+  types:
+    dcim.location:
+      key:
+        name: { type: string }
+objects:
+  - type: dcim.location
+    key: { name: fra1 }
+    uid: { v5: { type: dcim.location, stable: fra1 } }
+rules:
+  - name: sites
+    match: dcim.site
+    emit:
+      type: dcim.location
+      key: { name: "${key.slug}" }
+"#,
+            ),
+        )
+        .unwrap_err();
+        assert!(format!("{err:#}").contains("duplicate key"), "{err:#}");
+    }
+
+    #[test]
+    fn rejects_an_unknown_key_in_a_spec_object() {
+        let err = spec_err(
+            r#"
+objects:
+  - type: extras.status
+    key: { name: Active }
+    uid: target
+    atrs: {}
+"#,
+        );
+        assert!(err.contains("atrs"), "{err}");
     }
 }

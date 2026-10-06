@@ -6,14 +6,17 @@ use super::mapping::{
 use super::registry::ObjectTypeRegistry;
 use super::state::{resolved_from_state, state_mappings};
 use super::NautobotAdapter;
+use alembic_adapter_sdk::apply_retry::{
+    describe_missing_refs, is_missing_ref_error, RetryApplyDriver,
+};
+use alembic_adapter_sdk::{AppliedOp, ApplyReport, BackendId, Op, ProvisionReport};
 use alembic_core::{
     key_string, FieldSchema, FieldType, JsonMap, Key, Schema, TypeName, TypeSchema, Uid,
 };
 use alembic_engine::{
-    apply_non_delete_journaled, build_key_from_schema, collect_tag_names, describe_missing_refs,
-    is_missing_ref_error, query_filters_from_key, resolve_nested_ref_uid,
-    resolve_ref_keyed_identity, Adapter, AppliedOp, ApplyReport, BackendId, Emitter, ObservedState,
-    Observer, Op, ProvisionReport, RawNode, RetryApplyDriver,
+    apply_non_delete_journaled, build_key_from_schema, collect_tag_names, query_filters_from_key,
+    resolve_nested_ref_uid, resolve_ref_keyed_identity, Adapter, Emitter, ObservedState, Observer,
+    RawNode,
 };
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
@@ -30,6 +33,52 @@ impl Observer for NautobotAdapter {
         types: &[TypeName],
         state_store: &alembic_engine::StateStore,
     ) -> Result<ObservedState> {
+        self.read_listing(schema, types, state_store, false).await
+    }
+
+    async fn read_bound(
+        &self,
+        schema: &Schema,
+        types: &[TypeName],
+        state_store: &alembic_engine::StateStore,
+    ) -> Result<ObservedState> {
+        self.read_listing(schema, types, state_store, true).await
+    }
+}
+
+/// the nautobot uuids bound in state for one type. an empty vec means the type
+/// has no bindings and can be skipped. `None` means at least one binding is not
+/// a uuid, so the caller must fall back to the full listing.
+fn bound_uuids(
+    state_store: &alembic_engine::StateStore,
+    type_name: &TypeName,
+) -> Option<Vec<String>> {
+    let Some(bound) = state_store.backend_ids().get(type_name) else {
+        return Some(Vec::new());
+    };
+    bound
+        .keys()
+        .map(|id| match id {
+            BackendId::String(id) => Some(id.clone()),
+            BackendId::Int(_) => None,
+        })
+        .collect()
+}
+
+/// nautobot reads repeated `id` params as an OR, so one query covers a chunk.
+fn query_for_ids(ids: &[String]) -> QueryBuilder {
+    ids.iter()
+        .fold(QueryBuilder::new(), |query, id| query.filter("id", id))
+}
+
+impl NautobotAdapter {
+    async fn read_listing(
+        &self,
+        schema: &Schema,
+        types: &[TypeName],
+        state_store: &alembic_engine::StateStore,
+        bound_only: bool,
+    ) -> Result<ObservedState> {
         let registry: ObjectTypeRegistry = self.client.fetch_object_types().await?;
         let mut mappings = state_mappings(state_store);
 
@@ -44,21 +93,47 @@ impl Observer for NautobotAdapter {
             types.iter().cloned().collect()
         };
 
-        let mut tasks = Vec::new();
+        let mut checked = Vec::new();
         for type_name in requested {
             let info = registry
                 .info_for(&type_name)
-                .ok_or_else(|| anyhow!("unsupported type {}", type_name))?
-                .clone();
-            schema
+                .ok_or_else(|| anyhow!("unsupported type {}", type_name))?;
+            let type_schema = schema
                 .types
                 .get(type_name.as_str())
                 .ok_or_else(|| anyhow!("missing schema for {}", type_name))?;
+            checked.push((type_name, info, type_schema));
+        }
+        check_declared_refs(self, &checked).await?;
+
+        let mut tasks = Vec::new();
+        for (type_name, info, _) in checked {
+            // An unbound type cannot affect this run, so skip its listing.
+            let bound = bound_only
+                .then(|| bound_uuids(state_store, &type_name))
+                .flatten();
+            if bound.as_ref().is_some_and(|ids| ids.is_empty()) {
+                continue;
+            }
             let client = Arc::clone(&self.client);
 
             tasks.push(tokio::spawn(async move {
                 let resource: Resource<Value> = client.resource(info.endpoint.clone());
-                let objects = client.list_all(&resource, None).await?;
+                let objects = match &bound {
+                    Some(ids) => {
+                        const CHUNK: usize = 100;
+                        let mut objects = Vec::new();
+                        for chunk in ids.chunks(CHUNK) {
+                            objects.extend(
+                                client
+                                    .list_all(&resource, Some(query_for_ids(chunk)))
+                                    .await?,
+                            );
+                        }
+                        objects
+                    }
+                    None => client.list_all(&resource, None).await?,
+                };
                 let mut raw = Vec::new();
                 for object in objects {
                     let (backend_id, attrs) = extract_attrs(object)?;
@@ -152,6 +227,8 @@ impl Emitter for NautobotAdapter {
 
         #[async_trait]
         impl RetryApplyDriver for ApplyDriver<'_> {
+            type Error = anyhow::Error;
+
             async fn apply_non_delete(&mut self, op: &Op) -> Result<AppliedOp> {
                 match op {
                     Op::Create { .. } => self
@@ -189,7 +266,7 @@ impl Emitter for NautobotAdapter {
             }
 
             fn is_retryable(&self, err: &anyhow::Error) -> bool {
-                is_missing_ref_error(err)
+                is_missing_ref_error(err.as_ref())
             }
 
             fn resume(&mut self, resumed: &[AppliedOp]) {
@@ -1126,6 +1203,15 @@ async fn native_fields_for_type(
         native.insert(field.to_string());
     }
 
+    // what a create accepts, from the endpoint's own metadata: this holds on
+    // an endpoint with no objects yet, where a sample below has nothing to show.
+    if let Some(fields) = adapter.client.create_accepts(&info.endpoint).await {
+        native.extend(fields);
+    } else {
+        // an older server or a proxy can refuse OPTIONS; the sample still counts.
+        tracing::debug!(endpoint = %info.endpoint, "no OPTIONS metadata");
+    }
+
     let resource: Resource<Value> = adapter.client.resource(info.endpoint.clone());
     let page = resource
         .list(Some(QueryBuilder::default().limit(1)))
@@ -1137,6 +1223,71 @@ async fn native_fields_for_type(
     }
 
     Ok(native)
+}
+
+/// fail on a declared ref a type has neither as a field nor as a custom field:
+/// nautobot ignores unknown keys on write, so it would be dropped and diff
+/// forever. each endpoint's OPTIONS is read concurrently, and the custom fields
+/// once, only when some ref is missing from its endpoint. without OPTIONS
+/// metadata a type's fields are unknown and nothing is judged. plain fields are
+/// not checked here: `ensure_schema` provisions a missing one as a custom field
+/// on a type that takes them.
+async fn check_declared_refs(
+    adapter: &NautobotAdapter,
+    types: &[(TypeName, super::registry::ObjectTypeInfo, &TypeSchema)],
+) -> Result<()> {
+    let unaccepted = futures::future::join_all(types.iter().map(
+        |(type_name, info, type_schema)| async move {
+            let declared_refs: Vec<&String> = type_schema
+                .fields
+                .iter()
+                .filter(|(_, field)| {
+                    matches!(
+                        field.r#type,
+                        FieldType::Ref { .. } | FieldType::ListRef { .. }
+                    )
+                })
+                .map(|(name, _)| name)
+                .collect();
+            if declared_refs.is_empty() {
+                return None;
+            }
+            let fields = adapter.client.create_accepts(&info.endpoint).await?;
+            let unknown: Vec<&String> = declared_refs
+                .into_iter()
+                .filter(|name| !fields.contains(*name))
+                .collect();
+            (!unknown.is_empty()).then_some((type_name, unknown, fields))
+        },
+    ))
+    .await;
+    let unaccepted: Vec<_> = unaccepted.into_iter().flatten().collect();
+    if unaccepted.is_empty() {
+        return Ok(());
+    }
+
+    let custom_fields = adapter.client.fetch_custom_fields().await?;
+    for (type_name, unknown, fields) in unaccepted {
+        let custom = custom_fields.get(type_name.as_str());
+        let missing: Vec<&str> = unknown
+            .into_iter()
+            .filter(|name| !custom.is_some_and(|custom| custom.contains(*name)))
+            .map(String::as_str)
+            .collect();
+        if missing.is_empty() {
+            continue;
+        }
+        return Err(anyhow!(
+            "{type_name} has no field {}: nautobot would drop it on write. its fields are {}",
+            missing.join(", "),
+            fields
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    Ok(())
 }
 
 fn is_404_error(err: &nautobot::Error) -> bool {
@@ -1904,6 +2055,289 @@ mod tests {
 
         assert!(!created);
         choices.assert_calls(0);
+    }
+
+    // an endpoint with no objects yet still names its fields: nautobot's
+    // OPTIONS metadata lists what a create accepts, so a native field such as a
+    // location type's `content_types` is never provisioned as a custom field.
+    #[tokio::test]
+    async fn test_native_fields_come_from_options_on_an_empty_endpoint() {
+        use httpmock::Method::{GET, OPTIONS};
+        use httpmock::MockServer;
+
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/api/dcim/location-types/");
+            then.status(200).json_body(json!({
+                "count": 0, "next": null, "previous": null, "results": [],
+            }));
+        });
+        server.mock(|when, then| {
+            when.method(OPTIONS).path("/api/dcim/location-types/");
+            then.status(200).json_body(json!({
+                "name": "Location Type List",
+                "actions": { "POST": {
+                    "name": {}, "content_types": {}, "nestable": {}, "parent": {},
+                } },
+            }));
+        });
+
+        let adapter = NautobotAdapter::new(&server.base_url(), "token").unwrap();
+        let info = super::super::registry::ObjectTypeInfo {
+            type_name: TypeName::new("dcim.locationtype"),
+            endpoint: "dcim/location-types/".to_string(),
+            features: BTreeSet::new(),
+        };
+        let type_schema = TypeSchema {
+            key: BTreeMap::new(),
+            fields: BTreeMap::new(),
+        };
+        let native = native_fields_for_type(&adapter, &info, &type_schema)
+            .await
+            .unwrap();
+        assert!(native.contains("content_types"), "{native:?}");
+        assert!(native.contains("nestable"), "{native:?}");
+    }
+
+    // without OPTIONS metadata (an older server, a proxy that refuses the
+    // method), a sample object's fields are still read.
+    #[tokio::test]
+    async fn test_native_fields_fall_back_to_a_sample_object() {
+        use httpmock::Method::GET;
+        use httpmock::MockServer;
+
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/api/dcim/location-types/");
+            then.status(200).json_body(json!({
+                "count": 1, "next": null, "previous": null,
+                "results": [{ "id": "1", "name": "Site", "content_types": [] }],
+            }));
+        });
+
+        let adapter = NautobotAdapter::new(&server.base_url(), "token").unwrap();
+        let info = super::super::registry::ObjectTypeInfo {
+            type_name: TypeName::new("dcim.locationtype"),
+            endpoint: "dcim/location-types/".to_string(),
+            features: BTreeSet::new(),
+        };
+        let type_schema = TypeSchema {
+            key: BTreeMap::new(),
+            fields: BTreeMap::new(),
+        };
+        let native = native_fields_for_type(&adapter, &info, &type_schema)
+            .await
+            .unwrap();
+        assert!(native.contains("content_types"), "{native:?}");
+    }
+
+    // a minimal field, like mod.rs `field()` but scoped to these tests.
+    fn ref_field(target: TypeName) -> FieldSchema {
+        FieldSchema {
+            r#type: FieldType::Ref {
+                target: target.to_string(),
+            },
+            required: true,
+            nullable: false,
+            description: None,
+            format: None,
+            pattern: None,
+        }
+    }
+
+    // a type declaring one ref, `field`, at `endpoint`.
+    fn ref_declaring(
+        type_name: &str,
+        endpoint: &str,
+        field: &str,
+    ) -> (super::super::registry::ObjectTypeInfo, TypeSchema) {
+        let info = super::super::registry::ObjectTypeInfo {
+            type_name: TypeName::new(type_name),
+            endpoint: endpoint.to_string(),
+            features: BTreeSet::new(),
+        };
+        let type_schema = TypeSchema {
+            key: BTreeMap::new(),
+            fields: BTreeMap::from([(field.to_string(), ref_field(TypeName::new(type_name)))]),
+        };
+        (info, type_schema)
+    }
+
+    // the custom-fields list, each `(key, content type)` one field.
+    fn mock_custom_fields<'a>(
+        server: &'a httpmock::MockServer,
+        fields: &[(&str, &str)],
+    ) -> httpmock::Mock<'a> {
+        let results: Vec<Value> = fields
+            .iter()
+            .enumerate()
+            .map(|(i, (key, content_type))| {
+                json!({
+                    "id": format!("44444444-4444-4444-4444-44444444444{i}"),
+                    "key": key,
+                    "label": key,
+                    "content_types": [content_type],
+                    "type": { "value": "text" },
+                })
+            })
+            .collect();
+        server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/api/extras/custom-fields/");
+            then.status(200).json_body(json!({
+                "count": results.len(), "next": null, "previous": null, "results": results,
+            }));
+        })
+    }
+
+    // an endpoint whose create accepts `fields`.
+    fn mock_options(server: &httpmock::MockServer, path: &str, fields: &[&str]) {
+        let post: Map<String, Value> = fields
+            .iter()
+            .map(|field| ((*field).to_string(), json!({})))
+            .collect();
+        server.mock(|when, then| {
+            when.method(httpmock::Method::OPTIONS).path(path);
+            then.status(200)
+                .json_body(json!({ "actions": { "POST": post } }));
+        });
+    }
+
+    // a declared ref the type's OPTIONS metadata lists is accepted, without
+    // reading the custom fields.
+    #[tokio::test]
+    async fn check_declared_refs_passes_a_ref_the_endpoint_accepts() {
+        let server = httpmock::MockServer::start();
+        let custom_fields = mock_custom_fields(&server, &[]);
+        mock_options(&server, "/api/dcim/location-types/", &["name", "parent"]);
+
+        let adapter = NautobotAdapter::new(&server.base_url(), "token").unwrap();
+        let (info, type_schema) =
+            ref_declaring("dcim.locationtype", "dcim/location-types/", "parent");
+        check_declared_refs(
+            &adapter,
+            &[(TypeName::new("dcim.locationtype"), info, &type_schema)],
+        )
+        .await
+        .unwrap();
+        custom_fields.assert_calls(0);
+    }
+
+    // a declared ref the endpoint does not accept and that no custom field holds is
+    // refused with its name: it would be dropped on write and diff forever.
+    #[tokio::test]
+    async fn check_declared_refs_refuses_a_ref_the_endpoint_does_not_have() {
+        let server = httpmock::MockServer::start();
+        mock_custom_fields(&server, &[]);
+        mock_options(&server, "/api/dcim/location-types/", &["name"]);
+
+        let adapter = NautobotAdapter::new(&server.base_url(), "token").unwrap();
+        let (info, type_schema) =
+            ref_declaring("dcim.locationtype", "dcim/location-types/", "parent");
+        let err = check_declared_refs(
+            &adapter,
+            &[(TypeName::new("dcim.locationtype"), info, &type_schema)],
+        )
+        .await
+        .unwrap_err();
+        let message = format!("{err:#}");
+        assert!(message.contains("has no field parent"), "{message}");
+    }
+
+    // a ref the endpoint does not accept but a custom field on the type holds is
+    // written there, so it passes.
+    #[tokio::test]
+    async fn check_declared_refs_passes_a_ref_a_custom_field_holds() {
+        let server = httpmock::MockServer::start();
+        mock_custom_fields(&server, &[("parent", "dcim.locationtype")]);
+        mock_options(&server, "/api/dcim/location-types/", &["name"]);
+
+        let adapter = NautobotAdapter::new(&server.base_url(), "token").unwrap();
+        let (info, type_schema) =
+            ref_declaring("dcim.locationtype", "dcim/location-types/", "parent");
+        check_declared_refs(
+            &adapter,
+            &[(TypeName::new("dcim.locationtype"), info, &type_schema)],
+        )
+        .await
+        .unwrap();
+    }
+
+    // a custom field of that name on another type does not hold the ref.
+    #[tokio::test]
+    async fn check_declared_refs_refuses_a_ref_another_types_custom_field_holds() {
+        let server = httpmock::MockServer::start();
+        mock_custom_fields(&server, &[("parent", "dcim.location")]);
+        mock_options(&server, "/api/dcim/location-types/", &["name"]);
+
+        let adapter = NautobotAdapter::new(&server.base_url(), "token").unwrap();
+        let (info, type_schema) =
+            ref_declaring("dcim.locationtype", "dcim/location-types/", "parent");
+        let err = check_declared_refs(
+            &adapter,
+            &[(TypeName::new("dcim.locationtype"), info, &type_schema)],
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            format!("{err:#}").contains("has no field parent"),
+            "{err:#}"
+        );
+    }
+
+    // a server refusing OPTIONS leaves the fields unknown, so nothing is judged.
+    #[tokio::test]
+    async fn check_declared_refs_judges_nothing_without_options() {
+        let server = httpmock::MockServer::start();
+        let custom_fields = mock_custom_fields(&server, &[]);
+        server.mock(|when, then| {
+            when.method(httpmock::Method::OPTIONS)
+                .path("/api/dcim/location-types/");
+            then.status(405);
+        });
+
+        let adapter = NautobotAdapter::new(&server.base_url(), "token").unwrap();
+        let (info, type_schema) =
+            ref_declaring("dcim.locationtype", "dcim/location-types/", "parent");
+        check_declared_refs(
+            &adapter,
+            &[(TypeName::new("dcim.locationtype"), info, &type_schema)],
+        )
+        .await
+        .unwrap();
+        custom_fields.assert_calls(0);
+    }
+
+    // however many types need them, the custom fields are listed once.
+    #[tokio::test]
+    async fn check_declared_refs_lists_custom_fields_once() {
+        let server = httpmock::MockServer::start();
+        let custom_fields = mock_custom_fields(
+            &server,
+            &[("parent", "dcim.locationtype"), ("owner", "dcim.location")],
+        );
+        mock_options(&server, "/api/dcim/location-types/", &["name"]);
+        mock_options(&server, "/api/dcim/locations/", &["name"]);
+
+        let adapter = NautobotAdapter::new(&server.base_url(), "token").unwrap();
+        let (type_info, type_schema) =
+            ref_declaring("dcim.locationtype", "dcim/location-types/", "parent");
+        let (location_info, location_schema) =
+            ref_declaring("dcim.location", "dcim/locations/", "owner");
+        check_declared_refs(
+            &adapter,
+            &[
+                (TypeName::new("dcim.locationtype"), type_info, &type_schema),
+                (
+                    TypeName::new("dcim.location"),
+                    location_info,
+                    &location_schema,
+                ),
+            ],
+        )
+        .await
+        .unwrap();
+        custom_fields.assert_calls(1);
     }
 
     #[test]

@@ -1,10 +1,11 @@
 //! adapter registry and config loading for alembic.
 
+use alembic_adapter_sdk::external::{
+    ExternalEnvelopeRef, ExternalRequestRef, ExternalResponse, EXTERNAL_PROTOCOL_VERSION,
+};
+use alembic_adapter_sdk::{ExternalCapabilities, ExternalObject, ExternalRole};
 use alembic_engine::{
-    Adapter, ApplyReport, Backend, BackendIdentity, Emitter, ExternalCapabilities,
-    ExternalEnvelopeRef, ExternalObject, ExternalRequestRef, ExternalResponse, ExternalRole,
-    ObservedObject, ObservedState, Observer, Op, ProvisionReport, StateData, StateStore,
-    EXTERNAL_PROTOCOL_VERSION,
+    Adapter, Backend, BackendIdentity, Emitter, ObservedObject, ObservedState, Observer, StateStore,
 };
 use anyhow::{anyhow, Context, Result};
 use serde::{de::DeserializeOwned, Deserialize};
@@ -20,6 +21,7 @@ use tokio::time::timeout;
 
 #[cfg(feature = "django")]
 use alembic_adapter_django::emit::DjangoConfig;
+use alembic_adapter_sdk::{ApplyReport, Op, ProvisionReport, StateData};
 
 const SUPPORTED_BACKENDS: &[&str] = &[
     #[cfg(feature = "netbox")]
@@ -725,8 +727,9 @@ mod tests {
     use super::InfrahubSchemaConfig;
     #[cfg(unix)]
     use super::ProcessAdapter;
+    use alembic_adapter_sdk::{BackendId, Op, StateData};
     use alembic_core::{JsonMap, Key, Object, Schema, TypeName, Uid};
-    use alembic_engine::{Backend, BackendId, Op, StateData, StateStore};
+    use alembic_engine::{Backend, StateStore};
     use serde_json::json;
     use std::collections::BTreeMap;
     use std::fs;

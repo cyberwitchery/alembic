@@ -84,6 +84,25 @@ impl NetBoxClient {
         Ok(results)
     }
 
+    /// the fields an endpoint's create accepts, from its OPTIONS metadata. this
+    /// holds on an endpoint with no objects; `None` when the server does not answer.
+    pub(super) async fn endpoint_fields(&self, endpoint: &str) -> Option<BTreeSet<String>> {
+        match self
+            .client
+            .request_raw(reqwest::Method::OPTIONS, endpoint, None)
+            .await
+        {
+            Ok(metadata) => metadata
+                .pointer("/actions/POST")
+                .and_then(Value::as_object)
+                .map(|post| post.keys().cloned().collect()),
+            Err(err) => {
+                tracing::debug!(endpoint, error = %err, "no OPTIONS metadata for endpoint");
+                None
+            }
+        }
+    }
+
     pub(super) async fn fetch_custom_fields(&self) -> Result<BTreeMap<String, BTreeSet<String>>> {
         Ok(self
             .fetch_custom_field_defs()

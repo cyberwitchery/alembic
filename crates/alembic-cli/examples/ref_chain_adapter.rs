@@ -1,8 +1,11 @@
+use alembic_adapter_sdk::alembic_external_main;
+use alembic_adapter_sdk::{
+    ApplyReport, BackendId, ExternalAdapter, ExternalCapabilities, ExternalObject, ExternalRole,
+    Op, StateData, StateMappings,
+};
 use alembic_core::{JsonMap, Schema, TypeName};
 use alembic_engine::{
-    alembic_external_main, build_key_from_schema, normalize_attrs_refs, resolve_ref_keyed_identity,
-    ApplyReport, ExternalAdapter, ExternalCapabilities, ExternalObject, ExternalRole, Op, RawNode,
-    StateData, StateMappings,
+    build_key_from_schema, normalize_attrs_refs, resolve_ref_keyed_identity, RawNode,
 };
 use anyhow::{anyhow, Result};
 use serde_json::json;
@@ -50,6 +53,8 @@ fn attrs_of(value: serde_json::Value) -> JsonMap {
 }
 
 impl ExternalAdapter for RefChainAdapter {
+    type Error = anyhow::Error;
+
     fn setup(&mut self, _configuration: &serde_yaml::Value) -> Result<()> {
         Ok(())
     }
@@ -72,7 +77,7 @@ impl ExternalAdapter for RefChainAdapter {
             .into_iter()
             .map(|(type_name, backend_id, attrs)| RawNode {
                 type_name: TypeName::new(type_name),
-                backend_id: alembic_engine::BackendId::Int(backend_id),
+                backend_id: BackendId::Int(backend_id),
                 attrs: attrs_of(attrs),
             })
             .collect();

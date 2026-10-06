@@ -161,6 +161,26 @@ impl NautobotClient {
         Ok(by_field)
     }
 
+    /// the fields an endpoint's create accepts, from its OPTIONS metadata. this
+    /// holds on an endpoint with no objects yet; `None` when the server does not
+    /// answer, so a caller can fall back to reading a sample object instead.
+    pub(super) async fn create_accepts(&self, endpoint: &str) -> Option<BTreeSet<String>> {
+        match self
+            .client
+            .request_raw(reqwest::Method::OPTIONS, endpoint, None)
+            .await
+        {
+            Ok(metadata) => metadata
+                .pointer("/actions/POST")
+                .and_then(Value::as_object)
+                .map(|post| post.keys().cloned().collect()),
+            Err(err) => {
+                tracing::debug!(endpoint, error = %err, "no OPTIONS metadata for endpoint");
+                None
+            }
+        }
+    }
+
     pub(super) async fn fetch_tags(&self) -> Result<BTreeSet<String>> {
         let tags = self.list_all(&self.client.extras().tags(), None).await?;
         Ok(tags.into_iter().map(|t| t.name).collect())

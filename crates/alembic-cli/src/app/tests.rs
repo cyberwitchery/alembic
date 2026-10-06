@@ -2,8 +2,9 @@ use super::test_support::*;
 use super::*;
 use alembic_adapter_django::emit::{run_emit, DjangoConfig};
 use alembic_adapter_registry::{AdapterConfig, ExternalConfig};
+use alembic_adapter_sdk::{AppliedOp, BackendId};
 use alembic_core::{Inventory, Schema};
-use alembic_engine::{Op, StateData, StateLock, StateStore};
+use alembic_engine::{StateLock, StateStore};
 use std::collections::BTreeMap;
 use tempfile::tempdir;
 
@@ -162,7 +163,7 @@ fn plan_roundtrip_io() {
             uid: uuid::Uuid::from_u128(1),
             type_name: alembic_core::TypeName::new("dcim.site"),
             key: key_str("site=fra1"),
-            backend_id: Some(alembic_engine::BackendId::Int(1)),
+            backend_id: Some(BackendId::Int(1)),
         }],
         summary: None,
         schema_preview: None,
@@ -171,6 +172,49 @@ fn plan_roundtrip_io() {
     write_plan(&path, &plan).unwrap();
     let loaded = read_plan(&path).unwrap();
     assert_eq!(loaded.ops.len(), 1);
+}
+
+#[test]
+fn plan_roundtrip_io_yaml() {
+    // `plan -o plan.yaml` writes yaml, so `apply --plan plan.yaml` must read yaml.
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("plan.yaml");
+    let plan = Plan {
+        schema: alembic_core::Schema {
+            types: BTreeMap::new(),
+        },
+        ops: vec![Op::Delete {
+            uid: uuid::Uuid::from_u128(1),
+            type_name: alembic_core::TypeName::new("dcim.site"),
+            key: key_str("site=fra1"),
+            backend_id: Some(BackendId::Int(1)),
+        }],
+        summary: None,
+        schema_preview: None,
+    };
+
+    write_plan(&path, &plan).unwrap();
+    let raw = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        serde_json::from_str::<serde_json::Value>(&raw).is_err(),
+        "{raw}"
+    );
+    let loaded = read_plan(&path).unwrap();
+    assert_eq!(loaded.ops, plan.ops);
+}
+
+#[test]
+fn read_plan_hints_when_given_a_yaml_inventory_instead_of_a_plan() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("ir.yaml");
+    std::fs::write(
+        &path,
+        "schema:\n  types: {}\nobjects:\n  - uid: 00000000-0000-0000-0000-000000000000\n    type: dcim.site\n    key:\n      slug: fra1\n    attrs:\n      name: FRA1\n",
+    )
+    .unwrap();
+    let msg = format!("{:#}", read_plan(&path).unwrap_err());
+    assert!(msg.contains("inventory"), "{msg}");
+    assert!(msg.contains("unknown field `objects`"), "{msg}");
 }
 
 #[test]
@@ -195,6 +239,36 @@ fn write_apply_report_creates_missing_parent_dirs() {
     let path = dir.path().join("nested/out/report.json");
     write_apply_report(&path, &ApplyReport::default()).unwrap();
     assert!(path.exists());
+}
+
+#[test]
+fn write_inventory_to_yaml_path_serializes_as_yaml() {
+    // a `.yaml` output is hand-editable yaml, not json; the point of issue #440.
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("ir.yaml");
+    let inventory = Inventory {
+        schema: Schema {
+            types: BTreeMap::new(),
+        },
+        scope: None,
+        objects: vec![],
+    };
+    write_inventory(&path, &inventory).unwrap();
+    // valid yaml that is not the pretty json form; a `.json` sibling would parse
+    // as an inventory too, so this only proves the extension drove serialization.
+    let raw = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        serde_yaml::from_str::<Inventory>(&raw).is_ok(),
+        "not yaml: {raw}"
+    );
+    assert!(!raw.contains("\"objects\""), "{raw}");
+
+    // the same inventory to a `.json` path stays json and round-trips.
+    let json_path = dir.path().join("ir.json");
+    write_inventory(&json_path, &inventory).unwrap();
+    let read_back: Inventory =
+        serde_json::from_str(&std::fs::read_to_string(&json_path).unwrap()).unwrap();
+    assert_eq!(read_back, inventory);
 }
 
 #[test]
@@ -266,10 +340,10 @@ fn apply_report_json_carries_the_uid_to_backend_id_pairs() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("report.json");
     let report = ApplyReport {
-        applied: vec![alembic_engine::AppliedOp {
+        applied: vec![AppliedOp {
             uid: uuid::Uuid::from_u128(1),
             type_name: alembic_core::TypeName::new("dcim.site"),
-            backend_id: Some(alembic_engine::BackendId::Int(7)),
+            backend_id: Some(BackendId::Int(7)),
         }],
         ..Default::default()
     };
@@ -279,10 +353,7 @@ fn apply_report_json_carries_the_uid_to_backend_id_pairs() {
     let loaded: ApplyReport = serde_json::from_str(&raw).unwrap();
     assert_eq!(loaded.applied.len(), 1);
     assert_eq!(loaded.applied[0].uid, uuid::Uuid::from_u128(1));
-    assert_eq!(
-        loaded.applied[0].backend_id,
-        Some(alembic_engine::BackendId::Int(7))
-    );
+    assert_eq!(loaded.applied[0].backend_id, Some(BackendId::Int(7)));
     // absent, not null, when the apply did not resume from a journal
     assert!(
         !raw.contains("previously_applied_count"),
@@ -468,6 +539,25 @@ fn read_plan_invalid_json_errors() {
 }
 
 #[test]
+fn read_plan_hints_when_given_an_inventory_instead_of_a_plan() {
+    // feeding an IR where a plan was expected used to surface only a bare serde
+    // error. the doc is a valid inventory (schema + objects), just not a plan.
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("ir.json");
+    std::fs::write(
+        &path,
+        r#"{"schema":{"types":{}},"objects":[{"uid":"00000000-0000-0000-0000-000000000000","type":"dcim.site","key":{"slug":"fra1"},"attrs":{"name":"FRA1"}}]}"#,
+    )
+    .unwrap();
+    let err = read_plan(&path).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(msg.contains("inventory"), "{msg}");
+    assert!(msg.contains("`objects`"), "{msg}");
+    // the raw serde reason is still chained underneath.
+    assert!(msg.contains("unknown field `objects`"), "{msg}");
+}
+
+#[test]
 fn read_plan_rejects_a_misspelled_key() {
     // the plan file is the one document the host takes from someone else. a
     // misspelled `schema_preview` read as a plan carrying none, and apply's early
@@ -481,32 +571,6 @@ fn read_plan_rejects_a_misspelled_key() {
     .unwrap();
     let err = read_plan(&path).unwrap_err();
     assert!(format!("{err:#}").contains("schema_preveiw"), "{err:#}");
-}
-
-#[test]
-fn warn_misleading_output_extension_flags_yaml() {
-    // always-JSON outputs named like yaml get a (non-fatal) heads-up that mentions
-    // the path and the actual format.
-    let msg = warn_misleading_output_extension(Path::new("plan.yaml"))
-        .expect("a .yaml output path should warn");
-    assert!(msg.contains("plan.yaml"));
-    assert!(msg.contains("JSON"));
-    assert!(
-        warn_misleading_output_extension(Path::new("out.yml")).is_some(),
-        ".yml should warn too"
-    );
-    // detection is case-insensitive on the extension.
-    assert!(warn_misleading_output_extension(Path::new("out.YAML")).is_some());
-}
-
-#[test]
-fn warn_misleading_output_extension_allows_json() {
-    assert!(warn_misleading_output_extension(Path::new("plan.json")).is_none());
-}
-
-#[test]
-fn warn_misleading_output_extension_allows_no_extension() {
-    assert!(warn_misleading_output_extension(Path::new("plan")).is_none());
 }
 
 #[test]
@@ -1183,7 +1247,7 @@ async fn run_apply_interactive_delete_requires_allow_delete() {
             uid: uuid::Uuid::from_u128(1),
             type_name: alembic_core::TypeName::new("dcim.site"),
             key: key_str("site=fra1"),
-            backend_id: Some(alembic_engine::BackendId::Int(1)),
+            backend_id: Some(BackendId::Int(1)),
         }],
         summary: None,
         schema_preview: None,
@@ -1337,7 +1401,7 @@ async fn run_apply_writes_the_report_to_output() {
     assert_eq!(report.applied[0].type_name.as_str(), "dcim.site");
     assert_eq!(
         report.applied[0].backend_id,
-        Some(alembic_engine::BackendId::Int(7)),
+        Some(BackendId::Int(7)),
         "the report must carry the backend id the create returned"
     );
     // absent, not empty, when the run resumed from nothing
@@ -1517,10 +1581,7 @@ async fn run_apply_resumes_with_the_ids_the_interrupted_run_created() {
             .iter()
             .map(|a| (a.uid, a.backend_id.clone()))
             .collect::<Vec<_>>(),
-        vec![(
-            uuid::Uuid::from_u128(1),
-            Some(alembic_engine::BackendId::Int(7))
-        )]
+        vec![(uuid::Uuid::from_u128(1), Some(BackendId::Int(7)))]
     );
     assert_eq!(report.previously_applied_count, Some(1));
 
@@ -1532,7 +1593,7 @@ async fn run_apply_resumes_with_the_ids_the_interrupted_run_created() {
             alembic_core::TypeName::new("dcim.site"),
             uuid::Uuid::from_u128(1)
         ),
-        Some(alembic_engine::BackendId::Int(7))
+        Some(BackendId::Int(7))
     );
 }
 
@@ -2051,7 +2112,7 @@ objects:
         },
     };
     let result = run(cli, AppConfig::load().unwrap()).await;
-    result.unwrap();
+    assert_eq!(result.unwrap(), ExitCode::from(2));
 
     let drift: DriftReport = serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
     assert_eq!(drift.missing.len(), 1);
@@ -2201,7 +2262,7 @@ async fn run_plan_report_carries_an_empty_schema_preview_for_a_backend_that_prov
         },
     };
     let result = run(cli, AppConfig::load().unwrap()).await;
-    result.unwrap();
+    assert_eq!(result.unwrap(), ExitCode::SUCCESS);
 
     let raw = std::fs::read_to_string(&out).unwrap();
     assert_eq!(
@@ -2926,7 +2987,7 @@ async fn run_plan_refuses_an_adapter_that_reports_refs_as_backend_ids() {
     let error = match planned {
         // the backend holds all three objects, so a plan here is a plan of
         // creates that duplicate them.
-        Ok(()) => panic!(
+        Ok(_) => panic!(
             "the plan was taken: {}",
             std::fs::read_to_string(&out).unwrap_or_default()
         ),
@@ -3686,7 +3747,7 @@ async fn run_skill_install_writes_the_skill_under_the_given_root() {
     let cli = Cli {
         command: Command::Skill {
             action: SkillAction::Install {
-                name: "alembic".to_string(),
+                name: Some("alembic".to_string()),
                 dir: root.clone(),
                 force: false,
             },
@@ -3723,7 +3784,7 @@ async fn run_skill_install_touches_no_state() {
     let cli = Cli {
         command: Command::Skill {
             action: SkillAction::Install {
-                name: "alembic".to_string(),
+                name: Some("alembic".to_string()),
                 dir: dir.path().join("skills"),
                 force: false,
             },
@@ -3746,7 +3807,7 @@ async fn run_skill_show_and_list_write_no_files() {
     for action in [
         SkillAction::List,
         SkillAction::Show {
-            name: "alembic".to_string(),
+            name: Some("alembic".to_string()),
         },
     ] {
         run(
@@ -3772,7 +3833,7 @@ async fn run_skill_show_rejects_a_name_this_binary_does_not_carry() {
         Cli {
             command: Command::Skill {
                 action: SkillAction::Show {
-                    name: "netbox".to_string(),
+                    name: Some("netbox".to_string()),
                 },
             },
         },
@@ -3800,7 +3861,27 @@ fn skill_install_defaults_to_the_documented_skills_root() {
     else {
         panic!("expected a skill install command");
     };
-    assert_eq!(name, "alembic");
+    assert_eq!(name.as_deref(), Some("alembic"));
     assert_eq!(dir, PathBuf::from(".agents/skills"));
     assert!(!force);
+}
+
+/// clap's own missing-argument error names no candidates, so a bare `show` or
+/// `install` reaches the command and is refused there, with the list.
+#[tokio::test]
+async fn run_skill_without_a_name_lists_what_this_binary_carries() {
+    use clap::Parser;
+    for args in [
+        ["alembic", "skill", "show"].as_slice(),
+        ["alembic", "skill", "install"].as_slice(),
+    ] {
+        let cli = Cli::try_parse_from(args).expect("a bare skill command parses");
+        let err = run(cli, AppConfig::load().unwrap())
+            .await
+            .expect_err("a missing name is an error");
+        assert!(
+            format!("{err:#}").contains("this binary carries: alembic"),
+            "{err:#}"
+        );
+    }
 }

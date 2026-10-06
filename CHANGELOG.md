@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- **breaking** `plan --report` exits `2` when it finds drift and `0` when it finds none; an error still exits `1`
+- cli: `apply -p -` reads a json plan from stdin, so `plan --dry-run` can pipe directly into apply; `--interactive` with a stdin plan is rejected before backend setup (#442)
+- schema provisioning output names created fields, tags, object types and object fields; read-only `schema preview:` summaries say what would be created, updated, deprecated or deleted instead of using past tense (#478)
+- `skill list` prints a `name  summary` header over aligned columns instead of tab-separated lines, and `skill show` or `skill install` without a name names the skills the binary carries
+- `import` warns once per type, naming every undeclared attr it dropped from that type, instead of once per field; the old line called every dropped field server-computed, though most are ordinary fields the `-f` does not declare
+
+## [0.10.0] - 2026-09-27
+
+- the netbox adapter reads netbox's feature names as netbox spells them (`custom_fields`), so a declared non-native field is provisioned as a custom field; against netbox 4.6 and 4.7 none was, and the field was dropped on write
+- **breaking** the netbox adapter reads each type's fields from the endpoint's OPTIONS metadata, and `plan` fails on a declared ref the type has neither as a field nor as a custom field, naming it; netbox ignores unknown keys, so such a field was dropped on write and diffed forever (#459)
+- the shipped examples declare an ip's interface as netbox's `assigned_object` and drop the prefix `site` netbox replaced with `scope` in 4.2, so they converge against netbox 4.2+ (#458)
+- the nautobot adapter reads each type's native fields from the endpoint's OPTIONS metadata, so a native field on a type with no objects yet (a location type's `content_types` on a fresh nautobot) is written as the field it is, not provisioned as a custom field
+- a map spec takes an `objects:` list of target objects no source models, emitted once each and referenced by uid from rules, such as a location type every mapped site shares (`docs/map.md`)
+- **breaking** every `-o`/`--output` written to a `.yaml`/`.yml` path is yaml, where it used to be json under a yaml name with a warning; `apply --plan` reads a `.yaml`/`.yml` plan as yaml, so `plan -o plan.yaml` still feeds `apply --plan plan.yaml` (#440)
+- the rust sdk for external adapters moves out of `alembic-engine` into the new `alembic-adapter-sdk` crate, which carries the protocol types, the apply journal and the retry driver; `ExternalAdapter` and `RetryApplyDriver` declare their own `type Error`, and no signature in the crate names `anyhow`
+- a plan that does not need key adoption reads only objects already bound in state, narrowing the query in the netbox, nautobot and infrahub adapters; a delete-detecting run or one that can still adopt by key reads the whole listing as before (#416)
 - the nautobot adapter takes each object type's route from nautobot's api root, deriving one only where the root is unreachable or names no match (#419)
 
 ## [0.9.0] - 2026-08-28

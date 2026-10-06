@@ -149,7 +149,7 @@ NETBOX_URL=https://netbox.example.com NETBOX_TOKEN=$NETBOX_TOKEN \
 - without `--provision`, plan asks the backend for a read-only schema preview (what `apply`'s `ensure_schema` would create/delete, writing nothing) and prints it to stderr as `schema preview: ...`; the machine-readable copy rides in the plan's `schema_preview`, and under `--report` (which writes no plan) in the drift report's. backends that cannot preview report `schema preview: unavailable for this backend`
 - `--provision` runs adapter provisioning (`ensure_schema`) before observing backend state; provisioning that would delete custom object types/fields the inventory no longer declares is blocked unless `--allow-delete` is also given (such deletes cascade to their objects on the backend)
 - `--dry-run` prints the raw plan json instead of writing it; it writes no file, so `-o`/`--output` is rejected with it at parse time rather than accepted and ignored
-- `--report` prints a read-only drift report and exits without writing a plan file or saving state; `-o`/`--output` writes that report as json (optional: without it the report is the printed summary only)
+- `--report` prints a read-only drift report and exits without writing a plan file or saving state; `-o`/`--output` writes that report as json (optional: without it the report is the printed summary only). it exits `2` when the report finds drift and `0` when it finds none; an error exits `1`
 - saving nothing, `--report` and `--dry-run` take the state lock shared (see [state](state.md)), so two of them can run at once in the same directory; adding `--provision` makes the run exclusive again, since it writes backend schema
 - `--report` and `--dry-run` are mutually exclusive (both exit without applying); passing both is rejected at parse time
 - `--provision` cannot be combined with `--dry-run` (rejected at parse time): a `--dry-run` preview promises not to write, but `--provision` still writes backend schema (`ensure_schema`). combining `--provision` with `--report` stays allowed as the documented "provision schema, then preview drift" workflow (see below)
@@ -252,9 +252,13 @@ alembic apply -p plan.json \
 alembic apply -p plan.json -o apply-report.json \
   --backend-config examples/backend-infrahub.yaml \
   --allow-delete
+
+alembic plan -f examples/inventory.yaml --dry-run \
+  --backend-config examples/backend-netbox.yaml | \
+  alembic apply -p - --backend-config examples/backend-netbox.yaml
 ```
 
-- applies a plan file
+- applies a plan file; `-p -` reads a json plan from stdin, matching the json emitted by `plan --dry-run`
 - an applied update re-asserts every declared field of its object, not only the changes the plan listed: a backend edit to a declared field between plan and apply is converged back, and approving an update under `--interactive` approves that full write. undeclared fields stay untouched (`docs/engine.md`, diff rules)
 - deletes are blocked unless `--allow-delete` is provided; this covers both object deletes and destructive schema provisioning (deleting custom object types/fields the inventory no longer declares, which cascades to their objects)
 - `--interactive` prompts per operation and applies only approved ops
@@ -262,7 +266,9 @@ alembic apply -p plan.json -o apply-report.json \
   from stdin per operation, so scripted answers work (`printf 'y\nn\ny\n' |
   alembic apply -i ...`); if stdin ends before every operation has been answered
   the run returns an error naming that operation, rather than declining the rest
-  on your behalf. drop `--interactive` to apply the whole plan
+  on your behalf. because `-p -` already consumes stdin for the plan, it cannot
+  be combined with `--interactive`; that combination is rejected before backend
+  setup. drop `--interactive` to apply the whole plan
 - the `peeringdb` backend is read-only; apply will return an error
 - apply runs adapter provisioning (`ensure_schema`) before writes on any backend
   that can write, read+write or write-only; for netbox this can create custom
@@ -423,7 +429,8 @@ alembic skill install alembic
 alembic skill install alembic --dir /srv/intent/.agents/skills
 ```
 
-- `list` prints one `name<tab>summary` line per embedded skill
+- `list` prints a `name  summary` header and one aligned line per embedded skill;
+  `show` or `install` without a name fails and names them
 - `show` prints the skill's markdown to stdout, for a host that reads no skills
   directory
 - `install` writes it atomically to `<dir>/<name>/SKILL.md`, `--dir` defaulting

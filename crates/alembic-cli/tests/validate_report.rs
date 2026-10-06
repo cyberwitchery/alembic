@@ -92,7 +92,8 @@ fn validate_output_is_written_when_the_inventory_passes() {
     // `ok` is the last thing printed: it reports the whole command, the write
     // included, not the inventory alone
     assert!(
-        with_stdout.starts_with("validation report written to") && with_stdout.ends_with("ok\n"),
+        with_stdout.starts_with("validation report (json) written to")
+            && with_stdout.ends_with("ok\n"),
         "stdout:\n{with_stdout}"
     );
 
@@ -128,35 +129,28 @@ fn assert_refused(inventory: &Path, output: &Path, expected: &str) {
 }
 
 #[test]
-fn validate_warns_about_a_yaml_output_and_still_writes_it() {
-    // the warning rides with the write rather than being copied to each `-o`
-    // site, so a site that has one has the other.
+fn validate_writes_a_yaml_output_as_yaml_and_announces_it() {
+    // a `.yaml` output serializes as yaml (issue #440) and the announce line
+    // names that format, so it never reads as json. the extension drives both.
     let dir = tempdir().unwrap();
     let report = dir.path().join("validation.yaml");
 
     let (ok, stdout, stderr) = run_validate(&fixture(dir.path(), ""), Some(&report));
 
+    assert!(ok, "stderr:\n{stderr}");
     assert!(
-        ok,
-        "a misleading extension is a nudge, not an error: {stderr}"
-    );
-    assert!(
-        stderr.contains(&format!(
-            "warning: --output `{}` is written as JSON despite the .yaml extension",
-            report.display()
-        )),
-        "stderr:\n{stderr}"
-    );
-    assert!(
-        stdout.starts_with("validation report written to"),
+        stdout.starts_with("validation report (yaml) written to"),
         "stdout:\n{stdout}"
     );
     let raw = std::fs::read_to_string(&report).unwrap();
-    assert_eq!(
-        serde_json::from_str::<serde_json::Value>(&raw).unwrap()["errors"],
-        serde_json::json!([]),
+    // valid yaml and not the pretty-json form. a `.json` output would parse here
+    // too, so this only proves the extension drove serialization rather than that
+    // the document is structurally unchanged.
+    assert!(
+        serde_yaml::from_str::<serde_yaml::Value>(&raw).is_ok(),
         "{raw}"
     );
+    assert!(!raw.contains("\"errors\""), "{raw}");
 }
 
 #[test]
@@ -239,7 +233,7 @@ fn validate_accepts_a_character_device_output() {
 
     assert!(ok, "stderr:\n{stderr}");
     assert!(
-        stdout.starts_with("validation report written to") && stdout.ends_with("ok\n"),
+        stdout.starts_with("validation report (json) written to") && stdout.ends_with("ok\n"),
         "the run reaches its work and its write: {stdout}"
     );
 }

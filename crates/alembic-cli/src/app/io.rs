@@ -1,7 +1,11 @@
-use alembic_engine::{ApplyReport, DriftReport, Plan};
+use alembic_adapter_sdk::ApplyReport;
+use alembic_core::Inventory;
+use alembic_engine::{DriftReport, Plan};
 use anyhow::{anyhow, Context, Result};
+use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -117,17 +121,50 @@ fn probe_path(path: &Path) -> PathBuf {
     }
 }
 
-/// every `-o` write: warn on a misleading extension, then write `value` as
-/// pretty json. one call so a new output cannot keep the write and silently
-/// lose the warning; unlike the preflight, the warning has no `output_path` to
-/// gate it. announcing stays with the caller, which is per-site and interleaved.
+/// every `-o` write: serialize `value` as json or yaml, chosen by the output
+/// path extension (`-o out.yaml` → yaml; anything else stays json). one call so
+/// a new output cannot keep the write and silently lose it; unlike the preflight
+/// there is no `output_path` to gate it. callers announce what they wrote with
+/// `announce_written`, which reports the same extension-derived format so a
+/// `.yaml` output never reads as json.
 fn write_output<T: Serialize>(path: &Path, what: &str, value: &T) -> Result<()> {
-    if let Some(msg) = warn_misleading_output_extension(path) {
-        eprintln!("{msg}");
-    }
     ensure_parent_dir(path)?;
-    let raw = serde_json::to_string_pretty(value)?;
+    let raw = match output_kind(path) {
+        OutputKind::Yaml => serde_yaml::to_string(value)?.into_bytes(),
+        OutputKind::Json => serde_json::to_string_pretty(value)?.into_bytes(),
+    };
     fs::write(path, raw).with_context(|| format!("write {what}: {}", path.display()))
+}
+
+/// the serialization an output path maps to. only `.yaml`/`.yml` are yaml;
+/// anything else (including no extension) stays json. `read_plan` reads by the
+/// same rule, so a plan written by `plan -o` always reads back in `apply`.
+#[derive(Debug, PartialEq)]
+enum OutputKind {
+    Json,
+    Yaml,
+}
+
+fn output_kind(path: &Path) -> OutputKind {
+    match path.extension().and_then(|s| s.to_str()) {
+        Some(ext) if ext.eq_ignore_ascii_case("yaml") || ext.eq_ignore_ascii_case("yml") => {
+            OutputKind::Yaml
+        }
+        _ => OutputKind::Json,
+    }
+}
+
+/// announce that `what` was written to `path`, naming the format chosen by its
+/// extension so a `.yaml` output does not read as json. per-site so callers keep
+/// their own human noun (plan, ir, drift report, ...); the format is shared here
+/// so every write reports it consistently.
+pub(super) fn announce_written(path: &Path, what: &str) -> Result<()> {
+    let kind = match output_kind(path) {
+        OutputKind::Yaml => "yaml",
+        OutputKind::Json => "json",
+    };
+    println!("{what} ({kind}) written to {}", path.display());
+    Ok(())
 }
 
 pub(super) fn write_plan(path: &Path, plan: &Plan) -> Result<()> {
@@ -154,27 +191,78 @@ pub(super) fn write_inventory(path: &Path, inventory: &alembic_core::Inventory) 
 }
 
 pub(super) fn read_plan(path: &Path) -> Result<Plan> {
-    let raw = fs::read_to_string(path).with_context(|| format!("read plan: {}", path.display()))?;
-    serde_json::from_str(&raw).with_context(|| format!("parse plan: {}", path.display()))
+    let (raw, kind, source) = if path == Path::new("-") {
+        let mut raw = String::new();
+        std::io::stdin()
+            .lock()
+            .read_to_string(&mut raw)
+            .context("read plan: stdin")?;
+        (raw, OutputKind::Json, "stdin".to_string())
+    } else {
+        let raw =
+            fs::read_to_string(path).with_context(|| format!("read plan: {}", path.display()))?;
+        (raw, output_kind(path), path.display().to_string())
+    };
+    parse_as::<Plan>(&kind, &raw)
+        .map_err(|err| maybe_suggest_inventory(&kind, &raw, err))
+        .with_context(|| format!("parse plan: {source}"))
 }
 
-/// when an always-JSON output path carries a `.yaml`/`.yml` extension, return a
-/// warning that the file is written as JSON despite its name; `None` otherwise
-/// (any other extension, or none).
-///
-/// it returns the message rather than printing it so it stays unit-testable;
-/// `write_output` is the only caller and puts it on stderr. this is a gentle
-/// nudge, never an error: the file is still written and existing workflows keep
-/// working.
-pub(super) fn warn_misleading_output_extension(path: &Path) -> Option<String> {
-    let ext = path.extension().and_then(|s| s.to_str())?;
-    if ext.eq_ignore_ascii_case("yaml") || ext.eq_ignore_ascii_case("yml") {
-        Some(format!(
-            "warning: --output `{}` is written as JSON despite the .{} extension",
-            path.display(),
-            ext
-        ))
-    } else {
-        None
+fn parse_as<T: DeserializeOwned>(kind: &OutputKind, raw: &str) -> Result<T> {
+    Ok(match kind {
+        OutputKind::Yaml => serde_yaml::from_str(raw)?,
+        OutputKind::Json => serde_json::from_str(raw)?,
+    })
+}
+
+/// rewrap a plan parse error when the document is an inventory/IR instead.
+fn maybe_suggest_inventory(kind: &OutputKind, raw: &str, err: anyhow::Error) -> anyhow::Error {
+    match parse_as::<Inventory>(kind, raw) {
+        Ok(_) => anyhow!(
+            "expected a plan but the document looks like an inventory/IR (a top-level `objects` \
+             array); apply reads a plan, use `plan` to produce one from an inventory"
+        )
+        .context(format!("{}", err)),
+        Err(_) => err,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn output_kind_maps_yaml_extensions_to_yaml() {
+        assert_eq!(output_kind(Path::new("plan.yaml")), OutputKind::Yaml);
+        assert_eq!(output_kind(Path::new("plan.yml")), OutputKind::Yaml);
+    }
+
+    #[test]
+    fn output_kind_is_case_insensitive_on_extension() {
+        assert_eq!(output_kind(Path::new("PLAN.YAML")), OutputKind::Yaml);
+    }
+
+    #[test]
+    fn output_kind_defaults_to_json_without_yaml_extension() {
+        // no extension and a non-yaml extension both stay json.
+        assert_eq!(output_kind(Path::new("plan")), OutputKind::Json);
+        assert_eq!(output_kind(Path::new("plan.txt")), OutputKind::Json);
+    }
+
+    #[test]
+    fn read_plan_hints_when_given_a_yml_inventory_instead_of_a_plan() {
+        // the .yml branch of output_kind never ran before this; a plan parsed
+        // off an inventory must still be rejected with the same hint.
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("ir.yml");
+        std::fs::write(
+            &path,
+            "schema:\n  types: {}\nobjects:\n  - uid: 00000000-0000-0000-0000-000000000000\n    type: dcim.site\n    key:\n      slug: fra1\n    attrs:\n      name: FRA1\n",
+        )
+        .unwrap();
+        let msg = format!("{:#}", read_plan(&path).unwrap_err());
+        assert!(msg.contains("inventory"), "{msg}");
+        assert!(msg.contains("unknown field `objects`"), "{msg}");
     }
 }

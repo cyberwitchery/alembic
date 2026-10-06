@@ -3,8 +3,9 @@
 //! uses the peeringdb-rs crate to fetch data from PeeringDB.
 //! set the `PEERINGDB_API_KEY` environment variable to authenticate.
 
+use alembic_adapter_sdk::BackendId;
 use alembic_core::{JsonMap, Schema, TypeName};
-use alembic_engine::{build_key_from_schema, BackendId, ObservedObject, ObservedState, Observer};
+use alembic_engine::{build_key_from_schema, ObservedObject, ObservedState, Observer};
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use serde::Serialize;
@@ -203,6 +204,7 @@ fn to_observed_objects<T: Serialize + HasId>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alembic_adapter_sdk::StateData;
     use alembic_core::{FieldSchema, FieldType, TypeSchema};
 
     fn ix_schema() -> TypeSchema {
@@ -311,7 +313,7 @@ mod tests {
         let schema = Schema {
             types: BTreeMap::new(),
         };
-        let state = alembic_engine::StateStore::new(None, alembic_engine::StateData::default());
+        let state = alembic_engine::StateStore::new(None, StateData::default());
         let err = adapter
             .read(&schema, &[TypeName::new("peeringdb.ix")], &state)
             .await
@@ -327,7 +329,7 @@ mod tests {
         let schema = Schema {
             types: BTreeMap::new(),
         };
-        let state = alembic_engine::StateStore::new(None, alembic_engine::StateData::default());
+        let state = alembic_engine::StateStore::new(None, StateData::default());
         let observed = adapter.read(&schema, &[], &state).await.unwrap();
         assert!(observed.is_empty());
     }
@@ -338,8 +340,7 @@ mod tests {
         let schema = Schema {
             types: BTreeMap::from([("peeringdb.fac".to_string(), ix_schema())]),
         };
-        let state_store =
-            alembic_engine::StateStore::new(None, alembic_engine::StateData::default());
+        let state_store = alembic_engine::StateStore::new(None, StateData::default());
         let err = adapter
             .read(&schema, &[TypeName::new("peeringdb.fac")], &state_store)
             .await
@@ -356,8 +357,7 @@ mod tests {
         let schema = Schema {
             types: BTreeMap::from([("peeringdb.fac".to_string(), ix_schema())]),
         };
-        let state_store =
-            alembic_engine::StateStore::new(None, alembic_engine::StateData::default());
+        let state_store = alembic_engine::StateStore::new(None, StateData::default());
         let observed = adapter.read(&schema, &[], &state_store).await.unwrap();
 
         assert!(observed.is_empty());

@@ -1,17 +1,26 @@
 use crate::pretty_printing::bullet_list;
 use crate::sort_ops_for_apply;
-use crate::types::{
-    ApplyReport, Backend, ObservedState, Observer, Plan, ProvisionReport, CANNOT_OBSERVE,
-};
+use crate::types::{Backend, ObservedState, Observer, Plan, CANNOT_OBSERVE};
 use crate::StateStore;
+use alembic_adapter_sdk::{ApplyReport, Op, ProvisionReport};
 use alembic_core::{Inventory, TypeName};
 use anyhow::{anyhow, Result};
 use std::collections::BTreeSet;
+
+/// whether state has a backend binding for every declared object.
+fn every_declared_object_is_bound(inventory: &Inventory, state: &StateStore) -> bool {
+    inventory.objects.iter().all(|object| {
+        state
+            .backend_id(object.type_name.clone(), object.uid)
+            .is_some()
+    })
+}
 
 pub(crate) async fn observe(
     adapter: &(dyn Observer + '_),
     inventory: &Inventory,
     state: &mut StateStore,
+    detect_deletes: bool,
     adopt_by_key: bool,
 ) -> Result<(ObservedState, crate::types::BootstrapReport)> {
     crate::report_to_result(crate::validate(inventory))?;
@@ -26,7 +35,17 @@ pub(crate) async fn observe(
     }
     let types_vec: Vec<_> = types.into_iter().collect();
 
-    let observed = adapter.read(&inventory.schema, &types_vec, state).await?;
+    // Delete detection needs the full listing. Key adoption does too while any
+    // declared object is unbound. Otherwise only bound objects affect the plan.
+    let bound_is_enough =
+        !detect_deletes && (!adopt_by_key || every_declared_object_is_bound(inventory, state));
+    let observed = if bound_is_enough {
+        adapter
+            .read_bound(&inventory.schema, &types_vec, state)
+            .await?
+    } else {
+        adapter.read(&inventory.schema, &types_vec, state).await?
+    };
     crate::refs::refuse_backend_id_refs(&observed, &inventory.schema)?;
 
     let bootstrap =
@@ -118,10 +137,7 @@ pub(crate) async fn apply(
     allow_delete: bool,
 ) -> Result<ApplyReport> {
     if !allow_delete {
-        let has_delete = plan
-            .ops
-            .iter()
-            .any(|op| matches!(op, crate::Op::Delete { .. }));
+        let has_delete = plan.ops.iter().any(|op| matches!(op, Op::Delete { .. }));
         if has_delete {
             return Err(anyhow!(
                 "plan contains delete operations; re-run with --allow-delete"

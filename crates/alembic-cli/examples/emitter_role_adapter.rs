@@ -1,8 +1,8 @@
-use alembic_core::{Schema, TypeName};
-use alembic_engine::{
-    alembic_external_main, ApplyReport, ExternalAdapter, ExternalCapabilities, ExternalObject,
-    ExternalRole, Op, StateData,
+use alembic_adapter_sdk::alembic_external_main;
+use alembic_adapter_sdk::{
+    ApplyReport, ExternalAdapter, ExternalCapabilities, ExternalObject, ExternalRole, Op, StateData,
 };
+use alembic_core::{Schema, TypeName};
 use anyhow::Result;
 
 alembic_external_main!(EmitterRoleAdapter::default());
@@ -11,6 +11,8 @@ alembic_external_main!(EmitterRoleAdapter::default());
 pub struct EmitterRoleAdapter {}
 
 impl ExternalAdapter for EmitterRoleAdapter {
+    type Error = anyhow::Error;
+
     fn setup(&mut self, _configuration: &serde_yaml::Value) -> Result<()> {
         Ok(())
     }

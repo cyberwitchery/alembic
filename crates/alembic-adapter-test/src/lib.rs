@@ -1,10 +1,11 @@
 //! conformance checks for external adapter executables.
 
-use alembic_core::{key_string, uid_v5, validate_inventory, Inventory, Object, Schema, TypeName};
-use alembic_engine::{
-    AppliedOp, ApplyReport, BackendId, ExternalCapabilities, ExternalObject, ExternalResponse,
-    ExternalRole, ProvisionReport, EXTERNAL_PROTOCOL_VERSION,
+use alembic_adapter_sdk::external::{ExternalResponse, EXTERNAL_PROTOCOL_VERSION};
+use alembic_adapter_sdk::{
+    AppliedOp, ApplyReport, BackendId, ExternalCapabilities, ExternalObject, ExternalRole,
+    ProvisionReport,
 };
+use alembic_core::{key_string, uid_v5, validate_inventory, Inventory, Object, Schema, TypeName};
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};

@@ -1,9 +1,10 @@
 //! helpers for implementing external adapters.
 
-use crate::{ApplyReport, BackendId, Op, ProvisionReport, StateData};
+use crate::state::StateData;
+use crate::types::{ApplyReport, BackendId, Op, ProvisionReport};
 use alembic_core::{JsonMap, Key, Schema, TypeName};
-use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use std::fmt;
 use std::io::{self, BufReader, Read, Write};
 
 /// current external adapter protocol version.
@@ -165,8 +166,9 @@ impl<T> ExternalResponse<T> {
         }
     }
 
-    /// convert a result into a response.
-    pub fn from_result(result: Result<T>) -> Self {
+    /// convert a result into a response. the error is rendered with `{:#}`, so an
+    /// `anyhow::Error` carries its whole context chain.
+    pub fn from_result<E: fmt::Display>(result: Result<T, E>) -> Self {
         match result {
             Ok(value) => Self::ok(value),
             Err(err) => Self::error(format!("{err:#}")),
@@ -176,8 +178,11 @@ impl<T> ExternalResponse<T> {
 
 /// external adapter helper trait.
 pub trait ExternalAdapter {
+    /// error returned by the adapter's methods; only its `Display` reaches the host.
+    type Error: fmt::Display;
+
     /// initial configuration of the adapter
-    fn setup(&mut self, configuration: &serde_yaml::Value) -> Result<()>;
+    fn setup(&mut self, configuration: &serde_yaml::Value) -> Result<(), Self::Error>;
 
     /// read objects from the backend.
     fn read(
@@ -185,13 +190,18 @@ pub trait ExternalAdapter {
         schema: &Schema,
         types: &[TypeName],
         state: &StateData,
-    ) -> Result<Vec<ExternalObject>>;
+    ) -> Result<Vec<ExternalObject>, Self::Error>;
 
     /// apply operations to the backend.
-    fn write(&mut self, schema: &Schema, ops: &[Op], state: &StateData) -> Result<ApplyReport>;
+    fn write(
+        &mut self,
+        schema: &Schema,
+        ops: &[Op],
+        state: &StateData,
+    ) -> Result<ApplyReport, Self::Error>;
 
     /// provision backend schema elements.
-    fn ensure_schema(&mut self, schema: &Schema) -> Result<ProvisionReport> {
+    fn ensure_schema(&mut self, schema: &Schema) -> Result<ProvisionReport, Self::Error> {
         let _ = schema;
         Ok(ProvisionReport::default())
     }
@@ -199,7 +209,7 @@ pub trait ExternalAdapter {
     /// preview schema provisioning, writing nothing. the default pairs with
     /// [`ExternalAdapter::ensure_schema`]'s: nothing to provision. `None` means
     /// "cannot preview", and refuses to provision at all.
-    fn preview_schema(&mut self, schema: &Schema) -> Result<Option<ProvisionReport>> {
+    fn preview_schema(&mut self, schema: &Schema) -> Result<Option<ProvisionReport>, Self::Error> {
         let _ = schema;
         Ok(Some(ProvisionReport::default()))
     }
@@ -238,7 +248,7 @@ pub fn run_external_adapter<A: ExternalAdapter>(
     }
 
     if let Err(e) = adapter.setup(&envelope.setup) {
-        return write_error(&mut writer, format!("invalid setup: {e}"));
+        return write_error(&mut writer, format!("invalid setup: {e:#}"));
     }
 
     match envelope.request {
@@ -296,12 +306,13 @@ macro_rules! alembic_external_main {
 
 #[cfg(test)]
 mod tests {
-    use super::ExternalResponse;
-    use crate::{
-        run_external_adapter, AppliedOp, ApplyReport, ExternalAdapter, ExternalCapabilities,
-        ExternalEnvelope, ExternalEnvelopeRef, ExternalObject, ExternalRequest, ExternalRequestRef,
-        ExternalRole, Op, ProvisionReport, StateData, EXTERNAL_PROTOCOL_VERSION,
+    use super::{
+        run_external_adapter, ExternalAdapter, ExternalCapabilities, ExternalEnvelope,
+        ExternalEnvelopeRef, ExternalObject, ExternalRequest, ExternalRequestRef, ExternalResponse,
+        ExternalRole, EXTERNAL_PROTOCOL_VERSION,
     };
+    use crate::state::StateData;
+    use crate::types::{AppliedOp, ApplyReport, Op, ProvisionReport};
     use alembic_core::{Key, Object, Schema, TypeName, TypeSchema, Uid};
     use serde_json::json;
     use serde_yaml::Value;
@@ -562,19 +573,28 @@ mod tests {
         assert!(object.backend_id.is_none());
     }
 
+    #[test]
+    fn external_response_from_result_renders_any_display_error() {
+        let err = std::io::Error::other("backend unreachable");
+        let response: ExternalResponse<()> = ExternalResponse::from_result(Err(err));
+        assert_eq!(response.error.as_deref(), Some("backend unreachable"));
+    }
+
     #[derive(Debug, Default)]
     struct TestExternalAdapter {
         pub x: i64,
     }
 
     impl ExternalAdapter for TestExternalAdapter {
+        type Error = anyhow::Error;
+
         fn setup(&mut self, configuration: &Value) -> anyhow::Result<()> {
             if configuration
                 .get("fail_setup")
                 .and_then(serde_yaml::Value::as_bool)
                 == Some(true)
             {
-                anyhow::bail!("rejected by test adapter");
+                return Err(anyhow::anyhow!("rejected by test adapter").context("parsing setup"));
             }
             if let Some(x) = configuration.get("x").and_then(serde_yaml::Value::as_i64) {
                 self.x = x;
@@ -730,7 +750,7 @@ mod tests {
         // which must survive the wire as an explicit null result (not a missing one)
         // so the host reads it back as None, never as an empty "no schema changes".
         let response: ExternalResponse<Option<ProvisionReport>> =
-            ExternalResponse::from_result(Ok(None));
+            ExternalResponse::from_result(Ok::<_, anyhow::Error>(None));
         let wire = serde_json::to_value(&response).unwrap();
         assert_eq!(wire, json!({"ok": true, "result": null}));
         let back: ExternalResponse<Option<ProvisionReport>> = serde_json::from_value(wire).unwrap();
@@ -829,7 +849,9 @@ mod tests {
         let response: ExternalResponse<Vec<ExternalObject>> =
             serde_json::from_str(&response).unwrap();
         assert!(!response.ok);
-        assert!(response.error.unwrap().contains("invalid setup"));
+        let error = response.error.unwrap();
+        assert!(error.contains("invalid setup: parsing setup"));
+        assert!(error.contains("rejected by test adapter"));
 
         t.join().unwrap();
     }
@@ -973,6 +995,8 @@ mod tests {
         #[derive(Default)]
         struct EmitOnly;
         impl ExternalAdapter for EmitOnly {
+            type Error = anyhow::Error;
+
             fn setup(&mut self, _configuration: &Value) -> anyhow::Result<()> {
                 Ok(())
             }
