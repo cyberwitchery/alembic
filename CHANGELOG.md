@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- cli: `apply -p -` reads a json plan from stdin, so `plan --dry-run` can pipe directly into apply; `--interactive` with a stdin plan is rejected before backend setup (#442)
 - schema provisioning output names created fields, tags, object types and object fields; read-only `schema preview:` summaries say what would be created, updated, deprecated or deleted instead of using past tense (#478)
 - `skill list` prints a `name  summary` header over aligned columns instead of tab-separated lines, and `skill show` or `skill install` without a name names the skills the binary carries
 - `import` warns once per type, naming every undeclared attr it dropped from that type, instead of once per field; the old line called every dropped field server-computed, though most are ordinary fields the `-f` does not declare
