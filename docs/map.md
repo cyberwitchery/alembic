@@ -132,11 +132,11 @@ they can spell: a `v5:` pair both sides derive the same way, as above, or a
 literal uuid. its type must be in the target `schema`, like any emit's.
 
 two `objects:` entries can reference each other without hand-deriving that uuid:
-on a schema-declared `ref` (or nested ref) attr, the same
-`{ v5: { type, stable } }` expression is resolved to the uid string before the
-output inventory is validated. literal uuid ref values keep working. the
-interpretation is ref-typed only, so a `json` attr whose value happens to contain
-a `v5` key stays ordinary json:
+on a schema-declared ref key or attr (including `list_ref` and refs nested in
+`list`/`map` attrs), the same `{ v5: { type, stable } }` expression is resolved
+to the uid string before the output inventory is validated. literal uuid ref
+values keep working. the interpretation is ref-typed only, so a `json` attr
+whose value happens to contain a `v5` key stays ordinary json:
 
 ```yaml
 objects:
