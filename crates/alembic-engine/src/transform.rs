@@ -577,7 +577,8 @@ pub fn compile_map(input: &Inventory, spec: &MapSpec) -> Result<Inventory> {
         let key = render_key(&object.key, &ctx)?;
         let type_name = TypeName::new(render_template(&object.type_name, &ctx, "type")?);
         let uid = resolve_emit_uid(&object.uid, &ctx, type_name.as_str(), &key, None)?;
-        let attrs = render_attrs(&object.attrs, &ctx, "attrs")?;
+        let mut attrs = render_attrs(&object.attrs, &ctx, "attrs")?;
+        resolve_spec_object_refs(&type_name, &mut attrs, &spec.schema, &ctx)?;
         let attrs = JsonMap::from(attrs.into_iter().collect::<BTreeMap<_, _>>());
         emitted.push(Emitted {
             object: Object::new(uid, type_name, key, attrs)?,
@@ -812,6 +813,117 @@ fn resolve_uid_spec(spec: &EmitUid, ctx: &RenderCtx, context: &str) -> Result<Ui
             crate::render::derive_v5_uid(&kind, &stable, rule)
         }
     }
+}
+
+/// resolve `v5: {type, stable}` expressions carried by ref-typed attrs on
+/// top-level `objects:` entries. unlike ordinary rule attrs, these have no
+/// source vars to name; the expression gives two spec objects a shared way to
+/// spell the same uid without precomputing the uuid by hand. interpretation is
+/// schema-aware so a json field containing a literal `{"v5": ...}` object is
+/// left alone.
+fn resolve_spec_object_refs(
+    type_name: &TypeName,
+    attrs: &mut serde_json::Map<String, JsonValue>,
+    schema: &Schema,
+    ctx: &RenderCtx,
+) -> Result<()> {
+    let Some(type_schema) = schema.types.get(type_name.as_str()) else {
+        // output validation reports an undeclared type after all emits are built.
+        return Ok(());
+    };
+    for (field, value) in attrs {
+        let Some(field_schema) = type_schema
+            .fields
+            .get(field)
+            .or_else(|| type_schema.key.get(field))
+        else {
+            // output validation reports undeclared attrs.
+            continue;
+        };
+        resolve_spec_object_ref_value(
+            &field_schema.r#type,
+            value,
+            ctx,
+            &format!("attrs.{field}"),
+        )?;
+    }
+    Ok(())
+}
+
+fn resolve_spec_object_ref_value(
+    field_type: &FieldType,
+    value: &mut JsonValue,
+    ctx: &RenderCtx,
+    context: &str,
+) -> Result<()> {
+    match field_type {
+        FieldType::Ref { .. } => {
+            let JsonValue::Object(_) = value else {
+                // literal uuid strings keep their established path through
+                // output validation.
+                return Ok(());
+            };
+            let spec: EmitUid = serde_json::from_value(value.clone())
+                .with_context(|| format!("rule {}: invalid uid expression in {context}", ctx.rule))?;
+            let uid = resolve_uid_spec(&spec, ctx, context)?;
+            *value = JsonValue::String(uid.to_string());
+        }
+        FieldType::ListRef { .. } => {
+            if let JsonValue::Array(items) = value {
+                for (index, item) in items.iter_mut().enumerate() {
+                    resolve_spec_object_ref_value(
+                        &FieldType::Ref {
+                            target: String::new(),
+                        },
+                        item,
+                        ctx,
+                        &format!("{context}[{index}]"),
+                    )?;
+                }
+            }
+        }
+        FieldType::List { item } => {
+            if let JsonValue::Array(items) = value {
+                for (index, entry) in items.iter_mut().enumerate() {
+                    resolve_spec_object_ref_value(
+                        item,
+                        entry,
+                        ctx,
+                        &format!("{context}[{index}]"),
+                    )?;
+                }
+            }
+        }
+        FieldType::Map { value: inner } => {
+            if let JsonValue::Object(entries) = value {
+                for (key, entry) in entries {
+                    resolve_spec_object_ref_value(
+                        inner,
+                        entry,
+                        ctx,
+                        &format!("{context}.{key}"),
+                    )?;
+                }
+            }
+        }
+        FieldType::String
+        | FieldType::Text
+        | FieldType::Int
+        | FieldType::Float
+        | FieldType::Bool
+        | FieldType::Uuid
+        | FieldType::Date
+        | FieldType::Datetime
+        | FieldType::Time
+        | FieldType::Json
+        | FieldType::IpAddress
+        | FieldType::Cidr
+        | FieldType::Prefix
+        | FieldType::Mac
+        | FieldType::Slug
+        | FieldType::Enum { .. } => {}
+    }
+    Ok(())
 }
 
 /// rewire ref-typed key fields through the remap and re-derive each key-derived
@@ -3514,6 +3626,86 @@ rules:
     fn spec_objects_are_emitted_with_no_matching_source() {
         let out = compile_map(&input_inventory(json!([])), &spec(STATUS_SPEC)).unwrap();
         assert_eq!(out.objects.len(), 2);
+    }
+
+    #[test]
+    fn spec_objects_can_reference_each_other_by_v5_expression() {
+        let out = compile_map(
+            &input_inventory(json!([])),
+            &spec(
+                r#"
+schema:
+  types:
+    dcim.manufacturer:
+      key:
+        slug: { type: slug }
+      fields:
+        name: { type: string }
+    dcim.device_type:
+      key:
+        slug: { type: slug }
+      fields:
+        model: { type: string }
+        manufacturer: { type: ref, target: dcim.manufacturer }
+objects:
+  - type: dcim.manufacturer
+    key: { slug: nokia }
+    attrs: { name: Nokia }
+    uid: { v5: { type: dcim.manufacturer, stable: nokia } }
+  - type: dcim.device_type
+    key: { slug: srlinux }
+    attrs:
+      model: SR Linux
+      manufacturer: { v5: { type: dcim.manufacturer, stable: nokia } }
+    uid: { v5: { type: dcim.device_type, stable: srlinux } }
+"#,
+            ),
+        )
+        .unwrap();
+
+        let manufacturer = out
+            .objects
+            .iter()
+            .find(|o| o.type_name.as_str() == "dcim.manufacturer")
+            .unwrap();
+        let device_type = out
+            .objects
+            .iter()
+            .find(|o| o.type_name.as_str() == "dcim.device_type")
+            .unwrap();
+        assert_eq!(
+            device_type.attrs.get("manufacturer").unwrap(),
+            &json!(manufacturer.uid.to_string())
+        );
+    }
+
+    #[test]
+    fn a_v5_shaped_json_attr_on_a_spec_object_stays_json() {
+        let out = compile_map(
+            &input_inventory(json!([])),
+            &spec(
+                r#"
+schema:
+  types:
+    catalog.item:
+      key:
+        slug: { type: slug }
+      fields:
+        metadata: { type: json }
+objects:
+  - type: catalog.item
+    key: { slug: one }
+    attrs:
+      metadata: { v5: { type: not-a-ref, stable: untouched } }
+    uid: { v5: { type: catalog.item, stable: one } }
+"#,
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            out.objects[0].attrs.get("metadata").unwrap(),
+            &json!({ "v5": { "type": "not-a-ref", "stable": "untouched" } })
+        );
     }
 
     #[test]
