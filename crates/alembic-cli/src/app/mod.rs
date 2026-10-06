@@ -5,14 +5,7 @@ mod io;
 mod skill;
 mod state;
 
-use self::io::{
-    announce_written, read_plan, write_apply_report, write_drift_report, write_inventory,
-    write_plan, write_validation_report,
-};
-use self::state::load_state;
-use crate::app::config::AppConfig;
 use alembic_adapter_registry::{create_backend, Plugin};
-use alembic_core::TypeName;
 use alembic_engine::{
     apply_plan, build_plan, guard_drift_report, guard_schema_provisioning, load_inventory,
     load_inventory_unvalidated, plan_write_only, render_plan, Backend, DriftReport, Plan,
@@ -23,6 +16,14 @@ use clap::{Parser, Subcommand};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+
+use self::io::{
+    announce_written, read_plan, write_apply_report, write_drift_report, write_inventory,
+    write_plan, write_validation_report,
+};
+use self::state::load_state;
+use crate::app::config::AppConfig;
+use alembic_core::TypeName;
 
 #[cfg(test)]
 use self::state::{resolve_state_backend_config, state_path, StateBackendConfig};
@@ -103,7 +104,7 @@ enum Command {
         dry_run: bool,
         /// print a read-only drift report (desired vs observed) and exit without
         /// writing a plan file or saving state; --output writes the same report
-        /// to a file. mutually exclusive with --dry-run.
+        /// to a file. exits 2 on drift. mutually exclusive with --dry-run.
         #[arg(long, default_value_t = false, conflicts_with = "dry_run")]
         report: bool,
         /// allow the plan to include deletes (objects, and destructive schema

@@ -2112,7 +2112,7 @@ objects:
         },
     };
     let result = run(cli, AppConfig::load().unwrap()).await;
-    result.unwrap();
+    assert_eq!(result.unwrap(), ExitCode::from(2));
 
     let drift: DriftReport = serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
     assert_eq!(drift.missing.len(), 1);
@@ -2262,7 +2262,7 @@ async fn run_plan_report_carries_an_empty_schema_preview_for_a_backend_that_prov
         },
     };
     let result = run(cli, AppConfig::load().unwrap()).await;
-    result.unwrap();
+    assert_eq!(result.unwrap(), ExitCode::SUCCESS);
 
     let raw = std::fs::read_to_string(&out).unwrap();
     assert_eq!(
@@ -2987,7 +2987,7 @@ async fn run_plan_refuses_an_adapter_that_reports_refs_as_backend_ids() {
     let error = match planned {
         // the backend holds all three objects, so a plan here is a plan of
         // creates that duplicate them.
-        Ok(()) => panic!(
+        Ok(_) => panic!(
             "the plan was taken: {}",
             std::fs::read_to_string(&out).unwrap_or_default()
         ),

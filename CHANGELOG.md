@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **breaking** `plan --report` exits `2` when it finds drift and `0` when it finds none; an error still exits `1`
 - `skill list` prints a `name  summary` header over aligned columns instead of tab-separated lines, and `skill show` or `skill install` without a name names the skills the binary carries
 - `import` warns once per type, naming every undeclared attr it dropped from that type, instead of once per field; the old line called every dropped field server-computed, though most are ordinary fields the `-f` does not declare
 
