@@ -1,0 +1,27 @@
+name: validate-462
+
+on:
+  push:
+    branches: ["scratch/462-validate"]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # v1
+        with:
+          toolchain: stable
+          components: rustfmt
+      - name: Update lockfile
+        run: |
+          cargo update -p infrahub --precise 0.4.5
+          git diff -- Cargo.lock
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Test Infrahub adapter
+        run: cargo test -p alembic-adapter-infrahub
