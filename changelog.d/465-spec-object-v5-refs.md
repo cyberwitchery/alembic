@@ -1,0 +1,1 @@
+- map: a ref-typed key or attr on an `objects:` entry accepts `{ v5: { type, stable } }`, including nested attr refs, so spec objects can reference each other without hand-computing the derived uuid; literal uuid refs are unchanged (#465)
