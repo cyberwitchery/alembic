@@ -54,6 +54,7 @@ plans are json files that can be re-applied. the plan is deterministic for a giv
 - `type_name` may be any custom string.
 - `changes` is the plan-time diff, for review and drift reporting; apply writes an update's full declared projection, not only the listed changes (`docs/engine.md`, diff rules).
 - creates carry no `backend_id`; on updates and deletes it is optional and may be absent when not known.
+- a plan can both create and update one uid. the planner does that to break a reference cycle: the create leaves out a ref, and the update sets it once the target exists (`docs/engine.md`, apply ordering). the update has no `backend_id`, since the object does not exist at plan time, and it runs after the create. a drift report counts that object as missing only.
 - deletes are only applied when `--allow-delete` is set.
 - the plan embeds the schema used during planning to drive apply-time reference resolution; see `docs/ir.md` for the field schema.
 - `summary` is optional, counts of each op kind.

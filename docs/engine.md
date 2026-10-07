@@ -44,6 +44,13 @@ apply uses a dependency-aware ordering:
 - deletes in reverse type order
 - unresolved create/update refs are retried until convergence or explicit unresolved-ref failure
 
+creates that reference each other in a cycle (netbox's device `primary_ip4` ->
+ip -> interface -> device) cannot go out in any order, so `plan` breaks each
+cycle at a ref that can wait: an optional, non-key attr. that create omits the
+attr, and an update of the same uid sets it once the targets exist, so the plan
+shows both. a cycle held together only by key or `required` refs is left whole
+and fails at apply with `unresolved references`.
+
 ## diff rules
 
 diffs are computed at the `attrs` field level.

@@ -30,6 +30,51 @@ pub fn plan(
     allow_delete: bool,
     match_by_key: bool,
 ) -> Result<Plan> {
+    build(
+        desired,
+        observed,
+        state,
+        schema,
+        scope,
+        allow_delete,
+        match_by_key,
+        true,
+    )
+}
+
+/// `plan` for a write-only backend: every object a whole create. an emitter
+/// writes all of them at once and resolves no ref against a backend, so a
+/// reference cycle needs no deferred ref.
+pub(crate) fn plan_whole_creates(
+    desired: &[Object],
+    state: &StateStore,
+    schema: &alembic_core::Schema,
+    scope: Option<&Scope>,
+) -> Result<Plan> {
+    build(
+        desired,
+        &ObservedState::default(),
+        state,
+        schema,
+        scope,
+        false,
+        true,
+        false,
+    )
+}
+
+// `plan`'s seven arguments plus the one switch only `plan_whole_creates` flips.
+#[allow(clippy::too_many_arguments)]
+fn build(
+    desired: &[Object],
+    observed: &ObservedState,
+    state: &StateStore,
+    schema: &alembic_core::Schema,
+    scope: Option<&Scope>,
+    allow_delete: bool,
+    match_by_key: bool,
+    defer_cycle_refs: bool,
+) -> Result<Plan> {
     let mut ops = Vec::new();
     let mut matched = BTreeSet::new();
 
@@ -107,6 +152,9 @@ pub fn plan(
         }
     }
 
+    if defer_cycle_refs {
+        break_create_cycles(&mut ops, schema);
+    }
     ops.sort_by_cached_key(op_order_key);
 
     let mut plan = Plan {
@@ -241,6 +289,224 @@ fn op_order_key(op: &Op) -> OrderKey {
         Op::Delete { type_name, key, .. } => (type_name, key_string(key), 2u8),
     };
     (type_name.as_str().to_string(), weight, key)
+}
+
+/// a create's dependency on another create in the same plan, and whether it can
+/// wait: it can when every attr carrying it is an optional non-key field, so the
+/// create may go out without it and an update set it afterwards.
+struct CreateDep {
+    deferrable: bool,
+    fields: BTreeSet<String>,
+}
+
+/// creates that reference each other in a cycle cannot be applied in any order:
+/// each needs the others' backend ids first (netbox's device -> primary_ip4 ->
+/// interface -> device). break every such cycle at a deferrable ref: the create
+/// goes out without it, and an update for the same uid, with no backend id since
+/// the object does not exist yet, sets it once the targets exist. a cycle held
+/// together by key or required refs alone is left as it is.
+fn break_create_cycles(ops: &mut Vec<Op>, schema: &Schema) {
+    let creates: Vec<usize> = ops
+        .iter()
+        .enumerate()
+        .filter(|(_, op)| matches!(op, Op::Create { .. }))
+        .map(|(i, _)| i)
+        .collect();
+    let node_of: BTreeMap<Uid, usize> = creates
+        .iter()
+        .enumerate()
+        .map(|(node, &i)| (ops[i].uid(), node))
+        .collect();
+    let mut deps: Vec<BTreeMap<usize, CreateDep>> = creates
+        .iter()
+        .map(|&i| create_deps(&ops[i], schema, &node_of))
+        .collect();
+
+    let deferred = deferred_fields(&mut deps, &creates, ops);
+    for (node, fields) in deferred {
+        let Op::Create { desired, .. } = &mut ops[creates[node]] else {
+            unreachable!("nodes are creates");
+        };
+        let full = desired.clone();
+        let changes = fields
+            .iter()
+            .filter_map(|field| {
+                desired.attrs.remove(field).map(|to| FieldChange {
+                    field: field.clone(),
+                    from: Value::Null,
+                    to,
+                })
+            })
+            .collect();
+        ops.push(Op::Update {
+            uid: full.uid,
+            type_name: full.type_name.clone(),
+            desired: full,
+            changes,
+            backend_id: None,
+        });
+    }
+}
+
+/// the creates `op` references, by node, with the attrs that carry each ref.
+fn create_deps(
+    op: &Op,
+    schema: &Schema,
+    node_of: &BTreeMap<Uid, usize>,
+) -> BTreeMap<usize, CreateDep> {
+    let mut deps: BTreeMap<usize, CreateDep> = BTreeMap::new();
+    let (Op::Create { desired, .. }, Some(type_schema)) =
+        (op, schema.types.get(op.type_name().as_str()))
+    else {
+        return deps;
+    };
+    let mut add = |uids: BTreeSet<Uid>, field: &str, deferrable: bool| {
+        for uid in uids {
+            if let Some(&node) = node_of.get(&uid) {
+                let dep = deps.entry(node).or_insert(CreateDep {
+                    deferrable: true,
+                    fields: BTreeSet::new(),
+                });
+                dep.deferrable &= deferrable;
+                dep.fields.insert(field.to_string());
+            }
+        }
+    };
+    for (field, value) in desired.key.iter() {
+        if let Some(field_schema) = type_schema.key.get(field) {
+            let mut uids = BTreeSet::new();
+            collect_refs_in_value(&field_schema.r#type, value, &mut uids);
+            add(uids, field, false);
+        }
+    }
+    for (field, value) in desired.attrs.iter() {
+        let Some(field_schema) = type_schema
+            .fields
+            .get(field)
+            .or_else(|| type_schema.key.get(field))
+        else {
+            continue;
+        };
+        let mut uids = BTreeSet::new();
+        collect_refs_in_value(&field_schema.r#type, value, &mut uids);
+        let deferrable = !type_schema.key.contains_key(field) && !field_schema.required;
+        add(uids, field, deferrable);
+    }
+    deps
+}
+
+/// walk the creates in dependency order. when the walk stalls, every node left
+/// waits on a cycle; pick the first node, by plan order, that sits in a cycle and
+/// can defer all its refs into it, drop those edges, and carry on. returns the
+/// attrs each chosen node defers.
+fn deferred_fields(
+    deps: &mut [BTreeMap<usize, CreateDep>],
+    creates: &[usize],
+    ops: &[Op],
+) -> BTreeMap<usize, BTreeSet<String>> {
+    let n = deps.len();
+    let mut placed = vec![false; n];
+    let mut deferred: BTreeMap<usize, BTreeSet<String>> = BTreeMap::new();
+    loop {
+        let mut progressed = true;
+        while progressed {
+            progressed = false;
+            for node in 0..n {
+                if !placed[node] && deps[node].keys().all(|&dep| placed[dep]) {
+                    placed[node] = true;
+                    progressed = true;
+                }
+            }
+        }
+        if placed.iter().all(|&p| p) {
+            return deferred;
+        }
+
+        let component = strongly_connected(deps, &placed);
+        let candidate = (0..n)
+            .filter(|&node| !placed[node])
+            .filter(|&node| {
+                let mut inner = deps[node]
+                    .iter()
+                    .filter(|(&dep, _)| component[dep] == component[node])
+                    .peekable();
+                inner.peek().is_some() && inner.all(|(_, dep)| dep.deferrable)
+            })
+            .min_by_key(|&node| op_order_key(&ops[creates[node]]));
+        let Some(node) = candidate else {
+            return deferred;
+        };
+        let inner: Vec<usize> = deps[node]
+            .keys()
+            .copied()
+            .filter(|&dep| component[dep] == component[node])
+            .collect();
+        for dep in inner {
+            if let Some(edge) = deps[node].remove(&dep) {
+                deferred.entry(node).or_default().extend(edge.fields);
+            }
+        }
+    }
+}
+
+/// strongly connected components among the unplaced nodes (iterative kosaraju),
+/// as a component id per node. placed nodes get their own id each.
+fn strongly_connected(deps: &[BTreeMap<usize, CreateDep>], placed: &[bool]) -> Vec<usize> {
+    let n = deps.len();
+    let live = |node: usize| !placed[node];
+    let mut reverse: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for (node, edges) in deps.iter().enumerate() {
+        for &dep in edges.keys() {
+            if live(node) && live(dep) {
+                reverse[dep].push(node);
+            }
+        }
+    }
+
+    let mut visited = vec![false; n];
+    let mut finished = Vec::with_capacity(n);
+    for start in (0..n).filter(|&node| live(node)) {
+        if visited[start] {
+            continue;
+        }
+        visited[start] = true;
+        let mut stack = vec![(start, deps[start].keys().copied().collect::<Vec<_>>())];
+        while let Some((node, pending)) = stack.last_mut() {
+            match pending.pop() {
+                Some(next) if live(next) && !visited[next] => {
+                    visited[next] = true;
+                    let edges = deps[next].keys().copied().collect();
+                    stack.push((next, edges));
+                }
+                Some(_) => {}
+                None => {
+                    finished.push(*node);
+                    stack.pop();
+                }
+            }
+        }
+    }
+
+    let mut component: Vec<usize> = (0..n).collect();
+    let mut assigned = vec![false; n];
+    for &root in finished.iter().rev() {
+        if assigned[root] {
+            continue;
+        }
+        assigned[root] = true;
+        component[root] = root;
+        let mut stack = vec![root];
+        while let Some(node) = stack.pop() {
+            for &prev in &reverse[node] {
+                if !assigned[prev] {
+                    assigned[prev] = true;
+                    component[prev] = root;
+                    stack.push(prev);
+                }
+            }
+        }
+    }
+    component
 }
 
 /// collect the referenced uids carried by a value, recursing through list and
@@ -387,13 +653,24 @@ fn stable_toposort(ops: &[&Op], edges: &[BTreeSet<usize>]) -> Vec<usize> {
 /// (deletes) an op is placed before the ops it references, so an object is
 /// removed only after everything referencing it.
 fn ordered_by_refs(ops: &[&Op], schema: &Schema, reverse: bool) -> Vec<Op> {
-    let uid_to_node: BTreeMap<Uid, usize> = ops
-        .iter()
-        .enumerate()
-        .map(|(i, op)| (op.uid(), i))
-        .collect();
+    // a uid both created and updated is a create with a deferred ref
+    // (`break_create_cycles`): refs to it wait for the create, and the update
+    // runs after it.
+    let mut uid_to_node: BTreeMap<Uid, usize> = BTreeMap::new();
+    for (i, op) in ops.iter().enumerate() {
+        if matches!(op, Op::Create { .. }) || !uid_to_node.contains_key(&op.uid()) {
+            uid_to_node.insert(op.uid(), i);
+        }
+    }
 
     let mut edges: Vec<BTreeSet<usize>> = vec![BTreeSet::new(); ops.len()];
+    for (i, op) in ops.iter().enumerate() {
+        if let Some(&j) = uid_to_node.get(&op.uid()) {
+            if i != j {
+                edges[j].insert(i);
+            }
+        }
+    }
     for (i, &op) in ops.iter().enumerate() {
         for referenced in op_referenced_uids(op, schema) {
             let Some(&j) = uid_to_node.get(&referenced) else {
@@ -1547,5 +1824,247 @@ mod tests {
         assert_eq!(delete_pos, non_delete_count);
         // and the create chain is still toposorted within its block.
         assert!(order_index(&sorted, 2) < order_index(&sorted, 1));
+    }
+
+    // --- reference cycles among creates (issue #477) ---
+
+    fn ref_to(target: &str) -> FieldType {
+        FieldType::Ref {
+            target: target.to_string(),
+        }
+    }
+
+    /// netbox's primary_ip4 cycle: a device names its primary ip, the ip is
+    /// assigned to an interface, and the interface is keyed by the device.
+    fn device_ip_schema() -> Schema {
+        let device = TypeSchema {
+            key: BTreeMap::from([("name".to_string(), field(FieldType::String))]),
+            fields: BTreeMap::from([
+                ("name".to_string(), field(FieldType::String)),
+                ("primary_ip4".to_string(), field(ref_to("ipam.ip_address"))),
+            ]),
+        };
+        let interface = TypeSchema {
+            key: BTreeMap::from([
+                ("device".to_string(), field(ref_to("dcim.device"))),
+                ("name".to_string(), field(FieldType::String)),
+            ]),
+            fields: BTreeMap::from([
+                ("device".to_string(), field(ref_to("dcim.device"))),
+                ("name".to_string(), field(FieldType::String)),
+            ]),
+        };
+        let ip = TypeSchema {
+            key: BTreeMap::from([("address".to_string(), field(FieldType::String))]),
+            fields: BTreeMap::from([
+                ("address".to_string(), field(FieldType::String)),
+                (
+                    "assigned_object".to_string(),
+                    field(ref_to("dcim.interface")),
+                ),
+            ]),
+        };
+        Schema {
+            types: BTreeMap::from([
+                ("dcim.device".to_string(), device),
+                ("dcim.interface".to_string(), interface),
+                ("ipam.ip_address".to_string(), ip),
+            ]),
+        }
+    }
+
+    fn device_ip_objects() -> Vec<Object> {
+        let device = Object::new(
+            Uid::from_u128(1),
+            TypeName::new("dcim.device"),
+            Key::from(BTreeMap::from([("name".to_string(), json!("leaf01"))])),
+            make_attrs(&[("name", json!("leaf01")), ("primary_ip4", uref(3))]),
+        )
+        .unwrap();
+        let interface = Object::new(
+            Uid::from_u128(2),
+            TypeName::new("dcim.interface"),
+            Key::from(BTreeMap::from([
+                ("device".to_string(), uref(1)),
+                ("name".to_string(), json!("eth0")),
+            ])),
+            make_attrs(&[("device", uref(1)), ("name", json!("eth0"))]),
+        )
+        .unwrap();
+        let ip = Object::new(
+            Uid::from_u128(3),
+            TypeName::new("ipam.ip_address"),
+            Key::from(BTreeMap::from([(
+                "address".to_string(),
+                json!("10.0.0.10/24"),
+            )])),
+            make_attrs(&[
+                ("address", json!("10.0.0.10/24")),
+                ("assigned_object", uref(2)),
+            ]),
+        )
+        .unwrap();
+        vec![device, interface, ip]
+    }
+
+    fn plan_new(desired: &[Object], schema: &Schema) -> Plan {
+        plan(
+            desired,
+            &ObservedState::default(),
+            &empty_state(),
+            schema,
+            None,
+            false,
+            true,
+        )
+        .unwrap()
+    }
+
+    fn create_attrs(plan: &Plan, uid: u128) -> &JsonMap {
+        plan.ops
+            .iter()
+            .find_map(|op| match op {
+                Op::Create {
+                    uid: u, desired, ..
+                } if u.as_u128() == uid => Some(&desired.attrs),
+                _ => None,
+            })
+            .expect("create present")
+    }
+
+    #[test]
+    fn plan_breaks_a_create_cycle_at_an_optional_ref() {
+        let schema = device_ip_schema();
+        let plan = plan_new(&device_ip_objects(), &schema);
+
+        // the device is created without the ref that closes the cycle...
+        assert!(!create_attrs(&plan, 1).contains_key("primary_ip4"));
+        assert_eq!(create_attrs(&plan, 1).get("name"), Some(&json!("leaf01")));
+        // ...the key ref and the ip's assignment stay on their creates...
+        assert!(create_attrs(&plan, 2).contains_key("device"));
+        assert!(create_attrs(&plan, 3).contains_key("assigned_object"));
+        // ...and an update sets it once the ip exists.
+        let updates: Vec<&Op> = plan
+            .ops
+            .iter()
+            .filter(|op| matches!(op, Op::Update { .. }))
+            .collect();
+        assert_eq!(updates.len(), 1);
+        let Op::Update {
+            uid,
+            desired,
+            changes,
+            backend_id,
+            ..
+        } = updates[0]
+        else {
+            unreachable!()
+        };
+        assert_eq!(uid.as_u128(), 1);
+        assert_eq!(desired.attrs.get("primary_ip4"), Some(&uref(3)));
+        assert_eq!(
+            changes,
+            &vec![FieldChange {
+                field: "primary_ip4".to_string(),
+                from: Value::Null,
+                to: uref(3),
+            }]
+        );
+        assert!(backend_id.is_none());
+    }
+
+    #[test]
+    fn apply_order_runs_the_completing_update_after_the_cycle() {
+        let schema = device_ip_schema();
+        let plan = plan_new(&device_ip_objects(), &schema);
+        let sorted = sort_ops_for_apply(&plan.ops, &schema);
+
+        let pos = |want_update: bool, uid: u128| {
+            sorted
+                .iter()
+                .position(|op| {
+                    op.uid().as_u128() == uid && matches!(op, Op::Update { .. }) == want_update
+                })
+                .unwrap()
+        };
+        assert!(pos(false, 1) < pos(false, 2), "device before its interface");
+        assert!(pos(false, 2) < pos(false, 3), "interface before its ip");
+        assert!(
+            pos(false, 3) < pos(true, 1),
+            "primary ip set after the ip exists"
+        );
+    }
+
+    #[test]
+    fn plan_never_strips_a_required_ref() {
+        // a.next is required, b.back is not: the cycle is broken at b even
+        // though a sorts first.
+        let mut schema = node_schema(&[("next", ref_t()), ("back", ref_t())]);
+        schema
+            .types
+            .get_mut("node")
+            .unwrap()
+            .fields
+            .get_mut("next")
+            .unwrap()
+            .required = true;
+        let desired = vec![
+            make_object(1, "node", "a", make_attrs(&[("next", uref(2))])),
+            make_object(2, "node", "b", make_attrs(&[("back", uref(1))])),
+        ];
+        let plan = plan_new(&desired, &schema);
+
+        assert!(create_attrs(&plan, 1).contains_key("next"));
+        assert!(!create_attrs(&plan, 2).contains_key("back"));
+        assert!(plan
+            .ops
+            .iter()
+            .any(|op| matches!(op, Op::Update { uid, .. } if uid.as_u128() == 2)));
+    }
+
+    #[test]
+    fn plan_leaves_a_cycle_it_cannot_break() {
+        // both refs required: there is nothing to defer, so the creates stay
+        // whole and no completing update is invented.
+        let mut schema = node_schema(&[("next", ref_t())]);
+        schema
+            .types
+            .get_mut("node")
+            .unwrap()
+            .fields
+            .get_mut("next")
+            .unwrap()
+            .required = true;
+        let desired = vec![
+            make_object(1, "node", "a", make_attrs(&[("next", uref(2))])),
+            make_object(2, "node", "b", make_attrs(&[("next", uref(1))])),
+        ];
+        let plan = plan_new(&desired, &schema);
+
+        assert_eq!(plan.ops.len(), 2);
+        assert!(plan.ops.iter().all(|op| matches!(op, Op::Create { .. })));
+        assert!(create_attrs(&plan, 1).contains_key("next"));
+        assert!(create_attrs(&plan, 2).contains_key("next"));
+    }
+
+    #[test]
+    fn a_write_only_plan_keeps_cycle_creates_whole() {
+        let schema = device_ip_schema();
+        let plan = plan_whole_creates(&device_ip_objects(), &empty_state(), &schema, None).unwrap();
+        assert_eq!(plan.ops.len(), 3);
+        assert!(plan.ops.iter().all(|op| matches!(op, Op::Create { .. })));
+        assert!(create_attrs(&plan, 1).contains_key("primary_ip4"));
+    }
+
+    #[test]
+    fn plan_without_a_cycle_adds_no_update() {
+        let schema = node_schema(&[("next", ref_t())]);
+        let desired = vec![
+            make_object(1, "node", "a", make_attrs(&[("next", uref(2))])),
+            make_object(2, "node", "b", make_attrs(&[])),
+        ];
+        let plan = plan_new(&desired, &schema);
+        assert!(plan.ops.iter().all(|op| matches!(op, Op::Create { .. })));
+        assert!(create_attrs(&plan, 1).contains_key("next"));
     }
 }
