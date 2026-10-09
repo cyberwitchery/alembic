@@ -23,6 +23,16 @@ use std::collections::{BTreeMap, BTreeSet};
 use tempfile::tempdir;
 use uuid::Uuid;
 
+fn match_counts(plan: &Plan) -> (usize, usize, usize, usize) {
+    let matching = plan.summary.as_ref().unwrap().matching.as_ref().unwrap();
+    (
+        matching.by_state,
+        matching.by_key,
+        matching.adopted,
+        matching.to_create,
+    )
+}
+
 fn uid(n: u128) -> Uid {
     Uuid::from_u128(n)
 }
@@ -3144,6 +3154,8 @@ async fn a_rename_stays_an_update_when_the_stale_uid_sorts_first() {
     )
     .await
     .unwrap();
+    // the site and the device both match through state.
+    assert_eq!(match_counts(&plan), (2, 0, 0, 0));
     let ops = site_ops(&plan);
     assert_eq!(ops.len(), 1, "{:?}", plan.ops);
     assert!(
@@ -3310,6 +3322,11 @@ async fn a_key_adoption_is_reported_alongside_the_binding_it_writes() {
             .unwrap();
     assert!(plan.ops.is_empty(), "converged adoption plans nothing");
     assert_eq!(bootstrap.adoptions.len(), 1);
+    let matching = plan.summary.as_ref().unwrap().matching.as_ref().unwrap();
+    assert_eq!(matching.by_state, 0);
+    assert_eq!(matching.by_key, 1);
+    assert_eq!(matching.adopted, 1);
+    assert_eq!(matching.to_create, 0);
     let adoption = &bootstrap.adoptions[0];
     assert_eq!(adoption.type_name, t("dcim.site"));
     assert_eq!(adoption.uid, uid(1));
@@ -3334,6 +3351,7 @@ async fn no_adopt_plans_unknown_objects_as_creates() {
     assert!(bootstrap.is_empty());
     assert_eq!(plan.ops.len(), 1);
     assert!(matches!(plan.ops[0], Op::Create { .. }));
+    assert_eq!(match_counts(&plan), (0, 0, 0, 1));
     assert_eq!(state.backend_id(t("dcim.site"), uid(1)), None);
 
     // a state-known object still matches without adoption.
@@ -3345,6 +3363,7 @@ async fn no_adopt_plans_unknown_objects_as_creates() {
             .unwrap();
     assert!(bootstrap.is_empty());
     assert!(plan.ops.is_empty(), "state-known objects still converge");
+    assert_eq!(match_counts(&plan), (1, 0, 0, 0));
 }
 
 /// adopting an object another uid used to answer for supersedes that binding,
@@ -3366,6 +3385,25 @@ async fn a_superseding_adoption_reports_the_displaced_uid() {
         state.backend_id(t("dcim.site"), uid(9)),
         None,
         "the displaced uid lost its binding"
+    );
+}
+
+/// A stale state ID can resolve by key on a full observation without writing
+/// a replacement binding; key matches and adoptions must be distinct counters.
+#[tokio::test]
+async fn stale_state_id_falls_back_by_key_without_adoption() {
+    let inventory = adoption_inventory(uid(1));
+    let mut state = StateStore::new(None, StateData::default());
+    state.set_backend_id(t("dcim.site"), uid(1), BackendId::Int(99));
+    let (plan, bootstrap) = crate::build_plan(&AdoptionBackend, &inventory, &mut state, true, true)
+        .await
+        .unwrap();
+    assert!(plan.ops.is_empty());
+    assert!(bootstrap.adoptions.is_empty());
+    assert_eq!(match_counts(&plan), (0, 1, 0, 0));
+    assert_eq!(
+        state.backend_id(t("dcim.site"), uid(1)),
+        Some(BackendId::Int(99))
     );
 }
 

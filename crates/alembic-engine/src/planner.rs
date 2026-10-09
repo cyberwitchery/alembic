@@ -1,7 +1,7 @@
 //! diff and plan generation.
 
 use crate::state::StateStore;
-use crate::types::{ObservedState, Plan};
+use crate::types::{Adoption, BootstrapReport, MatchSummary, ObservedState, Plan, PlanSummary};
 use alembic_adapter_sdk::{FieldChange, Op};
 use alembic_core::{
     key_string, uid_v5, FieldType, JsonMap, Key, Object, Schema, Scope, TypeName, TypeSchema, Uid,
@@ -39,6 +39,33 @@ pub fn plan(
         allow_delete,
         match_by_key,
         true,
+        &[],
+    )
+}
+
+/// `plan` after bootstrap: an object the run adopted counts as a key match,
+/// though its binding is in state by the time the planner reads it.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn plan_with_bootstrap(
+    desired: &[Object],
+    observed: &ObservedState,
+    state: &StateStore,
+    schema: &Schema,
+    scope: Option<&Scope>,
+    allow_delete: bool,
+    match_by_key: bool,
+    bootstrap: &BootstrapReport,
+) -> Result<Plan> {
+    build(
+        desired,
+        observed,
+        state,
+        schema,
+        scope,
+        allow_delete,
+        match_by_key,
+        true,
+        &bootstrap.adoptions,
     )
 }
 
@@ -51,7 +78,7 @@ pub(crate) fn plan_whole_creates(
     schema: &alembic_core::Schema,
     scope: Option<&Scope>,
 ) -> Result<Plan> {
-    build(
+    let mut plan = build(
         desired,
         &ObservedState::default(),
         state,
@@ -60,10 +87,17 @@ pub(crate) fn plan_whole_creates(
         false,
         true,
         false,
-    )
+        &[],
+    )?;
+    // an emitter observes nothing, so nothing was matched.
+    if let Some(summary) = &mut plan.summary {
+        summary.matching = None;
+    }
+    Ok(plan)
 }
 
-// `plan`'s seven arguments plus the one switch only `plan_whole_creates` flips.
+// `plan`'s seven arguments, the one switch only `plan_whole_creates` flips, and
+// the adoptions only `plan_with_bootstrap` passes.
 #[allow(clippy::too_many_arguments)]
 fn build(
     desired: &[Object],
@@ -74,7 +108,13 @@ fn build(
     allow_delete: bool,
     match_by_key: bool,
     defer_cycle_refs: bool,
+    adoptions: &[Adoption],
 ) -> Result<Plan> {
+    let adopted: BTreeSet<_> = adoptions
+        .iter()
+        .map(|a| (a.type_name.clone(), a.uid))
+        .collect();
+    let mut matching = MatchSummary::default();
     let mut ops = Vec::new();
     let mut matched = BTreeSet::new();
 
@@ -85,6 +125,7 @@ fn build(
         let state_match = state
             .backend_id(object.type_name.clone(), object.uid)
             .and_then(|id| observed.by_backend_id(&object.type_name, &id));
+        let by_state = state_match.is_some();
         let observed_object = match state_match {
             Some(found) => Some(found),
             None if match_by_key => observed
@@ -100,6 +141,14 @@ fn build(
         };
 
         if let Some(obs) = observed_object {
+            if adopted.contains(&(object.type_name.clone(), object.uid)) {
+                matching.by_key += 1;
+                matching.adopted += 1;
+            } else if by_state {
+                matching.by_state += 1;
+            } else {
+                matching.by_key += 1;
+            }
             let type_schema = schema.types.get(object.type_name.as_str());
             let changes = diff_object(obs, object, type_schema);
             if !changes.is_empty() {
@@ -115,6 +164,7 @@ fn build(
                 matched.insert((object.type_name.clone(), backend_id.clone()));
             }
         } else {
+            matching.to_create += 1;
             ops.push(Op::Create {
                 uid: object.uid,
                 type_name: object.type_name.clone(),
@@ -163,7 +213,10 @@ fn build(
         summary: None,
         schema_preview: None,
     };
-    plan.summary = Some(plan.summary());
+    plan.summary = Some(PlanSummary {
+        matching: Some(matching),
+        ..plan.summary()
+    });
     Ok(plan)
 }
 
@@ -2054,6 +2107,13 @@ mod tests {
         assert_eq!(plan.ops.len(), 3);
         assert!(plan.ops.iter().all(|op| matches!(op, Op::Create { .. })));
         assert!(create_attrs(&plan, 1).contains_key("primary_ip4"));
+    }
+
+    #[test]
+    fn a_write_only_plan_reports_no_matching() {
+        let schema = device_ip_schema();
+        let plan = plan_whole_creates(&device_ip_objects(), &empty_state(), &schema, None).unwrap();
+        assert!(plan.summary.unwrap().matching.is_none());
     }
 
     #[test]

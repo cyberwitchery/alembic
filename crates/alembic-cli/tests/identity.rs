@@ -140,6 +140,29 @@ fn adoption_is_reported_and_persisted_to_scoped_state() {
         out.contains("plan: 0 to create, 0 to update, 0 to delete"),
         "{out}"
     );
+    assert!(
+        out.contains("0 by state, 1 by key (1 adopted), 0 to create"),
+        "{out}"
+    );
+    assert!(err.contains("state: none at"), "{err}");
+    let first: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(dir.path().join("plan.json")).unwrap()).unwrap();
+    assert_eq!(first["summary"]["state"]["present"], false);
+    assert_eq!(first["summary"]["state"]["bindings_loaded"], 0);
+    assert_eq!(first["summary"]["matching"]["adopted"], 1);
+
+    let second = plan(dir.path(), &inventory, &config, &[]);
+    assert!(second.status.success(), "{}", stderr(&second));
+    assert!(
+        stderr(&second).contains("1 bindings"),
+        "{}",
+        stderr(&second)
+    );
+    assert!(stdout(&second).contains("1 by state, 0 by key, 0 to create"));
+    let warm: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(dir.path().join("plan.json")).unwrap()).unwrap();
+    assert_eq!(warm["summary"]["state"]["present"], true);
+    assert_eq!(warm["summary"]["state"]["bindings_loaded"], 1);
 
     // the state landed under the backend-scoped path, stamped and mapped.
     let state_dir = dir.path().join(".alembic").join("state");
@@ -175,6 +198,7 @@ fn no_adopt_binds_nothing_and_plans_a_create() {
         out.contains("plan: 1 to create, 0 to update, 0 to delete"),
         "{out}"
     );
+    assert!(out.contains("0 by state, 0 by key, 1 to create"), "{out}");
 
     let state_dir = dir.path().join(".alembic").join("state");
     let entries: Vec<_> = fs::read_dir(&state_dir)
@@ -356,6 +380,38 @@ fn import_keeps_state_known_identity_across_a_backend_rename() {
     assert_ne!(imported["objects"][0]["uid"], SITE_UID);
 }
 
+/// Drift reports carry the same state context and match provenance as plans
+/// without persisting newly adopted bindings.
+#[test]
+fn report_carries_context_without_saving_identity() {
+    let dir = tempdir().unwrap();
+    let script = write_observer(dir.path(), OBSERVED_FRA1);
+    let config = write_backend_config(dir.path(), &script, "site-a");
+    let inventory = write_site_inventory(dir.path(), "dcim.site", "fra1");
+    let output = plan(dir.path(), &inventory, &config, &["--report"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let report: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(dir.path().join("plan.json")).unwrap()).unwrap();
+    assert_eq!(report["state"]["present"], false);
+    assert_eq!(report["matching"]["by_key"], 1);
+    assert_eq!(report["matching"]["adopted"], 1);
+    assert_eq!(report["adopted"].as_array().unwrap().len(), 1);
+    assert!(report.get("ops").is_none());
+    assert!(
+        !dir.path()
+            .join(".alembic")
+            .join("state")
+            .read_dir()
+            .unwrap()
+            .any(|entry| entry
+                .unwrap()
+                .path()
+                .extension()
+                .is_some_and(|ext| ext == "json")),
+        "report must not persist the adoption"
+    );
+}
+
 /// --dry-run promises raw plan json on stdout; adoption commentary rides
 /// stderr, so an adopting dry run still parses.
 #[test]
@@ -384,4 +440,19 @@ fn dry_run_stdout_stays_json_when_the_run_adopts() {
     let plan: serde_json::Value = serde_json::from_str(&stdout(&output))
         .expect("dry-run stdout must be the raw plan json, nothing else");
     assert_eq!(plan["ops"], serde_json::json!([]));
+    assert_eq!(plan["summary"]["state"]["present"], false);
+    assert_eq!(plan["summary"]["matching"]["by_key"], 1);
+    assert!(
+        !dir.path()
+            .join(".alembic")
+            .join("state")
+            .read_dir()
+            .unwrap()
+            .any(|entry| entry
+                .unwrap()
+                .path()
+                .extension()
+                .is_some_and(|ext| ext == "json")),
+        "dry run must not persist identity"
+    );
 }

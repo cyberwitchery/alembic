@@ -49,8 +49,8 @@ pub use pretty_printing::bullet_list;
 pub use state::{BackendIdentity, PostgresTlsMode, StateFile, StateLock, StateStore};
 pub use transform::{compile_map, eval_map_transform, load_map_spec, MapSpec, TransformsSpec};
 pub use types::{
-    Adapter, Adoption, Backend, BootstrapReport, Emitter, ObservedObject, ObservedState, Observer,
-    Plan, PlanSummary, SupersededBinding,
+    Adapter, Adoption, Backend, BootstrapReport, Emitter, MatchSummary, ObservedObject,
+    ObservedState, Observer, Plan, PlanSummary, StateContext, SupersededBinding,
 };
 
 /// validate an inventory and return the report.
@@ -90,7 +90,7 @@ pub async fn build_plan(
 ) -> Result<(Plan, types::BootstrapReport)> {
     let (observed, bootstrap) =
         pipeline::observe(adapter, inventory, state, allow_delete, adopt_by_key).await?;
-    let plan = plan(
+    let plan = planner::plan_with_bootstrap(
         &inventory.objects,
         &observed,
         state,
@@ -98,6 +98,7 @@ pub async fn build_plan(
         inventory.scope.as_ref(),
         allow_delete,
         adopt_by_key,
+        &bootstrap,
     )?;
     Ok((plan, bootstrap))
 }
