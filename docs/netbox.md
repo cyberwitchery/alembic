@@ -95,6 +95,8 @@ if the schema includes types that are not present in netbox core object types, t
 will provision them as custom objects on `apply` using the netbox custom objects plugin:
 
 - creates custom object types for missing schema types
+- refuses, at plan as at apply, a custom object field name netbox would reject: only
+  letters, digits and `_` are allowed
 - creates custom object type fields for schema keys + fields, carrying the same
   `description`, `required` and `validation_regex` a native custom field carries
 - converges a field the type already has onto those three, additively as above: the

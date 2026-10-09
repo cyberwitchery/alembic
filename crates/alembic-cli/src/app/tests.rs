@@ -3885,3 +3885,15 @@ async fn run_skill_without_a_name_lists_what_this_binary_carries() {
         );
     }
 }
+
+#[test]
+fn a_rejected_schema_fails_the_plan_and_a_preview_hiccup_does_not() {
+    let rejected = anyhow::Error::from(alembic_adapter_sdk::AdapterApplyError::SchemaMismatch {
+        message: "invalid custom object field name 'mgmt-vlan'".to_string(),
+    })
+    .context("preview custom object fields");
+    let err = schema_preview_failure(rejected).expect_err("a rejected schema fails the plan");
+    assert!(format!("{err:#}").contains("mgmt-vlan"), "{err:#}");
+
+    assert!(schema_preview_failure(anyhow!("connection reset by peer")).is_ok());
+}
