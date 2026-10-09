@@ -39,7 +39,19 @@ pub(super) struct CustomObjectField {
 pub(super) struct CustomFieldDef {
     /// `None` for a field netbox listed without one: it can be detected, not patched.
     pub(super) id: Option<u64>,
+    /// the wire spelling (`text`, `select`, ...), which decides whether it takes choices.
+    pub(super) field_type: Option<String>,
+    /// the choice set a `select`/`multiselect` offers its values from.
+    pub(super) choice_set: Option<u64>,
     pub(super) current: ExistingCustomField,
+}
+
+/// a custom field choice set: its id, name and `[value, label]` pairs.
+#[derive(Debug, Clone)]
+pub(super) struct ChoiceSet {
+    pub(super) id: u64,
+    pub(super) name: String,
+    pub(super) extra_choices: Vec<Value>,
 }
 
 pub(super) struct NetBoxClient {
@@ -124,6 +136,16 @@ impl NetBoxClient {
         for field in fields {
             let def = CustomFieldDef {
                 id: field.id.map(|id| id as u64),
+                field_type: field
+                    .r#type
+                    .value
+                    .and_then(|value| serde_json::to_value(value).ok())
+                    .and_then(|value| value.as_str().map(str::to_string)),
+                choice_set: field
+                    .choice_set
+                    .flatten()
+                    .and_then(|set| set.id)
+                    .map(|id| id as u64),
                 current: ExistingCustomField {
                     required: field.required.unwrap_or(false),
                     description: field.description.clone().unwrap_or_default(),
@@ -138,6 +160,19 @@ impl NetBoxClient {
             }
         }
         Ok(by_type)
+    }
+
+    /// every custom field choice set. untyped: the generated model's
+    /// `choice_colors` does not decode every server's shape, and only the id,
+    /// name and choices are read.
+    pub(super) async fn fetch_custom_field_choice_sets(&self) -> Result<Vec<ChoiceSet>> {
+        let resource: netbox::Resource<Value> =
+            self.client.resource("extras/custom-field-choice-sets/");
+        self.list_all(&resource, None)
+            .await?
+            .into_iter()
+            .map(parse_choice_set)
+            .collect()
     }
 
     pub(super) async fn fetch_tags(&self) -> Result<BTreeSet<String>> {
@@ -231,6 +266,28 @@ pub(super) fn parse_custom_object_type(value: Value) -> Result<CustomObjectType>
         object_type_name,
         table_model_name,
         description,
+    })
+}
+
+pub(super) fn parse_choice_set(value: Value) -> Result<ChoiceSet> {
+    let id = value
+        .get("id")
+        .and_then(as_u64)
+        .ok_or_else(|| anyhow!("custom field choice set missing id"))?;
+    let name = value
+        .get("name")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("custom field choice set missing name"))?
+        .to_string();
+    let extra_choices = value
+        .get("extra_choices")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    Ok(ChoiceSet {
+        id,
+        name,
+        extra_choices,
     })
 }
 

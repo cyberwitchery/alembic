@@ -3957,4 +3957,459 @@ mod tests {
         let preview = adapter.preview_schema(&schema).await.unwrap().unwrap();
         assert_eq!(preview.created_fields, vec!["ipam.prefix.tier".to_string()]);
     }
+
+    const CHOICE_SET_ID: u64 = 11;
+
+    /// `types` each declaring the custom field `tier` as `tier`, keyed by slug.
+    fn schema_declaring_tier(types: &[(&str, serde_json::Value)]) -> alembic_core::Schema {
+        let types: serde_json::Map<String, serde_json::Value> = types
+            .iter()
+            .map(|(type_name, tier)| {
+                (
+                    type_name.to_string(),
+                    json!({
+                        "key": { "slug": { "type": "string" } },
+                        "fields": { "tier": tier }
+                    }),
+                )
+            })
+            .collect();
+        serde_json::from_value(json!({ "types": types })).unwrap()
+    }
+
+    fn tier_enum(values: &[&str]) -> serde_json::Value {
+        json!({ "type": "enum", "values": values })
+    }
+
+    /// the custom-fields list holding `fields`, plus the sample-object probe.
+    fn mock_custom_fields(server: &MockServer, fields: serde_json::Value) {
+        let _fields = server.mock(|when, then| {
+            when.method(GET).path("/api/extras/custom-fields/");
+            then.status(200).json_body(page(fields));
+        });
+        let _probe = server.mock(|when, then| {
+            when.method(GET)
+                .path("/api/dcim/sites/")
+                .query_param("limit", "1");
+            then.status(200).json_body(page(json!([])));
+        });
+    }
+
+    /// the choice-sets list holding `sets`.
+    fn mock_choice_sets(server: &MockServer, sets: serde_json::Value) -> Mock<'_> {
+        server.mock(|when, then| {
+            when.method(GET)
+                .path("/api/extras/custom-field-choice-sets/");
+            then.status(200).json_body(page(sets));
+        })
+    }
+
+    /// an existing `tier` field on `dcim.site` of `field_type`, using the
+    /// `tier` choice set when it is a select.
+    fn existing_tier_field(field_type: &str) -> serde_json::Value {
+        let mut field = json!({
+            "id": EXISTING_FIELD_ID,
+            "name": "tier",
+            "object_types": ["dcim.site"],
+            "type": {"value": field_type},
+            "required": false,
+            "description": "",
+            "validation_regex": "",
+        });
+        if matches!(field_type, "select" | "multiselect") {
+            field["choice_set"] = json!({"id": CHOICE_SET_ID, "name": "tier"});
+        }
+        field
+    }
+
+    fn tier_choice_set(choices: serde_json::Value) -> serde_json::Value {
+        json!({"id": CHOICE_SET_ID, "name": "tier", "extra_choices": choices})
+    }
+
+    // a declared enum is a `select` over a choice set named after the field,
+    // holding the declared values in order, each its own label.
+    #[tokio::test]
+    async fn ensure_schema_creates_a_choice_set_and_a_select_field() {
+        let server = MockServer::start();
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
+        let _object_types = mock_site_object_type(&server);
+        mock_custom_fields(&server, json!([]));
+        let _sets = mock_choice_sets(&server, json!([]));
+        let set_create = server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/extras/custom-field-choice-sets/")
+                .json_body(json!({
+                    "name": "tier",
+                    "extra_choices": [["core", "core"], ["edge", "edge"], ["colo", "colo"]],
+                }));
+            then.status(201)
+                .json_body(tier_choice_set(json!([["core", "core"]])));
+        });
+        let cf_create = server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/extras/custom-fields/")
+                .json_body_includes(
+                    json!({"name": "tier", "type": "select", "choice_set": CHOICE_SET_ID})
+                        .to_string(),
+                );
+            then.status(201).json_body(existing_tier_field("select"));
+        });
+
+        let report = adapter
+            .ensure_schema(&schema_declaring_tier(&[(
+                "dcim.site",
+                tier_enum(&["core", "edge", "colo"]),
+            )]))
+            .await
+            .unwrap();
+
+        assert_eq!(report.created_fields, vec!["dcim.site.tier".to_string()]);
+        set_create.assert_calls(1);
+        cf_create.assert_calls(1);
+    }
+
+    // a `list` of `enum` is a `multiselect` over the same kind of choice set.
+    #[tokio::test]
+    async fn ensure_schema_creates_a_multiselect_for_a_list_of_enum() {
+        let server = MockServer::start();
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
+        let _object_types = mock_site_object_type(&server);
+        mock_custom_fields(&server, json!([]));
+        let _sets = mock_choice_sets(&server, json!([]));
+        let set_create = server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/extras/custom-field-choice-sets/")
+                .json_body(json!({
+                    "name": "tier",
+                    "extra_choices": [["core", "core"], ["edge", "edge"]],
+                }));
+            then.status(201).json_body(tier_choice_set(json!([])));
+        });
+        let cf_create = server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/extras/custom-fields/")
+                .json_body_includes(
+                    json!({"type": "multiselect", "choice_set": CHOICE_SET_ID}).to_string(),
+                );
+            then.status(201)
+                .json_body(existing_tier_field("multiselect"));
+        });
+
+        let report = adapter
+            .ensure_schema(&schema_declaring_tier(&[(
+                "dcim.site",
+                json!({"type": "list", "item": tier_enum(&["core", "edge"])}),
+            )]))
+            .await
+            .unwrap();
+
+        assert_eq!(report.created_fields, vec!["dcim.site.tier".to_string()]);
+        set_create.assert_calls(1);
+        cf_create.assert_calls(1);
+    }
+
+    // a choice set already named after the field is adopted, not duplicated. it
+    // gains the declared values it lacks, and keeps the ones it has, labels and
+    // undeclared values included.
+    #[tokio::test]
+    async fn ensure_schema_adopts_an_existing_choice_set_additively() {
+        let server = MockServer::start();
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
+        let _object_types = mock_site_object_type(&server);
+        mock_custom_fields(&server, json!([]));
+        let _sets = mock_choice_sets(
+            &server,
+            json!([tier_choice_set(json!([
+                ["core", "Core"],
+                ["legacy", "legacy"]
+            ]))]),
+        );
+        let set_create = server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/extras/custom-field-choice-sets/");
+            then.status(201).json_body(tier_choice_set(json!([])));
+        });
+        let set_patch = server.mock(|when, then| {
+            when.method(PATCH)
+                .path(format!(
+                    "/api/extras/custom-field-choice-sets/{CHOICE_SET_ID}/"
+                ))
+                .json_body(json!({
+                    "extra_choices": [["core", "Core"], ["legacy", "legacy"], ["edge", "edge"]],
+                }));
+            then.status(200).json_body(tier_choice_set(json!([])));
+        });
+        let cf_create = server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/extras/custom-fields/")
+                .json_body_includes(
+                    json!({"type": "select", "choice_set": CHOICE_SET_ID}).to_string(),
+                );
+            then.status(201).json_body(existing_tier_field("select"));
+        });
+
+        let report = adapter
+            .ensure_schema(&schema_declaring_tier(&[(
+                "dcim.site",
+                tier_enum(&["core", "edge"]),
+            )]))
+            .await
+            .unwrap();
+
+        assert_eq!(report.created_fields, vec!["dcim.site.tier".to_string()]);
+        set_create.assert_calls(0);
+        set_patch.assert_calls(1);
+        cf_create.assert_calls(1);
+    }
+
+    // an existing select converges additively through its own choice set: the
+    // declared value it lacks is added, the undeclared one stays, and the field
+    // itself is not patched.
+    #[tokio::test]
+    async fn ensure_schema_adds_the_choices_an_existing_select_lacks() {
+        let server = MockServer::start();
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
+        let _object_types = mock_site_object_type(&server);
+        mock_custom_fields(&server, json!([existing_tier_field("select")]));
+        let _sets = mock_choice_sets(
+            &server,
+            json!([tier_choice_set(json!([
+                ["core", "core"],
+                ["legacy", "legacy"]
+            ]))]),
+        );
+        let set_patch = server.mock(|when, then| {
+            when.method(PATCH)
+                .path(format!(
+                    "/api/extras/custom-field-choice-sets/{CHOICE_SET_ID}/"
+                ))
+                .json_body(json!({
+                    "extra_choices": [["core", "core"], ["legacy", "legacy"], ["edge", "edge"]],
+                }));
+            then.status(200).json_body(tier_choice_set(json!([])));
+        });
+        let cf_patch = server.mock(|when, then| {
+            when.method(PATCH)
+                .path(format!("/api/extras/custom-fields/{EXISTING_FIELD_ID}/"));
+            then.status(200).json_body(json!({}));
+        });
+
+        let report = adapter
+            .ensure_schema(&schema_declaring_tier(&[(
+                "dcim.site",
+                tier_enum(&["core", "edge"]),
+            )]))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            report.updated_fields,
+            vec!["dcim.site.tier: choices + [\"edge\"]".to_string()],
+        );
+        assert!(report.created_fields.is_empty());
+        set_patch.assert_calls(1);
+        cf_patch.assert_calls(0);
+    }
+
+    // a select whose set already offers every declared value is left alone.
+    #[tokio::test]
+    async fn an_agreeing_select_is_not_written() {
+        let server = MockServer::start();
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
+        let _object_types = mock_site_object_type(&server);
+        mock_custom_fields(&server, json!([existing_tier_field("select")]));
+        let _sets = mock_choice_sets(
+            &server,
+            json!([tier_choice_set(json!([["edge", "edge"], ["core", "core"]]))]),
+        );
+        let set_patch = server.mock(|when, then| {
+            when.method(PATCH).path(format!(
+                "/api/extras/custom-field-choice-sets/{CHOICE_SET_ID}/"
+            ));
+            then.status(200).json_body(tier_choice_set(json!([])));
+        });
+
+        let report = adapter
+            .ensure_schema(&schema_declaring_tier(&[(
+                "dcim.site",
+                tier_enum(&["core", "edge"]),
+            )]))
+            .await
+            .unwrap();
+
+        assert!(report.updated_fields.is_empty());
+        set_patch.assert_calls(0);
+    }
+
+    // preview makes ensure's decisions, a new set and an added choice alike,
+    // and writes nothing.
+    #[tokio::test]
+    async fn preview_schema_reports_choice_changes_like_ensure_without_writing() {
+        let server = MockServer::start();
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
+        let _object_types = mock_site_object_type(&server);
+        mock_custom_fields(&server, json!([existing_tier_field("select")]));
+        let _sets = mock_choice_sets(&server, json!([tier_choice_set(json!([["core", "core"]]))]));
+        let set_create = server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/extras/custom-field-choice-sets/")
+                .json_body_includes(json!({"name": "plane"}).to_string());
+            then.status(201)
+                .json_body(json!({"id": 12, "name": "plane", "extra_choices": []}));
+        });
+        let set_patch = server.mock(|when, then| {
+            when.method(PATCH).path(format!(
+                "/api/extras/custom-field-choice-sets/{CHOICE_SET_ID}/"
+            ));
+            then.status(200).json_body(tier_choice_set(json!([])));
+        });
+        let cf_create = server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/extras/custom-fields/")
+                .json_body_includes(json!({"name": "plane", "choice_set": 12}).to_string());
+            then.status(201).json_body(json!({
+                "id": 8, "name": "plane", "object_types": ["dcim.site"],
+                "type": {"value": "select"}
+            }));
+        });
+
+        let schema: alembic_core::Schema = serde_json::from_value(json!({
+            "types": {
+                "dcim.site": {
+                    "key": { "slug": { "type": "string" } },
+                    "fields": {
+                        "tier": tier_enum(&["core", "edge"]),
+                        "plane": tier_enum(&["data", "control"]),
+                    }
+                }
+            }
+        }))
+        .unwrap();
+
+        let preview = adapter.preview_schema(&schema).await.unwrap().unwrap();
+        assert_eq!(preview.created_fields, vec!["dcim.site.plane".to_string()]);
+        assert_eq!(
+            preview.updated_fields,
+            vec!["dcim.site.tier: choices + [\"edge\"]".to_string()],
+        );
+        set_create.assert_calls(0);
+        set_patch.assert_calls(0);
+        cf_create.assert_calls(0);
+
+        let report = adapter.ensure_schema(&schema).await.unwrap();
+        assert_eq!(report.created_fields, preview.created_fields);
+        assert_eq!(report.updated_fields, preview.updated_fields);
+        set_create.assert_calls(1);
+        set_patch.assert_calls(1);
+        cf_create.assert_calls(1);
+    }
+
+    // one field name is one choice set, so two types declaring it with
+    // different values cannot both be honoured: the run fails naming both,
+    // before anything is written, and the preview refuses the same inventory.
+    #[tokio::test]
+    async fn two_types_declaring_different_choices_are_refused() {
+        let server = MockServer::start();
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
+        let _object_types = mock_two_object_types(&server);
+        let _fields = server.mock(|when, then| {
+            when.method(GET).path("/api/extras/custom-fields/");
+            then.status(200).json_body(page(json!([])));
+        });
+        let _sets = mock_choice_sets(&server, json!([]));
+        let writes = server.mock(|when, then| {
+            when.method(POST);
+            then.status(201).json_body(json!({}));
+        });
+
+        // the same values in another order disagree too: order is display order.
+        let schema = schema_declaring_tier(&[
+            ("dcim.site", tier_enum(&["core", "edge"])),
+            ("dcim.device", tier_enum(&["edge", "core"])),
+        ]);
+        let err = adapter
+            .ensure_schema(&schema)
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("different choices"), "{err}");
+        assert!(err.contains("dcim.site.tier"), "{err}");
+        assert!(err.contains("dcim.device.tier"), "{err}");
+        assert!(adapter.preview_schema(&schema).await.is_err());
+        writes.assert_calls(0);
+    }
+
+    // the same holds for one existing select both types already share.
+    #[tokio::test]
+    async fn a_shared_select_declared_with_different_choices_is_refused() {
+        let server = MockServer::start();
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
+        let _object_types = mock_two_object_types(&server);
+        let mut field = existing_tier_field("select");
+        field["object_types"] = json!(["dcim.site", "dcim.device"]);
+        let _fields = server.mock(|when, then| {
+            when.method(GET).path("/api/extras/custom-fields/");
+            then.status(200).json_body(page(json!([field])));
+        });
+        let _sets = mock_choice_sets(&server, json!([tier_choice_set(json!([]))]));
+        let set_patch = server.mock(|when, then| {
+            when.method(PATCH).path(format!(
+                "/api/extras/custom-field-choice-sets/{CHOICE_SET_ID}/"
+            ));
+            then.status(200).json_body(tier_choice_set(json!([])));
+        });
+
+        let schema = schema_declaring_tier(&[
+            ("dcim.site", tier_enum(&["core", "edge"])),
+            ("dcim.device", tier_enum(&["core"])),
+        ]);
+        let err = adapter
+            .ensure_schema(&schema)
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("different choices"), "{err}");
+        assert!(err.contains("dcim.site.tier"), "{err}");
+        assert!(err.contains("dcim.device.tier"), "{err}");
+        set_patch.assert_calls(0);
+    }
+
+    // an enum declared on a field netbox holds as `text` is not retyped and gets
+    // no choice set, but its other declared properties still converge.
+    #[tokio::test]
+    async fn an_enum_on_an_existing_text_field_is_not_retyped() {
+        let server = MockServer::start();
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
+        let _object_types = mock_site_object_type(&server);
+        mock_custom_fields(&server, json!([existing_tier_field("text")]));
+        let sets = mock_choice_sets(&server, json!([]));
+        let set_write = server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/extras/custom-field-choice-sets/");
+            then.status(201).json_body(tier_choice_set(json!([])));
+        });
+        let cf_patch = server.mock(|when, then| {
+            when.method(PATCH)
+                .path(format!("/api/extras/custom-fields/{EXISTING_FIELD_ID}/"))
+                .json_body(json!({"description": "site tier"}));
+            then.status(200).json_body(json!({}));
+        });
+
+        let mut tier = tier_enum(&["core", "edge"]);
+        tier["description"] = json!("site tier");
+        let report = adapter
+            .ensure_schema(&schema_declaring_tier(&[("dcim.site", tier)]))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            report.updated_fields,
+            vec!["dcim.site.tier: description \"\" -> \"site tier\"".to_string()],
+        );
+        cf_patch.assert_calls(1);
+        set_write.assert_calls(0);
+        sets.assert_calls(0);
+    }
 }

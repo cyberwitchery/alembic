@@ -1,0 +1,1 @@
+- netbox adapter: an `enum` custom field is provisioned as a `select` (a `list` of `enum` as a `multiselect`) over a choice set named after the field, so netbox enforces the declared values; an existing set of that name is adopted, choices converge additively, and a field that already exists as another type is left alone with a warning (#480)
