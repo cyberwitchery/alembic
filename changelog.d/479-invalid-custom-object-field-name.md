@@ -1,0 +1,1 @@
+- `plan` fails on a netbox custom object field name netbox would reject, such as `mgmt-vlan`, instead of warning that the schema preview failed and writing a plan apply then refuses (#479)

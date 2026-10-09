@@ -29,7 +29,7 @@ use alembic_core::TypeName;
 use self::state::{resolve_state_backend_config, state_path, StateBackendConfig};
 #[cfg(test)]
 use alembic_adapter_django::emit::Runner;
-use alembic_adapter_sdk::{ApplyReport, Op, StateData, Tense};
+use alembic_adapter_sdk::{AdapterApplyError, ApplyReport, Op, StateData, Tense};
 #[cfg(test)]
 use alembic_engine::PostgresTlsMode;
 
@@ -259,6 +259,23 @@ fn should_detect_deletes(allow_delete: bool, report: bool) -> bool {
 
 /// how a `plan` run holds the state lock. a run that saves nothing needs no more
 /// than a reader's share; `--provision` writes backend schema, so it is not one.
+/// a preview the backend could not answer must not sink the read-only plan, so
+/// it is reported and planning goes on. a schema the backend says it will
+/// reject fails the plan here rather than the apply.
+fn schema_preview_failure(err: anyhow::Error) -> Result<()> {
+    let rejected = err.chain().any(|cause| {
+        matches!(
+            cause.downcast_ref::<AdapterApplyError>(),
+            Some(AdapterApplyError::SchemaMismatch { .. })
+        )
+    });
+    if rejected {
+        return Err(err.context("schema preview: the backend will reject this schema"));
+    }
+    eprintln!("schema preview failed: {err:#}");
+    Ok(())
+}
+
 fn state_lock_for_plan(report: bool, dry_run: bool, provision: bool) -> StateLock {
     if (report || dry_run) && !provision {
         StateLock::Shared
@@ -379,8 +396,7 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<ExitCode> {
                         schema_preview = Some(report);
                     }
                     Ok(None) => eprintln!("schema preview: unavailable for this backend"),
-                    // a preview hiccup must not sink the read-only plan; report and continue.
-                    Err(err) => eprintln!("schema preview failed: {err:#}"),
+                    Err(err) => schema_preview_failure(err)?,
                 }
             }
 

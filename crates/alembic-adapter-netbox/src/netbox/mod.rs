@@ -3539,6 +3539,15 @@ mod tests {
             err.to_string().contains("invalid custom object field name"),
             "unexpected error: {err}"
         );
+        // a schema netbox will refuse, not a preview that could not run: plan
+        // tells the two apart by this kind.
+        assert!(
+            err.chain().any(|cause| matches!(
+                cause.downcast_ref::<alembic_adapter_sdk::AdapterApplyError>(),
+                Some(alembic_adapter_sdk::AdapterApplyError::SchemaMismatch { .. })
+            )),
+            "unexpected error kind: {err:#}"
+        );
         assert_eq!(type_create.calls(), 0, "preview must not create types");
         assert_eq!(field_create.calls(), 0, "preview must not create fields");
     }
