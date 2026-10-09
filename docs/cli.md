@@ -144,6 +144,8 @@ NETBOX_URL=https://netbox.example.com NETBOX_TOKEN=$NETBOX_TOKEN \
 - against a write-only (emitter) backend such as `django`, which cannot report existing state, plain `plan` produces an all-creates plan against an empty observation, while `--report` is rejected up front (see below)
 - writes json plan to the `-o`/`--output` path (required only for this default write path), and prints a human-readable per-op summary of that plan (create/update/delete, with per-field `from -> to` for updates; long categories are truncated) so you can read what apply would do before applying
 - honors `--allow-delete` if you want delete ops; delete candidates are the observed objects the inventory asserts completeness over — bounded by its `scope:` block when one is declared (`docs/inventory.md`), the whole backend per declared type otherwise
+- says first, on stderr, which state it loaded: `state: <path or row key> for <backend>, N bindings`, or `state: none at <path> for <backend>, 0 bindings` when nothing was saved there yet. the plan's `summary.state` records the same, as loaded before any adoption (`storage`, `location`, `present`, `backend`, `bindings_loaded`); postgres state names the row key, never the url
+- prints how declared objects matched, under the operation counts: `matching: 12 by state, 3 by key (3 adopted), 2 to create`, also in `summary.matching` (`by_state`, `by_key`, `adopted`, `to_create`). `adopted` is the part of `by_key` the run bound by key; a state binding that no longer resolves can still match by key without one. a write-only backend matches nothing and omits `matching`
 - reports what bootstrapping wrote into identity memory, on stderr like the schema preview so `--dry-run`'s stdout stays raw json: `adopted N existing object(s) by key` names each backend object the run bound to a declared uid, and `superseded:` names any binding an adoption displaced. adoption persists with the plan's state save, so it is never silent; `--no-adopt` disables key adoption (state-known objects still match, everything else plans as a create). it conflicts with `--allow-delete` at parse time: refusing to identify a backend object by key is refusing to know enough to replace it, and their combination would plan the unidentified twin of every declared object as a delete beside its create
 - a uid planned as one create and one delete under two types renders as a `retype`: one logical object re-materialized (see `docs/identity.md`), created under the new type before the old one is deleted
 - without `--provision`, plan asks the backend for a read-only schema preview (what `apply`'s `ensure_schema` would create/delete, writing nothing) and prints it to stderr as `schema preview: ...`; the machine-readable copy rides in the plan's `schema_preview`, and under `--report` (which writes no plan) in the drift report's. backends that cannot preview report `schema preview: unavailable for this backend`
@@ -171,6 +173,9 @@ standalone human-readable summary grouped into three categories:
 - **changed**: declared and present on the backend, but one or more fields diverge (lists the per-field `from -> to`)
 - **missing**: declared in intent but absent from the backend
 - **extra**: present on the backend but not declared in intent, within what the inventory asserts completeness over (its `scope:` when declared, every declared type otherwise; `docs/inventory.md`)
+
+the json report also carries the plan's `state` and `matching`; neither is a
+drift category, and neither changes the exit code.
 
 it is one-way by construction: it only ever describes how observed state diverges
 from intent and never writes observed state back into the inventory or state
@@ -259,6 +264,7 @@ alembic plan -f examples/inventory.yaml --dry-run \
 ```
 
 - applies a plan file; `-p -` reads a json plan from stdin, matching the json emitted by `plan --dry-run`
+- says on stderr which state it loaded, in `plan`'s `state:` line
 - an applied update re-asserts every declared field of its object, not only the changes the plan listed: a backend edit to a declared field between plan and apply is converged back, and approving an update under `--interactive` approves that full write. undeclared fields stay untouched (`docs/engine.md`, diff rules)
 - deletes are blocked unless `--allow-delete` is provided; this covers both object deletes and destructive schema provisioning (deleting custom object types/fields the inventory no longer declares, which cascades to their objects)
 - `--interactive` prompts per operation and applies only approved ops
