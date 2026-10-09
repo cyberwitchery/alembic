@@ -1,4 +1,6 @@
-use super::client::{is_404_anyhow, CustomFieldDef, CustomObjectField, CustomObjectType};
+use super::client::{
+    is_404_anyhow, parse_choice_set, ChoiceSet, CustomFieldDef, CustomObjectField, CustomObjectType,
+};
 use super::mapping::{
     build_tag_inputs, custom_field_type_for_schema, custom_field_update_payload,
     describe_custom_field_update, merge_shared_field_properties, slugify, supports_feature,
@@ -462,15 +464,27 @@ impl Emitter for NetBoxAdapter {
         let mut deleted_object_types = Vec::new();
         let mut deleted_object_fields = Vec::new();
 
+        // choice sets first, so a select created below can reference its set's id.
+        let mut choice_set_ids = BTreeMap::new();
+        for set in &plan.choice_sets {
+            let id = self.ensure_choice_set(set).await?;
+            choice_set_ids.insert(set.name.as_str(), id);
+        }
+
         // native custom fields on existing object types.
         for field in &plan.native_fields {
             let content_type = content_type_of(&registry, field.type_name.as_str());
+            let choice_set = field
+                .choice_set
+                .as_deref()
+                .and_then(|name| choice_set_ids.get(name).copied());
             if self
                 .create_custom_field(
                     &field.type_name,
                     &content_type,
                     field.field_name,
                     field.field_schema,
+                    choice_set,
                 )
                 .await?
             {
@@ -478,12 +492,15 @@ impl Emitter for NetBoxAdapter {
             }
         }
 
-        // existing custom fields: converge only the properties the schema declares.
+        // existing custom fields: converge only the properties the schema declares;
+        // their missing choices went out with the choice sets above.
         // untyped: the patch response is not read, so it need not deserialize
         // into the vendor's custom field model.
         let custom_fields: Resource<Value> = self.client.resource("extras/custom-fields/");
         for update in &plan.updated_fields {
-            custom_fields.patch(update.field_id, &update.patch).await?;
+            if let Some(patch) = &update.patch {
+                custom_fields.patch(update.field_id, patch).await?;
+            }
             updated_fields.extend(update.declarations.iter().cloned());
         }
 
@@ -550,7 +567,9 @@ impl Emitter for NetBoxAdapter {
             .client
             .resource("plugins/custom-objects/custom-object-type-fields/");
         for update in &plan.updated_object_fields {
-            object_fields.patch(update.field_id, &update.patch).await?;
+            if let Some(patch) = &update.patch {
+                object_fields.patch(update.field_id, patch).await?;
+            }
             updated_object_fields.extend(update.declarations.iter().cloned());
         }
 
@@ -972,8 +991,12 @@ impl NetBoxAdapter {
         content_type: &str,
         field_name: &str,
         field_schema: &FieldSchema,
+        choice_set: Option<u64>,
     ) -> Result<bool> {
-        let payload = custom_field_payload(content_type, field_name, field_schema);
+        let mut payload = custom_field_payload(content_type, field_name, field_schema);
+        if let (Some(id), Some(payload)) = (choice_set, payload.as_object_mut()) {
+            payload.insert("choice_set".to_string(), Value::Number(id.into()));
+        }
         let resource = self.client.extras().custom_fields();
         match resource.create(&payload).await {
             Ok(_) => Ok(true),
@@ -992,6 +1015,49 @@ impl NetBoxAdapter {
                 } else {
                     Err(err.into())
                 }
+            }
+        }
+    }
+
+    /// create the planned set, or add its missing choices to the existing one,
+    /// returning its id. a create that loses a race adopts the winner's set, and
+    /// the next run adds what it lacks.
+    async fn ensure_choice_set(&self, set: &PlannedChoiceSet) -> Result<u64> {
+        let resource: Resource<Value> = self.client.resource("extras/custom-field-choice-sets/");
+        if let Some(existing) = &set.existing {
+            if !set.missing.is_empty() {
+                let mut choices = existing.extra_choices.clone();
+                choices.extend(set.missing.iter().map(|value| choice_entry(value)));
+                resource
+                    .patch(existing.id, &json!({ "extra_choices": choices }))
+                    .await
+                    .with_context(|| format!("adding choices to choice set {}", set.name))?;
+            }
+            return Ok(existing.id);
+        }
+        let choices: Vec<Value> = set
+            .missing
+            .iter()
+            .map(|value| choice_entry(value))
+            .collect();
+        match resource
+            .create(&json!({ "name": set.name, "extra_choices": choices }))
+            .await
+        {
+            Ok(created) => Ok(parse_choice_set(created)?.id),
+            Err(err) => {
+                let Some(existing) = self
+                    .client
+                    .fetch_custom_field_choice_sets()
+                    .await?
+                    .into_iter()
+                    .find(|existing| existing.name == set.name)
+                else {
+                    return Err(anyhow::Error::from(err)
+                        .context(format!("creating choice set {}", set.name)));
+                };
+                tracing::warn!(choice_set = %set.name, "custom field choice set already exists");
+                Ok(existing.id)
             }
         }
     }
@@ -1034,6 +1100,9 @@ impl NetBoxAdapter {
         // field carries a list of object types, so two declared types can land on
         // the same id and must produce one patch between them.
         let mut shared_fields: BTreeMap<u64, SharedCustomField> = BTreeMap::new();
+        // the choice sets fields this run creates reference, by set name, which is
+        // the field name: netbox shares one field across types, so one set per field.
+        let mut new_choice_sets: BTreeMap<&str, NewChoiceSet> = BTreeMap::new();
         let mut custom_schema_types: Vec<(TypeName, &TypeSchema)> = Vec::new();
         let mut custom_object_names: BTreeMap<String, TypeName> = BTreeMap::new();
         for (type_name, type_schema) in &schema.types {
@@ -1066,10 +1135,12 @@ impl NetBoxAdapter {
                             // netbox listed the field without an id, so it can be
                             // detected but not patched. saying so beats exiting 0
                             // with the divergence unreported.
-                            if custom_field_update_payload(&def.current, &payload).is_some() {
+                            if custom_field_update_payload(&def.current, &payload).is_some()
+                                || !declared_choices(field_schema).is_empty()
+                            {
                                 tracing::warn!(
                                     field = %declared,
-                                    "existing custom field diverges from the schema, but netbox reported no id to patch it by"
+                                    "existing custom field diverges from the schema or declares choices, but netbox reported no id to patch it by"
                                 );
                             }
                             continue;
@@ -1080,12 +1151,22 @@ impl NetBoxAdapter {
                                 .or_insert_with(|| SharedCustomField {
                                     field_name: field_name.clone(),
                                     current: def.current.clone(),
+                                    backend_type: def.field_type.clone(),
+                                    choice_set: def.choice_set,
                                     desired: Map::new(),
+                                    choices: Vec::new(),
                                     declarations: Vec::new(),
                                 });
-                        if let Some(property) =
-                            merge_shared_field_properties(&mut shared.desired, &payload)
-                        {
+                        let disagreement =
+                            merge_shared_field_properties(&mut shared.desired, &payload).or_else(
+                                || {
+                                    merge_shared_field_choices(
+                                        &mut shared.choices,
+                                        declared_choices(field_schema),
+                                    )
+                                },
+                            );
+                        if let Some(property) = disagreement {
                             return Err(anyhow!(
                                 "custom field {} is one netbox field (id {field_id}) shared by {} and {declared}, which declare different {property}; make them agree or give each type its own field name",
                                 shared.field_name,
@@ -1095,10 +1176,23 @@ impl NetBoxAdapter {
                         shared.declarations.push(declared);
                         continue;
                     }
+                    let declared = declared_choices(field_schema);
+                    if !declared.is_empty() {
+                        let new_set = new_choice_sets.entry(field_name.as_str()).or_default();
+                        let declaration = format!("{type_name}.{field_name}");
+                        if merge_shared_field_choices(&mut new_set.choices, declared).is_some() {
+                            return Err(anyhow!(
+                                "custom field {field_name} is one netbox choice set shared by {} and {declaration}, which declare different choices; make them agree or give each type its own field name",
+                                new_set.declarations.join(", "),
+                            ));
+                        }
+                        new_set.declarations.push(declaration);
+                    }
                     native_fields.push(PlannedNativeField {
                         type_name: type_name.clone(),
                         field_name: field_name.as_str(),
                         field_schema,
+                        choice_set: (!declared.is_empty()).then(|| field_name.clone()),
                     });
                 }
                 continue;
@@ -1107,19 +1201,87 @@ impl NetBoxAdapter {
             custom_schema_types.push((type_name, type_schema));
         }
 
+        // a field the model declares as an enum but netbox holds as another type
+        // has no choice set, and a live field is never retyped, so no run clears
+        // it: warn rather than report it converged. its other properties still
+        // converge, so one mistyped field does not stall a run.
+        for shared in shared_fields.values_mut() {
+            if shared.choices.is_empty()
+                || (takes_choices(shared.backend_type.as_deref()) && shared.choice_set.is_some())
+            {
+                continue;
+            }
+            let declared = shared
+                .desired
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            tracing::warn!(
+                fields = %shared.declarations.join(", "),
+                declared = %declared,
+                backend = %shared.backend_type.as_deref().unwrap_or("none"),
+                "declared choices not added: netbox holds this custom field as another type"
+            );
+            shared.choices.clear();
+        }
+
+        // one read for every set, and only when a declaration carries choices: a
+        // model without enums must not cost a request.
+        let choice_sets = if !new_choice_sets.is_empty()
+            || shared_fields
+                .values()
+                .any(|shared| !shared.choices.is_empty())
+        {
+            self.client.fetch_custom_field_choice_sets().await?
+        } else {
+            Vec::new()
+        };
+        let mut planned_sets: BTreeMap<String, PlannedChoiceSet> = BTreeMap::new();
+        for (name, new_set) in &new_choice_sets {
+            let existing = choice_sets.iter().find(|set| set.name == *name);
+            plan_choice_set(&mut planned_sets, name, existing, &new_set.choices);
+        }
+
         // one patch per backend field, computed once every declaration on it has
         // been merged: a property another type already agrees with the backend on
         // must not be planned away by this one.
         let mut updated_fields = Vec::new();
         for (field_id, shared) in shared_fields {
-            let Some(patch) =
-                custom_field_update_payload(&shared.current, &Value::Object(shared.desired))
-            else {
+            let patch =
+                custom_field_update_payload(&shared.current, &Value::Object(shared.desired));
+            let mut added = Vec::new();
+            if !shared.choices.is_empty() {
+                match choice_sets
+                    .iter()
+                    .find(|set| Some(set.id) == shared.choice_set)
+                {
+                    Some(set) => {
+                        added = plan_choice_set(
+                            &mut planned_sets,
+                            &set.name,
+                            Some(set),
+                            &shared.choices,
+                        );
+                    }
+                    None => tracing::warn!(
+                        fields = %shared.declarations.join(", "),
+                        "declared choices not added: netbox did not list the field's choice set"
+                    ),
+                }
+            }
+            if patch.is_none() && added.is_empty() {
                 continue;
-            };
-            // each declaration carries what the patch would write, so the
-            // preview names the change rather than only the field.
-            let changes = describe_custom_field_update(&shared.current, &patch).join(", ");
+            }
+            // each declaration carries what the write would do, so the preview
+            // names the change rather than only the field.
+            let mut changes = patch
+                .as_ref()
+                .map(|patch| describe_custom_field_update(&shared.current, patch))
+                .unwrap_or_default();
+            if !added.is_empty() {
+                changes.push(describe_added_choices(&added));
+            }
+            let changes = changes.join(", ");
             updated_fields.push(PlannedFieldUpdate {
                 declarations: shared
                     .declarations
@@ -1130,6 +1292,7 @@ impl NetBoxAdapter {
                 patch,
             });
         }
+        let choice_sets = planned_sets.into_values().collect();
 
         if !custom_schema_types.is_empty() && !custom_objects_available {
             let list = custom_schema_types
@@ -1200,7 +1363,7 @@ impl NetBoxAdapter {
                         updated_object_fields.push(PlannedFieldUpdate {
                             declarations: vec![format!("{type_name}.{field_name}: {changes}")],
                             field_id: field.id,
-                            patch,
+                            patch: Some(patch),
                         });
                     }
                 }
@@ -1275,6 +1438,7 @@ impl NetBoxAdapter {
         }
 
         Ok(ProvisionPlan {
+            choice_sets,
             native_fields,
             updated_fields,
             object_types,
@@ -1799,6 +1963,7 @@ impl<'a> CustomObjectFieldProvisioner<'a> {
 /// what actually changed. one plan, two consumers -- so a preview can never claim
 /// a change apply would not make, nor miss one.
 struct ProvisionPlan<'a> {
+    choice_sets: Vec<PlannedChoiceSet>,
     native_fields: Vec<PlannedNativeField<'a>>,
     updated_fields: Vec<PlannedFieldUpdate>,
     object_types: Vec<PlannedObjectType<'a>>,
@@ -1812,6 +1977,24 @@ struct PlannedNativeField<'a> {
     type_name: TypeName,
     field_name: &'a str,
     field_schema: &'a FieldSchema,
+    /// the name of the choice set a `select`/`multiselect` references.
+    choice_set: Option<String>,
+}
+
+/// a choice set to create, or to extend with the declared values it lacks.
+struct PlannedChoiceSet {
+    name: String,
+    /// `None` when no set has this name yet.
+    existing: Option<ChoiceSet>,
+    /// in declared order; every declared value when the set is created.
+    missing: Vec<String>,
+}
+
+/// the choices the declarations of one field this run creates agreed on.
+#[derive(Default)]
+struct NewChoiceSet {
+    choices: Vec<String>,
+    declarations: Vec<String>,
 }
 
 /// an existing custom field to converge, with the patch that does it: only the
@@ -1821,7 +2004,8 @@ struct PlannedFieldUpdate {
     /// object field exactly one, since colliding type names are refused.
     declarations: Vec<String>,
     field_id: u64,
-    patch: Value,
+    /// `None` when only its choice set moves.
+    patch: Option<Value>,
 }
 
 /// the declarations landing on one backend custom field, accumulated so they can
@@ -1829,7 +2013,10 @@ struct PlannedFieldUpdate {
 struct SharedCustomField {
     field_name: String,
     current: ExistingCustomField,
+    backend_type: Option<String>,
+    choice_set: Option<u64>,
     desired: Map<String, Value>,
+    choices: Vec<String>,
     declarations: Vec<String>,
 }
 
@@ -2062,14 +2249,99 @@ fn custom_object_field_action(
 
 /// netbox's `extras/custom-fields/` accepts more types than the netbox+nautobot
 /// intersection the shared map stays on, so upgrade the cells netbox's own
-/// custom-object path already carries. its object/multiobject arms have no
-/// equivalent here: ref/listref are skipped before a native field is created.
+/// custom-object path already carries, and enums to a select over a choice set.
+/// its object/multiobject arms have no equivalent here: ref/listref are skipped
+/// before a native field is created.
 fn native_custom_field_type(field_schema: &FieldSchema) -> String {
-    match field_schema.r#type {
+    match &field_schema.r#type {
         FieldType::Float => "decimal".to_string(),
         FieldType::Text => "longtext".to_string(),
+        FieldType::Enum { .. } => "select".to_string(),
+        FieldType::List { item } if matches!(**item, FieldType::Enum { .. }) => {
+            "multiselect".to_string()
+        }
         _ => custom_field_type_for_schema(field_schema),
     }
+}
+
+/// whether a live field of this type offers its values from a choice set.
+fn takes_choices(backend_type: Option<&str>) -> bool {
+    matches!(backend_type, Some("select" | "multiselect"))
+}
+
+/// the values a `select`/`multiselect` offers, in declaration order. empty for
+/// every other type.
+fn declared_choices(field_schema: &FieldSchema) -> &[String] {
+    match &field_schema.r#type {
+        FieldType::Enum { values } => values,
+        FieldType::List { item } => match &**item {
+            FieldType::Enum { values } => values,
+            _ => &[],
+        },
+        _ => &[],
+    }
+}
+
+/// fold one declaration's choices into what the others on the same field agreed
+/// on, naming the property when they disagree. order is display order.
+fn merge_shared_field_choices(
+    agreed: &mut Vec<String>,
+    declared: &[String],
+) -> Option<&'static str> {
+    if declared.is_empty() {
+        return None;
+    }
+    if agreed.is_empty() {
+        *agreed = declared.to_vec();
+        return None;
+    }
+    (agreed != declared).then_some("choices")
+}
+
+/// add the `declared` values `existing` lacks to the plan for the set `name`,
+/// returning them. additive: nothing the set offers is removed.
+fn plan_choice_set(
+    planned: &mut BTreeMap<String, PlannedChoiceSet>,
+    name: &str,
+    existing: Option<&ChoiceSet>,
+    declared: &[String],
+) -> Vec<String> {
+    let offered: BTreeSet<&str> = existing
+        .map(|set| set.extra_choices.iter().filter_map(choice_value).collect())
+        .unwrap_or_default();
+    let added: Vec<String> = declared
+        .iter()
+        .filter(|value| !offered.contains(value.as_str()))
+        .cloned()
+        .collect();
+    let set = planned
+        .entry(name.to_string())
+        .or_insert_with(|| PlannedChoiceSet {
+            name: name.to_string(),
+            existing: existing.cloned(),
+            missing: Vec::new(),
+        });
+    for value in &added {
+        if !set.missing.contains(value) {
+            set.missing.push(value.clone());
+        }
+    }
+    added
+}
+
+/// a choice as netbox stores it, `[value, label]`, labelled by its value.
+fn choice_entry(value: &str) -> Value {
+    json!([value, value])
+}
+
+fn choice_value(entry: &Value) -> Option<&str> {
+    entry.get(0).and_then(Value::as_str)
+}
+
+/// what adding them would do, worded the way `describe_custom_field_update`
+/// words a property.
+fn describe_added_choices(values: &[String]) -> String {
+    format!("choices + {}", json!(values))
 }
 
 /// the create payload for a custom field on a native netbox model.
@@ -2937,6 +3209,24 @@ mod test_normalization {
                     .unwrap(),
                 &json!(custom_object_field_type(&r#type)),
             );
+        }
+    }
+
+    #[test]
+    fn test_custom_field_payload_provisions_enums_as_selects() {
+        let values = vec!["core".to_string(), "edge".to_string()];
+        let single = FieldType::Enum {
+            values: values.clone(),
+        };
+        let many = FieldType::List {
+            item: Box::new(FieldType::Enum { values }),
+        };
+        for (r#type, expected) in [(single, "select"), (many, "multiselect")] {
+            // netbox enforces a regex on text only: the choices are the constraint.
+            let payload =
+                custom_field_payload("dcim.site", "tier", &field_schema(r#type, Some("^[a-z]+$")));
+            assert_eq!(payload.get("type").unwrap(), &json!(expected));
+            assert!(payload.get("validation_regex").is_none());
         }
     }
 
