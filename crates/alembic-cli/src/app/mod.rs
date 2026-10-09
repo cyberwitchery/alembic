@@ -21,7 +21,7 @@ use self::io::{
     announce_written, read_plan, write_apply_report, write_drift_report, write_inventory,
     write_plan, write_validation_report,
 };
-use self::state::load_state;
+use self::state::{load_state, load_state_with_context, print_state_context};
 use crate::app::config::AppConfig;
 use alembic_core::TypeName;
 
@@ -332,11 +332,12 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<ExitCode> {
             let plugins = search_for_plugins(&config)?;
             let (backend, backend_identity) =
                 create_backend(&plugins, backend.as_deref(), backend_config)?;
-            let mut state = load_state(
+            let (mut state, state_context) = load_state_with_context(
                 state_lock_for_plan(report, dry_run, provision),
                 &backend_identity,
             )
             .await?;
+            print_state_context(&state_context);
             // a drift report asserts what the backend holds; one that observes
             // nothing would report every declared object absent, so refuse it
             // before provisioning or a backend read or write.
@@ -399,6 +400,9 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<ExitCode> {
                 .await?
             };
             plan.schema_preview = schema_preview;
+            if let Some(summary) = &mut plan.summary {
+                summary.state = Some(state_context);
+            }
             // identity memory changed: say so before anything persists it.
             print_bootstrap(&bootstrap);
             if report {
@@ -448,7 +452,9 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<ExitCode> {
             let plugins = search_for_plugins(&config)?;
             let (backend, backend_identity) =
                 create_backend(&plugins, backend.as_deref(), backend_config)?;
-            let mut state = load_state(StateLock::Exclusive, &backend_identity).await?;
+            let (mut state, state_context) =
+                load_state_with_context(StateLock::Exclusive, &backend_identity).await?;
+            print_state_context(&state_context);
             // reject a backend that cannot apply before reading the plan or prompting
             backend.emitter()?;
             let plan = read_plan(&plan)?;

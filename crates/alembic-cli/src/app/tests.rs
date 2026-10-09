@@ -2265,11 +2265,22 @@ async fn run_plan_report_carries_an_empty_schema_preview_for_a_backend_that_prov
     assert_eq!(result.unwrap(), ExitCode::SUCCESS);
 
     let raw = std::fs::read_to_string(&out).unwrap();
+    let report: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(report["changed"], serde_json::json!([]));
+    assert_eq!(report["missing"], serde_json::json!([]));
+    assert_eq!(report["extra"], serde_json::json!([]));
     assert_eq!(
-        raw,
-        "{\n  \"changed\": [],\n  \"missing\": [],\n  \"extra\": [],\n  \"schema_preview\": {}\n}",
+        report["schema_preview"],
+        serde_json::json!({}),
         "nothing to provision is a report, not an omission"
     );
+    assert_eq!(report["state"]["storage"], "local");
+    assert_eq!(report["state"]["present"], false);
+    assert_eq!(report["state"]["bindings_loaded"], 0);
+    assert_eq!(report["matching"]["by_state"], 0);
+    assert_eq!(report["matching"]["by_key"], 0);
+    assert_eq!(report["matching"]["adopted"], 0);
+    assert_eq!(report["matching"]["to_create"], 0);
 }
 
 #[tokio::test(flavor = "multi_thread")]

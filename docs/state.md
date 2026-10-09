@@ -54,6 +54,9 @@ endpoint rename; without one, a moved endpoint reads as a different backend.
 
 ## behavior
 
+- `plan` and `apply` say on stderr which state they loaded and how many bindings it
+  held, or that none was saved there yet; plans and drift reports record the same
+  (see [cli](cli.md#plan)).
 - used as the primary match during planning and apply, and as the identity
   source for `import` (state-known backend objects keep their uids).
 - supports both integer (e.g. NetBox) and string/uuid (e.g. Nautobot) backend ids.

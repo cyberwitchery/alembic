@@ -1,11 +1,13 @@
 //! core engine types and adapter contract.
 
+use crate::state::BackendIdentity;
 use alembic_adapter_sdk::{ApplyReport, BackendId, Op, ProvisionReport};
 use alembic_core::{key_string, JsonMap, Key, Schema, TypeName, Uid};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::fmt;
 
 /// full plan document.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -24,6 +26,38 @@ pub struct Plan {
     pub schema_preview: Option<ProvisionReport>,
 }
 
+/// the state a run loaded, as it stood before bootstrap adopted anything.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StateContext {
+    pub storage: String,
+    pub location: String,
+    pub present: bool,
+    pub backend: BackendIdentity,
+    pub bindings_loaded: usize,
+}
+
+/// how declared objects matched the observation; not operation counts.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MatchSummary {
+    pub by_state: usize,
+    pub by_key: usize,
+    /// key matches that also wrote a new identity binding.
+    pub adopted: usize,
+    pub to_create: usize,
+}
+
+impl fmt::Display for MatchSummary {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} by state, {} by key", self.by_state, self.by_key)?;
+        if self.adopted > 0 {
+            write!(f, " ({} adopted)", self.adopted)?;
+        }
+        write!(f, ", {} to create", self.to_create)
+    }
+}
+
 /// high-level summary of plan operations.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -34,6 +68,10 @@ pub struct PlanSummary {
     pub update: usize,
     /// number of objects to delete.
     pub delete: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<StateContext>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matching: Option<MatchSummary>,
 }
 
 impl Plan {
@@ -325,7 +363,7 @@ impl BootstrapReport {
 
 #[cfg(test)]
 mod tests {
-    use crate::{Plan, PlanSummary};
+    use crate::{MatchSummary, Plan, PlanSummary};
 
     #[test]
     fn a_misspelled_schema_preview_key_is_rejected() {
@@ -343,6 +381,26 @@ mod tests {
         let plan: Plan = serde_json::from_str(r#"{"schema":{"types":{}},"ops":[]}"#).unwrap();
         assert!(plan.summary.is_none());
         assert!(plan.schema_preview.is_none());
+    }
+
+    #[test]
+    fn matching_summary_round_trips_and_absence_is_compatible() {
+        let old: Plan = serde_json::from_str(
+            r#"{"schema":{"types":{}},"ops":[],"summary":{"create":0,"update":0,"delete":0}}"#,
+        )
+        .unwrap();
+        assert!(old.summary.unwrap().matching.is_none());
+        let matching = MatchSummary {
+            by_state: 3,
+            by_key: 1,
+            adopted: 1,
+            to_create: 2,
+        };
+        let raw = serde_json::to_string(&matching).unwrap();
+        assert_eq!(
+            serde_json::from_str::<MatchSummary>(&raw).unwrap(),
+            matching
+        );
     }
 
     #[test]
