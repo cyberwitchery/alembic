@@ -93,12 +93,13 @@ fn every_committed_walkthrough_inventory_validates() {
             continue;
         }
         let doc = parse_yaml(&path);
-        // an inventory carries `objects`, a map spec carries `rules`. a fixture
-        // that is neither is a shape nothing here knows how to check.
+        // a map spec carries `rules` (and may declare `objects` too); an
+        // inventory carries `objects` alone. a fixture that is neither is a
+        // shape nothing here knows how to check.
         match (doc.get("objects").is_some(), doc.get("rules").is_some()) {
+            (_, true) => specs.push(path),
             (true, false) => inventories.push(path),
-            (false, true) => specs.push(path),
-            _ => panic!(
+            (false, false) => panic!(
                 "{} is neither an inventory (`objects:`) nor a map spec (`rules:`)",
                 path.display()
             ),
@@ -190,13 +191,38 @@ fn case_study_01_stands_one_model_up_into_two_backends() {
     let nautobot_device = object(&nautobot, "dcim.device", "name", "leaf01");
     assert_eq!(nautobot_device["attrs"]["location"], uid(location));
     assert!(nautobot_device["attrs"].get("site").is_none());
-    // "the interface and ip pass through under their neutral names".
-    let nautobot_ip = object(&nautobot, "ipam.ip_address", "address", "10.0.0.10/24");
+    // the location is typed by the one location type the spec declares.
+    let location_type = object(&nautobot, "dcim.locationtype", "name", "Site");
+    assert_eq!(location["attrs"]["location_type"], uid(location_type));
+    // "an ip reaches its interface through a separate
+    // `ipam.ipaddresstointerface` object", inside its parent prefix.
+    let nautobot_ip = object(&nautobot, "ipam.ipaddress", "address", "10.0.0.10/24");
+    let prefix = object(&nautobot, "ipam.prefix", "prefix", "10.0.0.0/24");
+    assert_eq!(nautobot_ip["attrs"]["parent"], uid(prefix));
     let nautobot_eth0 = object(&nautobot, "dcim.interface", "name", "eth0");
-    assert_eq!(
-        nautobot_ip["attrs"]["assigned_interface"],
-        uid(nautobot_eth0)
+    assert!(nautobot_ip["attrs"].get("assigned_interface").is_none());
+    let link = object(
+        &nautobot,
+        "ipam.ipaddresstointerface",
+        "ip_address",
+        uid(nautobot_ip),
     );
+    assert_eq!(link["attrs"]["ip_address"], uid(nautobot_ip));
+    assert_eq!(link["attrs"]["interface"], uid(nautobot_eth0));
+    // every type is reshaped, so nothing passes through under a neutral name.
+    let nautobot_spec = parse_yaml(&walkthrough_path("eval-fabric-nautobot.yaml"));
+    assert_eq!(type_names(&nautobot), type_names(&nautobot_spec));
+    // everything nautobot requires a status on points at the one `Active`.
+    let active = object(&nautobot, "extras.status", "name", "Active");
+    for object in [
+        location,
+        nautobot_device,
+        nautobot_eth0,
+        prefix,
+        nautobot_ip,
+    ] {
+        assert_eq!(object["attrs"]["status"], uid(active), "{object:#}");
+    }
 
     // one source of truth, one identity: every object is the same logical
     // object in both backend-shaped irs, the reshaped site/location included.
