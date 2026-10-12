@@ -49,8 +49,8 @@ pub use pretty_printing::bullet_list;
 pub use state::{BackendIdentity, PostgresTlsMode, StateFile, StateLock, StateStore};
 pub use transform::{compile_map, eval_map_transform, load_map_spec, MapSpec, TransformsSpec};
 pub use types::{
-    Adapter, Adoption, Backend, BootstrapReport, Emitter, ObservedObject, ObservedState, Observer,
-    Plan, PlanSummary, SupersededBinding,
+    Adapter, Adoption, Backend, BootstrapReport, Effects, Emitter, ObservedObject, ObservedState,
+    Observer, Plan, PlanSummary, SupersededBinding,
 };
 
 /// validate an inventory and return the report.
@@ -107,14 +107,11 @@ pub async fn build_plan(
 /// every declared object becomes a create (and nothing is updated or deleted).
 pub fn plan_write_only(inventory: &Inventory, state: &StateStore) -> Result<Plan> {
     report_to_result(validate(inventory))?;
-    plan(
+    planner::plan_whole_creates(
         &inventory.objects,
-        &ObservedState::default(),
         state,
         &inventory.schema,
         inventory.scope.as_ref(),
-        false,
-        true,
     )
 }
 

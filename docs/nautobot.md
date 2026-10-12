@@ -35,6 +35,31 @@ token: nautobot_xxx_replace_me
 - nested references should be provided as alembic uids (string UUIDs). the adapter resolves those
   to nautobot UUIDs before sending requests, including refs nested in list and map fields.
 
+## generic foreign keys
+
+nautobot writes a generic foreign key as two fields, a content type and an id
+(`termination_a_type` + `termination_a_id` on a cable, `assigned_object_type` +
+`assigned_object_id`), and reads them back the same way. declare both halves:
+the type as a `string` holding the content type, the id as a `ref` to the type
+it points at. the id half resolves like any ref, a uid on write and back to the
+uid on read:
+
+```yaml
+dcim.cable:
+  key: {label: {type: string}}
+  fields:
+    label: {type: string}
+    status: {type: ref, target: extras.status}
+    termination_a_type: {type: string}
+    termination_a_id: {type: ref, target: dcim.interface}
+    termination_b_type: {type: string}
+    termination_b_id: {type: ref, target: dcim.interface}
+```
+
+a ref has one target, so one declaration covers one kind of end: a cable
+between interfaces here. netbox's `a_terminations`/`b_terminations` lists have
+no nautobot field and are refused at plan; reshape them in a map.
+
 ## custom fields and tags
 
 - observe flattens `_custom_field_data` and `tags` into `attrs` for diffing and import.

@@ -1,0 +1,1 @@
+- the nautobot adapter reads a bare backend id in a declared ref field back as its uid, so the id half of a generic foreign key (a cable's `termination_a_id`) converges instead of planning an update on every run; `docs/nautobot.md` documents the two-field shape (#463)

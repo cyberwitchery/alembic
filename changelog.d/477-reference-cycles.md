@@ -1,0 +1,1 @@
+- `plan` breaks a reference cycle among new objects, such as netbox's device `primary_ip4` -> ip -> interface -> device: one create defers an optional, non-key ref and an update of the same uid sets it afterwards, so the cycle applies in one run instead of stopping with `unresolved references`; the generic adapter resolves that update's backend id from the same write (#477)

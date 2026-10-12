@@ -13,7 +13,7 @@ INFRAHUBCTL_PATH="${INFRAHUBCTL_PATH:-$ROOT/scripts/infrahubctl_docker.sh}"
 NETBOX_COMPOSE="${NETBOX_COMPOSE:-$ROOT/docker-compose.netbox.yml}"
 # infrahub ships no compose file in this repo; take upstream's at the version
 # infrahub.rs pins its integration ci to.
-INFRAHUB_VERSION="${INFRAHUB_VERSION:-1.10.6}"
+INFRAHUB_VERSION="${INFRAHUB_VERSION:-1.11.4}"
 INFRAHUB_COMPOSE="${INFRAHUB_COMPOSE:-/tmp/infrahub-compose-$INFRAHUB_VERSION.yml}"
 INFRAHUB_STATE_PATH="$(mktemp /tmp/alembic-state-infrahub-XXXXXX.json)"
 NETBOX_STATE_PATH="$(mktemp /tmp/alembic-state-netbox-XXXXXX.json)"

@@ -167,6 +167,7 @@ fn plan_roundtrip_io() {
         }],
         summary: None,
         schema_preview: None,
+        effects: None,
     };
 
     write_plan(&path, &plan).unwrap();
@@ -191,6 +192,7 @@ fn plan_roundtrip_io_yaml() {
         }],
         summary: None,
         schema_preview: None,
+        effects: None,
     };
 
     write_plan(&path, &plan).unwrap();
@@ -201,6 +203,46 @@ fn plan_roundtrip_io_yaml() {
     );
     let loaded = read_plan(&path).unwrap();
     assert_eq!(loaded.ops, plan.ops);
+}
+
+#[test]
+fn plan_roundtrip_keeps_effects() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("plan.json");
+    let plan = Plan {
+        schema: alembic_core::Schema {
+            types: BTreeMap::new(),
+        },
+        ops: vec![],
+        summary: None,
+        schema_preview: None,
+        effects: Some(Effects::Drive),
+    };
+
+    write_plan(&path, &plan).unwrap();
+    let raw = fs::read_to_string(&path).unwrap();
+    assert!(raw.contains("\"effects\": \"drive\""), "{raw}");
+    assert_eq!(read_plan(&path).unwrap().effects, Some(Effects::Drive));
+}
+
+#[test]
+fn read_plan_without_effects_reads_none() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("plan.json");
+    fs::write(&path, r#"{"schema":{"types":{}},"ops":[]}"#).unwrap();
+    assert_eq!(read_plan(&path).unwrap().effects, None);
+}
+
+#[test]
+fn read_plan_rejects_unknown_effects() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("plan.json");
+    fs::write(
+        &path,
+        r#"{"schema":{"types":{}},"ops":[],"effects":"both"}"#,
+    )
+    .unwrap();
+    assert!(read_plan(&path).is_err());
 }
 
 #[test]
@@ -228,6 +270,7 @@ fn write_plan_creates_missing_parent_dirs() {
         ops: vec![],
         summary: None,
         schema_preview: None,
+        effects: None,
     };
     write_plan(&path, &plan).unwrap();
     assert!(read_plan(&path).is_ok());
@@ -715,6 +758,7 @@ fn preflight_output_path_accepts_an_existing_file_and_keeps_it() {
         ops: vec![],
         summary: None,
         schema_preview: None,
+        effects: None,
     };
     write_plan(&target, &plan).unwrap();
     assert_eq!(read_plan(&target).unwrap().ops.len(), 0);
@@ -1251,6 +1295,7 @@ async fn run_apply_interactive_delete_requires_allow_delete() {
         }],
         summary: None,
         schema_preview: None,
+        effects: None,
     };
     write_plan(&plan_path, &plan).unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
@@ -1344,6 +1389,7 @@ types:
         }],
         summary: None,
         schema_preview: None,
+        effects: None,
     };
     let plan_path = dir.join("plan.json");
     write_plan(&plan_path, &plan).unwrap();
@@ -1473,6 +1519,7 @@ types:
         ],
         summary: None,
         schema_preview: None,
+        effects: None,
     };
     let plan_path = dir.join("plan.json");
     write_plan(&plan_path, &plan).unwrap();
@@ -3038,6 +3085,73 @@ async fn run_plan_without_report_still_plans_a_write_only_backend() {
     result.expect("plan without --report is unaffected");
     let raw = std::fs::read_to_string(&out).unwrap();
     assert!(raw.contains("\"create\""), "{raw}");
+}
+
+async fn planned_effects(
+    dir: &Path,
+    inventory: PathBuf,
+    backend: &str,
+    backend_config: Option<PathBuf>,
+) -> Option<Effects> {
+    let state_path = dir.join(".alembic").join("state.json");
+    let _env = EnvVarGuard::acquire_async(&[
+        ("ALEMBIC_STATE_BACKEND", Some("local")),
+        ("ALEMBIC_STATE_PATH", Some(state_path.to_str().unwrap())),
+    ])
+    .await;
+    let out = dir.join("plan.json");
+    std::env::set_current_dir(dir).unwrap();
+    let cli = Cli {
+        command: Command::Plan {
+            file: inventory,
+            output: Some(out.clone()),
+            backend: Some(backend.to_string()),
+            backend_config,
+            provision: false,
+            dry_run: false,
+            report: false,
+            allow_delete: false,
+            no_adopt: false,
+        },
+    };
+    run(cli, AppConfig::load().unwrap()).await.unwrap();
+    read_plan(&out).unwrap().effects
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn run_plan_records_emit_effects_for_a_write_only_backend() {
+    let _cwd = CwdGuard::acquire_async().await;
+    let dir = tempdir().unwrap();
+    let inventory = write_site_inventory(dir.path());
+    let effects = planned_effects(dir.path(), inventory, "django", None).await;
+    assert_eq!(effects, Some(Effects::Emit));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn run_plan_records_drive_effects_for_a_read_write_backend() {
+    let _cwd = CwdGuard::acquire_async().await;
+    let dir = tempdir().unwrap();
+    let config = dir.path().join("backend.yaml");
+    fs::write(
+        &config,
+        format!(
+            "backend: external\ncommand: \"{}\"\ntimeout_seconds: 5\n",
+            example_binary("minimal_external_adapter").display()
+        ),
+    )
+    .unwrap();
+    let inventory = write_site_inventory(dir.path());
+    let effects = planned_effects(dir.path(), inventory, "external", Some(config)).await;
+    assert_eq!(effects, Some(Effects::Drive));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn run_plan_records_no_effects_for_a_read_only_backend() {
+    let _cwd = CwdGuard::acquire_async().await;
+    let dir = tempdir().unwrap();
+    let (inventory, config, _log) = observer_role_fixture(dir.path());
+    let effects = planned_effects(dir.path(), inventory, "external", Some(config)).await;
+    assert_eq!(effects, None);
 }
 
 #[test]
