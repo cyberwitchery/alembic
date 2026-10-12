@@ -6,6 +6,9 @@
 # `ipam.ipaddress`, tied to its interface by a separate
 # `ipam.ipaddresstointerface` object, and needs a parent prefix. locations,
 # devices, interfaces, prefixes and ips all carry nautobot's `Active` status.
+#
+# note that for simplicity, all ip addresses in this example will get
+# the same parent; 10.0.0/24
 schema:
   types:
     extras.status:
