@@ -1,1 +1,0 @@
-- the dcim-evaluation walkthrough converges against nautobot: `eval-fabric.yaml` gives its device a role and a device type with a manufacturer, and `eval-fabric-nautobot.yaml` maps each type and declares the `Active` status, `Site` location type and parent prefix nautobot requires
