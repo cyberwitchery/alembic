@@ -86,29 +86,32 @@ adds the status, location type and prefix nautobot requires
 objects:
   - type: extras.status
     key: {name: Active}
-    uid: "3915bcde-33d3-4332-9930-9e3684a9d859"
+    uid: {v5: {type: extras.status, stable: Active}}
   - type: dcim.locationtype
     key: {name: Site}
     attrs: {name: Site, content_types: ["dcim.device"]}
     uid: {v5: {type: dcim.locationtype, stable: site}}
   - type: ipam.prefix
     key: {prefix: "10.0.0.0/24"}
-    attrs: {prefix: "10.0.0.0/24", status: "3915bcde-33d3-4332-9930-9e3684a9d859"}
+    attrs: {prefix: "10.0.0.0/24", status: {uid: {type: extras.status, stable: Active}}}
     uid: {v5: {type: ipam.prefix, stable: "10.0.0.0/24"}}
 rules:
   - name: sites-to-locations
     match: dcim.site
     uids:
       location_type: {v5: {type: dcim.locationtype, stable: site}}
+      active: {v5: {type: extras.status, stable: Active}}
     emit:
       type: dcim.location
       key: {name: "${attrs.name}"}
       attrs:
         name: "${attrs.name}"
         location_type: "${uids.location_type}"
-        status: "3915bcde-33d3-4332-9930-9e3684a9d859"
+        status: "${uids.active}"
   - name: devices
     match: dcim.device
+    uids:
+      active: {v5: {type: extras.status, stable: Active}}
     emit:
       type: dcim.device
       key: {name: "${key.name}"}
@@ -117,19 +120,20 @@ rules:
         location: "${attrs.site}"
         role: "${attrs.role}"
         device_type: "${attrs.device_type}"
-        status: "3915bcde-33d3-4332-9930-9e3684a9d859"
+        status: "${uids.active}"
   # ... 1:1 rules for the role, manufacturer, device type and interface
   - name: ip-addresses
     match: ipam.ip_address
     uids:
       parent: {v5: {type: ipam.prefix, stable: "10.0.0.0/24"}}
+      active: {v5: {type: extras.status, stable: Active}}
     emit:
       - type: ipam.ipaddress
         uid: "${uid}"
         key: {address: "${key.address}"}
         attrs:
           address: "${attrs.address}"
-          status: "3915bcde-33d3-4332-9930-9e3684a9d859"
+          status: "${uids.active}"
           parent: "${uids.parent}"
       - type: ipam.ipaddresstointerface
         uid: {v5: {type: ipam.ipaddresstointerface, stable: "${uid}#interface"}}
@@ -142,13 +146,12 @@ by the one `Site` location type the spec's `objects:` declares, which
 allows devices. no source object models that type, so the location
 reaches it by deriving the same `v5` uid. the `Active` status is
 nautobot's own: declared by key alone, plan adopts it rather than
-creating one, and its literal uid lets both the rules and the prefix,
-which renders with no vars, point at it. the device's `site` relation
-becomes `location`. the site, role and type rules are 1:1 and keep
-their source uids, so the device's refs stay valid. the ip rule emits
-two objects, so it names each uid: the ip keeps its own, and the link
-derives one from it. the ip names the prefix as its `parent`, reached
-through the prefix's `v5` uid.
+creating one. the rules and the prefix reach it through its `v5` uid.
+the device's `site` relation becomes `location`. the site, role and type
+rules are 1:1 and keep their source uids, so the device's refs stay
+valid. the ip rule emits two objects, so it names each uid: the ip
+keeps its own, and the link derives one from it. the ip names the
+prefix as its `parent`, reached through the prefix's `v5` uid.
 
 ```bash
 alembic map -f examples/walkthroughs/eval-fabric.yaml \
