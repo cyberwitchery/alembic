@@ -8,7 +8,7 @@
 # devices, interfaces, prefixes and ips all carry nautobot's `Active` status.
 #
 # note that for simplicity, all ip addresses in this example will get
-# the same parent; 10.0.0/24
+# the same parent; 10.0.0.0/24
 schema:
   types:
     extras.status:
