@@ -86,7 +86,7 @@ adds the status, location type and prefix nautobot requires
 objects:
   - type: extras.status
     key: {name: Active}
-    uid: "3915bcde-33d3-4332-9930-9e3684a9d859"49
+    uid: "3915bcde-33d3-4332-9930-9e3684a9d859"
   - type: dcim.locationtype
     key: {name: Site}
     attrs: {name: Site, content_types: ["dcim.device"]}
