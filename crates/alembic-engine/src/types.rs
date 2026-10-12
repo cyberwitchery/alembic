@@ -22,6 +22,17 @@ pub struct Plan {
     /// plan time. `None` when the backend cannot preview schema (or was not asked).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schema_preview: Option<ProvisionReport>,
+    /// whether the backend was planned write-only (`emit`) or read+write (`drive`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effects: Option<Effects>,
+}
+
+/// the kind of effects applying a plan has on its backend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Effects {
+    Emit,
+    Drive,
 }
 
 /// high-level summary of plan operations.

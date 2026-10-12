@@ -2044,6 +2044,7 @@ fn apply_plan_blocks_deletes_without_flag() {
         }],
         summary: None,
         schema_preview: None,
+        effects: None,
     };
     let backend = Backend::Adapter(Box::new(adapter));
     let result = futures::executor::block_on(apply_plan(&backend, &plan, &mut state, false));
@@ -2114,6 +2115,7 @@ fn apply_plan_blocks_schema_deletes_without_flag() {
             deleted_object_types: vec!["dcim.widget".to_string()],
             ..Default::default()
         }),
+        effects: None,
     };
     let backend = Backend::Adapter(Box::new(adapter));
     let result = futures::executor::block_on(apply_plan(&backend, &plan, &mut state, false));
@@ -2138,6 +2140,7 @@ fn apply_plan_allows_schema_deletes_with_flag() {
             deleted_object_fields: vec!["dcim.widget.color".to_string()],
             ..Default::default()
         }),
+        effects: None,
     };
     let backend = Backend::Adapter(Box::new(adapter));
     futures::executor::block_on(apply_plan(&backend, &plan, &mut state, true)).unwrap();
@@ -2201,6 +2204,7 @@ fn apply_plan_self_previews_and_blocks_schema_deletes() {
         ops: vec![],
         summary: None,
         schema_preview: None,
+        effects: None,
     };
     let backend = Backend::Adapter(Box::new(adapter));
     let result = futures::executor::block_on(apply_plan(&backend, &plan, &mut state, false));
@@ -2224,6 +2228,7 @@ fn apply_plan_self_preview_allows_schema_deletes_with_flag() {
         ops: vec![],
         summary: None,
         schema_preview: None,
+        effects: None,
     };
     let backend = Backend::Adapter(Box::new(adapter));
     futures::executor::block_on(apply_plan(&backend, &plan, &mut state, true)).unwrap();
@@ -2419,6 +2424,7 @@ fn apply_plan_updates_state() {
         ops: vec![],
         summary: None,
         schema_preview: None,
+        effects: None,
     };
     let backend = Backend::Adapter(Box::new(adapter));
     futures::executor::block_on(apply_plan(&backend, &plan, &mut state, true)).unwrap();
@@ -2452,6 +2458,7 @@ fn apply_plan_clears_state_for_deleted_op() {
         ops: vec![],
         summary: None,
         schema_preview: None,
+        effects: None,
     };
     let backend = Backend::Adapter(Box::new(adapter));
     futures::executor::block_on(apply_plan(&backend, &plan, &mut state, true)).unwrap();
@@ -2483,6 +2490,7 @@ fn apply_plan_recovers_state_mappings_for_resumed_ops() {
         ops: vec![],
         summary: None,
         schema_preview: None,
+        effects: None,
     };
     let backend = Backend::Adapter(Box::new(adapter));
     futures::executor::block_on(apply_plan(&backend, &plan, &mut state, true)).unwrap();
@@ -2517,6 +2525,7 @@ fn apply_plan_keeps_the_mapping_a_resumed_op_has_no_id_for() {
         ops: vec![],
         summary: None,
         schema_preview: None,
+        effects: None,
     };
     let backend = Backend::Adapter(Box::new(adapter));
     futures::executor::block_on(apply_plan(&backend, &plan, &mut state, true)).unwrap();
@@ -2547,6 +2556,7 @@ fn apply_plan_emitter_writes_and_provisions_nothing() {
         ops: vec![],
         summary: None,
         schema_preview: None,
+        effects: None,
     };
     let backend = Backend::Emitter(Box::new(adapter));
     let report =
@@ -2614,6 +2624,7 @@ fn empty_plan() -> Plan {
         ops: vec![],
         summary: None,
         schema_preview: None,
+        effects: None,
     }
 }
 
@@ -2661,6 +2672,7 @@ fn apply_plan_rejects_read_only_observer() {
         ops: vec![],
         summary: None,
         schema_preview: None,
+        effects: None,
     };
     let backend = Backend::Observer(Box::new(adapter));
     let err = futures::executor::block_on(apply_plan(&backend, &plan, &mut state, true))

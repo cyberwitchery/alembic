@@ -172,6 +172,7 @@ mod tests {
             ops,
             summary: None,
             schema_preview: None,
+            effects: None,
         }
     }
 

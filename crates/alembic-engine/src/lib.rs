@@ -49,8 +49,8 @@ pub use pretty_printing::bullet_list;
 pub use state::{BackendIdentity, PostgresTlsMode, StateFile, StateLock, StateStore};
 pub use transform::{compile_map, eval_map_transform, load_map_spec, MapSpec, TransformsSpec};
 pub use types::{
-    Adapter, Adoption, Backend, BootstrapReport, Emitter, ObservedObject, ObservedState, Observer,
-    Plan, PlanSummary, SupersededBinding,
+    Adapter, Adoption, Backend, BootstrapReport, Effects, Emitter, ObservedObject, ObservedState,
+    Observer, Plan, PlanSummary, SupersededBinding,
 };
 
 /// validate an inventory and return the report.

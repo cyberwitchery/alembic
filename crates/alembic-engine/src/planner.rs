@@ -162,6 +162,7 @@ fn build(
         ops,
         summary: None,
         schema_preview: None,
+        effects: None,
     };
     plan.summary = Some(plan.summary());
     Ok(plan)
