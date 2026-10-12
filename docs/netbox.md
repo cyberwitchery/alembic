@@ -104,6 +104,33 @@ schema preview names the values it would add (`dcim.site.tier: choices + ["colo"
 one field name is one set, so two types sharing it must declare the same values in the
 same order, or the run fails naming both.
 
+for example, a site field declared as an enum:
+
+```yaml
+dcim.site:
+  key: {slug: {type: slug}}
+  fields:
+    name: {type: string}
+    slug: {type: slug}
+    fabric_tier:
+      type: enum
+      values: [core, edge, colo]
+```
+
+`plan --provision` against netbox 4.6.2 creates the set `fabric_tier` with the choices
+`core`, `edge` and `colo`, and a `select` field over it:
+
+```
+provision: 1 fields created
+  created dcim.site.fabric_tier
+plan: 1 to create, 0 to update, 0 to delete
+```
+
+netbox then refuses a value outside the set, written through its api:
+`Invalid choice (bogus) for choice set fabric_tier.` adding `transit` to `values`
+previews as `would update dcim.site.fabric_tier: choices + ["transit"]`, and
+provisioning appends it to the set.
+
 choices are added only to a field netbox holds as a `select` or `multiselect`. a field
 declared an `enum` after it was created as another type is left alone and the run warns
 naming both types: a live field is never retyped. its `required` and `description` still
