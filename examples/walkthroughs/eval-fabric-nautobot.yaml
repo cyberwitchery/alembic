@@ -1,5 +1,5 @@
 # nautobot map for docs/case-studies/01-evaluate-dcim-systems.md.
-# nautobot 2.x models a site as `dcim.location` keyed by its human name (no slug),
+# nautobot 3.2.x models a site as `dcim.location` keyed by its human name (no slug),
 # typed by a `dcim.locationtype` that allows devices, and a device points at
 # `location`, not `site`. a device role is a generic `extras.role`, and
 # manufacturers and device types are keyed by name and model. an ip is
