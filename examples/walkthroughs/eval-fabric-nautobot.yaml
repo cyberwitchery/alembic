@@ -84,7 +84,7 @@ objects:
   # the ip's parent, in nautobot's default `Global` namespace.
   - type: ipam.prefix
     key: {prefix: "10.0.0.0/24"}
-    attrs: {prefix: "10.0.0.0/24", status: {uid: {type: extras.status, stable: Active}}}
+    attrs: {prefix: "10.0.0.0/24", status: {v5: {type: extras.status, stable: Active}}}
     uid: {v5: {type: ipam.prefix, stable: "10.0.0.0/24"}}
 rules:
   # site -> location: nautobot keys a location by its human name, not a slug.
