@@ -84,6 +84,9 @@ pub fn render_plan(plan: &Plan) -> String {
         update.len(),
         delete_count
     );
+    if let Some(matching) = plan.summary.as_ref().and_then(|s| s.matching.as_ref()) {
+        let _ = write!(out, "\nmatching: {matching}");
+    }
     for (label, lines) in [
         // apply is not atomic: the create lands first, then the delete, and a
         // run interrupted between the two resumes by re-issuing the delete.
