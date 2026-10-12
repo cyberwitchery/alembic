@@ -13,6 +13,7 @@ use alembic_engine::{
 };
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
+use clap_complete::{generate, shells::Bash};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -185,6 +186,8 @@ enum Command {
         #[command(subcommand)]
         action: SkillAction,
     },
+    /// create cli completion scripts
+    Completion { path: String },
 }
 
 /// skill subcommands.
@@ -303,6 +306,7 @@ fn output_path(command: &Command) -> Option<&Path> {
         // `install` writes into a directory it creates rather than to a named
         // output file, and it reports the path it wrote; the other two print
         Command::Skill { .. } => None,
+        Command::Completion { .. } => None,
     }
 }
 
@@ -618,6 +622,23 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<ExitCode> {
                 println!("skill written to {}", path.display());
             }
         },
+        Command::Completion { path } => {
+            let cli = Cli {
+                command: Command::Apply {
+                    plan: Default::default(),
+                    output: None,
+                    backend: None,
+                    backend_config: None,
+                    allow_delete: false,
+                    interactive: false,
+                },
+            };
+            let matches = get_matches();
+
+            if matches.is_present("generate-bash-completions") {
+                generate(Bash, &mut cli, path, &mut std::io::stdout());
+            }
+        }
     }
 
     Ok(ExitCode::SUCCESS)
