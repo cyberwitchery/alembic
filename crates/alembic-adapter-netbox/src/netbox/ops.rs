@@ -10,7 +10,9 @@ use super::NetBoxAdapter;
 use alembic_adapter_sdk::apply_retry::{
     describe_missing_refs, is_missing_ref_error, RetryApplyDriver,
 };
-use alembic_adapter_sdk::{AppliedOp, ApplyReport, BackendId, Op, ProvisionReport};
+use alembic_adapter_sdk::{
+    AdapterApplyError, AppliedOp, ApplyReport, BackendId, Op, ProvisionReport,
+};
 use alembic_core::{
     key_string, FieldSchema, FieldType, JsonMap, Key, Schema, TypeName, TypeSchema, Uid,
 };
@@ -2027,10 +2029,12 @@ fn validate_custom_object_field_name(name: &str) -> Result<()> {
             .chars()
             .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
     {
-        return Err(anyhow!(
-            "invalid custom object field name '{}': only letters, digits, and underscores are allowed",
-            name
-        ));
+        return Err(AdapterApplyError::SchemaMismatch {
+            message: format!(
+                "invalid custom object field name '{name}': only letters, digits, and underscores are allowed"
+            ),
+        }
+        .into());
     }
     Ok(())
 }
