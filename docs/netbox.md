@@ -76,18 +76,67 @@ which is the version it is validated against. use that pin when reporting a comp
 
 a declared type is provisioned as the netbox custom field type below, on both paths.
 `ref` and `list_ref` are never provisioned as native custom fields; on a custom object
-type they become `object` and `multiobject`.
+type they become `object` and `multiobject`. `enum` and `list` of `enum` are `select`
+and `multiselect` on a native custom field only: a custom object field still holds them
+as `text` and `json`.
 
 | declared | netbox |
 | --- | --- |
-| `string`, `uuid`, `time`, `ip_address`, `cidr`, `prefix`, `mac`, `slug`, `enum` | `text` |
+| `string`, `uuid`, `time`, `ip_address`, `cidr`, `prefix`, `mac`, `slug` | `text` |
 | `text` | `longtext` |
 | `int` | `integer` |
 | `float` | `decimal` |
 | `bool` | `boolean` |
 | `date` | `date` |
 | `datetime` | `datetime` |
+| `enum` | `select` |
+| `list` of `enum` | `multiselect` |
 | `json`, `list`, `map` | `json` |
+
+netbox keeps a select's values in a named custom field choice set, so a `select` is
+created referencing the set named after the field, whose choices are the declared values
+in declaration order, each its own label. a set by that name that already exists is
+adopted rather than duplicated. choices converge additively: a declared value the set
+lacks is appended to it, and a value the set has that the model does not declare is left
+alone, because core rejects an undeclared enum value before a write reaches netbox. a
+field the backend already has converges through whichever set it references, and the
+schema preview names the values it would add (`dcim.site.tier: choices + ["colo"]`).
+one field name is one set, so two types sharing it must declare the same values in the
+same order, or the run fails naming both.
+
+for example, a site field declared as an enum:
+
+```yaml
+dcim.site:
+  key: {slug: {type: slug}}
+  fields:
+    name: {type: string}
+    slug: {type: slug}
+    fabric_tier:
+      type: enum
+      values: [core, edge, colo]
+```
+
+`plan --provision` against netbox 4.6.2 creates the set `fabric_tier` with the choices
+`core`, `edge` and `colo`, and a `select` field over it:
+
+```
+provision: 1 fields created
+  created dcim.site.fabric_tier
+plan: 1 to create, 0 to update, 0 to delete
+```
+
+netbox then refuses a value outside the set, written through its api:
+`Invalid choice (bogus) for choice set fabric_tier.` adding `transit` to `values`
+previews as `would update dcim.site.fabric_tier: choices + ["transit"]`, and
+provisioning appends it to the set.
+
+choices are added only to a field netbox holds as a `select` or `multiselect`. a field
+declared an `enum` after it was created as another type is left alone and the run warns
+naming both types: a live field is never retyped. its `required` and `description` still
+converge, and a declared `pattern:` or `format:` is not provisioned on a `select`:
+netbox enforces `validation_regex` on text fields only, and the choices are the
+constraint.
 
 ## custom objects (netbox custom objects plugin)
 
