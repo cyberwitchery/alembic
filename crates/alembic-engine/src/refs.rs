@@ -3,11 +3,15 @@
 
 use crate::adapter_ops::backend_id_from_value;
 use crate::pretty_printing::bullet_list;
-use crate::types::ObservedState;
+use crate::types::{ObservedObject, ObservedState};
+use crate::StateStore;
 use alembic_adapter_sdk::BackendId;
-use alembic_core::{FieldType, JsonMap, Key, Schema, TypeName, TypeSchema, Uid};
+use alembic_core::{
+    key_string, uid_v5, FieldType, JsonMap, Key, Schema, TypeName, TypeSchema, Uid,
+};
 use anyhow::{anyhow, Result};
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::fmt;
 
 /// the backend id a ref-typed value still holds. a uid, a null and a value that
@@ -205,6 +209,142 @@ fn classify(
             BackendIdCause::KeyUnresolved
         }
         _ => BackendIdCause::Rewritable,
+    }
+}
+
+/// the uid each observed object answered to when it was read: the one state
+/// bound it to, or else the one its key derives, which is how an adapter writes
+/// a ref to a target state does not know. index-aligned with the observation.
+pub(crate) fn read_uids(observed: &ObservedState, state: &StateStore) -> Vec<Uid> {
+    observed
+        .objects()
+        .map(|object| {
+            object
+                .backend_id
+                .as_ref()
+                .and_then(|id| state.uid_for_backend_id(&object.type_name, id))
+                .unwrap_or_else(|| uid_v5(object.type_name.as_str(), &key_string(&object.key)))
+        })
+        .collect()
+}
+
+/// point observed refs at the uids adoption just bound. a ref to an object that
+/// was unbound at read time holds the uid its key derives (or, on a backend whose
+/// ids are strings, its bare backend id); once adoption binds a declared uid to
+/// that object, every ref to it, in keys as in attrs, is rewritten to the declared
+/// one. returns whether any key changed, since a re-keyed object may now match a
+/// declared key it could not before.
+pub(crate) fn rebind_adopted_refs(
+    observed: ObservedState,
+    read_uids: &[Uid],
+    schema: &Schema,
+    state: &StateStore,
+) -> Result<(ObservedState, bool)> {
+    let mut rebound: BTreeMap<(String, String), Uid> = BTreeMap::new();
+    for (object, read_uid) in observed.objects().zip(read_uids) {
+        let Some(backend_id) = &object.backend_id else {
+            continue;
+        };
+        let Some(bound) = state.uid_for_backend_id(&object.type_name, backend_id) else {
+            continue;
+        };
+        if bound == *read_uid {
+            continue;
+        }
+        let type_name = object.type_name.to_string();
+        rebound.insert((type_name.clone(), read_uid.to_string()), bound);
+        if let BackendId::String(id) = backend_id {
+            rebound.insert((type_name, id.clone()), bound);
+        }
+    }
+
+    let objects = observed.into_objects();
+    let mut keys_changed = false;
+    let mut next = ObservedState::default();
+    for mut object in objects {
+        if !rebound.is_empty() {
+            if let Some(type_schema) = schema.types.get(object.type_name.as_str()) {
+                keys_changed |= rebind_object(&mut object, type_schema, &rebound);
+            }
+        }
+        next.insert(object)?;
+    }
+    Ok((next, keys_changed))
+}
+
+/// rewrite one object's ref leaves through `rebound`; true when its key changed.
+fn rebind_object(
+    object: &mut ObservedObject,
+    type_schema: &TypeSchema,
+    rebound: &BTreeMap<(String, String), Uid>,
+) -> bool {
+    let mut key_changed = false;
+    for (field, schema) in &type_schema.key {
+        if let Some(value) = object.key.get_mut(field) {
+            key_changed |= rebind_value(&schema.r#type, value, rebound);
+        }
+    }
+    for (field, schema) in type_schema.key.iter().chain(&type_schema.fields) {
+        if let Some(value) = object.attrs.get_mut(field) {
+            rebind_value(&schema.r#type, value, rebound);
+        }
+    }
+    key_changed
+}
+
+/// the mutable counterpart of `scan`: rewrite each ref leaf `rebound` names.
+fn rebind_value(
+    field_type: &FieldType,
+    value: &mut Value,
+    rebound: &BTreeMap<(String, String), Uid>,
+) -> bool {
+    let leaf = |target: &str, value: &mut Value| {
+        let Some(uid) = value
+            .as_str()
+            .and_then(|raw| rebound.get(&(target.to_string(), raw.to_string())))
+        else {
+            return false;
+        };
+        *value = Value::String(uid.to_string());
+        true
+    };
+    match field_type {
+        FieldType::Ref { target } => leaf(target, value),
+        FieldType::ListRef { target } => match value {
+            Value::Array(items) => items
+                .iter_mut()
+                .fold(false, |changed, item| leaf(target, item) | changed),
+            _ => false,
+        },
+        FieldType::List { item } => match value {
+            Value::Array(items) => items.iter_mut().fold(false, |changed, elem| {
+                rebind_value(item, elem, rebound) | changed
+            }),
+            _ => false,
+        },
+        FieldType::Map { value: inner } => match value {
+            Value::Object(map) => map.values_mut().fold(false, |changed, elem| {
+                rebind_value(inner, elem, rebound) | changed
+            }),
+            _ => false,
+        },
+        // enumerated as in `scan`, so a new ref-bearing variant has to answer here.
+        FieldType::String
+        | FieldType::Text
+        | FieldType::Int
+        | FieldType::Float
+        | FieldType::Bool
+        | FieldType::Uuid
+        | FieldType::Date
+        | FieldType::Datetime
+        | FieldType::Time
+        | FieldType::Json
+        | FieldType::IpAddress
+        | FieldType::Cidr
+        | FieldType::Prefix
+        | FieldType::Mac
+        | FieldType::Slug
+        | FieldType::Enum { .. } => false,
     }
 }
 

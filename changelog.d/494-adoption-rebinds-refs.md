@@ -1,0 +1,1 @@
+- first-contact adoption points observed refs at the uids it binds and adopts again until nothing more matches, so an object keyed by a ref (an interface keyed by its device) is adopted instead of planned as a create, and refs to adopted objects no longer plan no-op updates (#494)

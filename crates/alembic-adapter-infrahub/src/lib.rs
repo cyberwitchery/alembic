@@ -12,7 +12,6 @@ use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use graphql_parser::schema::{parse_schema, Definition, Type as GqlType, TypeDefinition};
 use infrahub::{Client, ClientConfig};
-use reqwest::header::{HeaderMap, HeaderValue};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use serde_yaml::{Mapping as YamlMapping, Value as YamlValue};
@@ -75,12 +74,8 @@ impl SchemaPushConfig {
 /// infrahub adapter.
 pub struct InfrahubAdapter {
     client: Client,
-    api: reqwest::Client,
     base_url: String,
     token: String,
-    // the graphql client resolves the branch itself; the raw `/api/schema`
-    // request has to carry it, so keep a copy.
-    branch: Option<String>,
     schema_push: Option<SchemaPushConfig>,
 }
 
@@ -94,24 +89,10 @@ impl InfrahubAdapter {
             config = config.with_default_branch(branch);
         }
         let client = Client::new(config)?;
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            "X-INFRAHUB-KEY",
-            HeaderValue::from_str(token)
-                .map_err(|err| anyhow!("invalid infrahub token header: {err}"))?,
-        );
-        let api = reqwest::Client::builder()
-            .default_headers(headers)
-            .timeout(Duration::from_secs(30))
-            .no_proxy()
-            .build()
-            .context("build infrahub http client")?;
         Ok(Self {
             client,
-            api,
             base_url: url.to_string(),
             token: token.to_string(),
-            branch: branch.map(str::to_string),
             schema_push: None,
         })
     }
@@ -131,27 +112,10 @@ impl InfrahubAdapter {
     }
 
     async fn load_schema_snapshot(&self) -> Result<SchemaSnapshot> {
-        let base = self.base_url.trim_end_matches('/');
-        let mut url = reqwest::Url::parse(&format!("{base}/api/schema"))
-            .context("build infrahub schema snapshot url")?;
-        if let Some(branch) = &self.branch {
-            url.query_pairs_mut().append_pair("branch", branch);
-        }
-        let response = self
-            .api
-            .get(url)
-            .send()
+        self.client
+            .fetch_schema_snapshot(None)
             .await
-            .context("fetch infrahub schema snapshot")?;
-        let status = response.status();
-        let text = response
-            .text()
-            .await
-            .context("read infrahub schema snapshot")?;
-        if !status.is_success() {
-            return Err(anyhow!("infrahub schema snapshot http error: {}", status));
-        }
-        serde_json::from_str(&text).context("parse infrahub schema snapshot")
+            .context("fetch infrahub schema snapshot")
     }
 
     /// fetch every node of `type_name` as a `(backend id, raw attrs)` pair.

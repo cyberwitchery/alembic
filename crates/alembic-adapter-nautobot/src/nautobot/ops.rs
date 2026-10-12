@@ -1082,6 +1082,11 @@ fn normalize_value(
             }
             Value::Object(normalized)
         }
+        // a bare id: the id half of a generic fk (`termination_a_id`) is not a brief
+        Value::String(id) => match target_hint.and_then(|target| mappings.uid_for(target, &id)) {
+            Some(uid) => Value::String(uid.to_string()),
+            None => Value::String(id),
+        },
         other => other,
     }
 }
@@ -1366,6 +1371,62 @@ mod tests {
         normalize_attrs(&mut attrs, &type_schema, &schema, &registry, &mappings);
         assert_eq!(attrs.get("type").unwrap(), &json!("1000base-t"));
         assert!(!attrs.contains_key("if_type"));
+    }
+
+    #[test]
+    fn a_bare_backend_id_in_a_ref_field_reads_back_as_its_uid() {
+        // a generic fk's id half (`termination_a_id`) arrives as a bare uuid, not a
+        // nested brief; declared as a ref it must resolve like any other ref.
+        let registry = ObjectTypeRegistry::default();
+        let interface = Uid::from_u128(11);
+        let mut mappings = super::super::state::StateMappings::default();
+        mappings.by_type.insert(
+            "dcim.interface".to_string(),
+            BTreeMap::from([(
+                "3240a061-1422-4d1c-a78b-f78db1d1cfd8".to_string(),
+                interface,
+            )]),
+        );
+        let ref_field = FieldSchema {
+            r#type: FieldType::Ref {
+                target: "dcim.interface".to_string(),
+            },
+            required: false,
+            nullable: true,
+            format: None,
+            pattern: None,
+            description: None,
+        };
+        let type_schema = TypeSchema {
+            key: BTreeMap::new(),
+            fields: BTreeMap::from([
+                ("termination_a_id".to_string(), ref_field.clone()),
+                ("termination_b_id".to_string(), ref_field),
+            ]),
+        };
+        let schema = Schema {
+            types: BTreeMap::new(),
+        };
+        let mut attrs = JsonMap::default();
+        attrs.insert(
+            "termination_a_id".to_string(),
+            json!("3240a061-1422-4d1c-a78b-f78db1d1cfd8"),
+        );
+        // an id state does not know stays as nautobot reported it.
+        attrs.insert(
+            "termination_b_id".to_string(),
+            json!("36592b0f-303f-439a-885b-14772174e720"),
+        );
+
+        normalize_attrs(&mut attrs, &type_schema, &schema, &registry, &mappings);
+        assert_eq!(
+            attrs.get("termination_a_id").unwrap(),
+            &json!(interface.to_string())
+        );
+        assert_eq!(
+            attrs.get("termination_b_id").unwrap(),
+            &json!("36592b0f-303f-439a-885b-14772174e720")
+        );
     }
 
     #[test]

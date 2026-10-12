@@ -96,6 +96,14 @@ backend: state-known objects still match, everything else plans as a create.
 it conflicts with `--allow-delete`: refusing to identify a backend object by
 key is refusing to know enough to replace it.
 
+adoption also settles the refs that point at what it binds. a ref to an object
+state did not know reads as the uid its key derives; once adoption binds the
+declared uid to that object, the observation's refs, in keys as in attrs, are
+rewritten to it. a ref-keyed object (an interface keyed by its device) only
+matches its declared key once its parent's ref has moved, so adoption repeats
+until nothing more binds. first contact with a backend that already holds the
+whole inventory therefore plans nothing.
+
 ## key ambiguity
 
 real backends hold legitimate same-key objects (netbox ships with duplicate

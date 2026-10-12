@@ -107,14 +107,11 @@ pub async fn build_plan(
 /// every declared object becomes a create (and nothing is updated or deleted).
 pub fn plan_write_only(inventory: &Inventory, state: &StateStore) -> Result<Plan> {
     report_to_result(validate(inventory))?;
-    plan(
+    planner::plan_whole_creates(
         &inventory.objects,
-        &ObservedState::default(),
         state,
         &inventory.schema,
         inventory.scope.as_ref(),
-        false,
-        true,
     )
 }
 
