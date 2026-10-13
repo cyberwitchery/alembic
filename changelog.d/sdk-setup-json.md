@@ -1,1 +1,0 @@
-- **breaking** `alembic-adapter-sdk`: `ExternalAdapter::setup` takes a `&serde_json::Value`, and `ExternalEnvelope`, `ExternalEnvelopeRef` and the registry's `ExternalConfig` hold `setup` as one, so no public type names a yaml crate; an adapter swaps `serde_yaml::Value` for `serde_json::Value` in its `setup`

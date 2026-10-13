@@ -1,1 +1,0 @@
-- `alembic-adapter-sdk`: the yaml helpers live in `alembic_adapter_sdk::yaml` (still reachable as `alembic_engine::yaml`), so an adapter reads and writes yaml by the same rules without linking the engine; they return `yaml::Error`, which names no yaml library
