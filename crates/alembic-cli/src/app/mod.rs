@@ -27,9 +27,7 @@ use alembic_engine::{
 };
 use anyhow::{anyhow, Context, Result};
 use clap::{CommandFactory, Parser, Subcommand};
-use clap_complete::Shell::{Bash, Elvish, Fish, PowerShell, Zsh};
 use clap_complete::{generate, Shell};
-use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -187,7 +185,10 @@ enum Command {
         action: SkillAction,
     },
     /// emit shell completion script to stdout
-    Completion { shell_type: Option<String> },
+    Completion {
+        #[arg(value_enum)]
+        shell: Shell,
+    },
 }
 
 /// skill subcommands.
@@ -622,44 +623,17 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<ExitCode> {
                 println!("skill written to {}", path.display());
             }
         },
-        Command::Completion { shell_type } => {
-            let supported_shell_types: HashMap<String, Shell> = HashMap::from([
-                ("elvish".to_string(), Elvish),
-                ("zsh".to_string(), Zsh),
-                ("fish".to_string(), Fish),
-                ("powershell".to_string(), PowerShell),
-                ("bash".to_string(), Bash),
-            ]);
-            if let Some(shell_type) = shell_type {
-                if let Some(shell) = supported_shell_types.get(&shell_type) {
-                    generate(
-                        *shell,
-                        &mut Cli::command(),
-                        "alembic".to_string(),
-                        &mut std::io::stdout(),
-                    );
-                } else {
-                    println!("unknown shell type '{}'", shell_type);
-                    print_shells(&supported_shell_types)
-                }
-            } else {
-                print_shells(&supported_shell_types);
-            }
+        Command::Completion { shell } => {
+            generate(
+                shell,
+                &mut Cli::command(),
+                "alembic".to_string(),
+                &mut std::io::stdout(),
+            );
         }
     }
 
     Ok(ExitCode::SUCCESS)
-}
-
-fn print_shells(supported_shell_types: &HashMap<String, Shell>) {
-    println!(
-        "please specify a shell type (one of {})",
-        supported_shell_types
-            .keys()
-            .map(|s| format!("'{}'", s))
-            .collect::<Vec<_>>()
-            .join(", ")
-    );
 }
 
 /// say what bootstrapping wrote into identity memory: adoptions bind a
