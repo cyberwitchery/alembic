@@ -301,7 +301,7 @@ fn write_inventory_to_yaml_path_serializes_as_yaml() {
     // as an inventory too, so this only proves the extension drove serialization.
     let raw = std::fs::read_to_string(&path).unwrap();
     assert!(
-        serde_yaml::from_str::<Inventory>(&raw).is_ok(),
+        alembic_engine::yaml::from_str::<Inventory>(&raw).is_ok(),
         "not yaml: {raw}"
     );
     assert!(!raw.contains("\"objects\""), "{raw}");
@@ -1359,7 +1359,7 @@ async fn run_apply_read_only_backend_fails_before_prompting() {
 // `base_url`. shared by the apply-report tests, which differ only in what the
 // mocked POST answers.
 fn generic_apply_fixture(dir: &Path, base_url: &str) -> (PathBuf, PathBuf) {
-    let schema: alembic_core::Schema = serde_yaml::from_str(
+    let schema: alembic_core::Schema = alembic_engine::yaml::from_str(
         r#"
 types:
   dcim.site:
@@ -1461,7 +1461,7 @@ async fn run_apply_writes_the_report_to_output() {
 // shape resume exists for: the run dies between the two, and the device can only
 // be written once the site's backend id is known.
 fn generic_resume_fixture(dir: &Path, base_url: &str) -> (PathBuf, PathBuf) {
-    let schema: alembic_core::Schema = serde_yaml::from_str(
+    let schema: alembic_core::Schema = alembic_engine::yaml::from_str(
         r#"
 types:
   dcim.site:
@@ -3540,7 +3540,7 @@ async fn minimal_external_adapter() {
         working_dir: None,
         env: BTreeMap::new(),
         timeout_seconds: Some(5),
-        setup: serde_yaml::Value::default(),
+        setup: serde_json::Value::default(),
         instance: None,
     });
 

@@ -2,9 +2,9 @@
   "bomFormat": "CycloneDX",
   "specVersion": "1.3",
   "version": 1,
-  "serialNumber": "urn:uuid:d1c360d9-f0cf-4d7d-9e03-d74890dbdcc5",
+  "serialNumber": "urn:uuid:b8a31642-4982-414a-bcf1-97cdb2f18415",
   "metadata": {
-    "timestamp": "2026-10-04T15:07:19.739037000Z",
+    "timestamp": "2026-10-13T08:03:35.646078000Z",
     "tools": [
       {
         "vendor": "CycloneDX",
@@ -14,7 +14,7 @@
     ],
     "component": {
       "type": "library",
-      "bom-ref": "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl/3e53fc7b-d6ef-4ada-80e9-76e477a8e107/scratchpad/wt-alembic/crates/alembic-core#0.10.0",
+      "bom-ref": "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl-sec-divinate/4a3f5dce-4ce6-4f41-b541-9b0d44dc8a61/scratchpad/wt/alembic/crates/alembic-core#0.10.0",
       "name": "alembic-core",
       "version": "0.10.0",
       "description": "Core IR types and validation for Alembic.",
@@ -42,7 +42,7 @@
       "components": [
         {
           "type": "library",
-          "bom-ref": "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl/3e53fc7b-d6ef-4ada-80e9-76e477a8e107/scratchpad/wt-alembic/crates/alembic-core#0.10.0 bin-target-0",
+          "bom-ref": "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl-sec-divinate/4a3f5dce-4ce6-4f41-b541-9b0d44dc8a61/scratchpad/wt/alembic/crates/alembic-core#0.10.0 bin-target-0",
           "name": "alembic_core",
           "version": "0.10.0",
           "purl": "pkg:cargo/alembic-core@0.10.0?download_url=file://.#src/lib.rs"
@@ -1367,16 +1367,16 @@
     },
     {
       "type": "library",
-      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#uuid@1.26.1",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#uuid@1.27.0",
       "author": "Ashley Mannix<ashleymannix@live.com.au>, Dylan DPC<dylan.dpc@gmail.com>, Hunar Roop Kahlon<hunar.roop@gmail.com>",
       "name": "uuid",
-      "version": "1.26.1",
+      "version": "1.27.0",
       "description": "A library to generate and parse UUIDs.",
       "scope": "required",
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "2ef6dac1e96601b4fb3acccccff2139741fcb757cb9a36089bf5be91cfb285ce"
+          "content": "97277d36b9c3ace13e58fa6e753f8b0bbbf302a18dd193240d70f9e29681059a"
         }
       ],
       "licenses": [
@@ -1384,7 +1384,7 @@
           "expression": "Apache-2.0 OR MIT"
         }
       ],
-      "purl": "pkg:cargo/uuid@1.26.1",
+      "purl": "pkg:cargo/uuid@1.27.0",
       "externalReferences": [
         {
           "type": "documentation",
@@ -1920,14 +1920,14 @@
   ],
   "dependencies": [
     {
-      "ref": "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl/3e53fc7b-d6ef-4ada-80e9-76e477a8e107/scratchpad/wt-alembic/crates/alembic-core#0.10.0",
+      "ref": "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl-sec-divinate/4a3f5dce-4ce6-4f41-b541-9b0d44dc8a61/scratchpad/wt/alembic/crates/alembic-core#0.10.0",
       "dependsOn": [
         "registry+https://github.com/rust-lang/crates.io-index#ipnet@2.12.2",
         "registry+https://github.com/rust-lang/crates.io-index#regex@1.13.1",
         "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.229",
         "registry+https://github.com/rust-lang/crates.io-index#serde_json@1.0.151",
         "registry+https://github.com/rust-lang/crates.io-index#thiserror@2.0.21",
-        "registry+https://github.com/rust-lang/crates.io-index#uuid@1.26.1"
+        "registry+https://github.com/rust-lang/crates.io-index#uuid@1.27.0"
       ]
     },
     {
@@ -2141,7 +2141,7 @@
       "ref": "registry+https://github.com/rust-lang/crates.io-index#unicode-xid@0.2.6"
     },
     {
-      "ref": "registry+https://github.com/rust-lang/crates.io-index#uuid@1.26.1",
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#uuid@1.27.0",
       "dependsOn": [
         "registry+https://github.com/rust-lang/crates.io-index#getrandom@0.4.2",
         "registry+https://github.com/rust-lang/crates.io-index#js-sys@0.3.85",

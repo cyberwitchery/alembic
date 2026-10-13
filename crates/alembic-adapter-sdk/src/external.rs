@@ -16,7 +16,7 @@ pub struct ExternalEnvelope {
     /// protocol version.
     pub version: u8,
     /// custom plugin configuration.
-    pub setup: serde_yaml::Value,
+    pub setup: serde_json::Value,
     /// request payload.
     #[serde(flatten)]
     pub request: ExternalRequest,
@@ -52,7 +52,7 @@ pub struct ExternalEnvelopeRef<'a> {
     /// protocol version.
     pub version: u8,
     /// custom plugin configuration.
-    pub setup: serde_yaml::Value,
+    pub setup: serde_json::Value,
     /// request payload.
     #[serde(flatten)]
     pub request: ExternalRequestRef<'a>,
@@ -182,7 +182,7 @@ pub trait ExternalAdapter {
     type Error: fmt::Display;
 
     /// initial configuration of the adapter
-    fn setup(&mut self, configuration: &serde_yaml::Value) -> Result<(), Self::Error>;
+    fn setup(&mut self, configuration: &serde_json::Value) -> Result<(), Self::Error>;
 
     /// read objects from the backend.
     fn read(
@@ -315,7 +315,7 @@ mod tests {
     use crate::types::{AppliedOp, ApplyReport, Op, ProvisionReport};
     use alembic_core::{Key, Object, Schema, TypeName, TypeSchema, Uid};
     use serde_json::json;
-    use serde_yaml::Value;
+    use serde_json::Value;
     use std::io::BufReader;
     use std::io::{BufRead, Write};
 
@@ -589,14 +589,10 @@ mod tests {
         type Error = anyhow::Error;
 
         fn setup(&mut self, configuration: &Value) -> anyhow::Result<()> {
-            if configuration
-                .get("fail_setup")
-                .and_then(serde_yaml::Value::as_bool)
-                == Some(true)
-            {
+            if configuration.get("fail_setup").and_then(Value::as_bool) == Some(true) {
                 return Err(anyhow::anyhow!("rejected by test adapter").context("parsing setup"));
             }
-            if let Some(x) = configuration.get("x").and_then(serde_yaml::Value::as_i64) {
+            if let Some(x) = configuration.get("x").and_then(Value::as_i64) {
                 self.x = x;
             }
             Ok(())
@@ -832,7 +828,7 @@ mod tests {
 
         let envelope = ExternalEnvelope {
             version: EXTERNAL_PROTOCOL_VERSION,
-            setup: serde_yaml::from_str("fail_setup: true").unwrap(),
+            setup: json!({ "fail_setup": true }),
             request: ExternalRequest::Read {
                 schema: Default::default(),
                 types: vec![],
@@ -918,7 +914,7 @@ mod tests {
 
         let envelope = ExternalEnvelope {
             version: EXTERNAL_PROTOCOL_VERSION,
-            setup: serde_yaml::from_str(&format!("x: {MAGIC_NUMBER}")).unwrap(),
+            setup: json!({ "x": MAGIC_NUMBER }),
             request,
         };
 
