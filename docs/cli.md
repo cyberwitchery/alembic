@@ -451,6 +451,17 @@ alembic skill install alembic --dir /srv/intent/.agents/skills
   is only worth reading when it describes the alembic you are running, which is
   why it ships inside it rather than being fetched
 
+## completion
+
+this command takes a subcommand of one of the following values:
+'elvish', 'zsh', 'fish', 'bash' or 'powershell'. it will print a
+shell completion script to stdout, which can be piped to a suitable
+location, e.g:
+
+```bash
+$ alembic complete zsh > ~/alembic/alembic.zsh
+```
+
 ## environment variables
 
 - `NETBOX_URL`
