@@ -5,34 +5,34 @@ mod io;
 mod skill;
 mod state;
 
+use self::io::{
+    announce_written, read_plan, write_apply_report, write_drift_report, write_inventory,
+    write_plan, write_validation_report,
+};
+use self::state::{load_state, load_state_with_context, print_state_context};
+#[cfg(test)]
+use self::state::{resolve_state_backend_config, state_path, StateBackendConfig};
+use crate::app::config::AppConfig;
+#[cfg(test)]
+use alembic_adapter_django::emit::Runner;
 use alembic_adapter_registry::{create_backend, Plugin};
+use alembic_adapter_sdk::{AdapterApplyError, ApplyReport, Op, StateData, Tense};
+use alembic_core::TypeName;
+#[cfg(test)]
+use alembic_engine::PostgresTlsMode;
 use alembic_engine::{
     apply_plan, build_plan, guard_drift_report, guard_schema_provisioning, load_inventory,
     load_inventory_unvalidated, plan_write_only, render_plan, Backend, DriftReport, Effects, Plan,
     StateLock, StateStore,
 };
 use anyhow::{anyhow, Context, Result};
-use clap::{Parser, Subcommand};
-use clap_complete::{generate, shells::Bash};
+use clap::{CommandFactory, Parser, Subcommand};
+use clap_complete::Shell::{Bash, Elvish, Fish, PowerShell, Zsh};
+use clap_complete::{generate, Shell};
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-
-use self::io::{
-    announce_written, read_plan, write_apply_report, write_drift_report, write_inventory,
-    write_plan, write_validation_report,
-};
-use self::state::{load_state, load_state_with_context, print_state_context};
-use crate::app::config::AppConfig;
-use alembic_core::TypeName;
-
-#[cfg(test)]
-use self::state::{resolve_state_backend_config, state_path, StateBackendConfig};
-#[cfg(test)]
-use alembic_adapter_django::emit::Runner;
-use alembic_adapter_sdk::{AdapterApplyError, ApplyReport, Op, StateData, Tense};
-#[cfg(test)]
-use alembic_engine::PostgresTlsMode;
 
 /// top-level cli definition.
 #[derive(Parser)]
@@ -186,8 +186,8 @@ enum Command {
         #[command(subcommand)]
         action: SkillAction,
     },
-    /// create cli completion scripts
-    Completion { path: String },
+    /// emit shell completion script to stdout
+    Completion { shell_type: Option<String> },
 }
 
 /// skill subcommands.
@@ -622,26 +622,44 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<ExitCode> {
                 println!("skill written to {}", path.display());
             }
         },
-        Command::Completion { path } => {
-            let cli = Cli {
-                command: Command::Apply {
-                    plan: Default::default(),
-                    output: None,
-                    backend: None,
-                    backend_config: None,
-                    allow_delete: false,
-                    interactive: false,
-                },
-            };
-            let matches = get_matches();
-
-            if matches.is_present("generate-bash-completions") {
-                generate(Bash, &mut cli, path, &mut std::io::stdout());
+        Command::Completion { shell_type } => {
+            let supported_shell_types: HashMap<String, Shell> = HashMap::from([
+                ("elvish".to_string(), Elvish),
+                ("zsh".to_string(), Zsh),
+                ("fish".to_string(), Fish),
+                ("powershell".to_string(), PowerShell),
+                ("bash".to_string(), Bash),
+            ]);
+            if let Some(shell_type) = shell_type {
+                if let Some(shell) = supported_shell_types.get(&shell_type) {
+                    generate(
+                        *shell,
+                        &mut Cli::command(),
+                        "alembic".to_string(),
+                        &mut std::io::stdout(),
+                    );
+                } else {
+                    println!("unknown shell type '{}'", shell_type);
+                    print_shells(&supported_shell_types)
+                }
+            } else {
+                print_shells(&supported_shell_types);
             }
         }
     }
 
     Ok(ExitCode::SUCCESS)
+}
+
+fn print_shells(supported_shell_types: &HashMap<String, Shell>) {
+    println!(
+        "please specify a shell type (one of {})",
+        supported_shell_types
+            .keys()
+            .map(|s| format!("'{}'", s))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
 }
 
 /// say what bootstrapping wrote into identity memory: adoptions bind a
