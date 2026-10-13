@@ -5,21 +5,7 @@ mod io;
 mod skill;
 mod state;
 
-use self::io::{
-    announce_written, read_plan, write_apply_report, write_drift_report, write_inventory,
-    write_plan, write_validation_report,
-};
-use self::state::{load_state, load_state_with_context, print_state_context};
-#[cfg(test)]
-use self::state::{resolve_state_backend_config, state_path, StateBackendConfig};
-use crate::app::config::AppConfig;
-#[cfg(test)]
-use alembic_adapter_django::emit::Runner;
 use alembic_adapter_registry::{create_backend, Plugin};
-use alembic_adapter_sdk::{AdapterApplyError, ApplyReport, Op, StateData, Tense};
-use alembic_core::TypeName;
-#[cfg(test)]
-use alembic_engine::PostgresTlsMode;
 use alembic_engine::{
     apply_plan, build_plan, guard_drift_report, guard_schema_provisioning, load_inventory,
     load_inventory_unvalidated, plan_write_only, render_plan, Backend, DriftReport, Effects, Plan,
@@ -31,6 +17,22 @@ use clap_complete::{generate, Shell};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+
+use self::io::{
+    announce_written, read_plan, write_apply_report, write_drift_report, write_inventory,
+    write_plan, write_validation_report,
+};
+use self::state::{load_state, load_state_with_context, print_state_context};
+use crate::app::config::AppConfig;
+use alembic_core::TypeName;
+
+#[cfg(test)]
+use self::state::{resolve_state_backend_config, state_path, StateBackendConfig};
+#[cfg(test)]
+use alembic_adapter_django::emit::Runner;
+use alembic_adapter_sdk::{AdapterApplyError, ApplyReport, Op, StateData, Tense};
+#[cfg(test)]
+use alembic_engine::PostgresTlsMode;
 
 /// top-level cli definition.
 #[derive(Parser)]
