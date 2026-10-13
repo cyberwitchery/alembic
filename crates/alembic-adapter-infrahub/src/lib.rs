@@ -14,7 +14,6 @@ use graphql_parser::schema::{parse_schema, Definition, Type as GqlType, TypeDefi
 use infrahub::{Client, ClientConfig};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
-use serde_yaml::{Mapping as YamlMapping, Value as YamlValue};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -1368,7 +1367,7 @@ fn write_schema_document(path: &Path, document: &SchemaDocument) -> Result<()> {
         fs::create_dir_all(parent)
             .with_context(|| format!("create schema directory {}", parent.display()))?;
     }
-    let raw = serde_yaml::to_string(document).context("serialize infrahub schema")?;
+    let raw = alembic_engine::yaml::to_string(document).context("serialize infrahub schema")?;
     fs::write(path, raw).with_context(|| format!("write schema {}", path.display()))?;
     Ok(())
 }
@@ -1393,29 +1392,137 @@ fn ensure_repository_config(repo_root: &Path, schema_path: &Path) -> Result<()> 
     {
         let raw = fs::read_to_string(&config_path)
             .with_context(|| format!("read {}", config_path.display()))?;
-        serde_yaml::from_str::<YamlValue>(&raw)
+        alembic_engine::yaml::from_str::<OrderedYaml>(&raw)
             .with_context(|| format!("parse {}", config_path.display()))?
     } else {
-        YamlValue::Mapping(YamlMapping::new())
+        OrderedYaml::Map(Vec::new())
     };
 
-    let mapping = root
-        .as_mapping_mut()
-        .ok_or_else(|| anyhow!(".infrahub.yml must be a mapping"))?;
-    let schemas_key = YamlValue::String("schemas".to_string());
-    let entry = mapping
-        .entry(schemas_key)
-        .or_insert_with(|| YamlValue::Sequence(Vec::new()));
-    let list = entry
-        .as_sequence_mut()
-        .ok_or_else(|| anyhow!("schemas must be a list in .infrahub.yml"))?;
-    if !list.iter().any(|v| v.as_str() == Some(&rel_path)) {
-        list.push(YamlValue::String(rel_path));
+    let OrderedYaml::Map(entries) = &mut root else {
+        return Err(anyhow!(".infrahub.yml must be a mapping"));
+    };
+    let index = match entries.iter().position(|(key, _)| key == "schemas") {
+        Some(index) => index,
+        None => {
+            entries.push(("schemas".to_string(), OrderedYaml::Seq(Vec::new())));
+            entries.len() - 1
+        }
+    };
+    let OrderedYaml::Seq(list) = &mut entries[index].1 else {
+        return Err(anyhow!("schemas must be a list in .infrahub.yml"));
+    };
+    if !list
+        .iter()
+        .any(|v| matches!(v, OrderedYaml::String(path) if *path == rel_path))
+    {
+        list.push(OrderedYaml::String(rel_path));
     }
 
-    let raw = serde_yaml::to_string(&root).context("serialize .infrahub.yml")?;
+    let raw = alembic_engine::yaml::to_string(&root).context("serialize .infrahub.yml")?;
     fs::write(&config_path, raw).with_context(|| format!("write {}", config_path.display()))?;
     Ok(())
+}
+
+/// a yaml node that keeps its mappings in file order. `.infrahub.yml` belongs
+/// to the user, and adding a schema path to it must not reorder their keys.
+#[derive(Debug)]
+enum OrderedYaml {
+    Null,
+    Bool(bool),
+    Number(serde_json::Number),
+    String(String),
+    Seq(Vec<OrderedYaml>),
+    Map(Vec<(String, OrderedYaml)>),
+}
+
+impl Serialize for OrderedYaml {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        match self {
+            OrderedYaml::Null => serializer.serialize_unit(),
+            OrderedYaml::Bool(value) => serializer.serialize_bool(*value),
+            OrderedYaml::Number(value) => value.serialize(serializer),
+            OrderedYaml::String(value) => serializer.serialize_str(value),
+            OrderedYaml::Seq(items) => items.serialize(serializer),
+            OrderedYaml::Map(entries) => {
+                let mut map = serializer.serialize_map(Some(entries.len()))?;
+                for (key, value) in entries {
+                    map.serialize_entry(key, value)?;
+                }
+                map.end()
+            }
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for OrderedYaml {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_any(OrderedYamlVisitor)
+    }
+}
+
+struct OrderedYamlVisitor;
+
+impl<'de> serde::de::Visitor<'de> for OrderedYamlVisitor {
+    type Value = OrderedYaml;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str("a yaml value")
+    }
+
+    fn visit_unit<E>(self) -> Result<OrderedYaml, E> {
+        Ok(OrderedYaml::Null)
+    }
+
+    fn visit_none<E>(self) -> Result<OrderedYaml, E> {
+        Ok(OrderedYaml::Null)
+    }
+
+    fn visit_some<D: serde::Deserializer<'de>>(self, d: D) -> Result<OrderedYaml, D::Error> {
+        OrderedYaml::deserialize(d)
+    }
+
+    fn visit_bool<E>(self, value: bool) -> Result<OrderedYaml, E> {
+        Ok(OrderedYaml::Bool(value))
+    }
+
+    fn visit_i64<E>(self, value: i64) -> Result<OrderedYaml, E> {
+        Ok(OrderedYaml::Number(value.into()))
+    }
+
+    fn visit_u64<E>(self, value: u64) -> Result<OrderedYaml, E> {
+        Ok(OrderedYaml::Number(value.into()))
+    }
+
+    fn visit_f64<E: serde::de::Error>(self, value: f64) -> Result<OrderedYaml, E> {
+        serde_json::Number::from_f64(value)
+            .map(OrderedYaml::Number)
+            .ok_or_else(|| E::custom(format!("unsupported number {value}")))
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<OrderedYaml, E> {
+        Ok(OrderedYaml::String(value.to_string()))
+    }
+
+    fn visit_string<E>(self, value: String) -> Result<OrderedYaml, E> {
+        Ok(OrderedYaml::String(value))
+    }
+
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<OrderedYaml, A::Error> {
+        let mut items = Vec::new();
+        while let Some(item) = seq.next_element()? {
+            items.push(item);
+        }
+        Ok(OrderedYaml::Seq(items))
+    }
+
+    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<OrderedYaml, A::Error> {
+        let mut entries = Vec::new();
+        while let Some(entry) = map.next_entry()? {
+            entries.push(entry);
+        }
+        Ok(OrderedYaml::Map(entries))
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -2682,6 +2789,26 @@ schema { query: Query }
         fs::write(&outside, "version: 1.0").unwrap();
         let err = ensure_repository_config(repo_root, &outside).unwrap_err();
         assert!(err.to_string().contains("must be inside repository root"));
+    }
+
+    #[test]
+    fn ensure_repository_config_keeps_the_users_key_order() {
+        let repo_dir = temp_dir("ordered");
+        let repo_root = repo_dir.path();
+        fs::write(
+            repo_root.join(".infrahub.yml"),
+            "queries:\n  - name: q\n    file_path: q.gql\nschemas:\n  - a.yaml\nmenus: []\n",
+        )
+        .unwrap();
+        let schema = repo_root.join("b.yaml");
+        ensure_repository_config(repo_root, &schema).unwrap();
+
+        let config = fs::read_to_string(repo_root.join(".infrahub.yml")).unwrap();
+        let order = |needle: &str| config.find(needle).unwrap();
+        assert!(order("queries") < order("schemas"), "{config}");
+        assert!(order("schemas") < order("menus"), "{config}");
+        assert!(order("name") < order("file_path"), "{config}");
+        assert!(order("a.yaml") < order("b.yaml"), "{config}");
     }
 
     /// a repo root that is a regular file makes the stat fail with

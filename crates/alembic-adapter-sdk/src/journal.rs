@@ -52,7 +52,7 @@ pub enum JournalError {
     Yaml {
         path: PathBuf,
         #[source]
-        source: serde_yaml::Error,
+        source: Box<dyn std::error::Error + Send + Sync>,
     },
     #[error("failed to encode a journal record")]
     Encode(#[source] serde_json::Error),
@@ -478,10 +478,13 @@ fn parse_records(contents: &str, path: &Path) -> Result<(Vec<OpWithMeta>, bool)>
 }
 
 fn parse_legacy(contents: &str, path: &Path) -> Result<Vec<OpWithMeta>> {
+    let options = serde_saphyr::options! { with_snippet: false };
     let journal: LegacyJournal =
-        serde_yaml::from_str(contents).map_err(|source| JournalError::Yaml {
-            path: path.to_owned(),
-            source,
+        serde_saphyr::from_str_with_options(contents, options).map_err(|source| {
+            JournalError::Yaml {
+                path: path.to_owned(),
+                source: Box::new(source),
+            }
         })?;
     Ok(journal.ops)
 }

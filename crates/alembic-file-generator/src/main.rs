@@ -307,7 +307,7 @@ types:
         status:
           type: string";
 
-    serde_yaml::from_str(schema_yaml).context("parsing embedded schema")
+    alembic_engine::yaml::from_str(schema_yaml).context("parsing embedded schema")
 }
 
 #[cfg(test)]

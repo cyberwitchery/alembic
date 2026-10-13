@@ -37,7 +37,8 @@ fn run_documented_map(inventory: &str, spec: &str) -> Value {
 }
 
 fn parse_yaml(path: &Path) -> Value {
-    serde_yaml::from_str(&fs::read_to_string(path).expect("read fixture")).expect("fixture parses")
+    alembic_engine::yaml::from_str(&fs::read_to_string(path).expect("read fixture"))
+        .expect("fixture parses")
 }
 
 fn type_names(doc: &Value) -> BTreeSet<String> {

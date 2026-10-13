@@ -286,7 +286,7 @@ fn member_corpus() -> String {
     let fixture = fixture_path("django_list_members.yaml");
     let text = fs::read_to_string(&fixture).expect("read the list member fixture");
     let mut inventory: Inventory =
-        serde_yaml::from_str(&text).expect("parse the list member fixture");
+        alembic_engine::yaml::from_str(&text).expect("parse the list member fixture");
     let template = inventory.objects.first().cloned().expect("a seed object");
     let list_fields: Vec<String> = inventory.schema.types[template.type_name.as_str()]
         .fields

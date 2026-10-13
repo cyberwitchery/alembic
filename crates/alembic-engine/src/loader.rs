@@ -69,7 +69,7 @@ fn load_recursive(
         serde_json::from_str(&content)
             .with_context(|| format!("parse json: {}", canonical.display()))?
     } else {
-        serde_yaml::from_str(&content)
+        crate::yaml::from_str(&content)
             .with_context(|| format!("parse yaml: {}", canonical.display()))?
     };
 
