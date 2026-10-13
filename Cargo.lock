@@ -229,7 +229,6 @@ dependencies = [
  "postgres-native-tls",
  "rand",
  "serde",
- "serde-saphyr",
  "serde_json",
  "starlark",
  "tempfile",

@@ -7,6 +7,7 @@ pub mod journal;
 pub mod state;
 pub mod state_mappings;
 pub mod types;
+pub mod yaml;
 
 pub use errors::AdapterApplyError;
 pub use external::{ExternalAdapter, ExternalCapabilities, ExternalObject, ExternalRole};

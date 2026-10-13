@@ -1,31 +1,45 @@
 //! yaml in and out. every yaml file alembic reads or writes goes through here,
-//! so one set of parsing rules holds for inventories, map specs, configs and plans.
+//! so one set of parsing rules holds for inventories, map specs, configs, plans
+//! and adapter files. it lives in the sdk so an adapter gets the same rules
+//! without linking the engine.
 
-use anyhow::{anyhow, Result};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
+
+/// a yaml read or write failure. it carries a line and column but never the
+/// source, and names no yaml library, so swapping one is not a breaking change.
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+pub struct Error(Box<dyn std::error::Error + Send + Sync>);
+
+impl Error {
+    fn new(source: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> Self {
+        Self(source.into())
+    }
+}
 
 /// parse a yaml document. only `true`/`false` are booleans, so `no` or `on`
 /// stay strings, a duplicate key is an error, and errors carry a line and
 /// column but never echo the source (a config can hold a token).
-pub fn from_str<T: DeserializeOwned>(raw: &str) -> Result<T> {
+pub fn from_str<T: DeserializeOwned>(raw: &str) -> Result<T, Error> {
     let options = serde_saphyr::options! {
         strict_booleans: true,
         with_snippet: false,
     };
     // the multi-document reader rejects content after the first node that
     // `from_str` would silently drop, such as a dedent after an indented root.
-    let mut documents = serde_saphyr::from_multiple_with_options(raw, options.clone())?;
+    let mut documents =
+        serde_saphyr::from_multiple_with_options(raw, options.clone()).map_err(Error::new)?;
     match documents.len() {
-        0 => Ok(serde_saphyr::from_str_with_options(raw, options)?),
+        0 => serde_saphyr::from_str_with_options(raw, options).map_err(Error::new),
         1 => Ok(documents.remove(0)),
-        n => Err(anyhow!("expected one yaml document, found {n}")),
+        n => Err(Error::new(format!("expected one yaml document, found {n}"))),
     }
 }
 
 /// serialize a value as a yaml document.
-pub fn to_string<T: Serialize>(value: &T) -> Result<String> {
-    Ok(serde_saphyr::to_string(value)?)
+pub fn to_string<T: Serialize>(value: &T) -> Result<String, Error> {
+    serde_saphyr::to_string(value).map_err(Error::new)
 }
 
 #[cfg(test)]

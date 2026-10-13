@@ -13,7 +13,7 @@ readme = "../../README.md"
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
-serde-saphyr = { workspace = true, features = ["deserialize"] }
+serde-saphyr = { workspace = true, features = ["deserialize", "serialize"] }
 alembic-core.workspace = true
 uuid.workspace = true
 tempfile.workspace = true

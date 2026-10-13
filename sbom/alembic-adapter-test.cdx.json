@@ -2,9 +2,9 @@
   "bomFormat": "CycloneDX",
   "specVersion": "1.3",
   "version": 1,
-  "serialNumber": "urn:uuid:7ab38bbd-f801-4443-a4fc-fad3f63b6d0d",
+  "serialNumber": "urn:uuid:b7da7692-fb37-4a86-ac05-7032ad801274",
   "metadata": {
-    "timestamp": "2026-10-13T08:03:35.723488000Z",
+    "timestamp": "2026-10-13T09:56:18.408327000Z",
     "tools": [
       {
         "vendor": "CycloneDX",
@@ -9808,7 +9808,6 @@
         "registry+https://github.com/rust-lang/crates.io-index#native-tls@0.2.18",
         "registry+https://github.com/rust-lang/crates.io-index#postgres-native-tls@0.5.3",
         "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.229",
-        "registry+https://github.com/rust-lang/crates.io-index#serde-saphyr@1.3.0",
         "registry+https://github.com/rust-lang/crates.io-index#serde_json@1.0.151",
         "registry+https://github.com/rust-lang/crates.io-index#starlark@0.14.2",
         "registry+https://github.com/rust-lang/crates.io-index#tempfile@3.27.0",
