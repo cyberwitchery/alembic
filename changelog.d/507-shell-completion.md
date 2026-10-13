@@ -1,0 +1,1 @@
+- feat: an additional cli command for generating shell completion scripts (supports 'elvish', 'zsh', 'fish', 'bash' & 'powershell')
