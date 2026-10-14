@@ -460,6 +460,8 @@ mod tests {
             "dcim.device_type",
             "dcim.site",
             "dcim.device",
+            "dcim.interface",
+            "dcim.cable",
         ] {
             assert!(
                 schema.types.contains_key(type_name),
