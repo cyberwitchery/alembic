@@ -137,30 +137,27 @@ fn objects(num_devices: usize, num_interfaces: usize) -> Result<Vec<Object>> {
         objects.push(site(i)?);
     }
 
-    let mut devices = Vec::with_capacity(num_devices);
     for i in 0..num_devices {
-        let device = device(i)?;
-        objects.push(device.clone());
-        devices.push(device);
+        objects.push(device(i)?);
     }
 
-    let num_interfaces = if devices.is_empty() {
-        0
-    } else {
-        num_interfaces
-    };
-    let mut interfaces = Vec::with_capacity(num_interfaces);
-
+    // with no devices there is nothing to put an interface on.
+    if num_devices == 0 {
+        return Ok(objects);
+    }
     for i in 0..num_interfaces {
-        let interface = interface(i, &devices)?;
-        objects.push(interface.clone());
-        interfaces.push(interface);
+        objects.push(interface(i, i % num_devices)?);
     }
 
     // neighbours sit on neighbouring devices, so a cable joins two devices
     // whenever there are at least two.
-    for (i, pair) in interfaces.chunks_exact(2).enumerate() {
-        objects.push(cable(i, pair[0].uid, pair[1].uid)?);
+    for i in 0..num_interfaces / 2 {
+        let (a, b) = (2 * i, 2 * i + 1);
+        objects.push(cable(
+            i,
+            interface_uid(a, a % num_devices),
+            interface_uid(b, b % num_devices),
+        )?);
     }
 
     Ok(objects)
@@ -217,7 +214,7 @@ fn device(i: usize) -> Result<Object> {
     // `name` is declared in both `key` and `fields`, so it is carried in both.
     object(
         DEVICE,
-        Key::from(BTreeMap::from([("name".to_string(), json!(name))])),
+        device_key(i),
         [
             ("name".to_string(), json!(name)),
             ("site".to_string(), object_ref(SITE, i % SITES)),
@@ -232,21 +229,27 @@ fn device_name(i: usize) -> String {
     format!("device_{i}")
 }
 
+fn device_key(i: usize) -> Key {
+    Key::from(BTreeMap::from([(
+        "name".to_string(),
+        json!(device_name(i)),
+    )]))
+}
+
+fn device_uid(i: usize) -> Uid {
+    uid_v5(DEVICE, &key_string(&device_key(i)))
+}
+
 /// build a single `dcim.interface`, and connect it
-fn interface(i: usize, devices: &[Object]) -> Result<Object> {
-    let name = interface_name(i);
-    let dev = json!(devices[i % devices.len()].uid.to_string());
+fn interface(i: usize, device: usize) -> Result<Object> {
     // `device` and `name` are declared in both `key` and `fields`, so they are carried in both.
     object(
         INTERFACE,
-        Key::from(BTreeMap::from([
-            ("device".to_string(), dev.clone()),
-            ("name".to_string(), json!(name)),
-        ])),
+        interface_key(i, device),
         [
-            ("name".to_string(), json!(name)),
+            ("name".to_string(), json!(interface_name(i))),
             ("type".to_string(), json!("25gbase-x-sfp28")),
-            ("device".to_string(), dev),
+            ("device".to_string(), json!(device_uid(device).to_string())),
             ("enabled".to_string(), Value::Bool(true)),
         ],
     )
@@ -254,6 +257,17 @@ fn interface(i: usize, devices: &[Object]) -> Result<Object> {
 
 fn interface_name(i: usize) -> String {
     format!("interface_{i}")
+}
+
+fn interface_key(i: usize, device: usize) -> Key {
+    Key::from(BTreeMap::from([
+        ("device".to_string(), json!(device_uid(device).to_string())),
+        ("name".to_string(), json!(interface_name(i))),
+    ]))
+}
+
+fn interface_uid(i: usize, device: usize) -> Uid {
+    uid_v5(INTERFACE, &key_string(&interface_key(i, device)))
 }
 
 /// build a single `dcim.cable`, and connect two interfaces using it
@@ -711,10 +725,7 @@ mod tests {
 
     #[test]
     fn interface_names_are_unique_per_device_not_globally() {
-        let on = |i| {
-            let device = device(i).expect("device should build");
-            interface(0, &[device]).expect("interface should build")
-        };
+        let on = |device| interface(0, device).expect("interface should build");
         let (a, b) = (on(1), on(2));
         assert_eq!(a.key.get("name"), b.key.get("name"));
         assert_eq!(a.key.get("device"), a.attrs.get("device"));
