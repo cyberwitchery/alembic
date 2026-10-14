@@ -30,8 +30,8 @@ impl NetBoxAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alembic_adapter_sdk::{BackendId, FieldChange, Op, StateData};
     use alembic_core::{key_string, JsonMap, Key, TypeName, Uid};
-    use alembic_engine::Op;
     use httpmock::Method::{GET, PATCH, POST};
     use httpmock::{Mock, MockServer};
     use serde_json::json;
@@ -72,12 +72,147 @@ mod tests {
 
     fn state_with_mappings(path: &std::path::Path) -> StateStore {
         let mut store = StateStore::load(path).unwrap();
-        store.set_backend_id(
-            TypeName::new("dcim.site"),
-            uid(1),
-            alembic_engine::BackendId::Int(1),
-        );
+        store.set_backend_id(TypeName::new("dcim.site"), uid(1), BackendId::Int(1));
         store
+    }
+
+    /// a listing that only answers when netbox is asked for specific primary
+    /// keys, so a full listing does not satisfy it. the ids go in repeated `id`
+    /// params, which is what netbox 4.x actually filters on; it drops an
+    /// unrecognized filter rather than refusing it, so a wrong spelling reads as
+    /// no filter and returns the whole table.
+    fn mock_list_by_ids<'a>(
+        server: &'a MockServer,
+        path: &'a str,
+        ids: &'a [&'a str],
+        payload: serde_json::Value,
+    ) -> Mock<'a> {
+        let ids: Vec<String> = ids.iter().map(|id| (*id).to_string()).collect();
+        server.mock(move |when, then| {
+            let mut when = when
+                .method(GET)
+                .path(path)
+                .query_param("limit", "200")
+                .query_param("offset", "0");
+            for id in &ids {
+                when = when.query_param("id", id.clone());
+            }
+            then.status(200).json_body(page(payload));
+        })
+    }
+
+    #[tokio::test]
+    async fn a_bound_read_asks_netbox_only_for_the_ids_state_holds() {
+        let server = MockServer::start();
+        let dir = tempdir().unwrap();
+        let state = state_with_mappings(&dir.path().join("state.json"));
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
+
+        let _object_types = mock_list(
+            &server,
+            "/api/core/object-types/",
+            json!([{
+                "app_label": "dcim",
+                "model": "site",
+                "rest_api_endpoint": "/api/dcim/sites/",
+                "features": ["custom-fields", "tags"]
+            }]),
+        );
+        let sites = mock_list_by_ids(
+            &server,
+            "/api/dcim/sites/",
+            &["1"],
+            json!([{ "id": 1, "name": "FRA1", "slug": "fra1" }]),
+        );
+        let _custom_fields = server.mock(|when, then| {
+            when.method(GET).path("/api/extras/custom-fields/");
+            then.status(200).json_body(page(json!([])));
+        });
+
+        let schema = alembic_core::Schema {
+            types: std::collections::BTreeMap::from([(
+                "dcim.site".to_string(),
+                alembic_core::TypeSchema {
+                    key: std::collections::BTreeMap::from([(
+                        "name".to_string(),
+                        alembic_core::FieldSchema {
+                            r#type: alembic_core::FieldType::String,
+                            required: true,
+                            nullable: false,
+                            description: None,
+                            format: None,
+                            pattern: None,
+                        },
+                    )]),
+                    fields: std::collections::BTreeMap::new(),
+                },
+            )]),
+        };
+
+        let observed = adapter
+            .read_bound(&schema, &[TypeName::new("dcim.site")], &state)
+            .await
+            .unwrap();
+
+        sites.assert();
+        assert_eq!(observed.len(), 1);
+    }
+
+    /// a type with no state bindings is not fetched at all.
+    #[tokio::test]
+    async fn a_bound_read_skips_a_type_with_no_state_bindings() {
+        let server = MockServer::start();
+        let dir = tempdir().unwrap();
+        let state = StateStore::load(dir.path().join("state.json")).unwrap();
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
+
+        let _object_types = mock_list(
+            &server,
+            "/api/core/object-types/",
+            json!([{
+                "app_label": "dcim",
+                "model": "site",
+                "rest_api_endpoint": "/api/dcim/sites/",
+                "features": ["custom-fields", "tags"]
+            }]),
+        );
+        let sites = mock_list(
+            &server,
+            "/api/dcim/sites/",
+            json!([{ "id": 1, "name": "FRA1", "slug": "fra1" }]),
+        );
+        let _custom_fields = server.mock(|when, then| {
+            when.method(GET).path("/api/extras/custom-fields/");
+            then.status(200).json_body(page(json!([])));
+        });
+
+        let schema = alembic_core::Schema {
+            types: std::collections::BTreeMap::from([(
+                "dcim.site".to_string(),
+                alembic_core::TypeSchema {
+                    key: std::collections::BTreeMap::from([(
+                        "name".to_string(),
+                        alembic_core::FieldSchema {
+                            r#type: alembic_core::FieldType::String,
+                            required: true,
+                            nullable: false,
+                            description: None,
+                            format: None,
+                            pattern: None,
+                        },
+                    )]),
+                    fields: std::collections::BTreeMap::new(),
+                },
+            )]),
+        };
+
+        let observed = adapter
+            .read_bound(&schema, &[TypeName::new("dcim.site")], &state)
+            .await
+            .unwrap();
+
+        sites.assert_calls(0);
+        assert_eq!(observed.len(), 0);
     }
 
     fn mock_list<'a>(
@@ -312,7 +447,7 @@ mod tests {
         schema: &alembic_core::Schema,
         site_key: Key,
     ) {
-        let stateless = alembic_engine::StateStore::new(None, alembic_engine::StateData::default());
+        let stateless = alembic_engine::StateStore::new(None, StateData::default());
         let report = alembic_engine::import_inventory(adapter, schema, &[], &stateless)
             .await
             .unwrap();
@@ -1199,17 +1334,12 @@ mod tests {
 
     #[tokio::test]
     async fn apply_handles_update_operation() {
-        use alembic_engine::FieldChange;
         use httpmock::Method::PATCH;
 
         let server = MockServer::start();
         let dir = tempdir().unwrap();
         let mut state = StateStore::load(dir.path().join("state.json")).unwrap();
-        state.set_backend_id(
-            TypeName::new("dcim.site"),
-            uid(1),
-            alembic_engine::BackendId::Int(1),
-        );
+        state.set_backend_id(TypeName::new("dcim.site"), uid(1), BackendId::Int(1));
         let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
 
         let _object_types = mock_list(
@@ -1240,7 +1370,7 @@ mod tests {
         let ops = vec![Op::Update {
             uid: uid(1),
             type_name: TypeName::new("dcim.site"),
-            backend_id: Some(alembic_engine::BackendId::Int(1)),
+            backend_id: Some(BackendId::Int(1)),
             desired: alembic_core::Object {
                 uid: uid(1),
                 type_name: TypeName::new("dcim.site"),
@@ -1295,11 +1425,7 @@ mod tests {
         let server = MockServer::start();
         let dir = tempdir().unwrap();
         let mut state = StateStore::load(dir.path().join("state.json")).unwrap();
-        state.set_backend_id(
-            TypeName::new("dcim.site"),
-            uid(1),
-            alembic_engine::BackendId::Int(1),
-        );
+        state.set_backend_id(TypeName::new("dcim.site"), uid(1), BackendId::Int(1));
         let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
 
         let _object_types = mock_list(
@@ -1325,7 +1451,7 @@ mod tests {
             uid: uid(1),
             type_name: TypeName::new("dcim.site"),
             key: key("slug", json!("fra1")),
-            backend_id: Some(alembic_engine::BackendId::Int(1)),
+            backend_id: Some(BackendId::Int(1)),
         }];
 
         let schema = alembic_core::Schema {
@@ -1359,11 +1485,7 @@ mod tests {
         let server = MockServer::start();
         let dir = tempdir().unwrap();
         let mut state = StateStore::load(dir.path().join("state.json")).unwrap();
-        state.set_backend_id(
-            TypeName::new("dcim.site"),
-            uid(1),
-            alembic_engine::BackendId::Int(1),
-        );
+        state.set_backend_id(TypeName::new("dcim.site"), uid(1), BackendId::Int(1));
         let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
 
         let _object_types = mock_list(
@@ -1389,7 +1511,7 @@ mod tests {
             uid: uid(1),
             type_name: TypeName::new("dcim.site"),
             key: key("slug", json!("fra1")),
-            backend_id: Some(alembic_engine::BackendId::Int(1)),
+            backend_id: Some(BackendId::Int(1)),
         }];
 
         let schema = alembic_core::Schema {
@@ -1473,7 +1595,7 @@ mod tests {
                 uid: uid(2),
                 type_name: TypeName::new("dcim.site"),
                 key: key("slug", json!("ber1")),
-                backend_id: Some(alembic_engine::BackendId::Int(2)),
+                backend_id: Some(BackendId::Int(2)),
             },
         ];
         let creates: Vec<Op> = ops
@@ -1536,7 +1658,7 @@ mod tests {
                 .iter()
                 .map(|op| (op.uid, op.backend_id.clone()))
                 .collect::<Vec<_>>(),
-            vec![(uid(1), Some(alembic_engine::BackendId::Int(1)))],
+            vec![(uid(1), Some(BackendId::Int(1)))],
         );
         drop(journal);
 
@@ -3417,6 +3539,15 @@ mod tests {
             err.to_string().contains("invalid custom object field name"),
             "unexpected error: {err}"
         );
+        // a schema netbox will refuse, not a preview that could not run: plan
+        // tells the two apart by this kind.
+        assert!(
+            err.chain().any(|cause| matches!(
+                cause.downcast_ref::<alembic_adapter_sdk::AdapterApplyError>(),
+                Some(alembic_adapter_sdk::AdapterApplyError::SchemaMismatch { .. })
+            )),
+            "unexpected error kind: {err:#}"
+        );
         assert_eq!(type_create.calls(), 0, "preview must not create types");
         assert_eq!(field_create.calls(), 0, "preview must not create fields");
     }
@@ -3637,5 +3768,657 @@ mod tests {
             preview.deleted_object_types,
             vec!["custom.legacy".to_string()]
         );
+    }
+
+    /// an `ipam.prefix` that declares a `site` ref, the relation netbox 4.2
+    /// replaced with `scope` (#459).
+    fn prefix_with_site_schema() -> alembic_core::Schema {
+        serde_json::from_value(json!({
+            "types": {
+                "ipam.prefix": {
+                    "key": { "prefix": { "type": "prefix" } },
+                    "fields": {
+                        "prefix": { "type": "prefix" },
+                        "site": { "type": "ref", "target": "dcim.site" }
+                    }
+                },
+                "dcim.site": {
+                    "key": { "slug": { "type": "slug" } },
+                    "fields": { "slug": { "type": "slug" } }
+                }
+            }
+        }))
+        .unwrap()
+    }
+
+    fn mock_prefix_backend(server: &MockServer, custom_fields: serde_json::Value) {
+        mock_prefix_backend_with_features(server, custom_fields, &["custom-fields", "tags"]);
+    }
+
+    fn mock_prefix_backend_with_features(
+        server: &MockServer,
+        custom_fields: serde_json::Value,
+        features: &[&str],
+    ) {
+        mock_list(
+            server,
+            "/api/core/object-types/",
+            json!([
+                {
+                    "app_label": "ipam",
+                    "model": "prefix",
+                    "rest_api_endpoint": "/api/ipam/prefixes/",
+                    "features": features
+                },
+                {
+                    "app_label": "dcim",
+                    "model": "site",
+                    "rest_api_endpoint": "/api/dcim/sites/",
+                    "features": features
+                }
+            ]),
+        );
+        // any query: the listing pages at 200, the native-field sample at 1.
+        server.mock(|when, then| {
+            when.method(GET).path("/api/ipam/prefixes/");
+            then.status(200).json_body(page(json!([])));
+        });
+        server.mock(|when, then| {
+            when.method(GET).path("/api/extras/custom-fields/");
+            then.status(200).json_body(page(custom_fields));
+        });
+    }
+
+    fn mock_prefix_options(server: &MockServer, fields: &[&str]) {
+        let post: serde_json::Map<String, serde_json::Value> = fields
+            .iter()
+            .map(|field| ((*field).to_string(), json!({})))
+            .collect();
+        server.mock(|when, then| {
+            when.method(httpmock::Method::OPTIONS)
+                .path("/api/ipam/prefixes/");
+            then.status(200)
+                .json_body(json!({ "name": "Prefix List", "actions": { "POST": post } }));
+        });
+    }
+
+    async fn read_prefixes(adapter: &NetBoxAdapter) -> anyhow::Result<()> {
+        let dir = tempdir().unwrap();
+        let state = StateStore::load(dir.path().join("state.json")).unwrap();
+        adapter
+            .read(
+                &prefix_with_site_schema(),
+                &[TypeName::new("ipam.prefix")],
+                &state,
+            )
+            .await
+            .map(|_| ())
+    }
+
+    #[tokio::test]
+    async fn read_refuses_a_declared_ref_the_type_does_not_have() {
+        let server = MockServer::start();
+        mock_prefix_backend(&server, json!([]));
+        mock_prefix_options(
+            &server,
+            &["prefix", "scope", "scope_type", "scope_id", "vrf"],
+        );
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
+
+        let err = read_prefixes(&adapter).await.unwrap_err();
+        let message = format!("{err:#}");
+        assert!(message.contains("ipam.prefix"), "{message}");
+        assert!(message.contains("site"), "{message}");
+    }
+
+    #[tokio::test]
+    async fn read_accepts_a_declared_ref_the_type_has() {
+        let server = MockServer::start();
+        mock_prefix_backend(&server, json!([]));
+        mock_prefix_options(&server, &["prefix", "site"]);
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
+
+        read_prefixes(&adapter).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn read_accepts_a_declared_ref_held_by_a_custom_field() {
+        let server = MockServer::start();
+        mock_prefix_backend(
+            &server,
+            json!([{
+                "id": 3,
+                "name": "site",
+                "object_types": ["ipam.prefix"],
+                "type": {"value": "object", "label": "Object"},
+            }]),
+        );
+        mock_prefix_options(&server, &["prefix", "scope"]);
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
+
+        read_prefixes(&adapter).await.unwrap();
+    }
+
+    // without OPTIONS metadata the adapter cannot know the type's fields, so it
+    // reads as before rather than refusing a field it cannot judge.
+    #[tokio::test]
+    async fn read_without_options_metadata_does_not_judge_fields() {
+        let server = MockServer::start();
+        mock_prefix_backend(&server, json!([]));
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
+
+        read_prefixes(&adapter).await.unwrap();
+    }
+
+    // a native column the fixed list does not name, on a type with no objects
+    // to sample, is still netbox's: provisioning must not create a custom field
+    // for it.
+    #[tokio::test]
+    async fn preview_takes_native_fields_from_options_on_an_empty_endpoint() {
+        let server = MockServer::start();
+        mock_prefix_backend(&server, json!([]));
+        mock_prefix_options(&server, &["prefix", "comments", "is_pool"]);
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
+
+        let schema: alembic_core::Schema = serde_json::from_value(json!({
+            "types": {
+                "ipam.prefix": {
+                    "key": { "prefix": { "type": "prefix" } },
+                    "fields": {
+                        "prefix": { "type": "prefix" },
+                        "comments": { "type": "string" },
+                        "is_pool": { "type": "bool" }
+                    }
+                }
+            }
+        }))
+        .unwrap();
+        let preview = adapter.preview_schema(&schema).await.unwrap().unwrap();
+        assert!(
+            preview.created_fields.is_empty(),
+            "{:?}",
+            preview.created_fields
+        );
+    }
+
+    // netbox 4.x names its model features with underscores (`custom_fields`),
+    // as its object-types api reports them; a declared field the type lacks is
+    // still provisioned as a custom field.
+    #[tokio::test]
+    async fn preview_reads_netbox_feature_names() {
+        let server = MockServer::start();
+        mock_prefix_backend_with_features(&server, json!([]), &["custom_fields", "tags"]);
+        mock_prefix_options(&server, &["prefix", "description"]);
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
+
+        let schema: alembic_core::Schema = serde_json::from_value(json!({
+            "types": {
+                "ipam.prefix": {
+                    "key": { "prefix": { "type": "prefix" } },
+                    "fields": {
+                        "prefix": { "type": "prefix" },
+                        "tier": { "type": "string" }
+                    }
+                }
+            }
+        }))
+        .unwrap();
+        let preview = adapter.preview_schema(&schema).await.unwrap().unwrap();
+        assert_eq!(preview.created_fields, vec!["ipam.prefix.tier".to_string()]);
+    }
+
+    const CHOICE_SET_ID: u64 = 11;
+
+    /// `types` each declaring the custom field `tier` as `tier`, keyed by slug.
+    fn schema_declaring_tier(types: &[(&str, serde_json::Value)]) -> alembic_core::Schema {
+        let types: serde_json::Map<String, serde_json::Value> = types
+            .iter()
+            .map(|(type_name, tier)| {
+                (
+                    type_name.to_string(),
+                    json!({
+                        "key": { "slug": { "type": "string" } },
+                        "fields": { "tier": tier }
+                    }),
+                )
+            })
+            .collect();
+        serde_json::from_value(json!({ "types": types })).unwrap()
+    }
+
+    fn tier_enum(values: &[&str]) -> serde_json::Value {
+        json!({ "type": "enum", "values": values })
+    }
+
+    /// the custom-fields list holding `fields`, plus the sample-object probe.
+    fn mock_custom_fields(server: &MockServer, fields: serde_json::Value) {
+        let _fields = server.mock(|when, then| {
+            when.method(GET).path("/api/extras/custom-fields/");
+            then.status(200).json_body(page(fields));
+        });
+        let _probe = server.mock(|when, then| {
+            when.method(GET)
+                .path("/api/dcim/sites/")
+                .query_param("limit", "1");
+            then.status(200).json_body(page(json!([])));
+        });
+    }
+
+    /// the choice-sets list holding `sets`.
+    fn mock_choice_sets(server: &MockServer, sets: serde_json::Value) -> Mock<'_> {
+        server.mock(|when, then| {
+            when.method(GET)
+                .path("/api/extras/custom-field-choice-sets/");
+            then.status(200).json_body(page(sets));
+        })
+    }
+
+    /// an existing `tier` field on `dcim.site` of `field_type`, using the
+    /// `tier` choice set when it is a select.
+    fn existing_tier_field(field_type: &str) -> serde_json::Value {
+        let mut field = json!({
+            "id": EXISTING_FIELD_ID,
+            "name": "tier",
+            "object_types": ["dcim.site"],
+            "type": {"value": field_type},
+            "required": false,
+            "description": "",
+            "validation_regex": "",
+        });
+        if matches!(field_type, "select" | "multiselect") {
+            field["choice_set"] = json!({"id": CHOICE_SET_ID, "name": "tier"});
+        }
+        field
+    }
+
+    fn tier_choice_set(choices: serde_json::Value) -> serde_json::Value {
+        json!({"id": CHOICE_SET_ID, "name": "tier", "extra_choices": choices})
+    }
+
+    // a declared enum is a `select` over a choice set named after the field,
+    // holding the declared values in order, each its own label.
+    #[tokio::test]
+    async fn ensure_schema_creates_a_choice_set_and_a_select_field() {
+        let server = MockServer::start();
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
+        let _object_types = mock_site_object_type(&server);
+        mock_custom_fields(&server, json!([]));
+        let _sets = mock_choice_sets(&server, json!([]));
+        let set_create = server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/extras/custom-field-choice-sets/")
+                .json_body(json!({
+                    "name": "tier",
+                    "extra_choices": [["core", "core"], ["edge", "edge"], ["colo", "colo"]],
+                }));
+            then.status(201)
+                .json_body(tier_choice_set(json!([["core", "core"]])));
+        });
+        let cf_create = server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/extras/custom-fields/")
+                .json_body_includes(
+                    json!({"name": "tier", "type": "select", "choice_set": CHOICE_SET_ID})
+                        .to_string(),
+                );
+            then.status(201).json_body(existing_tier_field("select"));
+        });
+
+        let report = adapter
+            .ensure_schema(&schema_declaring_tier(&[(
+                "dcim.site",
+                tier_enum(&["core", "edge", "colo"]),
+            )]))
+            .await
+            .unwrap();
+
+        assert_eq!(report.created_fields, vec!["dcim.site.tier".to_string()]);
+        set_create.assert_calls(1);
+        cf_create.assert_calls(1);
+    }
+
+    // a `list` of `enum` is a `multiselect` over the same kind of choice set.
+    #[tokio::test]
+    async fn ensure_schema_creates_a_multiselect_for_a_list_of_enum() {
+        let server = MockServer::start();
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
+        let _object_types = mock_site_object_type(&server);
+        mock_custom_fields(&server, json!([]));
+        let _sets = mock_choice_sets(&server, json!([]));
+        let set_create = server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/extras/custom-field-choice-sets/")
+                .json_body(json!({
+                    "name": "tier",
+                    "extra_choices": [["core", "core"], ["edge", "edge"]],
+                }));
+            then.status(201).json_body(tier_choice_set(json!([])));
+        });
+        let cf_create = server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/extras/custom-fields/")
+                .json_body_includes(
+                    json!({"type": "multiselect", "choice_set": CHOICE_SET_ID}).to_string(),
+                );
+            then.status(201)
+                .json_body(existing_tier_field("multiselect"));
+        });
+
+        let report = adapter
+            .ensure_schema(&schema_declaring_tier(&[(
+                "dcim.site",
+                json!({"type": "list", "item": tier_enum(&["core", "edge"])}),
+            )]))
+            .await
+            .unwrap();
+
+        assert_eq!(report.created_fields, vec!["dcim.site.tier".to_string()]);
+        set_create.assert_calls(1);
+        cf_create.assert_calls(1);
+    }
+
+    // a choice set already named after the field is adopted, not duplicated. it
+    // gains the declared values it lacks, and keeps the ones it has, labels and
+    // undeclared values included.
+    #[tokio::test]
+    async fn ensure_schema_adopts_an_existing_choice_set_additively() {
+        let server = MockServer::start();
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
+        let _object_types = mock_site_object_type(&server);
+        mock_custom_fields(&server, json!([]));
+        let _sets = mock_choice_sets(
+            &server,
+            json!([tier_choice_set(json!([
+                ["core", "Core"],
+                ["legacy", "legacy"]
+            ]))]),
+        );
+        let set_create = server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/extras/custom-field-choice-sets/");
+            then.status(201).json_body(tier_choice_set(json!([])));
+        });
+        let set_patch = server.mock(|when, then| {
+            when.method(PATCH)
+                .path(format!(
+                    "/api/extras/custom-field-choice-sets/{CHOICE_SET_ID}/"
+                ))
+                .json_body(json!({
+                    "extra_choices": [["core", "Core"], ["legacy", "legacy"], ["edge", "edge"]],
+                }));
+            then.status(200).json_body(tier_choice_set(json!([])));
+        });
+        let cf_create = server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/extras/custom-fields/")
+                .json_body_includes(
+                    json!({"type": "select", "choice_set": CHOICE_SET_ID}).to_string(),
+                );
+            then.status(201).json_body(existing_tier_field("select"));
+        });
+
+        let report = adapter
+            .ensure_schema(&schema_declaring_tier(&[(
+                "dcim.site",
+                tier_enum(&["core", "edge"]),
+            )]))
+            .await
+            .unwrap();
+
+        assert_eq!(report.created_fields, vec!["dcim.site.tier".to_string()]);
+        set_create.assert_calls(0);
+        set_patch.assert_calls(1);
+        cf_create.assert_calls(1);
+    }
+
+    // an existing select converges additively through its own choice set: the
+    // declared value it lacks is added, the undeclared one stays, and the field
+    // itself is not patched.
+    #[tokio::test]
+    async fn ensure_schema_adds_the_choices_an_existing_select_lacks() {
+        let server = MockServer::start();
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
+        let _object_types = mock_site_object_type(&server);
+        mock_custom_fields(&server, json!([existing_tier_field("select")]));
+        let _sets = mock_choice_sets(
+            &server,
+            json!([tier_choice_set(json!([
+                ["core", "core"],
+                ["legacy", "legacy"]
+            ]))]),
+        );
+        let set_patch = server.mock(|when, then| {
+            when.method(PATCH)
+                .path(format!(
+                    "/api/extras/custom-field-choice-sets/{CHOICE_SET_ID}/"
+                ))
+                .json_body(json!({
+                    "extra_choices": [["core", "core"], ["legacy", "legacy"], ["edge", "edge"]],
+                }));
+            then.status(200).json_body(tier_choice_set(json!([])));
+        });
+        let cf_patch = server.mock(|when, then| {
+            when.method(PATCH)
+                .path(format!("/api/extras/custom-fields/{EXISTING_FIELD_ID}/"));
+            then.status(200).json_body(json!({}));
+        });
+
+        let report = adapter
+            .ensure_schema(&schema_declaring_tier(&[(
+                "dcim.site",
+                tier_enum(&["core", "edge"]),
+            )]))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            report.updated_fields,
+            vec!["dcim.site.tier: choices + [\"edge\"]".to_string()],
+        );
+        assert!(report.created_fields.is_empty());
+        set_patch.assert_calls(1);
+        cf_patch.assert_calls(0);
+    }
+
+    // a select whose set already offers every declared value is left alone.
+    #[tokio::test]
+    async fn an_agreeing_select_is_not_written() {
+        let server = MockServer::start();
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
+        let _object_types = mock_site_object_type(&server);
+        mock_custom_fields(&server, json!([existing_tier_field("select")]));
+        let _sets = mock_choice_sets(
+            &server,
+            json!([tier_choice_set(json!([["edge", "edge"], ["core", "core"]]))]),
+        );
+        let set_patch = server.mock(|when, then| {
+            when.method(PATCH).path(format!(
+                "/api/extras/custom-field-choice-sets/{CHOICE_SET_ID}/"
+            ));
+            then.status(200).json_body(tier_choice_set(json!([])));
+        });
+
+        let report = adapter
+            .ensure_schema(&schema_declaring_tier(&[(
+                "dcim.site",
+                tier_enum(&["core", "edge"]),
+            )]))
+            .await
+            .unwrap();
+
+        assert!(report.updated_fields.is_empty());
+        set_patch.assert_calls(0);
+    }
+
+    // preview makes ensure's decisions, a new set and an added choice alike,
+    // and writes nothing.
+    #[tokio::test]
+    async fn preview_schema_reports_choice_changes_like_ensure_without_writing() {
+        let server = MockServer::start();
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
+        let _object_types = mock_site_object_type(&server);
+        mock_custom_fields(&server, json!([existing_tier_field("select")]));
+        let _sets = mock_choice_sets(&server, json!([tier_choice_set(json!([["core", "core"]]))]));
+        let set_create = server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/extras/custom-field-choice-sets/")
+                .json_body_includes(json!({"name": "plane"}).to_string());
+            then.status(201)
+                .json_body(json!({"id": 12, "name": "plane", "extra_choices": []}));
+        });
+        let set_patch = server.mock(|when, then| {
+            when.method(PATCH).path(format!(
+                "/api/extras/custom-field-choice-sets/{CHOICE_SET_ID}/"
+            ));
+            then.status(200).json_body(tier_choice_set(json!([])));
+        });
+        let cf_create = server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/extras/custom-fields/")
+                .json_body_includes(json!({"name": "plane", "choice_set": 12}).to_string());
+            then.status(201).json_body(json!({
+                "id": 8, "name": "plane", "object_types": ["dcim.site"],
+                "type": {"value": "select"}
+            }));
+        });
+
+        let schema: alembic_core::Schema = serde_json::from_value(json!({
+            "types": {
+                "dcim.site": {
+                    "key": { "slug": { "type": "string" } },
+                    "fields": {
+                        "tier": tier_enum(&["core", "edge"]),
+                        "plane": tier_enum(&["data", "control"]),
+                    }
+                }
+            }
+        }))
+        .unwrap();
+
+        let preview = adapter.preview_schema(&schema).await.unwrap().unwrap();
+        assert_eq!(preview.created_fields, vec!["dcim.site.plane".to_string()]);
+        assert_eq!(
+            preview.updated_fields,
+            vec!["dcim.site.tier: choices + [\"edge\"]".to_string()],
+        );
+        set_create.assert_calls(0);
+        set_patch.assert_calls(0);
+        cf_create.assert_calls(0);
+
+        let report = adapter.ensure_schema(&schema).await.unwrap();
+        assert_eq!(report.created_fields, preview.created_fields);
+        assert_eq!(report.updated_fields, preview.updated_fields);
+        set_create.assert_calls(1);
+        set_patch.assert_calls(1);
+        cf_create.assert_calls(1);
+    }
+
+    // one field name is one choice set, so two types declaring it with
+    // different values cannot both be honoured: the run fails naming both,
+    // before anything is written, and the preview refuses the same inventory.
+    #[tokio::test]
+    async fn two_types_declaring_different_choices_are_refused() {
+        let server = MockServer::start();
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
+        let _object_types = mock_two_object_types(&server);
+        let _fields = server.mock(|when, then| {
+            when.method(GET).path("/api/extras/custom-fields/");
+            then.status(200).json_body(page(json!([])));
+        });
+        let _sets = mock_choice_sets(&server, json!([]));
+        let writes = server.mock(|when, then| {
+            when.method(POST);
+            then.status(201).json_body(json!({}));
+        });
+
+        // the same values in another order disagree too: order is display order.
+        let schema = schema_declaring_tier(&[
+            ("dcim.site", tier_enum(&["core", "edge"])),
+            ("dcim.device", tier_enum(&["edge", "core"])),
+        ]);
+        let err = adapter
+            .ensure_schema(&schema)
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("different choices"), "{err}");
+        assert!(err.contains("dcim.site.tier"), "{err}");
+        assert!(err.contains("dcim.device.tier"), "{err}");
+        assert!(adapter.preview_schema(&schema).await.is_err());
+        writes.assert_calls(0);
+    }
+
+    // the same holds for one existing select both types already share.
+    #[tokio::test]
+    async fn a_shared_select_declared_with_different_choices_is_refused() {
+        let server = MockServer::start();
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
+        let _object_types = mock_two_object_types(&server);
+        let mut field = existing_tier_field("select");
+        field["object_types"] = json!(["dcim.site", "dcim.device"]);
+        let _fields = server.mock(|when, then| {
+            when.method(GET).path("/api/extras/custom-fields/");
+            then.status(200).json_body(page(json!([field])));
+        });
+        let _sets = mock_choice_sets(&server, json!([tier_choice_set(json!([]))]));
+        let set_patch = server.mock(|when, then| {
+            when.method(PATCH).path(format!(
+                "/api/extras/custom-field-choice-sets/{CHOICE_SET_ID}/"
+            ));
+            then.status(200).json_body(tier_choice_set(json!([])));
+        });
+
+        let schema = schema_declaring_tier(&[
+            ("dcim.site", tier_enum(&["core", "edge"])),
+            ("dcim.device", tier_enum(&["core"])),
+        ]);
+        let err = adapter
+            .ensure_schema(&schema)
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("different choices"), "{err}");
+        assert!(err.contains("dcim.site.tier"), "{err}");
+        assert!(err.contains("dcim.device.tier"), "{err}");
+        set_patch.assert_calls(0);
+    }
+
+    // an enum declared on a field netbox holds as `text` is not retyped and gets
+    // no choice set, but its other declared properties still converge.
+    #[tokio::test]
+    async fn an_enum_on_an_existing_text_field_is_not_retyped() {
+        let server = MockServer::start();
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
+        let _object_types = mock_site_object_type(&server);
+        mock_custom_fields(&server, json!([existing_tier_field("text")]));
+        let sets = mock_choice_sets(&server, json!([]));
+        let set_write = server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/extras/custom-field-choice-sets/");
+            then.status(201).json_body(tier_choice_set(json!([])));
+        });
+        let cf_patch = server.mock(|when, then| {
+            when.method(PATCH)
+                .path(format!("/api/extras/custom-fields/{EXISTING_FIELD_ID}/"))
+                .json_body(json!({"description": "site tier"}));
+            then.status(200).json_body(json!({}));
+        });
+
+        let mut tier = tier_enum(&["core", "edge"]);
+        tier["description"] = json!("site tier");
+        let report = adapter
+            .ensure_schema(&schema_declaring_tier(&[("dcim.site", tier)]))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            report.updated_fields,
+            vec!["dcim.site.tier: description \"\" -> \"site tier\"".to_string()],
+        );
+        cf_patch.assert_calls(1);
+        set_write.assert_calls(0);
+        sets.assert_calls(0);
     }
 }

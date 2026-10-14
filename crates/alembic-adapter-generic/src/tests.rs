@@ -1,6 +1,7 @@
 use super::*;
+use alembic_adapter_sdk::StateData;
 use alembic_core::{FieldSchema, FieldType, Key, TypeSchema};
-use alembic_engine::{StateData, StateStore};
+use alembic_engine::StateStore;
 use httpmock::prelude::*;
 use httpmock::Method::PATCH;
 
@@ -472,7 +473,7 @@ fn test_resolve_attrs_unresolved_nested_ref_surfaces_missing_ref() {
 
     let err = resolve_attrs(&attrs, &type_schema, &resolved).unwrap_err();
     assert!(
-        is_missing_ref_error(&err),
+        is_missing_ref_error(err.as_ref()),
         "nested unresolved ref must surface MissingRef for the retry loop, got: {err}"
     );
 }
@@ -497,7 +498,7 @@ fn test_normalize_attrs_refs_resolves_refs_nested_in_list() {
         site_uid,
         BackendId::Int(7),
     );
-    let mappings = StateMappings::from_state(&state);
+    let mappings = state_mappings_from_state(&state);
 
     let attrs: JsonMap = serde_json::json!({ "members": [7] })
         .as_object()
@@ -534,7 +535,7 @@ fn test_normalize_attrs_refs_resolves_refs_nested_in_map() {
         site_uid,
         BackendId::Int(7),
     );
-    let mappings = StateMappings::from_state(&state);
+    let mappings = state_mappings_from_state(&state);
 
     let attrs: JsonMap = serde_json::json!({ "links": {"primary": 7} })
         .as_object()
@@ -569,7 +570,7 @@ fn test_normalize_attrs_refs_resolves_list_ref() {
         site_uid,
         BackendId::Int(7),
     );
-    let mappings = StateMappings::from_state(&state);
+    let mappings = state_mappings_from_state(&state);
 
     let attrs: JsonMap = serde_json::json!({ "peers": [7] })
         .as_object()
@@ -604,7 +605,7 @@ fn test_normalize_attrs_refs_resolves_object_shaped_ref() {
         site_uid,
         BackendId::Int(7),
     );
-    let mappings = StateMappings::from_state(&state);
+    let mappings = state_mappings_from_state(&state);
 
     let attrs: JsonMap = serde_json::json!({ "site": {"id": 7} })
         .as_object()
@@ -1268,6 +1269,135 @@ async fn test_apply_update_patch() {
     let report = adapter.write(&schema, &ops, &state).await.unwrap();
     mock.assert();
     assert_eq!(report.applied.len(), 1);
+}
+
+#[tokio::test]
+async fn test_apply_update_of_an_object_created_in_the_same_write() {
+    // a create with a deferred ref is followed by an update of the same uid, which
+    // carries no backend id: it targets the object the create just made.
+    let server = MockServer::start();
+    let create = server.mock(|when, then| {
+        when.method(POST).path("/api/devices");
+        then.status(201)
+            .header("content-type", "application/json")
+            .json_body(serde_json::json!({"id": 22, "name": "leaf01"}));
+    });
+    let update = server.mock(|when, then| {
+        when.method(PATCH).path("/api/devices/22");
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(serde_json::json!({"id": 22, "name": "leaf01"}));
+    });
+
+    let config = test_config(&server.base_url());
+    let adapter = GenericAdapter::new(config).unwrap();
+    let schema = test_schema();
+
+    let uid = Uid::new_v4();
+    let mut key = BTreeMap::new();
+    key.insert("name".to_string(), serde_json::json!("leaf01"));
+    let mut attrs = BTreeMap::new();
+    attrs.insert("name".to_string(), serde_json::json!("leaf01"));
+    let desired = alembic_core::Object {
+        uid,
+        type_name: TypeName::new("device".to_string()),
+        key: Key::from(key),
+        attrs: attrs.into(),
+        source: None,
+    };
+
+    let ops = vec![
+        Op::Create {
+            uid,
+            type_name: TypeName::new("device".to_string()),
+            desired: desired.clone(),
+        },
+        Op::Update {
+            uid,
+            type_name: TypeName::new("device".to_string()),
+            desired,
+            backend_id: None,
+            changes: vec![],
+        },
+    ];
+
+    let state = new_state_store();
+    let report = adapter.write(&schema, &ops, &state).await.unwrap();
+    create.assert();
+    update.assert();
+    assert_eq!(report.applied.len(), 2);
+}
+
+#[tokio::test]
+async fn test_resumed_apply_updates_an_object_an_earlier_run_created() {
+    // the create of a deferred-ref pair is journaled as done and the update is
+    // still pending: the re-run must not create again, and the update must reach
+    // the object the first run made through the id the journal recorded.
+    let server = MockServer::start();
+    let create = server.mock(|when, then| {
+        when.method(POST).path("/api/devices");
+        then.status(201)
+            .header("content-type", "application/json")
+            .json_body(serde_json::json!({"id": 99, "name": "leaf01"}));
+    });
+    let update = server.mock(|when, then| {
+        when.method(PATCH).path("/api/devices/22");
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(serde_json::json!({"id": 22, "name": "leaf01"}));
+    });
+
+    let config = test_config(&server.base_url());
+    let adapter = GenericAdapter::new(config).unwrap();
+    let schema = test_schema();
+
+    let uid = Uid::new_v4();
+    let mut key = BTreeMap::new();
+    key.insert("name".to_string(), serde_json::json!("leaf01"));
+    let mut attrs = BTreeMap::new();
+    attrs.insert("name".to_string(), serde_json::json!("leaf01"));
+    let desired = alembic_core::Object {
+        uid,
+        type_name: TypeName::new("device".to_string()),
+        key: Key::from(key),
+        attrs: attrs.into(),
+        source: None,
+    };
+    let ops = vec![
+        Op::Create {
+            uid,
+            type_name: TypeName::new("device".to_string()),
+            desired: desired.clone(),
+        },
+        Op::Update {
+            uid,
+            type_name: TypeName::new("device".to_string()),
+            desired,
+            backend_id: None,
+            changes: vec![],
+        },
+    ];
+
+    // a fresh directory per run; the completed apply deletes the journal in it.
+    let dir = std::env::temp_dir().join(format!("alembic-generic-resume-{}", Uid::new_v4()));
+    let state = new_state_store().with_journal_dir(dir.clone());
+    let mut journal = alembic_adapter_sdk::journal::Journal::load_or_create(
+        &dir,
+        &state.journal_scope("generic"),
+        &ops,
+    )
+    .unwrap();
+    journal
+        .mark_op_as_done(&ops[0], Some(&BackendId::Int(22)))
+        .unwrap();
+    drop(journal);
+
+    let report = adapter.write(&schema, &ops, &state).await.unwrap();
+    create.assert_calls(0);
+    update.assert();
+    assert_eq!(report.applied.len(), 1);
+    assert_eq!(report.previously_applied_count, Some(1));
+    let _ = std::fs::remove_dir_all(&dir); // best-effort cleanup of the empty dir
 }
 
 #[tokio::test]

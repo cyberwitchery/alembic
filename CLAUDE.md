@@ -51,6 +51,11 @@ files: <comma-separated paths>
 what changed, and the issue if there is one. the mechanism, what the old code
 did, the worked example and what to do about it go in the pr description.
 
+a pr never edits `CHANGELOG.md`. it adds its entry as its own file,
+`changelog.d/<issue or change>.md`, holding that one bullet line, so two prs
+never conflict over it. `scripts/changelog.sh release <version>` moves the
+fragments into `CHANGELOG.md` at release.
+
 what someone running the cli notices, or what changes in a file it reads,
 earns an entry. a test, refactor, cleanup or perf change gets none, however
 much code it moves; the pr description carries that work instead. nothing

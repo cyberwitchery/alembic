@@ -2,6 +2,7 @@ use alembic_core::Uid;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum AdapterApplyError {
     #[error("missing referenced uid {uid}")]
     MissingRef { uid: Uid },

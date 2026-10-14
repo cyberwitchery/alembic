@@ -13,6 +13,8 @@ async fn build_plan(
         .await
         .map(|(plan, _)| plan)
 }
+use crate::adapter_ops::state_mappings_from_state;
+use alembic_adapter_sdk::{AppliedOp, ApplyReport, BackendId, Op, ProvisionReport, StateData};
 use alembic_core::{
     FieldSchema, FieldType, Inventory, JsonMap, Key, Object, Schema, TypeName, TypeSchema, Uid,
 };
@@ -20,6 +22,16 @@ use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
 use tempfile::tempdir;
 use uuid::Uuid;
+
+fn match_counts(plan: &Plan) -> (usize, usize, usize, usize) {
+    let matching = plan.summary.as_ref().unwrap().matching.as_ref().unwrap();
+    (
+        matching.by_state,
+        matching.by_key,
+        matching.adopted,
+        matching.to_create,
+    )
+}
 
 fn uid(n: u128) -> Uid {
     Uuid::from_u128(n)
@@ -1042,6 +1054,145 @@ impl Emitter for TestAdapter {
 
 impl Adapter for TestAdapter {}
 
+/// records which of the two reads the engine chose, so the dispatch rule is
+/// pinned rather than inferred from what came back.
+#[derive(Clone)]
+struct ReadKindRecorder {
+    observed: ObservedState,
+    bound: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    full: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl ReadKindRecorder {
+    fn new(observed: ObservedState) -> Self {
+        Self {
+            observed,
+            bound: Default::default(),
+            full: Default::default(),
+        }
+    }
+
+    fn counts(&self) -> (usize, usize) {
+        use std::sync::atomic::Ordering::SeqCst;
+        (self.bound.load(SeqCst), self.full.load(SeqCst))
+    }
+}
+
+#[async_trait::async_trait]
+impl Observer for ReadKindRecorder {
+    async fn read(
+        &self,
+        _schema: &alembic_core::Schema,
+        _types: &[TypeName],
+        _state: &StateStore,
+    ) -> anyhow::Result<ObservedState> {
+        self.full.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(self.observed.clone())
+    }
+
+    async fn read_bound(
+        &self,
+        _schema: &alembic_core::Schema,
+        _types: &[TypeName],
+        _state: &StateStore,
+    ) -> anyhow::Result<ObservedState> {
+        self.bound.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(self.observed.clone())
+    }
+}
+
+/// the converged steady state: one declared site, already bound, observed as it
+/// is declared.
+fn bound_site() -> (Inventory, ObservedState) {
+    let inventory = inv(vec![obj(
+        uid(1),
+        "dcim.site",
+        "site=fra1",
+        json!({ "name": "FRA1", "slug": "fra1" }),
+    )]);
+    let mut observed = ObservedState::default();
+    observed
+        .insert(ObservedObject {
+            type_name: t("dcim.site"),
+            key: key_str("site=fra1"),
+            attrs: attrs_map(json!({ "name": "FRA1", "slug": "fra1" })),
+            backend_id: Some(BackendId::Int(1)),
+        })
+        .unwrap();
+    (inventory, observed)
+}
+
+fn state_binding_the_site(dir: &std::path::Path, bind: bool) -> StateStore {
+    let mut state = StateStore::load(dir.join("state.json")).unwrap();
+    if bind {
+        state.set_backend_id(t("dcim.site"), uid(1), BackendId::Int(1));
+    }
+    state
+}
+
+#[test]
+fn a_converged_run_reads_only_what_state_binds() {
+    let (inventory, observed) = bound_site();
+    let adapter = ReadKindRecorder::new(observed);
+    let dir = tempdir().unwrap();
+    let mut state = state_binding_the_site(dir.path(), true);
+
+    let plan =
+        futures::executor::block_on(build_plan(&adapter, &inventory, &mut state, false)).unwrap();
+
+    assert!(plan.ops.is_empty(), "unexpected ops: {:?}", plan.ops);
+    assert_eq!(adapter.counts(), (1, 0), "expected the bound read");
+}
+
+#[test]
+fn detecting_deletes_still_reads_the_whole_listing() {
+    let (inventory, observed) = bound_site();
+    let adapter = ReadKindRecorder::new(observed);
+    let dir = tempdir().unwrap();
+    let mut state = state_binding_the_site(dir.path(), true);
+
+    futures::executor::block_on(build_plan(&adapter, &inventory, &mut state, true)).unwrap();
+
+    assert_eq!(
+        adapter.counts(),
+        (0, 1),
+        "extra is defined against the full observation"
+    );
+}
+
+#[test]
+fn an_unbound_declared_object_still_reads_the_whole_listing() {
+    let (inventory, observed) = bound_site();
+    let adapter = ReadKindRecorder::new(observed);
+    let dir = tempdir().unwrap();
+    let mut state = state_binding_the_site(dir.path(), false);
+
+    futures::executor::block_on(build_plan(&adapter, &inventory, &mut state, false)).unwrap();
+
+    assert_eq!(
+        adapter.counts(),
+        (0, 1),
+        "key adoption needs objects not yet bound in state"
+    );
+}
+
+#[test]
+fn no_adopt_needs_only_the_bound_read() {
+    let (inventory, observed) = bound_site();
+    let adapter = ReadKindRecorder::new(observed);
+    let dir = tempdir().unwrap();
+    let mut state = state_binding_the_site(dir.path(), false);
+
+    let (plan, bootstrap) = futures::executor::block_on(crate::build_plan(
+        &adapter, &inventory, &mut state, false, false,
+    ))
+    .unwrap();
+
+    assert!(bootstrap.is_empty());
+    assert!(matches!(plan.ops.as_slice(), [Op::Create { .. }]));
+    assert_eq!(adapter.counts(), (1, 0), "no adoption means no key lookup");
+}
+
 #[test]
 fn build_plan_creates_ops() {
     let inventory = inv(vec![obj(
@@ -1283,7 +1434,7 @@ impl Observer for RefChainAdapter {
                 attrs: attrs_map(attrs.clone()),
             })
             .collect();
-        let mut mappings = StateMappings::from_state(state);
+        let mut mappings = state_mappings_from_state(state);
         let mut observed = ObservedState::default();
         for object in resolve_ref_keyed_identity(
             &raw,
@@ -1903,6 +2054,7 @@ fn apply_plan_blocks_deletes_without_flag() {
         }],
         summary: None,
         schema_preview: None,
+        effects: None,
     };
     let backend = Backend::Adapter(Box::new(adapter));
     let result = futures::executor::block_on(apply_plan(&backend, &plan, &mut state, false));
@@ -1973,6 +2125,7 @@ fn apply_plan_blocks_schema_deletes_without_flag() {
             deleted_object_types: vec!["dcim.widget".to_string()],
             ..Default::default()
         }),
+        effects: None,
     };
     let backend = Backend::Adapter(Box::new(adapter));
     let result = futures::executor::block_on(apply_plan(&backend, &plan, &mut state, false));
@@ -1997,6 +2150,7 @@ fn apply_plan_allows_schema_deletes_with_flag() {
             deleted_object_fields: vec!["dcim.widget.color".to_string()],
             ..Default::default()
         }),
+        effects: None,
     };
     let backend = Backend::Adapter(Box::new(adapter));
     futures::executor::block_on(apply_plan(&backend, &plan, &mut state, true)).unwrap();
@@ -2060,6 +2214,7 @@ fn apply_plan_self_previews_and_blocks_schema_deletes() {
         ops: vec![],
         summary: None,
         schema_preview: None,
+        effects: None,
     };
     let backend = Backend::Adapter(Box::new(adapter));
     let result = futures::executor::block_on(apply_plan(&backend, &plan, &mut state, false));
@@ -2083,6 +2238,7 @@ fn apply_plan_self_preview_allows_schema_deletes_with_flag() {
         ops: vec![],
         summary: None,
         schema_preview: None,
+        effects: None,
     };
     let backend = Backend::Adapter(Box::new(adapter));
     futures::executor::block_on(apply_plan(&backend, &plan, &mut state, true)).unwrap();
@@ -2278,6 +2434,7 @@ fn apply_plan_updates_state() {
         ops: vec![],
         summary: None,
         schema_preview: None,
+        effects: None,
     };
     let backend = Backend::Adapter(Box::new(adapter));
     futures::executor::block_on(apply_plan(&backend, &plan, &mut state, true)).unwrap();
@@ -2311,6 +2468,7 @@ fn apply_plan_clears_state_for_deleted_op() {
         ops: vec![],
         summary: None,
         schema_preview: None,
+        effects: None,
     };
     let backend = Backend::Adapter(Box::new(adapter));
     futures::executor::block_on(apply_plan(&backend, &plan, &mut state, true)).unwrap();
@@ -2342,6 +2500,7 @@ fn apply_plan_recovers_state_mappings_for_resumed_ops() {
         ops: vec![],
         summary: None,
         schema_preview: None,
+        effects: None,
     };
     let backend = Backend::Adapter(Box::new(adapter));
     futures::executor::block_on(apply_plan(&backend, &plan, &mut state, true)).unwrap();
@@ -2376,6 +2535,7 @@ fn apply_plan_keeps_the_mapping_a_resumed_op_has_no_id_for() {
         ops: vec![],
         summary: None,
         schema_preview: None,
+        effects: None,
     };
     let backend = Backend::Adapter(Box::new(adapter));
     futures::executor::block_on(apply_plan(&backend, &plan, &mut state, true)).unwrap();
@@ -2406,6 +2566,7 @@ fn apply_plan_emitter_writes_and_provisions_nothing() {
         ops: vec![],
         summary: None,
         schema_preview: None,
+        effects: None,
     };
     let backend = Backend::Emitter(Box::new(adapter));
     let report =
@@ -2473,6 +2634,7 @@ fn empty_plan() -> Plan {
         ops: vec![],
         summary: None,
         schema_preview: None,
+        effects: None,
     }
 }
 
@@ -2520,6 +2682,7 @@ fn apply_plan_rejects_read_only_observer() {
         ops: vec![],
         summary: None,
         schema_preview: None,
+        effects: None,
     };
     let backend = Backend::Observer(Box::new(adapter));
     let err = futures::executor::block_on(apply_plan(&backend, &plan, &mut state, true))
@@ -2696,7 +2859,7 @@ impl Observer for RefBackend {
                 attrs: attrs_map(json!({ "name": "leaf01", "site": 1 })),
             },
         ];
-        let mut mappings = StateMappings::from_state(state);
+        let mut mappings = state_mappings_from_state(state);
         let resolved = resolve_ref_keyed_identity(
             &raw,
             schema,
@@ -2790,9 +2953,9 @@ async fn plan_converges_once_the_desired_set_claims_new_uids() {
     let first = build_plan(&RefBackend, &inventory, &mut state, false)
         .await
         .unwrap();
-    // the first plan reads before it adopts, so the device's ref still resolves
-    // to the uid state held: one update, and the harness is doing something.
-    assert_eq!(first.ops.len(), 1, "{:?}", first.ops);
+    // the device's ref reads as the uid state held, and the site's binding moves
+    // to the claimed uid; the ref follows it, so even the first plan is settled.
+    assert!(first.ops.is_empty(), "{:?}", first.ops);
 
     let second = build_plan(&RefBackend, &inventory, &mut state, false)
         .await
@@ -2894,7 +3057,7 @@ impl Observer for RenameBackend {
                 attrs: attrs_map(json!({ "name": "leaf01", "site": 1 })),
             },
         ];
-        let mut mappings = StateMappings::from_state(state);
+        let mut mappings = state_mappings_from_state(state);
         let resolved = resolve_ref_keyed_identity(
             &raw,
             schema,
@@ -3003,6 +3166,8 @@ async fn a_rename_stays_an_update_when_the_stale_uid_sorts_first() {
     )
     .await
     .unwrap();
+    // the site and the device both match through state.
+    assert_eq!(match_counts(&plan), (2, 0, 0, 0));
     let ops = site_ops(&plan);
     assert_eq!(ops.len(), 1, "{:?}", plan.ops);
     assert!(
@@ -3069,11 +3234,7 @@ async fn plan_converges_when_the_stale_uid_sorts_before_the_declared_uid() {
     let mut state = StateStore::load(&path).unwrap();
 
     let inventory = ref_backend_inventory(uid(900), uid(11));
-    let first = build_plan(&RefBackend, &inventory, &mut state, false)
-        .await
-        .unwrap();
-    assert_eq!(first.ops.len(), 1, "{:?}", first.ops);
-    for round in 1..4 {
+    for round in 0..4 {
         let plan = build_plan(&RefBackend, &inventory, &mut state, false)
             .await
             .unwrap();
@@ -3173,6 +3334,11 @@ async fn a_key_adoption_is_reported_alongside_the_binding_it_writes() {
             .unwrap();
     assert!(plan.ops.is_empty(), "converged adoption plans nothing");
     assert_eq!(bootstrap.adoptions.len(), 1);
+    let matching = plan.summary.as_ref().unwrap().matching.as_ref().unwrap();
+    assert_eq!(matching.by_state, 0);
+    assert_eq!(matching.by_key, 1);
+    assert_eq!(matching.adopted, 1);
+    assert_eq!(matching.to_create, 0);
     let adoption = &bootstrap.adoptions[0];
     assert_eq!(adoption.type_name, t("dcim.site"));
     assert_eq!(adoption.uid, uid(1));
@@ -3197,6 +3363,7 @@ async fn no_adopt_plans_unknown_objects_as_creates() {
     assert!(bootstrap.is_empty());
     assert_eq!(plan.ops.len(), 1);
     assert!(matches!(plan.ops[0], Op::Create { .. }));
+    assert_eq!(match_counts(&plan), (0, 0, 0, 1));
     assert_eq!(state.backend_id(t("dcim.site"), uid(1)), None);
 
     // a state-known object still matches without adoption.
@@ -3208,6 +3375,7 @@ async fn no_adopt_plans_unknown_objects_as_creates() {
             .unwrap();
     assert!(bootstrap.is_empty());
     assert!(plan.ops.is_empty(), "state-known objects still converge");
+    assert_eq!(match_counts(&plan), (1, 0, 0, 0));
 }
 
 /// adopting an object another uid used to answer for supersedes that binding,
@@ -3229,6 +3397,25 @@ async fn a_superseding_adoption_reports_the_displaced_uid() {
         state.backend_id(t("dcim.site"), uid(9)),
         None,
         "the displaced uid lost its binding"
+    );
+}
+
+/// A stale state ID can resolve by key on a full observation without writing
+/// a replacement binding; key matches and adoptions must be distinct counters.
+#[tokio::test]
+async fn stale_state_id_falls_back_by_key_without_adoption() {
+    let inventory = adoption_inventory(uid(1));
+    let mut state = StateStore::new(None, StateData::default());
+    state.set_backend_id(t("dcim.site"), uid(1), BackendId::Int(99));
+    let (plan, bootstrap) = crate::build_plan(&AdoptionBackend, &inventory, &mut state, true, true)
+        .await
+        .unwrap();
+    assert!(plan.ops.is_empty());
+    assert!(bootstrap.adoptions.is_empty());
+    assert_eq!(match_counts(&plan), (0, 1, 0, 0));
+    assert_eq!(
+        state.backend_id(t("dcim.site"), uid(1)),
+        Some(BackendId::Int(99))
     );
 }
 
@@ -3325,4 +3512,230 @@ async fn unmanaged_twins_both_plan_as_deletes_by_id() {
 
     let drift = crate::DriftReport::from_plan(&plan);
     assert_eq!(drift.extra.len(), 2, "both twins surface as extra");
+}
+
+// --- first-contact adoption rebinds observed refs (issue #494) ---
+
+fn ref_field(target: &str) -> FieldSchema {
+    FieldSchema {
+        r#type: FieldType::Ref {
+            target: target.to_string(),
+        },
+        required: false,
+        nullable: false,
+        format: None,
+        pattern: None,
+        description: None,
+    }
+}
+
+fn string_field() -> FieldSchema {
+    FieldSchema {
+        r#type: FieldType::String,
+        required: false,
+        nullable: false,
+        format: None,
+        pattern: None,
+        description: None,
+    }
+}
+
+/// a device, an interface keyed by `(device, name)`, and an ip assigned to it.
+fn device_interface_ip_schema() -> Schema {
+    Schema {
+        types: BTreeMap::from([
+            (
+                "dcim.device".to_string(),
+                TypeSchema {
+                    key: BTreeMap::from([("name".to_string(), string_field())]),
+                    fields: BTreeMap::new(),
+                },
+            ),
+            (
+                "dcim.interface".to_string(),
+                TypeSchema {
+                    key: BTreeMap::from([
+                        ("device".to_string(), ref_field("dcim.device")),
+                        ("name".to_string(), string_field()),
+                    ]),
+                    fields: BTreeMap::new(),
+                },
+            ),
+            (
+                "ipam.ip_address".to_string(),
+                TypeSchema {
+                    key: BTreeMap::from([("address".to_string(), string_field())]),
+                    fields: BTreeMap::from([(
+                        "assigned_object".to_string(),
+                        ref_field("dcim.interface"),
+                    )]),
+                },
+            ),
+        ]),
+    }
+}
+
+fn interface_key(device: Uid) -> Key {
+    Key::from(BTreeMap::from([
+        ("device".to_string(), json!(device.to_string())),
+        ("name".to_string(), json!("eth0")),
+    ]))
+}
+
+/// the backend already holds all three, and nothing is in state: refs to them
+/// come back as the uids their keys derive, the way an adapter reports a target
+/// state does not know.
+struct PopulatedBackend;
+
+#[async_trait::async_trait]
+impl Observer for PopulatedBackend {
+    async fn read(
+        &self,
+        _schema: &Schema,
+        _types: &[TypeName],
+        _state: &StateStore,
+    ) -> anyhow::Result<ObservedState> {
+        let device_key = key_str("name=leaf01");
+        let derived_device = alembic_core::uid_v5("dcim.device", &key_string(&device_key));
+        let observed_interface_key = interface_key(derived_device);
+        let derived_interface =
+            alembic_core::uid_v5("dcim.interface", &key_string(&observed_interface_key));
+
+        let mut observed = ObservedState::default();
+        observed.insert(ObservedObject {
+            type_name: t("dcim.device"),
+            key: device_key,
+            attrs: JsonMap::default(),
+            backend_id: Some(BackendId::Int(1)),
+        })?;
+        observed.insert(ObservedObject {
+            type_name: t("dcim.interface"),
+            key: observed_interface_key,
+            attrs: JsonMap::default(),
+            backend_id: Some(BackendId::Int(10)),
+        })?;
+        observed.insert(ObservedObject {
+            type_name: t("ipam.ip_address"),
+            key: key_str("address=10.0.0.10/24"),
+            attrs: attrs_map(json!({ "assigned_object": derived_interface.to_string() })),
+            backend_id: Some(BackendId::Int(20)),
+        })?;
+        Ok(observed)
+    }
+}
+
+#[tokio::test]
+async fn first_contact_adoption_rebinds_refs_and_adopts_ref_keyed_objects() {
+    let (device, interface, ip) = (uid(1), uid(2), uid(3));
+    let inventory = Inventory {
+        scope: None,
+        schema: device_interface_ip_schema(),
+        objects: vec![
+            Object::new(
+                device,
+                t("dcim.device"),
+                key_str("name=leaf01"),
+                JsonMap::default(),
+            )
+            .unwrap(),
+            Object::new(
+                interface,
+                t("dcim.interface"),
+                interface_key(device),
+                JsonMap::default(),
+            )
+            .unwrap(),
+            Object::new(
+                ip,
+                t("ipam.ip_address"),
+                key_str("address=10.0.0.10/24"),
+                attrs_map(json!({ "assigned_object": interface.to_string() })),
+            )
+            .unwrap(),
+        ],
+    };
+    let mut state = StateStore::new(None, StateData::default());
+
+    let (plan, bootstrap) =
+        crate::build_plan(&PopulatedBackend, &inventory, &mut state, false, true)
+            .await
+            .unwrap();
+
+    assert_eq!(bootstrap.adoptions.len(), 3, "{:?}", bootstrap.adoptions);
+    assert_eq!(
+        state.backend_id(t("dcim.interface"), interface),
+        Some(BackendId::Int(10)),
+        "the ref-keyed interface is adopted, not created again"
+    );
+    assert!(plan.ops.is_empty(), "nothing to change: {:?}", plan.ops);
+}
+
+/// nautobot reports a generic fk's id half as the target's bare backend id, a
+/// uuid string; once adoption binds that target it reads back as the declared uid.
+struct StringIdBackend;
+
+const INTERFACE_BACKEND_ID: &str = "3240a061-1422-4d1c-a78b-f78db1d1cfd8";
+
+#[async_trait::async_trait]
+impl Observer for StringIdBackend {
+    async fn read(
+        &self,
+        _schema: &Schema,
+        _types: &[TypeName],
+        _state: &StateStore,
+    ) -> anyhow::Result<ObservedState> {
+        let mut observed = ObservedState::default();
+        observed.insert(ObservedObject {
+            type_name: t("dcim.interface"),
+            key: key_str("name=eth0"),
+            attrs: JsonMap::default(),
+            backend_id: Some(BackendId::String(INTERFACE_BACKEND_ID.to_string())),
+        })?;
+        observed.insert(ObservedObject {
+            type_name: t("ipam.ip_address"),
+            key: key_str("address=10.0.0.10/24"),
+            attrs: attrs_map(json!({ "assigned_object": INTERFACE_BACKEND_ID })),
+            backend_id: Some(BackendId::String(
+                "36592b0f-303f-439a-885b-14772174e720".to_string(),
+            )),
+        })?;
+        Ok(observed)
+    }
+}
+
+#[tokio::test]
+async fn first_contact_adoption_rebinds_a_bare_string_backend_id_ref() {
+    let (interface, ip) = (uid(2), uid(3));
+    let mut schema = device_interface_ip_schema();
+    schema.types.get_mut("dcim.interface").unwrap().key =
+        BTreeMap::from([("name".to_string(), string_field())]);
+    let inventory = Inventory {
+        scope: None,
+        schema,
+        objects: vec![
+            Object::new(
+                interface,
+                t("dcim.interface"),
+                key_str("name=eth0"),
+                JsonMap::default(),
+            )
+            .unwrap(),
+            Object::new(
+                ip,
+                t("ipam.ip_address"),
+                key_str("address=10.0.0.10/24"),
+                attrs_map(json!({ "assigned_object": interface.to_string() })),
+            )
+            .unwrap(),
+        ],
+    };
+    let mut state = StateStore::new(None, StateData::default());
+
+    let (plan, bootstrap) =
+        crate::build_plan(&StringIdBackend, &inventory, &mut state, false, true)
+            .await
+            .unwrap();
+
+    assert_eq!(bootstrap.adoptions.len(), 2);
+    assert!(plan.ops.is_empty(), "nothing to change: {:?}", plan.ops);
 }

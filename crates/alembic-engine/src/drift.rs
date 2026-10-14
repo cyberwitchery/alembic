@@ -7,10 +7,12 @@
 //! store. there is deliberately no "adopt observed" mode.
 
 use crate::types::{
-    Adoption, BootstrapReport, FieldChange, Op, Plan, ProvisionReport, SupersededBinding,
+    Adoption, BootstrapReport, MatchSummary, Plan, StateContext, SupersededBinding,
 };
-use alembic_core::{key_string, Key, TypeName};
+use alembic_adapter_sdk::{FieldChange, Op, ProvisionReport};
+use alembic_core::{key_string, Key, TypeName, Uid};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use std::fmt;
 
 /// an object present in both intent and backend, but with diverging fields.
@@ -66,6 +68,12 @@ pub struct DriftReport {
     /// identity bindings the run's adoptions superseded.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub superseded: Vec<SupersededBinding>,
+    /// the state the run loaded and how objects matched; like `adopted`, not
+    /// drift categories.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<StateContext>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matching: Option<MatchSummary>,
 }
 
 impl DriftReport {
@@ -75,8 +83,17 @@ impl DriftReport {
     /// backend/state, honoring the one-way invariant.
     pub fn from_plan(plan: &Plan) -> Self {
         let mut report = DriftReport::default();
+        // an update of a uid the plan also creates sets a ref the create deferred
+        // to break a cycle: the object is missing, and that is the whole drift.
+        let created: BTreeSet<Uid> = plan
+            .ops
+            .iter()
+            .filter(|op| matches!(op, Op::Create { .. }))
+            .map(Op::uid)
+            .collect();
         for op in &plan.ops {
             match op {
+                Op::Update { uid, .. } if created.contains(uid) => {}
                 Op::Update {
                     type_name,
                     desired,
@@ -100,6 +117,8 @@ impl DriftReport {
             }
         }
         report.schema_preview = plan.schema_preview.clone();
+        report.state = plan.summary.as_ref().and_then(|s| s.state.clone());
+        report.matching = plan.summary.as_ref().and_then(|s| s.matching.clone());
         report
     }
 
@@ -133,10 +152,11 @@ impl DriftReport {
 impl fmt::Display for DriftReport {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.is_empty() {
-            return write!(
+            write!(
                 f,
                 "no drift: observed backend state matches declared intent"
-            );
+            )?;
+            return write_matching(f, self.matching.as_ref());
         }
 
         write!(
@@ -175,14 +195,22 @@ impl fmt::Display for DriftReport {
             }
         }
 
-        Ok(())
+        write_matching(f, self.matching.as_ref())
     }
+}
+
+fn write_matching(f: &mut fmt::Formatter<'_>, matching: Option<&MatchSummary>) -> fmt::Result {
+    if let Some(m) = matching {
+        write!(f, "\nmatching: {m}")?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{BackendId, Op, Plan};
+    use crate::types::Plan;
+    use alembic_adapter_sdk::BackendId;
     use alembic_core::{JsonMap, Key, Object, Schema, TypeName, Uid};
     use serde_json::json;
     use std::collections::BTreeMap;
@@ -223,6 +251,7 @@ mod tests {
             ops,
             summary: None,
             schema_preview: None,
+            effects: None,
         };
         plan.summary = Some(plan.summary());
         plan
@@ -276,6 +305,28 @@ mod tests {
     }
 
     #[test]
+    fn carries_match_provenance_without_counting_it_as_drift() {
+        let mut plan = plan_with(vec![]);
+        plan.summary.as_mut().unwrap().matching = Some(MatchSummary {
+            by_state: 1,
+            by_key: 2,
+            adopted: 1,
+            to_create: 0,
+        });
+        let report = DriftReport::from_plan(&plan);
+        assert_eq!(report.matching, plan.summary.unwrap().matching);
+        assert!(report.is_empty());
+        assert_eq!(report.len(), 0);
+        let text = report.to_string();
+        assert!(
+            text.contains("1 by state, 2 by key (1 adopted), 0 to create"),
+            "{text}"
+        );
+        let value = serde_json::to_value(&report).unwrap();
+        assert_eq!(value["matching"]["adopted"], 1);
+    }
+
+    #[test]
     fn only_changed() {
         let report = DriftReport::from_plan(&plan_with(vec![update_op(
             1,
@@ -296,6 +347,19 @@ mod tests {
         assert_eq!(entry.changes[0].field, "name");
         assert_eq!(entry.changes[0].from, json!("old"));
         assert_eq!(entry.changes[0].to, json!("new"));
+    }
+
+    #[test]
+    fn an_update_completing_a_create_is_not_drift_of_its_own() {
+        // a create with a deferred ref plans as a create plus an update of the
+        // same uid; the object is missing, not also changed.
+        let report = DriftReport::from_plan(&plan_with(vec![
+            create_op(1, "dcim.device", "leaf01"),
+            update_op(1, "dcim.device", "leaf01", vec![name_change()]),
+        ]));
+        assert_eq!(report.len(), 1);
+        assert_eq!(report.missing.len(), 1);
+        assert!(report.changed.is_empty());
     }
 
     #[test]

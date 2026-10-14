@@ -1,10 +1,11 @@
 //! adapter registry and config loading for alembic.
 
+use alembic_adapter_sdk::external::{
+    ExternalEnvelopeRef, ExternalRequestRef, ExternalResponse, EXTERNAL_PROTOCOL_VERSION,
+};
+use alembic_adapter_sdk::{ExternalCapabilities, ExternalObject, ExternalRole};
 use alembic_engine::{
-    Adapter, ApplyReport, Backend, BackendIdentity, Emitter, ExternalCapabilities,
-    ExternalEnvelopeRef, ExternalObject, ExternalRequestRef, ExternalResponse, ExternalRole,
-    ObservedObject, ObservedState, Observer, Op, ProvisionReport, StateData, StateStore,
-    EXTERNAL_PROTOCOL_VERSION,
+    Adapter, Backend, BackendIdentity, Emitter, ObservedObject, ObservedState, Observer, StateStore,
 };
 use anyhow::{anyhow, Context, Result};
 use serde::{de::DeserializeOwned, Deserialize};
@@ -20,6 +21,7 @@ use tokio::time::timeout;
 
 #[cfg(feature = "django")]
 use alembic_adapter_django::emit::DjangoConfig;
+use alembic_adapter_sdk::{ApplyReport, Op, ProvisionReport, StateData};
 
 const SUPPORTED_BACKENDS: &[&str] = &[
     #[cfg(feature = "netbox")]
@@ -116,7 +118,7 @@ pub struct ExternalConfig {
     pub env: BTreeMap<String, String>,
     pub timeout_seconds: Option<u64>,
     #[serde(default)]
-    pub setup: serde_yaml::Value,
+    pub setup: serde_json::Value,
     /// stable backend-instance identity. an external adapter's config carries
     /// no endpoint the host can read, so without this the identity falls back
     /// to a fingerprint of the whole config, which changes when the config does.
@@ -206,7 +208,7 @@ impl AdapterConfig {
                 working_dir: None,
                 env: BTreeMap::new(),
                 timeout_seconds: None,
-                setup: serde_yaml::Value::default(),
+                setup: serde_json::Value::default(),
                 instance: None,
             })),
             other => Err(anyhow!(
@@ -297,7 +299,7 @@ impl AdapterConfig {
                         path.ok_or_else(|| anyhow!("generic backend requires config_path"))?;
                     let content = fs::read_to_string(&path)
                         .with_context(|| format!("read generic config: {}", path.display()))?;
-                    serde_yaml::from_str(&content)
+                    alembic_engine::yaml::from_str(&content)
                         .with_context(|| format!("parse generic config: {}", path.display()))?
                 };
                 let identity = BackendIdentity::new(
@@ -339,7 +341,7 @@ impl AdapterConfig {
                         cfg.args,
                         cfg.working_dir,
                         cfg.env,
-                        serde_yaml::to_string(&cfg.setup).unwrap_or_default(),
+                        serde_json::to_string(&cfg.setup).unwrap_or_default(),
                     );
                     format!(
                         "config-{}",
@@ -401,7 +403,7 @@ struct ProcessAdapter {
     working_dir: Option<PathBuf>,
     env: BTreeMap<String, String>,
     timeout: Duration,
-    setup: serde_yaml::Value,
+    setup: serde_json::Value,
 }
 
 impl ProcessAdapter {
@@ -695,7 +697,7 @@ pub fn create_backend(
 fn load_config(path: &PathBuf) -> Result<AdapterConfig> {
     let content = fs::read_to_string(path)
         .with_context(|| format!("read adapter config: {}", path.display()))?;
-    let config: AdapterConfig = serde_yaml::from_str(&content)
+    let config: AdapterConfig = alembic_engine::yaml::from_str(&content)
         .with_context(|| format!("parse adapter config: {}", path.display()))?;
     Ok(config)
 }
@@ -725,8 +727,9 @@ mod tests {
     use super::InfrahubSchemaConfig;
     #[cfg(unix)]
     use super::ProcessAdapter;
+    use alembic_adapter_sdk::{BackendId, Op, StateData};
     use alembic_core::{JsonMap, Key, Object, Schema, TypeName, Uid};
-    use alembic_engine::{Backend, BackendId, Op, StateData, StateStore};
+    use alembic_engine::{Backend, StateStore};
     use serde_json::json;
     use std::collections::BTreeMap;
     use std::fs;
@@ -860,7 +863,7 @@ mod tests {
         ];
 
         for (backend, yaml) in cases {
-            let err = serde_yaml::from_str::<AdapterConfig>(yaml)
+            let err = alembic_engine::yaml::from_str::<AdapterConfig>(yaml)
                 .expect_err(&format!("{backend}: unknown key must be rejected"));
             assert!(
                 err.to_string().contains("unknown field"),
@@ -873,7 +876,8 @@ mod tests {
     #[test]
     fn known_backend_config_still_parses() {
         let config: AdapterConfig =
-            serde_yaml::from_str("backend: external\ncommand: ./a\ntimeout_seconds: 5\n").unwrap();
+            alembic_engine::yaml::from_str("backend: external\ncommand: ./a\ntimeout_seconds: 5\n")
+                .unwrap();
         assert_eq!(config.backend_name(), "external");
     }
 
@@ -883,7 +887,7 @@ mod tests {
     #[cfg(feature = "peeringdb")]
     #[test]
     fn peeringdb_takes_no_config_keys() {
-        let bare: AdapterConfig = serde_yaml::from_str("backend: peeringdb\n").unwrap();
+        let bare: AdapterConfig = alembic_engine::yaml::from_str("backend: peeringdb\n").unwrap();
         assert_eq!(bare.backend_name(), "peeringdb");
         assert_eq!(
             AdapterConfig::from_env(&[], "peeringdb")
@@ -892,8 +896,9 @@ mod tests {
             "peeringdb"
         );
 
-        let err = serde_yaml::from_str::<AdapterConfig>("backend: peeringdb\ntoken: secret\n")
-            .expect_err("a key peeringdb does not read must be rejected");
+        let err =
+            alembic_engine::yaml::from_str::<AdapterConfig>("backend: peeringdb\ntoken: secret\n")
+                .expect_err("a key peeringdb does not read must be rejected");
         assert!(
             err.to_string().contains("token"),
             "expected the error to name the key, got: {err}"
@@ -903,7 +908,7 @@ mod tests {
     #[cfg(feature = "infrahub")]
     #[test]
     fn unknown_nested_infrahub_schema_key_is_rejected() {
-        let err = serde_yaml::from_str::<AdapterConfig>(
+        let err = alembic_engine::yaml::from_str::<AdapterConfig>(
             "backend: infrahub\nurl: http://ih\nschema:\n  mode: infrahubctl\n  schema_pth: ./s.yaml\n",
         )
         .expect_err("unknown key in a nested config must be rejected");
@@ -959,7 +964,7 @@ fi
             working_dir: None,
             env: BTreeMap::new(),
             timeout_seconds: Some(5),
-            setup: serde_yaml::Value::default(),
+            setup: serde_json::Value::default(),
             instance: None,
         });
         let (backend, _) = config.build().unwrap();
@@ -1025,7 +1030,7 @@ fi
             working_dir: None,
             env: BTreeMap::new(),
             timeout_seconds: Some(5),
-            setup: serde_yaml::Value::default(),
+            setup: serde_json::Value::default(),
             instance: None,
         })
         .build()
@@ -1214,7 +1219,7 @@ esac
             working_dir: None,
             env: BTreeMap::new(),
             timeout: Duration::from_secs(1),
-            setup: serde_yaml::Value::default(),
+            setup: serde_json::Value::default(),
         };
 
         let err = adapter.run(Vec::new()).await.unwrap_err();
@@ -1255,7 +1260,7 @@ esac
             working_dir: None,
             env: BTreeMap::new(),
             timeout: Duration::from_secs(5),
-            setup: serde_yaml::Value::default(),
+            setup: serde_json::Value::default(),
         };
 
         // 100 KB > the 64 KB pipe buffer, so the unread write hits BrokenPipe.
@@ -1289,7 +1294,7 @@ esac
             working_dir: None,
             env: BTreeMap::new(),
             timeout: Duration::from_secs(1),
-            setup: serde_yaml::Value::default(),
+            setup: serde_json::Value::default(),
         };
 
         // 256 KB > the 64 KB pipe buffer, so an un-drained write blocks once the

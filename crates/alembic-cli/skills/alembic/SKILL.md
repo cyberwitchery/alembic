@@ -1,6 +1,6 @@
 ---
 name: alembic
-description: Operate the alembic CLI (validate, import, map, plan, apply) against a DCIM/IPAM backend such as netbox, nautobot, infrahub or a generic REST service. Use when a task involves an alembic inventory, map spec, plan file or state store, when converging declared intent onto such a backend, or when reading drift out of one. Carries the identity and safety rules the command line does not state.
+description: Operate the alembic CLI (validate, import, map, plan, apply) against a backend such as netbox, nautobot, infrahub or a generic REST service. Use when a task involves an alembic inventory, map spec, plan file or state store, when converging declared intent onto such a backend, or when reading drift out of one. Carries the identity and safety rules the command line does not state.
 ---
 
 # alembic

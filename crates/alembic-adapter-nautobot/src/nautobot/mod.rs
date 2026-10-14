@@ -27,10 +27,11 @@ impl NautobotAdapter {
 #[cfg(test)]
 mod tests {
     use super::NautobotAdapter;
+    use alembic_adapter_sdk::{BackendId, FieldChange, Op};
     use alembic_core::{
         FieldSchema, FieldType, JsonMap, Key, Object, Schema, TypeName, TypeSchema, Uid,
     };
-    use alembic_engine::{BackendId, Emitter, FieldChange, Observer, Op, StateStore};
+    use alembic_engine::{Emitter, Observer, StateStore};
     use httpmock::Method::{DELETE, GET, PATCH, POST};
     use httpmock::MockServer;
     use serde_json::json;
@@ -1033,6 +1034,108 @@ mod tests {
                 "slug": "fra1"
             }));
         });
+    }
+
+    #[tokio::test]
+    async fn a_bound_read_asks_nautobot_only_for_the_ids_state_holds() {
+        let server = MockServer::start();
+        let dir = tempdir().unwrap();
+        mock_content_types(&server);
+        let site_id = "11111111-1111-1111-1111-111111111111";
+        // only answers when nautobot is asked for that uuid, so a full listing
+        // does not satisfy it.
+        let sites = server.mock(|when, then| {
+            when.method(GET)
+                .path("/api/dcim/sites/")
+                .query_param("id", site_id);
+            then.status(200).json_body(page(json!([{
+                "id": site_id,
+                "name": "FRA1",
+                "slug": "fra1",
+            }])));
+        });
+
+        let mut store = state(dir.path());
+        store.set_backend_id(
+            TypeName::new("dcim.site"),
+            uid(1),
+            BackendId::String(site_id.to_string()),
+        );
+
+        let adapter = NautobotAdapter::new(&server.base_url(), "token").unwrap();
+        let observed = adapter
+            .read_bound(&site_schema(), &[TypeName::new("dcim.site")], &store)
+            .await
+            .unwrap();
+
+        sites.assert();
+        assert_eq!(observed.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_bound_read_skips_a_type_with_no_state_bindings() {
+        let server = MockServer::start();
+        let dir = tempdir().unwrap();
+        mock_content_types(&server);
+        let sites = server.mock(|when, then| {
+            when.method(GET).path("/api/dcim/sites/");
+            then.status(200).json_body(page(json!([])));
+        });
+
+        let adapter = NautobotAdapter::new(&server.base_url(), "token").unwrap();
+        let observed = adapter
+            .read_bound(
+                &site_schema(),
+                &[TypeName::new("dcim.site")],
+                &state(dir.path()),
+            )
+            .await
+            .unwrap();
+
+        sites.assert_calls(0);
+        assert_eq!(observed.len(), 0);
+    }
+
+    // a declared ref the type has no field for fails the read itself, before
+    // anything is listed, so a plan never diffs on it.
+    #[tokio::test]
+    async fn read_refuses_a_declared_ref_the_type_has_no_field_for() {
+        let server = MockServer::start();
+        let dir = tempdir().unwrap();
+        mock_content_types(&server);
+        let _options = server.mock(|when, then| {
+            when.method(httpmock::Method::OPTIONS)
+                .path("/api/dcim/sites/");
+            then.status(200)
+                .json_body(json!({ "actions": { "POST": { "name": {}, "slug": {} } } }));
+        });
+        let _custom_fields = server.mock(|when, then| {
+            when.method(GET).path("/api/extras/custom-fields/");
+            then.status(200).json_body(page(json!([])));
+        });
+        let sites = server.mock(|when, then| {
+            when.method(GET).path("/api/dcim/sites/");
+            then.status(200).json_body(page(json!([])));
+        });
+
+        let mut schema = site_schema();
+        schema.types.get_mut("dcim.site").unwrap().fields.insert(
+            "region".to_string(),
+            field(FieldType::Ref {
+                target: "dcim.region".to_string(),
+            }),
+        );
+        let adapter = NautobotAdapter::new(&server.base_url(), "token").unwrap();
+        let err = adapter
+            .read(&schema, &[TypeName::new("dcim.site")], &state(dir.path()))
+            .await
+            .unwrap_err();
+
+        assert!(
+            format!("{err:#}").contains("dcim.site has no field region"),
+            "{err:#}"
+        );
+        sites.assert_calls(0);
     }
 
     #[tokio::test]

@@ -1,6 +1,6 @@
 # ir
 
-alembic lets you define your own vendor-neutral data model for dcim/ipam data. all objects share a common envelope and are typed by an explicit `type` string. types are user-defined and must be described with a schema.
+alembic lets you define your own vendor-neutral data model. all objects share a common envelope and are typed by an explicit `type` string. types are user-defined and must be described with a schema.
 
 ## object envelope
 
@@ -90,6 +90,12 @@ fields:
   status: { type: enum, values: [active, planned, staged] }
   site: { type: ref, target: dcim.site }
 ```
+
+an `enum` is checked against `values` before any write. a backend that provisions it
+as a choice field (netbox and nautobot custom fields, see `docs/netbox.md` and
+`docs/nautobot.md`) enforces it too, but only ever adds choices, so a value dropped
+from `values` stays valid in the backend and the field stays stricter in alembic than
+in the backend.
 
 a field declaration takes those metadata keys plus the one param its type requires; anything else is a parse error, so a typo'd `required` or `pattern` is reported rather than dropping the constraint it declares.
 

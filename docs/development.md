@@ -6,6 +6,7 @@
 alembic/
   crates/
     alembic-core
+    alembic-adapter-sdk
     alembic-engine
     alembic-adapter-registry
     alembic-adapter-netbox
@@ -103,5 +104,9 @@ cargo llvm-cov --workspace --all-features --fail-under-lines 80 \
 
 ## release
 
+- changelog entries wait in `changelog.d/`, one file each. run
+  `scripts/changelog.sh release <version>` and commit the result before
+  tagging: it moves them into `CHANGELOG.md`, which the publish workflow reads
+  the release notes from.
 - tag a release with `v*` to trigger the publish workflow.
 - ensure `CARGO_REGISTRY_TOKEN` is set in repository secrets.

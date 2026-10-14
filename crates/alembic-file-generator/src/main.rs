@@ -1,7 +1,8 @@
 //! generate files for testing (a huge plan.json or inventory.json)
 
+use alembic_adapter_sdk::Op;
 use alembic_core::{key_string, uid_v5, Inventory, JsonMap, Key, Object, Schema, TypeName, Uid};
-use alembic_engine::{Op, Plan};
+use alembic_engine::Plan;
 use anyhow::{Context, Result};
 use clap::{Parser, ValueEnum};
 use serde_json::{json, Value};
@@ -93,6 +94,7 @@ fn build_plan(num_devices: usize, num_interfaces: usize) -> Result<Plan> {
         ops,
         summary: None,
         schema_preview: None,
+        effects: None,
     })
 }
 
@@ -418,7 +420,7 @@ types:
         a_terminations: { type: list_ref, target: dcim.interface }
         b_terminations: { type: list_ref, target: dcim.interface }";
 
-    serde_yaml::from_str(schema_yaml).context("parsing embedded schema")
+    alembic_engine::yaml::from_str(schema_yaml).context("parsing embedded schema")
 }
 
 #[cfg(test)]

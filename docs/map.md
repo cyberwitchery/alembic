@@ -49,7 +49,8 @@ rules:
 - each rule has a `match` selector and either one or more `emit` blocks or
   `emit: passthrough` (see below).
 - a key a block does not define is a parse error, not a silent no-op, at every
-  level of the spec: the top level takes `schema`, `rules` and `transforms`; a
+  level of the spec: the top level takes `schema`, `rules`, `objects` and
+  `transforms`; a
   rule takes `name`, `match`, `group_by`, `lookups`, `uids` and `emit`; an emit
   takes `type` (or `kind`), `key`, `uid` and `attrs`; `schema` is the inventory
   schema, down to the keys a field declaration takes (`docs/ir.md`).
@@ -99,6 +100,57 @@ never collides with a specific rule, whatever the rule order. the passed-through
 type's schema is taken from the input, so the target `schema` need only declare
 the types you actually reshape. a passed-through object is genuinely unchanged:
 key, attrs, and uid. `passthrough` cannot be combined with `group_by`.
+
+## objects
+
+some objects exist only in the target's vocabulary: nautobot's status objects,
+a location type every location points at. no source object models them, and a
+rule emits once per matched source, so two sites cannot both emit the one
+location type they share. the spec's `objects:` list declares them once each:
+
+```yaml
+objects:
+  - type: dcim.locationtype
+    key: { name: Site }
+    attrs: { name: Site }
+    uid: { v5: { type: dcim.locationtype, stable: site } }
+rules:
+  - name: sites
+    match: dcim.site
+    uids:
+      location_type: { v5: { type: dcim.locationtype, stable: site } }
+    emit:
+      type: dcim.location
+      key: { name: "${attrs.name}" }
+      attrs:
+        location_type: "${uids.location_type}"
+```
+
+an entry takes the keys an emit does and renders with no source vars, so it
+holds literal values. it needs a `uid:`, since rules reach it only through a uid
+they can spell: a `v5:` pair both sides derive the same way, as above, or a
+literal uuid. its type must be in the target `schema`, like any emit's.
+
+two `objects:` entries can reference each other without hand-deriving that uuid:
+on a schema-declared ref key or attr (including `list_ref` and refs nested in
+`list`/`map` attrs), the same `{ v5: { type, stable } }` expression is resolved
+to the uid string before the output inventory is validated. a literal uuid
+works too. the interpretation is ref-typed only, so a `json` attr whose value
+happens to contain a `v5` key stays ordinary json:
+
+```yaml
+objects:
+  - type: dcim.manufacturer
+    key: { slug: nokia }
+    attrs: { name: Nokia }
+    uid: { v5: { type: dcim.manufacturer, stable: nokia } }
+  - type: dcim.device_type
+    key: { slug: srlinux }
+    attrs:
+      model: SR Linux
+      manufacturer: { v5: { type: dcim.manufacturer, stable: nokia } }
+    uid: { v5: { type: dcim.device_type, stable: srlinux } }
+```
 
 ## vars
 

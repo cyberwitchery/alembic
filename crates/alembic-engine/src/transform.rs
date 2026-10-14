@@ -26,7 +26,6 @@ use anyhow::{anyhow, Context, Result};
 use serde::de::{self, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 use serde_json::Value as JsonValue;
-use serde_yaml::Value as YamlValue;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -90,6 +89,10 @@ pub struct MapSpec {
     pub schema: Schema,
     #[serde(default)]
     pub rules: Vec<MapRule>,
+    /// objects the target needs that no source object models, emitted once
+    /// each; rules reference them through the uid they declare.
+    #[serde(default)]
+    pub objects: Vec<MapEmit>,
     /// user-defined starlark transforms, consulted by `${var|name}` pipelines
     /// before the built-ins (requires the `starlark` feature).
     #[serde(default)]
@@ -213,14 +216,14 @@ pub struct MapEmit {
     /// target type name (templates allowed).
     #[serde(rename = "type", alias = "kind")]
     pub type_name: String,
-    pub key: BTreeMap<String, YamlValue>,
+    pub key: BTreeMap<String, JsonValue>,
     /// optional uid override. absent, a one-to-one emit inherits the source
     /// uid and a group emit mints from the rendered target `(type, key)`; a
     /// multi-emit must set it on every emitted object.
     #[serde(default)]
     pub uid: Option<EmitUid>,
     #[serde(default)]
-    pub attrs: BTreeMap<String, YamlValue>,
+    pub attrs: BTreeMap<String, JsonValue>,
 }
 
 /// a compiled `match` selector: a type-name pattern plus field predicates over
@@ -305,7 +308,7 @@ pub fn load_map_spec(path: impl AsRef<Path>) -> Result<MapSpec> {
     let path = path.as_ref();
     let raw = std::fs::read_to_string(path)
         .with_context(|| format!("read map spec: {}", path.display()))?;
-    let mut spec: MapSpec = serde_yaml::from_str(&raw)
+    let mut spec: MapSpec = crate::yaml::from_str(&raw)
         .with_context(|| format!("parse map spec: {}", path.display()))?;
     spec.base_dir = path.parent().map(Path::to_path_buf);
     Ok(spec)
@@ -386,6 +389,17 @@ struct Emitted {
 /// identity to inherit, and a one-element list stays in the explicit regime so
 /// reshaping `emit:` into a list cannot silently change identity.
 fn validate_emit_identity(spec: &MapSpec) -> Result<()> {
+    // a spec object has no source to inherit from, and rules can only reach it
+    // through a uid they can spell.
+    for (index, object) in spec.objects.iter().enumerate() {
+        if object.uid.is_none() {
+            return Err(anyhow!(
+                "objects: entry {} ({}) has no uid:; declare one (e.g. a `v5:` pair) so rules can reference it",
+                index + 1,
+                object.type_name
+            ));
+        }
+    }
     for rule in &spec.rules {
         let EmitSpec::Multi(emits) = &rule.emit else {
             continue;
@@ -548,6 +562,27 @@ pub fn compile_map(input: &Inventory, spec: &MapSpec) -> Result<Inventory> {
                 uid_from_key: false,
             });
         }
+    }
+
+    // spec objects: rendered without source vars, so a template in one fails
+    // naming the var it reached for.
+    let no_vars = BTreeMap::new();
+    let ctx = RenderCtx {
+        vars: &no_vars,
+        transforms: &run.transforms,
+        rule: "objects",
+    };
+    for object in &spec.objects {
+        let type_name = TypeName::new(render_template(&object.type_name, &ctx, "type")?);
+        let key = render_spec_object_key(&type_name, &object.key, &spec.schema, &ctx)?;
+        let uid = resolve_emit_uid(&object.uid, &ctx, type_name.as_str(), &key, None)?;
+        let mut attrs = render_attrs(&object.attrs, &ctx, "attrs")?;
+        resolve_spec_object_refs(&type_name, &mut attrs, &spec.schema, &ctx)?;
+        let attrs = JsonMap::from(attrs.into_iter().collect::<BTreeMap<_, _>>());
+        emitted.push(Emitted {
+            object: Object::new(uid, type_name, key, attrs)?,
+            uid_from_key: matches!(object.uid, Some(EmitUid::Target)),
+        });
     }
 
     // the output schema is the target schema, plus the source schema for every
@@ -777,6 +812,133 @@ fn resolve_uid_spec(spec: &EmitUid, ctx: &RenderCtx, context: &str) -> Result<Ui
             crate::render::derive_v5_uid(&kind, &stable, rule)
         }
     }
+}
+
+/// render an `objects:` key, resolving `v5:` expressions in its ref fields first.
+fn render_spec_object_key(
+    type_name: &TypeName,
+    key: &BTreeMap<String, JsonValue>,
+    schema: &Schema,
+    ctx: &RenderCtx,
+) -> Result<Key> {
+    let Some(type_schema) = schema.types.get(type_name.as_str()) else {
+        return render_key(key, ctx);
+    };
+    // a key field is a scalar, so a plain ref is the only reference it can hold.
+    let mut resolved = key.clone();
+    for (field, field_schema) in &type_schema.key {
+        if !matches!(field_schema.r#type, FieldType::Ref { .. }) {
+            continue;
+        }
+        let Some(value @ JsonValue::Object(_)) = resolved.get_mut(field) else {
+            continue;
+        };
+        let context = format!("key.{field}");
+        let spec: EmitUid = serde_json::from_value(value.clone())
+            .with_context(|| format!("rule {}: invalid uid expression in {context}", ctx.rule))?;
+        *value = JsonValue::String(resolve_uid_spec(&spec, ctx, &context)?.to_string());
+    }
+    render_key(&resolved, ctx)
+}
+
+/// resolve `v5:` expressions in an `objects:` entry's ref-typed attrs.
+fn resolve_spec_object_refs(
+    type_name: &TypeName,
+    attrs: &mut serde_json::Map<String, JsonValue>,
+    schema: &Schema,
+    ctx: &RenderCtx,
+) -> Result<()> {
+    let Some(type_schema) = schema.types.get(type_name.as_str()) else {
+        // output validation reports an undeclared type after all emits are built.
+        return Ok(());
+    };
+    // an entry has no source vars, so this is how two entries spell a shared uid.
+    // only ref-typed fields are read this way: a json attr holding a `v5` key
+    // stays json.
+    for (field, value) in attrs {
+        let Some(field_schema) = type_schema
+            .fields
+            .get(field)
+            .or_else(|| type_schema.key.get(field))
+        else {
+            // output validation reports undeclared attrs.
+            continue;
+        };
+        resolve_spec_object_ref_value(&field_schema.r#type, value, ctx, &format!("attrs.{field}"))?;
+    }
+    Ok(())
+}
+
+fn resolve_spec_object_ref_value(
+    field_type: &FieldType,
+    value: &mut JsonValue,
+    ctx: &RenderCtx,
+    context: &str,
+) -> Result<()> {
+    match field_type {
+        FieldType::Ref { .. } => {
+            let JsonValue::Object(_) = value else {
+                // literal uuid strings keep their established path through
+                // output validation.
+                return Ok(());
+            };
+            let spec: EmitUid = serde_json::from_value(value.clone()).with_context(|| {
+                format!("rule {}: invalid uid expression in {context}", ctx.rule)
+            })?;
+            let uid = resolve_uid_spec(&spec, ctx, context)?;
+            *value = JsonValue::String(uid.to_string());
+        }
+        FieldType::ListRef { .. } => {
+            if let JsonValue::Array(items) = value {
+                for (index, item) in items.iter_mut().enumerate() {
+                    resolve_spec_object_ref_value(
+                        &FieldType::Ref {
+                            target: String::new(),
+                        },
+                        item,
+                        ctx,
+                        &format!("{context}[{index}]"),
+                    )?;
+                }
+            }
+        }
+        FieldType::List { item } => {
+            if let JsonValue::Array(items) = value {
+                for (index, entry) in items.iter_mut().enumerate() {
+                    resolve_spec_object_ref_value(
+                        item,
+                        entry,
+                        ctx,
+                        &format!("{context}[{index}]"),
+                    )?;
+                }
+            }
+        }
+        FieldType::Map { value: inner } => {
+            if let JsonValue::Object(entries) = value {
+                for (key, entry) in entries {
+                    resolve_spec_object_ref_value(inner, entry, ctx, &format!("{context}.{key}"))?;
+                }
+            }
+        }
+        FieldType::String
+        | FieldType::Text
+        | FieldType::Int
+        | FieldType::Float
+        | FieldType::Bool
+        | FieldType::Uuid
+        | FieldType::Date
+        | FieldType::Datetime
+        | FieldType::Time
+        | FieldType::Json
+        | FieldType::IpAddress
+        | FieldType::Cidr
+        | FieldType::Prefix
+        | FieldType::Mac
+        | FieldType::Slug
+        | FieldType::Enum { .. } => {}
+    }
+    Ok(())
 }
 
 /// rewire ref-typed key fields through the remap and re-derive each key-derived
@@ -1051,11 +1213,11 @@ mod tests {
     }
 
     fn spec(yaml: &str) -> MapSpec {
-        serde_yaml::from_str(yaml).unwrap()
+        crate::yaml::from_str(yaml).unwrap()
     }
 
     fn spec_err(yaml: &str) -> String {
-        serde_yaml::from_str::<MapSpec>(yaml)
+        crate::yaml::from_str::<MapSpec>(yaml)
             .unwrap_err()
             .to_string()
     }
@@ -3410,5 +3572,382 @@ rules:
                 .contains("`target` is only meaningful as an emit's uid:"),
             "{err:#}"
         );
+    }
+
+    const STATUS_SPEC: &str = r#"
+schema:
+  types:
+    extras.status:
+      key:
+        name: { type: string }
+    dcim.location:
+      key:
+        name: { type: string }
+      fields:
+        status: { type: ref, target: extras.status }
+objects:
+  - type: extras.status
+    key: { name: Active }
+    uid: { v5: { type: extras.status, stable: active } }
+  - type: extras.status
+    key: { name: Planned }
+    uid: { v5: { type: extras.status, stable: planned } }
+rules:
+  - name: sites
+    match: dcim.site
+    uids:
+      status: { v5: { type: extras.status, stable: "${attrs.status}" } }
+    emit:
+      type: dcim.location
+      key: { name: "${key.slug}" }
+      attrs: { status: "${uids.status}" }
+"#;
+
+    fn two_sites() -> Inventory {
+        input_inventory(json!([
+            { "uid": Uuid::from_u128(1).to_string(), "type": "dcim.site",
+              "key": { "slug": "fra1" }, "attrs": { "status": "active" } },
+            { "uid": Uuid::from_u128(2).to_string(), "type": "dcim.site",
+              "key": { "slug": "ber1" }, "attrs": { "status": "active" } }
+        ]))
+    }
+
+    #[test]
+    fn spec_objects_are_emitted_once_and_referenced_by_rules() {
+        // two sites share one status object the source does not model; the
+        // spec declares it once and both locations reference it.
+        let out = compile_map(&two_sites(), &spec(STATUS_SPEC)).unwrap();
+        let statuses: Vec<_> = out
+            .objects
+            .iter()
+            .filter(|o| o.type_name.as_str() == "extras.status")
+            .collect();
+        assert_eq!(statuses.len(), 2);
+        let active = uid_v5("extras.status", "active");
+        assert!(statuses.iter().any(|o| o.uid == active));
+        for location in out
+            .objects
+            .iter()
+            .filter(|o| o.type_name.as_str() == "dcim.location")
+        {
+            assert_eq!(
+                location.attrs.get("status").unwrap(),
+                &json!(active.to_string())
+            );
+        }
+    }
+
+    #[test]
+    fn spec_objects_are_emitted_with_no_matching_source() {
+        let out = compile_map(&input_inventory(json!([])), &spec(STATUS_SPEC)).unwrap();
+        assert_eq!(out.objects.len(), 2);
+    }
+
+    #[test]
+    fn spec_objects_can_reference_each_other_by_v5_expression() {
+        let out = compile_map(
+            &input_inventory(json!([])),
+            &spec(
+                r#"
+schema:
+  types:
+    dcim.manufacturer:
+      key:
+        slug: { type: slug }
+      fields:
+        name: { type: string }
+    dcim.device_type:
+      key:
+        slug: { type: slug }
+      fields:
+        model: { type: string }
+        manufacturer: { type: ref, target: dcim.manufacturer }
+objects:
+  - type: dcim.manufacturer
+    key: { slug: nokia }
+    attrs: { name: Nokia }
+    uid: { v5: { type: dcim.manufacturer, stable: nokia } }
+  - type: dcim.device_type
+    key: { slug: srlinux }
+    attrs:
+      model: SR Linux
+      manufacturer: { v5: { type: dcim.manufacturer, stable: nokia } }
+    uid: { v5: { type: dcim.device_type, stable: srlinux } }
+"#,
+            ),
+        )
+        .unwrap();
+
+        let manufacturer = out
+            .objects
+            .iter()
+            .find(|o| o.type_name.as_str() == "dcim.manufacturer")
+            .unwrap();
+        let device_type = out
+            .objects
+            .iter()
+            .find(|o| o.type_name.as_str() == "dcim.device_type")
+            .unwrap();
+        assert_eq!(
+            device_type.attrs.get("manufacturer").unwrap(),
+            &json!(manufacturer.uid.to_string())
+        );
+    }
+
+    #[test]
+    fn a_spec_object_ref_key_accepts_a_v5_expression() {
+        let out = compile_map(
+            &input_inventory(json!([])),
+            &spec(
+                r#"
+schema:
+  types:
+    dcim.device:
+      key:
+        name: { type: slug }
+    dcim.interface:
+      key:
+        device: { type: ref, target: dcim.device }
+        name: { type: string }
+objects:
+  - type: dcim.device
+    key: { name: leaf01 }
+    uid: { v5: { type: dcim.device, stable: leaf01 } }
+  - type: dcim.interface
+    key:
+      device: { v5: { type: dcim.device, stable: leaf01 } }
+      name: eth0
+    uid: { v5: { type: dcim.interface, stable: leaf01:eth0 } }
+"#,
+            ),
+        )
+        .unwrap();
+
+        let device = out
+            .objects
+            .iter()
+            .find(|o| o.type_name.as_str() == "dcim.device")
+            .unwrap();
+        let interface = out
+            .objects
+            .iter()
+            .find(|o| o.type_name.as_str() == "dcim.interface")
+            .unwrap();
+        assert_eq!(
+            interface.key.get("device").unwrap(),
+            &json!(device.uid.to_string())
+        );
+    }
+
+    #[test]
+    fn spec_object_nested_reference_fields_accept_v5_expressions() {
+        let out = compile_map(
+            &input_inventory(json!([])),
+            &spec(
+                r#"
+schema:
+  types:
+    extras.status:
+      key:
+        name: { type: string }
+    catalog.bundle:
+      key:
+        name: { type: string }
+      fields:
+        statuses: { type: list_ref, target: extras.status }
+        ordered:
+          type: list
+          item: { type: ref, target: extras.status }
+        named:
+          type: map
+          value: { type: ref, target: extras.status }
+objects:
+  - type: extras.status
+    key: { name: Active }
+    uid: { v5: { type: extras.status, stable: active } }
+  - type: catalog.bundle
+    key: { name: default }
+    attrs:
+      statuses:
+        - { v5: { type: extras.status, stable: active } }
+      ordered:
+        - { v5: { type: extras.status, stable: active } }
+      named:
+        primary: { v5: { type: extras.status, stable: active } }
+    uid: { v5: { type: catalog.bundle, stable: default } }
+"#,
+            ),
+        )
+        .unwrap();
+
+        let status = out
+            .objects
+            .iter()
+            .find(|o| o.type_name.as_str() == "extras.status")
+            .unwrap();
+        let bundle = out
+            .objects
+            .iter()
+            .find(|o| o.type_name.as_str() == "catalog.bundle")
+            .unwrap();
+        let uid = status.uid.to_string();
+        assert_eq!(bundle.attrs.get("statuses").unwrap(), &json!([uid.clone()]));
+        assert_eq!(bundle.attrs.get("ordered").unwrap(), &json!([uid.clone()]));
+        assert_eq!(
+            bundle.attrs.get("named").unwrap(),
+            &json!({ "primary": uid })
+        );
+    }
+
+    #[test]
+    fn invalid_spec_object_ref_expression_names_the_field() {
+        let err = compile_map(
+            &input_inventory(json!([])),
+            &spec(
+                r#"
+schema:
+  types:
+    dcim.manufacturer:
+      key:
+        slug: { type: slug }
+    dcim.device_type:
+      key:
+        slug: { type: slug }
+      fields:
+        manufacturer: { type: ref, target: dcim.manufacturer }
+objects:
+  - type: dcim.manufacturer
+    key: { slug: nokia }
+    uid: { v5: { type: dcim.manufacturer, stable: nokia } }
+  - type: dcim.device_type
+    key: { slug: srlinux }
+    attrs:
+      manufacturer: { v5: { type: dcim.manufacturer, stabel: nokia } }
+    uid: { v5: { type: dcim.device_type, stable: srlinux } }
+"#,
+            ),
+        )
+        .unwrap_err();
+        let message = format!("{err:#}");
+        assert!(
+            message.contains("invalid uid expression in attrs.manufacturer"),
+            "{message}"
+        );
+        assert!(message.contains("stabel"), "{message}");
+    }
+
+    #[test]
+    fn a_v5_shaped_json_attr_on_a_spec_object_stays_json() {
+        let out = compile_map(
+            &input_inventory(json!([])),
+            &spec(
+                r#"
+schema:
+  types:
+    catalog.item:
+      key:
+        slug: { type: slug }
+      fields:
+        metadata: { type: json }
+objects:
+  - type: catalog.item
+    key: { slug: one }
+    attrs:
+      metadata: { v5: { type: not-a-ref, stable: untouched } }
+    uid: { v5: { type: catalog.item, stable: one } }
+"#,
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            out.objects[0].attrs.get("metadata").unwrap(),
+            &json!({ "v5": { "type": "not-a-ref", "stable": "untouched" } })
+        );
+    }
+
+    #[test]
+    fn a_spec_object_needs_a_uid() {
+        let err = compile_map(
+            &input_inventory(json!([])),
+            &spec(
+                r#"
+schema:
+  types:
+    extras.status:
+      key:
+        name: { type: string }
+objects:
+  - type: extras.status
+    key: { name: Active }
+"#,
+            ),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("uid"), "{err}");
+    }
+
+    #[test]
+    fn a_spec_object_has_no_source_vars() {
+        let err = compile_map(
+            &input_inventory(json!([])),
+            &spec(
+                r#"
+schema:
+  types:
+    extras.status:
+      key:
+        name: { type: string }
+objects:
+  - type: extras.status
+    key: { name: "${key.name}" }
+    uid: { v5: { type: extras.status, stable: x } }
+"#,
+            ),
+        )
+        .unwrap_err();
+        assert!(format!("{err:#}").contains("key.name"), "{err:#}");
+    }
+
+    #[test]
+    fn a_spec_object_colliding_with_a_rule_emit_fails_validation() {
+        let err = compile_map(
+            &two_sites(),
+            &spec(
+                r#"
+schema:
+  types:
+    dcim.location:
+      key:
+        name: { type: string }
+objects:
+  - type: dcim.location
+    key: { name: fra1 }
+    uid: { v5: { type: dcim.location, stable: fra1 } }
+rules:
+  - name: sites
+    match: dcim.site
+    emit:
+      type: dcim.location
+      key: { name: "${key.slug}" }
+"#,
+            ),
+        )
+        .unwrap_err();
+        assert!(format!("{err:#}").contains("duplicate key"), "{err:#}");
+    }
+
+    #[test]
+    fn rejects_an_unknown_key_in_a_spec_object() {
+        let err = spec_err(
+            r#"
+objects:
+  - type: extras.status
+    key: { name: Active }
+    uid: target
+    atrs: {}
+"#,
+        );
+        assert!(err.contains("atrs"), "{err}");
     }
 }

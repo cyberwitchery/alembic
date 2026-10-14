@@ -8,39 +8,41 @@ mod state;
 use alembic_adapter_registry::{create_backend, Plugin};
 use alembic_engine::{
     apply_plan, build_plan, guard_drift_report, guard_schema_provisioning, load_inventory,
-    load_inventory_unvalidated, plan_write_only, render_plan, ApplyReport, Backend, DriftReport,
-    Plan, StateData, StateLock, StateStore, Tense,
+    load_inventory_unvalidated, plan_write_only, render_plan, Backend, DriftReport, Effects, Plan,
+    StateLock, StateStore,
 };
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::ExitCode;
 
 use self::io::{
-    read_plan, write_apply_report, write_drift_report, write_inventory, write_plan,
-    write_validation_report,
+    announce_written, read_plan, write_apply_report, write_drift_report, write_inventory,
+    write_plan, write_validation_report,
 };
-use self::state::load_state;
+use self::state::{load_state, load_state_with_context, print_state_context};
 use crate::app::config::AppConfig;
 use alembic_core::TypeName;
 
 #[cfg(test)]
-use self::io::warn_misleading_output_extension;
-#[cfg(test)]
 use self::state::{resolve_state_backend_config, state_path, StateBackendConfig};
 #[cfg(test)]
 use alembic_adapter_django::emit::Runner;
+use alembic_adapter_sdk::{AdapterApplyError, ApplyReport, Op, StateData, Tense};
 #[cfg(test)]
 use alembic_engine::PostgresTlsMode;
 
 /// top-level cli definition.
 #[derive(Parser)]
 #[command(name = "alembic", version)]
-#[command(
-    about = "Data-model-first converger + loader for DCIM/IPAM (YAML/JSON inventories in, JSON plans out)"
-)]
+#[command(about = "move network data between the systems that hold it and the ones that need it")]
 #[command(long_about = "\
-Data-model-first converger + loader for DCIM/IPAM.
+move network data between the systems that hold it and the ones that need it.
+
+import reads a system through its adapter, map reshapes it into a vendor-neutral
+model you define, and plan diffs that model against a backend. none of them
+write; apply is the only command that does.
 
 File formats are chosen by file extension:
   - inventories (IR) are authored as YAML or JSON: a .json extension is parsed as
@@ -48,9 +50,10 @@ File formats are chosen by file extension:
     inventory carries a schema block plus optional include/imports.
   - plans (plan --output), the validation report (validate --output), the drift
     report (plan --report --output), observed or transformed IR (import --output
-    and map --output), and the apply report (apply --output) are always written
-    as JSON, regardless of the path extension.
-  - apply --plan consumes a JSON plan file as produced by alembic plan.")]
+    and map --output), and the apply report (apply --output) are written as YAML
+    to a .yaml or .yml path and as JSON to anything else.
+  - apply --plan reads a plan by the same rule: YAML from a .yaml or .yml path,
+    JSON otherwise; pass - to read a JSON plan from stdin.")]
 pub(crate) struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -64,19 +67,20 @@ enum Command {
         /// inventory file to validate (yaml or json).
         #[arg(short = 'f', long)]
         file: PathBuf,
-        /// where to write the json validation report; written on both outcomes,
-        /// with an empty `errors` list when the inventory validates.
+        /// where to write the validation report (yaml or json by extension);
+        /// written on both outcomes, with an empty `errors` list when the
+        /// inventory validates.
         #[arg(short = 'o', long)]
         output: Option<PathBuf>,
     },
-    /// compute a deterministic plan (desired vs observed) and write it as json.
+    /// compute a deterministic plan (desired vs observed) and write it to a file.
     Plan {
         /// inventory file to plan from (yaml or json).
         #[arg(short = 'f', long)]
         file: PathBuf,
-        /// where to write the json plan, or the json drift report under
-        /// --report; required unless --report or --dry-run, and rejected with
-        /// --dry-run, which prints the plan instead of writing it.
+        /// where to write the plan, or the drift report under --report (yaml or
+        /// json by extension); required unless --report or --dry-run, and
+        /// rejected with --dry-run, which prints the plan instead of writing it.
         #[arg(
             short = 'o',
             long,
@@ -100,7 +104,7 @@ enum Command {
         dry_run: bool,
         /// print a read-only drift report (desired vs observed) and exit without
         /// writing a plan file or saving state; --output writes the same report
-        /// as json. mutually exclusive with --dry-run.
+        /// to a file. exits 2 on drift. mutually exclusive with --dry-run.
         #[arg(long, default_value_t = false, conflicts_with = "dry_run")]
         report: bool,
         /// allow the plan to include deletes (objects, and destructive schema
@@ -115,12 +119,13 @@ enum Command {
         #[arg(long, default_value_t = false, conflicts_with = "allow_delete")]
         no_adopt: bool,
     },
-    /// apply a json plan to a backend (the only command that writes).
+    /// apply a plan to a backend (the only command that writes).
     Apply {
-        /// json plan file produced by `alembic plan`.
+        /// plan file produced by `alembic plan` (yaml or json by extension);
+        /// pass `-` to read a json plan from stdin.
         #[arg(short = 'p', long)]
         plan: PathBuf,
-        /// where to write the json apply report (uid -> backend id per applied
+        /// where to write the apply report (uid -> backend id per applied
         /// op); written only when the apply succeeds.
         #[arg(short = 'o', long)]
         output: Option<PathBuf>,
@@ -133,7 +138,8 @@ enum Command {
         /// allow delete ops (object and destructive schema deletes) in the plan.
         #[arg(long, default_value_t = false)]
         allow_delete: bool,
-        /// prompt for confirmation per operation, applying only approved ops.
+        /// prompt for confirmation per operation, applying only approved ops;
+        /// cannot be combined with `--plan -`, since stdin carries the plan.
         #[arg(short = 'i', long, default_value_t = false)]
         interactive: bool,
     },
@@ -151,13 +157,13 @@ enum Command {
         /// map specification (target schema + rules).
         #[arg(long)]
         spec: Option<PathBuf>,
-        /// where to write the transformed json inventory.
+        /// where to write the transformed inventory (yaml or json by extension).
         #[arg(short = 'o', long)]
         output: Option<PathBuf>,
     },
     /// observe a backend's live state into the data model.
     Import {
-        /// where to write the observed json inventory.
+        /// where to write the observed inventory (yaml or json by extension).
         #[arg(short = 'o', long)]
         output: PathBuf,
         /// inventory whose schema selects which types to observe.
@@ -189,12 +195,12 @@ enum SkillAction {
     /// print a skill to stdout, for a host that reads no skills directory.
     Show {
         /// skill name, as `list` reports it.
-        name: String,
+        name: Option<String>,
     },
     /// write a skill to a skills directory.
     Install {
         /// skill name, as `list` reports it.
-        name: String,
+        name: Option<String>,
         /// skills root to install under; the file lands at `<dir>/<name>/SKILL.md`.
         #[arg(long, default_value = skill::DEFAULT_SKILLS_DIR)]
         dir: PathBuf,
@@ -253,6 +259,23 @@ fn should_detect_deletes(allow_delete: bool, report: bool) -> bool {
 
 /// how a `plan` run holds the state lock. a run that saves nothing needs no more
 /// than a reader's share; `--provision` writes backend schema, so it is not one.
+/// a preview the backend could not answer must not sink the read-only plan, so
+/// it is reported and planning goes on. a schema the backend says it will
+/// reject fails the plan here rather than the apply.
+fn schema_preview_failure(err: anyhow::Error) -> Result<()> {
+    let rejected = err.chain().any(|cause| {
+        matches!(
+            cause.downcast_ref::<AdapterApplyError>(),
+            Some(AdapterApplyError::SchemaMismatch { .. })
+        )
+    });
+    if rejected {
+        return Err(err.context("schema preview: the backend will reject this schema"));
+    }
+    eprintln!("schema preview failed: {err:#}");
+    Ok(())
+}
+
 fn state_lock_for_plan(report: bool, dry_run: bool, provision: bool) -> StateLock {
     if (report || dry_run) && !provision {
         StateLock::Shared
@@ -283,7 +306,7 @@ fn output_path(command: &Command) -> Option<&Path> {
     }
 }
 
-pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
+pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<ExitCode> {
     // before anything expensive: a command that writes an output file pays for a
     // load, a backend observation or an apply first, so a bad -o must not surface
     // at the write. the write path recreates what the probe removed.
@@ -302,7 +325,7 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             // and an absent file would be indistinguishable from a crash.
             if let Some(output) = &output {
                 write_validation_report(output, &located)?;
-                println!("validation report written to {}", output.display());
+                announce_written(output, "validation report")?;
             }
             // after the write, so `ok` means the whole command succeeded
             if located.errors.is_empty() {
@@ -326,11 +349,12 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             let plugins = search_for_plugins(&config)?;
             let (backend, backend_identity) =
                 create_backend(&plugins, backend.as_deref(), backend_config)?;
-            let mut state = load_state(
+            let (mut state, state_context) = load_state_with_context(
                 state_lock_for_plan(report, dry_run, provision),
                 &backend_identity,
             )
             .await?;
+            print_state_context(&state_context);
             // a drift report asserts what the backend holds; one that observes
             // nothing would report every declared object absent, so refuse it
             // before provisioning or a backend read or write.
@@ -365,7 +389,7 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                 match emitter.preview_schema(&inventory.schema).await {
                     Ok(Some(report)) => {
                         if !report.is_empty() {
-                            eprintln!("schema preview: {report}");
+                            eprintln!("schema preview: {}", report.summary(Tense::Would));
                             for (label, name) in report.named_changes(Tense::Would) {
                                 eprintln!("  {label} {name}");
                             }
@@ -373,8 +397,7 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                         schema_preview = Some(report);
                     }
                     Ok(None) => eprintln!("schema preview: unavailable for this backend"),
-                    // a preview hiccup must not sink the read-only plan; report and continue.
-                    Err(err) => eprintln!("schema preview failed: {err:#}"),
+                    Err(err) => schema_preview_failure(err)?,
                 }
             }
 
@@ -393,6 +416,14 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                 .await?
             };
             plan.schema_preview = schema_preview;
+            plan.effects = match &backend {
+                Backend::Emitter(_) => Some(Effects::Emit),
+                Backend::Adapter(_) => Some(Effects::Drive),
+                Backend::Observer(_) => None,
+            };
+            if let Some(summary) = &mut plan.summary {
+                summary.state = Some(state_context);
+            }
             // identity memory changed: say so before anything persists it.
             print_bootstrap(&bootstrap);
             if report {
@@ -404,7 +435,11 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                 // never a plan, and still no state save
                 if let Some(output) = &output {
                     write_drift_report(output, &drift)?;
-                    println!("\ndrift report written to {}", output.display());
+                    println!();
+                    announce_written(output, "drift report")?;
+                }
+                if !drift.is_empty() {
+                    return Ok(ExitCode::from(2));
                 }
             } else if dry_run {
                 let raw = serde_json::to_string_pretty(&plan)?;
@@ -418,7 +453,8 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                 // human-readable, per-op view of what apply would do (see before
                 // write); the machine-readable copy is the written plan file.
                 println!("{}", render_plan(&plan));
-                println!("\nplan written to {}", output.display());
+                println!();
+                announce_written(&output, "plan")?;
             }
         }
         Command::Apply {
@@ -429,21 +465,23 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             allow_delete,
             interactive,
         } => {
+            if interactive && plan == Path::new("-") {
+                return Err(anyhow!(
+                    "--interactive cannot be used with --plan -: stdin is already used for the plan"
+                ));
+            }
             let plugins = search_for_plugins(&config)?;
             let (backend, backend_identity) =
                 create_backend(&plugins, backend.as_deref(), backend_config)?;
-            let mut state = load_state(StateLock::Exclusive, &backend_identity).await?;
+            let (mut state, state_context) =
+                load_state_with_context(StateLock::Exclusive, &backend_identity).await?;
+            print_state_context(&state_context);
             // reject a backend that cannot apply before reading the plan or prompting
             backend.emitter()?;
             let plan = read_plan(&plan)?;
 
             let plan = if interactive {
-                if !allow_delete
-                    && plan
-                        .ops
-                        .iter()
-                        .any(|op| matches!(op, alembic_engine::Op::Delete { .. }))
-                {
+                if !allow_delete && plan.ops.iter().any(|op| matches!(op, Op::Delete { .. })) {
                     return Err(anyhow!(
                         "plan contains delete operations; re-run with --allow-delete"
                     ));
@@ -452,21 +490,21 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                 let mut approved = Vec::new();
                 for op in ordered {
                     let description = match &op {
-                        alembic_engine::Op::Create {
+                        Op::Create {
                             type_name, desired, ..
                         } => format!(
                             "create {} {}",
                             type_name,
                             alembic_core::key_string(&desired.key)
                         ),
-                        alembic_engine::Op::Update {
+                        Op::Update {
                             type_name, desired, ..
                         } => format!(
                             "update {} {}",
                             type_name,
                             alembic_core::key_string(&desired.key)
                         ),
-                        alembic_engine::Op::Delete { type_name, key, .. } => {
+                        Op::Delete { type_name, key, .. } => {
                             format!("delete {} {}", type_name, alembic_core::key_string(key))
                         }
                     };
@@ -479,6 +517,7 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                     ops: approved,
                     summary: None,
                     schema_preview: None,
+                    effects: plan.effects,
                 }
             } else {
                 plan
@@ -491,7 +530,7 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             // path only: state.json is cumulative and the journal is gone by now.
             if let Some(output) = output {
                 write_apply_report(&output, &report)?;
-                println!("apply report written to {}", output.display());
+                announce_written(&output, "apply report")?;
             }
         }
         Command::Map {
@@ -535,7 +574,7 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                 let spec = alembic_engine::load_map_spec(&spec)?;
                 let inventory = alembic_engine::compile_map(&input, &spec)?;
                 write_inventory(&output, &inventory)?;
-                println!("ir written to {}", output.display());
+                announce_written(&output, "ir")?;
             }
         },
         Command::Import {
@@ -568,20 +607,20 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             )
             .await?;
             write_inventory(&output, &report.inventory)?;
-            println!("inventory written to {}", output.display());
+            announce_written(&output, "inventory")?;
         }
         // no backend, no state, no inventory: the text is in the binary
         Command::Skill { action } => match action {
             SkillAction::List => skill::list(),
-            SkillAction::Show { name } => skill::show(&name)?,
+            SkillAction::Show { name } => skill::show(name.as_deref())?,
             SkillAction::Install { name, dir, force } => {
-                let path = skill::install(&name, &dir, force)?;
+                let path = skill::install(name.as_deref(), &dir, force)?;
                 println!("skill written to {}", path.display());
             }
         },
     }
 
-    Ok(())
+    Ok(ExitCode::SUCCESS)
 }
 
 /// say what bootstrapping wrote into identity memory: adoptions bind a

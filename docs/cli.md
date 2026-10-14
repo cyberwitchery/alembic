@@ -144,12 +144,14 @@ NETBOX_URL=https://netbox.example.com NETBOX_TOKEN=$NETBOX_TOKEN \
 - against a write-only (emitter) backend such as `django`, which cannot report existing state, plain `plan` produces an all-creates plan against an empty observation, while `--report` is rejected up front (see below)
 - writes json plan to the `-o`/`--output` path (required only for this default write path), and prints a human-readable per-op summary of that plan (create/update/delete, with per-field `from -> to` for updates; long categories are truncated) so you can read what apply would do before applying
 - honors `--allow-delete` if you want delete ops; delete candidates are the observed objects the inventory asserts completeness over — bounded by its `scope:` block when one is declared (`docs/inventory.md`), the whole backend per declared type otherwise
+- says first, on stderr, which state it loaded: `state: <path or row key> for <backend>, N bindings`, or `state: none at <path> for <backend>, 0 bindings` when nothing was saved there yet. the plan's `summary.state` records the same, as loaded before any adoption (`storage`, `location`, `present`, `backend`, `bindings_loaded`); postgres state names the row key, never the url
+- prints how declared objects matched, under the operation counts: `matching: 12 by state, 3 by key (3 adopted), 2 to create`, also in `summary.matching` (`by_state`, `by_key`, `adopted`, `to_create`). `adopted` is the part of `by_key` the run bound by key; a state binding that no longer resolves can still match by key without one. a write-only backend matches nothing and omits `matching`
 - reports what bootstrapping wrote into identity memory, on stderr like the schema preview so `--dry-run`'s stdout stays raw json: `adopted N existing object(s) by key` names each backend object the run bound to a declared uid, and `superseded:` names any binding an adoption displaced. adoption persists with the plan's state save, so it is never silent; `--no-adopt` disables key adoption (state-known objects still match, everything else plans as a create). it conflicts with `--allow-delete` at parse time: refusing to identify a backend object by key is refusing to know enough to replace it, and their combination would plan the unidentified twin of every declared object as a delete beside its create
 - a uid planned as one create and one delete under two types renders as a `retype`: one logical object re-materialized (see `docs/identity.md`), created under the new type before the old one is deleted
-- without `--provision`, plan asks the backend for a read-only schema preview (what `apply`'s `ensure_schema` would create/delete, writing nothing) and prints it to stderr as `schema preview: ...`; the machine-readable copy rides in the plan's `schema_preview`, and under `--report` (which writes no plan) in the drift report's. backends that cannot preview report `schema preview: unavailable for this backend`
+- without `--provision`, plan asks the backend for a read-only schema preview (what `apply`'s `ensure_schema` would create/delete, writing nothing) and prints it to stderr as `schema preview: ...`; the machine-readable copy rides in the plan's `schema_preview`, and under `--report` (which writes no plan) in the drift report's. backends that cannot preview report `schema preview: unavailable for this backend`, and a preview that fails is reported as `schema preview failed: ...` while the plan goes on. a preview that finds a schema the backend will reject (a netbox custom object field name outside `[A-Za-z0-9_]`) fails the plan instead, since apply would refuse it
 - `--provision` runs adapter provisioning (`ensure_schema`) before observing backend state; provisioning that would delete custom object types/fields the inventory no longer declares is blocked unless `--allow-delete` is also given (such deletes cascade to their objects on the backend)
 - `--dry-run` prints the raw plan json instead of writing it; it writes no file, so `-o`/`--output` is rejected with it at parse time rather than accepted and ignored
-- `--report` prints a read-only drift report and exits without writing a plan file or saving state; `-o`/`--output` writes that report as json (optional: without it the report is the printed summary only)
+- `--report` prints a read-only drift report and exits without writing a plan file or saving state; `-o`/`--output` writes that report as json (optional: without it the report is the printed summary only). it exits `2` when the report finds drift and `0` when it finds none; an error exits `1`
 - saving nothing, `--report` and `--dry-run` take the state lock shared (see [state](state.md)), so two of them can run at once in the same directory; adding `--provision` makes the run exclusive again, since it writes backend schema
 - `--report` and `--dry-run` are mutually exclusive (both exit without applying); passing both is rejected at parse time
 - `--provision` cannot be combined with `--dry-run` (rejected at parse time): a `--dry-run` preview promises not to write, but `--provision` still writes backend schema (`ensure_schema`). combining `--provision` with `--report` stays allowed as the documented "provision schema, then preview drift" workflow (see below)
@@ -171,6 +173,9 @@ standalone human-readable summary grouped into three categories:
 - **changed**: declared and present on the backend, but one or more fields diverge (lists the per-field `from -> to`)
 - **missing**: declared in intent but absent from the backend
 - **extra**: present on the backend but not declared in intent, within what the inventory asserts completeness over (its `scope:` when declared, every declared type otherwise; `docs/inventory.md`)
+
+the json report also carries the plan's `state` and `matching`; neither is a
+drift category, and neither changes the exit code.
 
 it is one-way by construction: it only ever describes how observed state diverges
 from intent and never writes observed state back into the inventory or state
@@ -252,9 +257,14 @@ alembic apply -p plan.json \
 alembic apply -p plan.json -o apply-report.json \
   --backend-config examples/backend-infrahub.yaml \
   --allow-delete
+
+alembic plan -f examples/inventory.yaml --dry-run \
+  --backend-config examples/backend-netbox.yaml | \
+  alembic apply -p - --backend-config examples/backend-netbox.yaml
 ```
 
-- applies a plan file
+- applies a plan file; `-p -` reads a json plan from stdin, matching the json emitted by `plan --dry-run`
+- says on stderr which state it loaded, in `plan`'s `state:` line
 - an applied update re-asserts every declared field of its object, not only the changes the plan listed: a backend edit to a declared field between plan and apply is converged back, and approving an update under `--interactive` approves that full write. undeclared fields stay untouched (`docs/engine.md`, diff rules)
 - deletes are blocked unless `--allow-delete` is provided; this covers both object deletes and destructive schema provisioning (deleting custom object types/fields the inventory no longer declares, which cascades to their objects)
 - `--interactive` prompts per operation and applies only approved ops
@@ -262,7 +272,9 @@ alembic apply -p plan.json -o apply-report.json \
   from stdin per operation, so scripted answers work (`printf 'y\nn\ny\n' |
   alembic apply -i ...`); if stdin ends before every operation has been answered
   the run returns an error naming that operation, rather than declining the rest
-  on your behalf. drop `--interactive` to apply the whole plan
+  on your behalf. because `-p -` already consumes stdin for the plan, it cannot
+  be combined with `--interactive`; that combination is rejected before backend
+  setup. drop `--interactive` to apply the whole plan
 - the `peeringdb` backend is read-only; apply will return an error
 - apply runs adapter provisioning (`ensure_schema`) before writes on any backend
   that can write, read+write or write-only; for netbox this can create custom
@@ -423,7 +435,8 @@ alembic skill install alembic
 alembic skill install alembic --dir /srv/intent/.agents/skills
 ```
 
-- `list` prints one `name<tab>summary` line per embedded skill
+- `list` prints a `name  summary` header and one aligned line per embedded skill;
+  `show` or `install` without a name fails and names them
 - `show` prints the skill's markdown to stdout, for a host that reads no skills
   directory
 - `install` writes it atomically to `<dir>/<name>/SKILL.md`, `--dir` defaulting

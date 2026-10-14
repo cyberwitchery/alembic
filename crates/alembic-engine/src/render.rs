@@ -2,7 +2,6 @@ use alembic_core::{uid_v5, Key, Uid};
 use anyhow::{anyhow, Result};
 use serde::Deserialize;
 use serde_json::{Map as JsonObject, Value as JsonValue};
-use serde_yaml::{Mapping as YamlMapping, Value as YamlValue};
 use std::collections::BTreeMap;
 
 /// a `v5: { type, stable }` uid spec, shared by the map emit path (`transform`)
@@ -78,13 +77,13 @@ pub(crate) enum TransformedOutput {
 }
 
 pub(crate) fn render_attrs(
-    attrs: &BTreeMap<String, YamlValue>,
+    attrs: &BTreeMap<String, JsonValue>,
     ctx: &RenderCtx,
     context: &str,
 ) -> Result<JsonObject<String, JsonValue>> {
     let mut map = JsonObject::new();
     for (key, value) in attrs {
-        let rendered = render_yaml_value(value, ctx, context, false, TransformedOutput::Typed)?;
+        let rendered = render_value(value, ctx, context, false, TransformedOutput::Typed)?;
         if let Some(value) = rendered {
             map.insert(key.clone(), value);
         }
@@ -92,11 +91,11 @@ pub(crate) fn render_attrs(
     Ok(map)
 }
 
-pub(crate) fn render_key(key: &BTreeMap<String, YamlValue>, ctx: &RenderCtx) -> Result<Key> {
+pub(crate) fn render_key(key: &BTreeMap<String, JsonValue>, ctx: &RenderCtx) -> Result<Key> {
     let mut map = BTreeMap::new();
     for (field, value) in key {
         let context = format!("key.{field}");
-        let rendered = render_yaml_value(value, ctx, &context, false, TransformedOutput::String)?;
+        let rendered = render_value(value, ctx, &context, false, TransformedOutput::String)?;
         let Some(value) = rendered else {
             return Err(anyhow!("rule {}: missing value for {context}", ctx.rule));
         };
@@ -105,14 +104,14 @@ pub(crate) fn render_key(key: &BTreeMap<String, YamlValue>, ctx: &RenderCtx) -> 
     Ok(Key::from(map))
 }
 
-pub(crate) fn render_yaml_value(
-    value: &YamlValue,
+pub(crate) fn render_value(
+    value: &JsonValue,
     ctx: &RenderCtx,
     context: &str,
     allow_missing: bool,
     output: TransformedOutput,
 ) -> Result<Option<JsonValue>> {
-    let rendered = render_yaml_value_inner(value, ctx, context, allow_missing, output)?;
+    let rendered = render_value_inner(value, ctx, context, allow_missing, output)?;
     // key/uid components feed uid derivation and must stay scalar (docs/map.md)
     if let (TransformedOutput::String, Some(value)) = (output, &rendered) {
         ensure_scalar(value, ctx.rule, context)?;
@@ -120,19 +119,19 @@ pub(crate) fn render_yaml_value(
     Ok(rendered)
 }
 
-fn render_yaml_value_inner(
-    value: &YamlValue,
+fn render_value_inner(
+    value: &JsonValue,
     ctx: &RenderCtx,
     context: &str,
     allow_missing: bool,
     output: TransformedOutput,
 ) -> Result<Option<JsonValue>> {
     match value {
-        YamlValue::String(raw) => render_string_value(raw, ctx, context, allow_missing, output),
-        YamlValue::Sequence(items) => {
+        JsonValue::String(raw) => render_string_value(raw, ctx, context, allow_missing, output),
+        JsonValue::Array(items) => {
             let mut rendered = Vec::new();
             for item in items {
-                let value = render_yaml_value(item, ctx, context, allow_missing, output)?;
+                let value = render_value(item, ctx, context, allow_missing, output)?;
                 match value {
                     Some(value) => rendered.push(value),
                     None => {
@@ -145,21 +144,17 @@ fn render_yaml_value_inner(
             }
             Ok(Some(JsonValue::Array(rendered)))
         }
-        YamlValue::Mapping(map) => {
+        JsonValue::Object(map) => {
             if let Some((optional, spec)) = parse_uid_mapping(map) {
                 return render_uid_mapping(&spec, ctx, context, optional);
             }
 
             let mut rendered = JsonObject::new();
             for (key, value) in map {
-                let key = key
-                    .as_str()
-                    .ok_or_else(|| anyhow!("rule {}: {context} keys must be strings", ctx.rule))?
-                    .to_string();
-                let value = render_yaml_value(value, ctx, context, allow_missing, output)?;
+                let value = render_value(value, ctx, context, allow_missing, output)?;
                 match value {
                     Some(value) => {
-                        rendered.insert(key, value);
+                        rendered.insert(key.clone(), value);
                     }
                     None => {
                         if allow_missing {
@@ -171,28 +166,25 @@ fn render_yaml_value_inner(
             }
             Ok(Some(JsonValue::Object(rendered)))
         }
-        _ => Ok(Some(yaml_to_json(value.clone())?)),
+        JsonValue::Null | JsonValue::Bool(_) | JsonValue::Number(_) => Ok(Some(value.clone())),
     }
 }
 
-fn parse_uid_mapping(map: &YamlMapping) -> Option<(bool, UidV5Spec)> {
+fn parse_uid_mapping(map: &JsonObject<String, JsonValue>) -> Option<(bool, UidV5Spec)> {
     if map.len() != 1 {
         return None;
     }
     let (key, value) = map.iter().next()?;
-    let key = key.as_str()?;
-    let optional = match key {
+    let optional = match key.as_str() {
         "uid" => false,
         "uid?" => true,
         _ => return None,
     };
-    let YamlValue::Mapping(inner) = value else {
+    let JsonValue::Object(inner) = value else {
         return None;
     };
-    let kind = inner
-        .get(YamlValue::String("type".to_string()))
-        .or_else(|| inner.get(YamlValue::String("kind".to_string())))?;
-    let stable = inner.get(YamlValue::String("stable".to_string()))?;
+    let kind = inner.get("type").or_else(|| inner.get("kind"))?;
+    let stable = inner.get("stable")?;
     let kind = kind.as_str()?.to_string();
     let stable = stable.as_str()?.to_string();
     Some((
@@ -202,10 +194,6 @@ fn parse_uid_mapping(map: &YamlMapping) -> Option<(bool, UidV5Spec)> {
             stable,
         },
     ))
-}
-
-pub(crate) fn yaml_to_json(value: YamlValue) -> Result<JsonValue> {
-    serde_json::to_value(value).map_err(|err| anyhow!("yaml to json failed: {err}"))
 }
 
 fn render_uid_mapping(
@@ -276,7 +264,7 @@ fn render_string_value(
             return Ok(None);
         };
         // a lone `${var}` with no transforms preserves its raw typed value;
-        // render_yaml_value gates scalar-ness for key/uid output.
+        // render_value gates scalar-ness for key/uid output.
         if placeholder.transforms.is_empty() {
             return Ok(Some(value.clone()));
         }
@@ -732,7 +720,6 @@ fn render_template_optional(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_yaml::Value as YamlValue;
     use std::collections::BTreeMap;
 
     /// a render context over `vars` with no user transforms and a fixed rule
@@ -749,7 +736,7 @@ mod tests {
     #[test]
     fn render_uid_mapping_optional_skips_missing() {
         let vars = BTreeMap::new();
-        let mapping: YamlValue = serde_yaml::from_str(
+        let mapping: JsonValue = crate::yaml::from_str(
             r#"
 uid?:
   type: "dcim.site"
@@ -757,7 +744,7 @@ uid?:
 "#,
         )
         .unwrap();
-        let rendered = render_yaml_value(
+        let rendered = render_value(
             &mapping,
             &ctx(&vars),
             "attrs",
@@ -771,7 +758,7 @@ uid?:
     #[test]
     fn render_uid_mapping_required_errors_on_missing() {
         let vars = BTreeMap::new();
-        let mapping: YamlValue = serde_yaml::from_str(
+        let mapping: JsonValue = crate::yaml::from_str(
             r#"
 uid:
   type: "dcim.site"
@@ -779,7 +766,7 @@ uid:
 "#,
         )
         .unwrap();
-        let err = render_yaml_value(
+        let err = render_value(
             &mapping,
             &ctx(&vars),
             "attrs",
@@ -794,7 +781,7 @@ uid:
     fn render_uid_mapping_derives_uid_from_type_and_stable() {
         let mut vars = BTreeMap::new();
         vars.insert("slug".to_string(), JsonValue::String("fra1".to_string()));
-        let mapping: YamlValue = serde_yaml::from_str(
+        let mapping: JsonValue = crate::yaml::from_str(
             r#"
 uid:
   type: "dcim.site"
@@ -802,7 +789,7 @@ uid:
 "#,
         )
         .unwrap();
-        let rendered = render_yaml_value(
+        let rendered = render_value(
             &mapping,
             &ctx(&vars),
             "attrs",
@@ -958,7 +945,7 @@ uid:
         let mut vars = BTreeMap::new();
         vars.insert("x".to_string(), JsonValue::Null);
         let mut key = BTreeMap::new();
-        key.insert("slug".to_string(), YamlValue::String("${x}".to_string()));
+        key.insert("slug".to_string(), JsonValue::String("${x}".to_string()));
         let err = render_key(&key, &ctx(&vars)).unwrap_err();
         assert!(err.to_string().contains("is null"), "{err:#}");
     }
@@ -984,7 +971,7 @@ uid:
         let mut vars = BTreeMap::new();
         vars.insert("tags".to_string(), serde_json::json!(["a", "b"]));
         let mut key = BTreeMap::new();
-        key.insert("k".to_string(), YamlValue::String("${tags}".to_string()));
+        key.insert("k".to_string(), JsonValue::String("${tags}".to_string()));
         let err = render_key(&key, &ctx(&vars)).unwrap_err();
         assert!(err.to_string().contains("must be a scalar"), "{err:#}");
     }
@@ -995,7 +982,7 @@ uid:
         let mut key = BTreeMap::new();
         key.insert(
             "k".to_string(),
-            YamlValue::Sequence(vec![YamlValue::String("a".to_string())]),
+            JsonValue::Array(vec![JsonValue::String("a".to_string())]),
         );
         let err = render_key(&key, &ctx(&vars)).unwrap_err();
         assert!(err.to_string().contains("must be a scalar"), "{err:#}");
@@ -1005,7 +992,7 @@ uid:
     fn render_key_rejects_literal_null() {
         let vars = BTreeMap::new();
         let mut key = BTreeMap::new();
-        key.insert("k".to_string(), YamlValue::Null);
+        key.insert("k".to_string(), JsonValue::Null);
         let err = render_key(&key, &ctx(&vars)).unwrap_err();
         assert!(err.to_string().contains("is null"), "{err:#}");
     }
@@ -1015,7 +1002,7 @@ uid:
         let mut vars = BTreeMap::new();
         vars.insert("tags".to_string(), serde_json::json!(["a", "b"]));
         let mut attrs = BTreeMap::new();
-        attrs.insert("tags".to_string(), YamlValue::String("${tags}".to_string()));
+        attrs.insert("tags".to_string(), JsonValue::String("${tags}".to_string()));
         let rendered = render_attrs(&attrs, &ctx(&vars), "attrs").unwrap();
         assert_eq!(
             rendered.get("tags").unwrap(),

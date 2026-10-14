@@ -13,7 +13,7 @@ INFRAHUBCTL_PATH="${INFRAHUBCTL_PATH:-$ROOT/scripts/infrahubctl_docker.sh}"
 NETBOX_COMPOSE="${NETBOX_COMPOSE:-$ROOT/docker-compose.netbox.yml}"
 # infrahub ships no compose file in this repo; take upstream's at the version
 # infrahub.rs pins its integration ci to.
-INFRAHUB_VERSION="${INFRAHUB_VERSION:-1.10.6}"
+INFRAHUB_VERSION="${INFRAHUB_VERSION:-1.11.4}"
 INFRAHUB_COMPOSE="${INFRAHUB_COMPOSE:-/tmp/infrahub-compose-$INFRAHUB_VERSION.yml}"
 INFRAHUB_STATE_PATH="$(mktemp /tmp/alembic-state-infrahub-XXXXXX.json)"
 NETBOX_STATE_PATH="$(mktemp /tmp/alembic-state-netbox-XXXXXX.json)"
@@ -112,6 +112,21 @@ ALEMBIC_STATE_BACKEND=local ALEMBIC_STATE_PATH="$NETBOX_STATE_PATH" \
   cargo run -p alembic-cli -- apply \
   -p /tmp/alembic-netbox-plan.json \
   --backend-config "$NETBOX_CONFIG"
+
+# a declared field the backend drops on write would plan again forever, so the
+# backend the apply produced must plan nothing.
+echo "planning netbox again: it must have converged..."
+replan="$(ALEMBIC_STATE_BACKEND=local ALEMBIC_STATE_PATH="$NETBOX_STATE_PATH" \
+  cargo run -q -p alembic-cli -- plan \
+  -f "$ROOT/examples/e2e.yaml" \
+  -o /tmp/alembic-netbox-replan.json \
+  --backend-config "$NETBOX_CONFIG" \
+  --allow-delete)"
+if ! grep -q "^plan: 0 to create, 0 to update, 0 to delete$" <<<"$replan"; then
+  echo "netbox did not converge after apply:" >&2
+  echo "$replan" >&2
+  exit 1
+fi
 
 echo "importing from infrahub..."
 ALEMBIC_STATE_BACKEND=local ALEMBIC_STATE_PATH="$INFRAHUB_STATE_PATH" \

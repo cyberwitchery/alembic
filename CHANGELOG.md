@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+unreleased changes live in `changelog.d/` until a release collects them.
+
+## [0.11.0] - 2026-10-13
+
+- `alembic-adapter-sdk`: the yaml helpers live in `alembic_adapter_sdk::yaml` (still reachable as `alembic_engine::yaml`), so an adapter reads and writes yaml by the same rules without linking the engine; they return `yaml::Error`, which names no yaml library
+- **breaking** `alembic-adapter-sdk`: `ExternalAdapter::setup` takes a `&serde_json::Value`, and `ExternalEnvelope`, `ExternalEnvelopeRef` and the registry's `ExternalConfig` hold `setup` as one, so no public type names a yaml crate; an adapter swaps `serde_yaml::Value` for `serde_json::Value` in its `setup`
+- **breaking** yaml is read and written with `serde-saphyr` instead of the unmaintained libyaml binding (RUSTSEC-2024-0449): a duplicate key is an error in every mapping, including inventory `attrs`, `<<` merge keys merge, an unquoted number with a leading zero or `_` (`017`, `1_000`) reads as a number rather than a string, `.inf` and `.nan` are refused, and yaml output double-quotes a string that would read back as another type (`"no"`, `"017"`); an external backend with no `instance:` gets a new fallback identity, now fingerprinted from `setup` as json so it no longer depends on the yaml library, and with it a fresh state file; pin `instance:` for an identity that survives config edits
+- netbox adapter: an `enum` custom field is provisioned as a `select` (a `list` of `enum` as a `multiselect`) over a choice set named after the field, so netbox enforces the declared values; an existing set of that name is adopted, choices converge additively, and a field that already exists as another type is left alone with a warning (#480)
+- `plan` fails on a netbox custom object field name netbox would reject, such as `mgmt-vlan`, instead of warning that the schema preview failed and writing a plan apply then refuses (#479)
+- `plan` and `apply` say which state they loaded and how many bindings it held; `plan` prints how declared objects matched (by state, by key, adopted, to create), and the plan and drift report json carry both (#500)
+- plan: plans record an optional `effects` field, `emit` for a write-only backend and `drive` for a read+write one (#498)
+- the nautobot adapter reads a bare backend id in a declared ref field back as its uid, so the id half of a generic foreign key (a cable's `termination_a_id`) converges instead of planning an update on every run; `docs/nautobot.md` documents the two-field shape (#463)
+- first-contact adoption points observed refs at the uids it binds and adopts again until nothing more matches, so an object keyed by a ref (an interface keyed by its device) is adopted instead of planned as a create, and refs to adopted objects no longer plan no-op updates (#494)
+- `plan` breaks a reference cycle among new objects, such as netbox's device `primary_ip4` -> ip -> interface -> device: one create defers an optional, non-key ref and an update of the same uid sets it afterwards, so the cycle applies in one run instead of stopping with `unresolved references`; the generic adapter resolves that update's backend id from the same write (#477)
+- map: a ref-typed key or attr on an `objects:` entry accepts `{ v5: { type, stable } }`, including nested attr refs, so spec objects can reference each other without hand-computing the derived uuid; literal uuid refs are unchanged (#465)
+- cli: `apply -p -` reads a json plan from stdin, so `plan --dry-run` can pipe directly into apply; `--interactive` with a stdin plan is rejected before backend setup (#442)
+- infrahub adapter: use `infrahub.rs` 0.4.5 for `/api/schema` snapshots, so schema preview/provisioning shares the client's transient-error retry and `Retry-After` handling; Infrahub e2e coverage now runs against 1.11.4 (#462)
+- schema provisioning output names created fields, tags, object types and object fields; read-only `schema preview:` summaries say what would be created, updated, deprecated or deleted instead of using past tense (#478)
+- `import` warns once per type, naming every undeclared attr it dropped from that type, instead of once per field; the old line called every dropped field server-computed, though most are ordinary fields the `-f` does not declare
+- **breaking** `plan --report` exits `2` when it finds drift and `0` when it finds none; an error still exits `1`
+- `skill list` prints a `name  summary` header over aligned columns instead of tab-separated lines, and `skill show` or `skill install` without a name names the skills the binary carries
+
+## [0.10.0] - 2026-09-27
+
+- the netbox adapter reads netbox's feature names as netbox spells them (`custom_fields`), so a declared non-native field is provisioned as a custom field; against netbox 4.6 and 4.7 none was, and the field was dropped on write
+- **breaking** the netbox adapter reads each type's fields from the endpoint's OPTIONS metadata, and `plan` fails on a declared ref the type has neither as a field nor as a custom field, naming it; netbox ignores unknown keys, so such a field was dropped on write and diffed forever (#459)
+- the shipped examples declare an ip's interface as netbox's `assigned_object` and drop the prefix `site` netbox replaced with `scope` in 4.2, so they converge against netbox 4.2+ (#458)
+- the nautobot adapter reads each type's native fields from the endpoint's OPTIONS metadata, so a native field on a type with no objects yet (a location type's `content_types` on a fresh nautobot) is written as the field it is, not provisioned as a custom field
+- a map spec takes an `objects:` list of target objects no source models, emitted once each and referenced by uid from rules, such as a location type every mapped site shares (`docs/map.md`)
+- **breaking** every `-o`/`--output` written to a `.yaml`/`.yml` path is yaml, where it used to be json under a yaml name with a warning; `apply --plan` reads a `.yaml`/`.yml` plan as yaml, so `plan -o plan.yaml` still feeds `apply --plan plan.yaml` (#440)
+- the rust sdk for external adapters moves out of `alembic-engine` into the new `alembic-adapter-sdk` crate, which carries the protocol types, the apply journal and the retry driver; `ExternalAdapter` and `RetryApplyDriver` declare their own `type Error`, and no signature in the crate names `anyhow`
+- a plan that does not need key adoption reads only objects already bound in state, narrowing the query in the netbox, nautobot and infrahub adapters; a delete-detecting run or one that can still adopt by key reads the whole listing as before (#416)
 - the nautobot adapter takes each object type's route from nautobot's api root, deriving one only where the root is unreachable or names no match (#419)
 
 ## [0.9.0] - 2026-08-28

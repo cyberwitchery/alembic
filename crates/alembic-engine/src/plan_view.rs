@@ -6,7 +6,8 @@
 //! as drift (changed / missing / extra, desired-vs-observed). here the framing
 //! is the operations apply will perform.
 
-use crate::types::{Op, Plan};
+use crate::types::Plan;
+use alembic_adapter_sdk::Op;
 use alembic_core::key_string;
 use std::fmt::Write;
 
@@ -83,6 +84,9 @@ pub fn render_plan(plan: &Plan) -> String {
         update.len(),
         delete_count
     );
+    if let Some(matching) = plan.summary.as_ref().and_then(|s| s.matching.as_ref()) {
+        let _ = write!(out, "\nmatching: {matching}");
+    }
     for (label, lines) in [
         // apply is not atomic: the create lands first, then the delete, and a
         // run interrupted between the two resumes by re-issuing the delete.
@@ -141,7 +145,8 @@ fn retype_pairs(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{FieldChange, Op, Plan};
+    use crate::types::Plan;
+    use alembic_adapter_sdk::FieldChange;
     use alembic_core::{Key, Object, Schema, TypeName, Uid};
     use std::collections::BTreeMap;
 
@@ -170,6 +175,7 @@ mod tests {
             ops,
             summary: None,
             schema_preview: None,
+            effects: None,
         }
     }
 

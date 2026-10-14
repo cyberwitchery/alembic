@@ -1,8 +1,8 @@
 //! drives the real `alembic` binary over the provisioning summary: the three
-//! sites that print it name what a run wrote to schema it did not create, and the
-//! `--allow-delete` gate names what it is refusing over. needs a subprocess
-//! because the summary goes to process stdout/stderr, which libtest cannot
-//! intercept from an in-process `run()`.
+//! sites that print it name every schema change, and the `--allow-delete` gate
+//! names what it is refusing over. needs a subprocess because the summary goes
+//! to process stdout/stderr, which libtest cannot intercept from an in-process
+//! `run()`.
 
 use std::process::Command;
 use tempfile::tempdir;
@@ -36,7 +36,7 @@ fn run(cmd: &mut Command) -> (bool, String, String) {
 }
 
 #[test]
-fn apply_names_what_it_updated_deprecated_and_deleted() {
+fn apply_names_every_schema_change() {
     let dir = tempdir().expect("create temp dir");
     let config = converging_backend(dir.path());
 
@@ -51,6 +51,7 @@ fn apply_names_what_it_updated_deprecated_and_deleted() {
 
     assert!(ok, "apply failed; stdout:\n{stdout}\nstderr:\n{stderr}");
     for line in [
+        "  created dcim.widget",
         "  updated dcim.gadget.color",
         "  deprecated dcim.relic",
         "  deleted dcim.fossil",
@@ -61,11 +62,6 @@ fn apply_names_what_it_updated_deprecated_and_deleted() {
             "expected `{line}`; stdout:\n{stdout}"
         );
     }
-    // a create is new, so the count is the whole story: it stays unnamed.
-    assert!(
-        !stdout.contains("  created dcim.widget"),
-        "stdout:\n{stdout}"
-    );
     assert!(
         stdout.contains("1 object types created"),
         "stdout:\n{stdout}"
@@ -124,14 +120,16 @@ fn plan_provision_names_what_it_provisioned() {
     let (ok, stdout, stderr) = run(&mut cmd);
 
     assert!(ok, "plan failed; stdout:\n{stdout}\nstderr:\n{stderr}");
-    assert!(
-        stdout.contains("  deleted dcim.fossil.age"),
-        "provisioning happened, so past tense; stdout:\n{stdout}"
-    );
+    for line in ["  created dcim.widget", "  deleted dcim.fossil.age"] {
+        assert!(
+            stdout.contains(line),
+            "provisioning happened, so past tense; expected `{line}`; stdout:\n{stdout}"
+        );
+    }
 }
 
 #[test]
-fn plan_previews_what_provisioning_would_delete() {
+fn plan_previews_what_provisioning_would_change() {
     let dir = tempdir().expect("create temp dir");
     let config = converging_backend(dir.path());
     let inventory = dir.path().join("inventory.yaml");
@@ -150,7 +148,16 @@ fn plan_previews_what_provisioning_would_delete() {
 
     assert!(ok, "plan failed; stdout:\n{stdout}\nstderr:\n{stderr}");
     // the read-only preview: nothing was written, and it is not the plan's stdout.
+    assert!(
+        stderr.contains("1 object types would be created"),
+        "preview count must be prospective; stderr:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("1 object types created"),
+        "read-only preview must not claim the type was already created; stderr:\n{stderr}"
+    );
     for line in [
+        "  would create dcim.widget",
         "  would update dcim.gadget.color",
         "  would deprecate dcim.relic",
         "  would delete dcim.fossil",

@@ -45,7 +45,8 @@ plans are json files that can be re-applied. the plan is deterministic for a giv
     }
   ],
   "summary": { "create": 1, "update": 1, "delete": 1 },
-  "schema_preview": { "...": "..." }
+  "schema_preview": { "...": "..." },
+  "effects": "drive"
 }
 ```
 
@@ -54,8 +55,10 @@ plans are json files that can be re-applied. the plan is deterministic for a giv
 - `type_name` may be any custom string.
 - `changes` is the plan-time diff, for review and drift reporting; apply writes an update's full declared projection, not only the listed changes (`docs/engine.md`, diff rules).
 - creates carry no `backend_id`; on updates and deletes it is optional and may be absent when not known.
+- a plan can both create and update one uid. the planner does that to break a reference cycle: the create leaves out a ref, and the update sets it once the target exists (`docs/engine.md`, apply ordering). the update has no `backend_id`, since the object does not exist at plan time, and it runs after the create. a drift report counts that object as missing only.
 - deletes are only applied when `--allow-delete` is set.
 - the plan embeds the schema used during planning to drive apply-time reference resolution; see `docs/ir.md` for the field schema.
 - `summary` is optional, counts of each op kind.
 - `schema_preview` is optional, the read-only schema preview plan records (shape in `docs/external-adapters.md`, when it is populated in `docs/cli.md`).
+- `effects` is optional: `emit` when planned against a write-only backend (every op a create), `drive` against a read+write one. an external adapter that does not answer `capabilities` counts as read+write (see `docs/external-adapters.md`), so `drive` can also mean its role is unknown. right now this value is just informational, apply does not check it.
 - keys are exact: an unknown one is an error, so a misspelled `summary` or `schema_preview` cannot read as absent.

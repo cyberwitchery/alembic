@@ -32,10 +32,13 @@ impl ObjectTypeRegistry {
             let endpoint_type = type_name_from_endpoint(&endpoint)
                 .unwrap_or_else(|| format!("{}.{}", object_type.app_label, object_type.model));
             let model_type = format!("{}.{}", object_type.app_label, object_type.model);
+            // netbox names features with underscores (`custom_fields`); the
+            // adapters check the hyphenated spelling nautobot's registry uses.
             let features: BTreeSet<String> = object_type
                 .features
                 .unwrap_or_default()
                 .into_iter()
+                .map(|feature| feature.replace('_', "-"))
                 .collect();
             let info = ObjectTypeInfo {
                 type_name: TypeName::new(endpoint_type.clone()),

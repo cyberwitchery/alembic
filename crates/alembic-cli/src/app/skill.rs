@@ -40,18 +40,19 @@ const SKILLS: &[Skill] = &[Skill {
     source: include_str!("../../skills/alembic/SKILL.md"),
 }];
 
-fn find(name: &str) -> Result<&'static Skill> {
+fn find(name: Option<&str>) -> Result<&'static Skill> {
+    let names = || {
+        SKILLS
+            .iter()
+            .map(|skill| skill.name)
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let name = name.ok_or_else(|| anyhow!("name a skill; this binary carries: {}", names()))?;
     SKILLS
         .iter()
         .find(|skill| skill.name == name)
-        .ok_or_else(|| {
-            let names = SKILLS
-                .iter()
-                .map(|skill| skill.name)
-                .collect::<Vec<_>>()
-                .join(", ");
-            anyhow!("no skill named `{name}`; this binary carries: {names}")
-        })
+        .ok_or_else(|| anyhow!("no skill named `{name}`; this binary carries: {}", names()))
 }
 
 fn fingerprint(content: &str) -> u64 {
@@ -92,16 +93,27 @@ fn render(skill: &Skill) -> String {
     stamp(skill, &content)
 }
 
+fn listing() -> String {
+    let width = SKILLS
+        .iter()
+        .map(|skill| skill.name.len())
+        .chain(["name".len()])
+        .max()
+        .unwrap_or_default();
+    std::iter::once(("name", "summary"))
+        .chain(SKILLS.iter().map(|skill| (skill.name, skill.summary)))
+        .map(|(name, summary)| format!("{name:<width$}  {summary}\n"))
+        .collect()
+}
+
 /// `alembic skill list`.
 pub(crate) fn list() {
-    for skill in SKILLS {
-        println!("{}\t{}", skill.name, skill.summary);
-    }
+    print!("{}", listing());
 }
 
 /// `alembic skill show <name>`, for a host that reads something other than a
 /// skills directory.
-pub(crate) fn show(name: &str) -> Result<()> {
+pub(crate) fn show(name: Option<&str>) -> Result<()> {
     print!("{}", render(find(name)?));
     Ok(())
 }
@@ -166,7 +178,7 @@ fn write_atomic(path: &Path, content: &str) -> Result<()> {
 }
 
 /// `alembic skill install <name> --dir <root>`, writing `<root>/<name>/SKILL.md`.
-pub(crate) fn install(name: &str, dir: &Path, force: bool) -> Result<PathBuf> {
+pub(crate) fn install(name: Option<&str>, dir: &Path, force: bool) -> Result<PathBuf> {
     let skill = find(name)?;
     let target = dir.join(skill.name);
     fs::create_dir_all(&target)
@@ -211,7 +223,7 @@ mod tests {
 
     #[test]
     fn rendering_pins_the_doc_links_to_this_build() {
-        let rendered = render(find("alembic").unwrap());
+        let rendered = render(find(Some("alembic")).unwrap());
         let docs_ref = SOURCE_REF
             .map(str::to_string)
             .unwrap_or_else(|| format!("v{VERSION}"));
@@ -223,18 +235,42 @@ mod tests {
 
     #[test]
     fn rendering_records_the_version_it_came_from() {
-        let rendered = render(find("alembic").unwrap());
+        let rendered = render(find(Some("alembic")).unwrap());
         assert!(rendered.contains(&format!("alembic {VERSION}")));
         if SOURCE_REF.is_some() {
             assert!(rendered.contains("unreleased alembic"));
         }
-        assert!(is_unchanged_install(find("alembic").unwrap(), &rendered));
+        assert!(is_unchanged_install(
+            find(Some("alembic")).unwrap(),
+            &rendered
+        ));
         assert!(rendered.ends_with('\n'));
     }
 
     #[test]
+    fn the_listing_labels_the_name_column() {
+        let listing = listing();
+        let mut lines = listing.lines();
+        let header = lines.next().unwrap();
+        assert!(
+            header.starts_with("name ") && header.ends_with("summary"),
+            "{listing}"
+        );
+        let row = lines.next().unwrap();
+        assert!(row.starts_with("alembic "), "{listing}");
+        assert_eq!(header.find("summary"), row.find("driving"), "{listing}");
+    }
+
+    #[test]
+    fn a_missing_name_names_what_is_embedded() {
+        let err = find(None).unwrap_err().to_string();
+        assert!(err.contains("name a skill"), "{err}");
+        assert!(err.contains("alembic"), "{err}");
+    }
+
+    #[test]
     fn an_unknown_skill_names_what_is_embedded() {
-        let err = find("nautobot").unwrap_err().to_string();
+        let err = find(Some("nautobot")).unwrap_err().to_string();
         assert!(err.contains("no skill named `nautobot`"), "{err}");
         assert!(err.contains("alembic"), "{err}");
     }
@@ -243,18 +279,18 @@ mod tests {
     fn install_writes_the_layout_a_host_reads() {
         let dir = tempdir().unwrap();
         let root = dir.path().join("nested/skills");
-        let path = install("alembic", &root, false).unwrap();
+        let path = install(Some("alembic"), &root, false).unwrap();
         assert_eq!(path, root.join("alembic/SKILL.md"));
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
-            render(find("alembic").unwrap())
+            render(find(Some("alembic")).unwrap())
         );
     }
 
     #[test]
     fn installing_again_replaces_a_stale_copy() {
         let dir = tempdir().unwrap();
-        let skill = find("alembic").unwrap();
+        let skill = find(Some("alembic")).unwrap();
         let target = dir.path().join("alembic");
         fs::create_dir(&target).unwrap();
         let path = target.join("SKILL.md");
@@ -263,11 +299,11 @@ mod tests {
             stamp(skill, "an older skill, describing an older cli\n"),
         )
         .unwrap();
-        let again = install("alembic", dir.path(), false).unwrap();
+        let again = install(Some("alembic"), dir.path(), false).unwrap();
         assert_eq!(again, path);
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
-            render(find("alembic").unwrap()),
+            render(find(Some("alembic")).unwrap()),
             "installing over a stale copy is the upgrade path"
         );
     }
@@ -280,7 +316,7 @@ mod tests {
         let path = target.join("SKILL.md");
         std::fs::write(&path, "a skill owned by somebody else\n").unwrap();
 
-        let err = install("alembic", dir.path(), false)
+        let err = install(Some("alembic"), dir.path(), false)
             .unwrap_err()
             .to_string();
         assert!(
@@ -296,12 +332,12 @@ mod tests {
     #[test]
     fn install_refuses_a_locally_modified_alembic_skill() {
         let dir = tempdir().unwrap();
-        let path = install("alembic", dir.path(), false).unwrap();
+        let path = install(Some("alembic"), dir.path(), false).unwrap();
         let mut modified = fs::read_to_string(&path).unwrap();
         modified.insert_str(0, "locally adjusted\n");
         fs::write(&path, &modified).unwrap();
 
-        let err = install("alembic", dir.path(), false)
+        let err = install(Some("alembic"), dir.path(), false)
             .unwrap_err()
             .to_string();
         assert!(err.contains("pass --force"), "{err}");
@@ -316,10 +352,10 @@ mod tests {
         let path = target.join("SKILL.md");
         fs::write(&path, "a skill owned by somebody else\n").unwrap();
 
-        install("alembic", dir.path(), true).unwrap();
+        install(Some("alembic"), dir.path(), true).unwrap();
         assert_eq!(
             fs::read_to_string(&path).unwrap(),
-            render(find("alembic").unwrap())
+            render(find(Some("alembic")).unwrap())
         );
         assert_eq!(fs::read_dir(target).unwrap().count(), 1);
     }
@@ -329,7 +365,9 @@ mod tests {
         let dir = tempdir().unwrap();
         let blocked = dir.path().join("skills");
         std::fs::write(&blocked, "not a directory").unwrap();
-        let err = install("alembic", &blocked, false).unwrap_err().to_string();
+        let err = install(Some("alembic"), &blocked, false)
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("could not create"), "{err}");
     }
 }

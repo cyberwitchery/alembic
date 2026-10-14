@@ -11,6 +11,9 @@ schema:
           type: string
         content_types:
           type: json
+    extras.status:
+      key:
+        name: { type: string }
     dcim.locationtype:
       key:
         name:
@@ -26,7 +29,8 @@ schema:
         name:
           type: string
         status:
-          type: string
+            type: ref
+            target: extras.status
         location_type:
           type: ref
           target: dcim.locationtype
@@ -51,5 +55,8 @@ objects:
       name: "FRA1"
     attrs:
       name: "FRA1"
-      status: "6f7f1c2c-2b9a-4f5b-a187-2d757fe48abd"
+      status: "00000000-0000-0000-0000-000000000004"
       location_type: "00000000-0000-0000-0000-000000000002"
+  - uid: "00000000-0000-0000-0000-000000000004"
+    type: extras.status
+    key: { name: "Active" }

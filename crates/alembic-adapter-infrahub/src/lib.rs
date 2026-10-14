@@ -1,20 +1,19 @@
 //! infrahub graphql adapter for alembic.
 
+use alembic_adapter_sdk::apply_retry::{is_missing_ref_error, RetryApplyDriver};
+use alembic_adapter_sdk::{AppliedOp, ApplyReport, BackendId, Op, ProvisionReport};
 use alembic_core::{key_string, FieldType, JsonMap, Key, Schema, TypeName, Uid};
 use alembic_engine::{
-    apply_non_delete_journaled, build_key_from_schema, is_missing_ref_error, normalize_attrs_refs,
-    resolve_ref_keyed_identity, resolve_value_for_type, resolved_ids_identity, Adapter, AppliedOp,
-    ApplyReport, BackendId, Emitter, ObservedState, Observer, Op, ProvisionReport, RawNode,
-    RetryApplyDriver, StateMappings, StateStore,
+    apply_non_delete_journaled, build_key_from_schema, normalize_attrs_refs,
+    resolve_ref_keyed_identity, resolve_value_for_type, resolved_ids_identity,
+    state_mappings_from_state, Adapter, Emitter, ObservedState, Observer, RawNode, StateStore,
 };
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use graphql_parser::schema::{parse_schema, Definition, Type as GqlType, TypeDefinition};
 use infrahub::{Client, ClientConfig};
-use reqwest::header::{HeaderMap, HeaderValue};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
-use serde_yaml::{Mapping as YamlMapping, Value as YamlValue};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -74,12 +73,8 @@ impl SchemaPushConfig {
 /// infrahub adapter.
 pub struct InfrahubAdapter {
     client: Client,
-    api: reqwest::Client,
     base_url: String,
     token: String,
-    // the graphql client resolves the branch itself; the raw `/api/schema`
-    // request has to carry it, so keep a copy.
-    branch: Option<String>,
     schema_push: Option<SchemaPushConfig>,
 }
 
@@ -93,24 +88,10 @@ impl InfrahubAdapter {
             config = config.with_default_branch(branch);
         }
         let client = Client::new(config)?;
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            "X-INFRAHUB-KEY",
-            HeaderValue::from_str(token)
-                .map_err(|err| anyhow!("invalid infrahub token header: {err}"))?,
-        );
-        let api = reqwest::Client::builder()
-            .default_headers(headers)
-            .timeout(Duration::from_secs(30))
-            .no_proxy()
-            .build()
-            .context("build infrahub http client")?;
         Ok(Self {
             client,
-            api,
             base_url: url.to_string(),
             token: token.to_string(),
-            branch: branch.map(str::to_string),
             schema_push: None,
         })
     }
@@ -130,27 +111,10 @@ impl InfrahubAdapter {
     }
 
     async fn load_schema_snapshot(&self) -> Result<SchemaSnapshot> {
-        let base = self.base_url.trim_end_matches('/');
-        let mut url = reqwest::Url::parse(&format!("{base}/api/schema"))
-            .context("build infrahub schema snapshot url")?;
-        if let Some(branch) = &self.branch {
-            url.query_pairs_mut().append_pair("branch", branch);
-        }
-        let response = self
-            .api
-            .get(url)
-            .send()
+        self.client
+            .fetch_schema_snapshot(None)
             .await
-            .context("fetch infrahub schema snapshot")?;
-        let status = response.status();
-        let text = response
-            .text()
-            .await
-            .context("read infrahub schema snapshot")?;
-        if !status.is_success() {
-            return Err(anyhow!("infrahub schema snapshot http error: {}", status));
-        }
-        serde_json::from_str(&text).context("parse infrahub schema snapshot")
+            .context("fetch infrahub schema snapshot")
     }
 
     /// fetch every node of `type_name` as a `(backend id, raw attrs)` pair.
@@ -163,26 +127,38 @@ impl InfrahubAdapter {
         type_name: &TypeName,
         type_schema: &alembic_core::TypeSchema,
     ) -> Result<Vec<(BackendId, JsonMap)>> {
+        self.read_type_nodes(schema_info, type_name, type_schema, None)
+            .await
+    }
+
+    /// `ids` narrows the query to the nodes named, which every infrahub node
+    /// query accepts as `ids: [ID]`. `None` reads the type whole.
+    async fn read_type_nodes(
+        &self,
+        schema_info: &SchemaInfo,
+        type_name: &TypeName,
+        type_schema: &alembic_core::TypeSchema,
+        ids: Option<&[String]>,
+    ) -> Result<Vec<(BackendId, JsonMap)>> {
         let gql_type = gql_type_name(type_name);
         let fields = field_names_for_schema(type_schema);
         let field_kinds = schema_info.field_kinds(&gql_type, type_schema, &fields)?;
         let selection = build_selection(&field_kinds);
 
-        let query = format!(
-            "query($offset: Int, $limit: Int) {{ {type_name}(offset: $offset, limit: $limit) {{ count edges {{ node {{ id hfid {selection} }} }} }} }}",
-            type_name = gql_type,
-            selection = selection
-        );
+        let query = node_query(&gql_type, &selection, ids.is_some());
 
         let mut observed = Vec::new();
         let mut offset = 0usize;
         let limit = 200usize;
 
         loop {
-            let vars = json!({
+            let mut vars = json!({
                 "offset": offset,
                 "limit": limit,
             });
+            if let Some(ids) = ids {
+                vars["ids"] = json!(ids);
+            }
             let response = self
                 .client
                 .execute_raw(&query, Some(vars), None)
@@ -605,6 +581,56 @@ impl Observer for InfrahubAdapter {
         types: &[TypeName],
         state_store: &StateStore,
     ) -> Result<ObservedState> {
+        self.read_listing(schema, types, state_store, false).await
+    }
+
+    async fn read_bound(
+        &self,
+        schema: &Schema,
+        types: &[TypeName],
+        state_store: &StateStore,
+    ) -> Result<ObservedState> {
+        self.read_listing(schema, types, state_store, true).await
+    }
+}
+
+/// the paginated node query for one type. `filtered` adds infrahub's `ids: [ID]`
+/// argument to restrict the read to nodes already bound in state.
+fn node_query(gql_type: &str, selection: &str, filtered: bool) -> String {
+    let (decl, arg) = if filtered {
+        (", $ids: [ID]", "ids: $ids, ")
+    } else {
+        ("", "")
+    };
+    format!(
+        "query($offset: Int, $limit: Int{decl}) {{ {gql_type}({arg}offset: $offset, limit: $limit) {{ count edges {{ node {{ id hfid {selection} }} }} }} }}"
+    )
+}
+
+/// the infrahub ids bound in state for one type. an empty vec means the type has
+/// no bindings and can be skipped. `None` means at least one binding is not an
+/// infrahub string id, so the caller must fall back to the full query.
+fn bound_ids(state_store: &StateStore, type_name: &TypeName) -> Option<Vec<String>> {
+    let Some(bound) = state_store.backend_ids().get(type_name) else {
+        return Some(Vec::new());
+    };
+    bound
+        .keys()
+        .map(|id| match id {
+            BackendId::String(id) => Some(id.clone()),
+            BackendId::Int(_) => None,
+        })
+        .collect()
+}
+
+impl InfrahubAdapter {
+    async fn read_listing(
+        &self,
+        schema: &Schema,
+        types: &[TypeName],
+        state_store: &StateStore,
+        bound_only: bool,
+    ) -> Result<ObservedState> {
         let schema_info = self.load_schema_info().await?;
         validate_schema(schema, &schema_info)?;
 
@@ -626,8 +652,15 @@ impl Observer for InfrahubAdapter {
                 .types
                 .get(type_name.as_str())
                 .ok_or_else(|| anyhow!("missing schema for {}", type_name))?;
+            // An unbound type cannot affect this run, so skip its query.
+            let bound = bound_only
+                .then(|| bound_ids(state_store, &type_name))
+                .flatten();
+            if bound.as_ref().is_some_and(|ids| ids.is_empty()) {
+                continue;
+            }
             let nodes = self
-                .read_type_objects(&schema_info, &type_name, type_schema)
+                .read_type_nodes(&schema_info, &type_name, type_schema, bound.as_deref())
                 .await?;
             for (backend_id, attrs) in nodes {
                 raw.push(RawNode {
@@ -638,7 +671,7 @@ impl Observer for InfrahubAdapter {
             }
         }
 
-        let mut mappings = StateMappings::from_state(state_store);
+        let mut mappings = state_mappings_from_state(state_store);
         let observed = resolve_ref_keyed_identity(
             &raw,
             schema,
@@ -689,6 +722,8 @@ impl Emitter for InfrahubAdapter {
 
         #[async_trait]
         impl RetryApplyDriver for ApplyDriver<'_> {
+            type Error = anyhow::Error;
+
             async fn apply_non_delete(&mut self, op: &Op) -> Result<AppliedOp> {
                 match op {
                     Op::Create { .. } => {
@@ -706,7 +741,7 @@ impl Emitter for InfrahubAdapter {
             }
 
             fn is_retryable(&self, err: &anyhow::Error) -> bool {
-                is_missing_ref_error(err)
+                is_missing_ref_error(err.as_ref())
             }
 
             fn resume(&mut self, resumed: &[AppliedOp]) {
@@ -1332,7 +1367,7 @@ fn write_schema_document(path: &Path, document: &SchemaDocument) -> Result<()> {
         fs::create_dir_all(parent)
             .with_context(|| format!("create schema directory {}", parent.display()))?;
     }
-    let raw = serde_yaml::to_string(document).context("serialize infrahub schema")?;
+    let raw = alembic_engine::yaml::to_string(document).context("serialize infrahub schema")?;
     fs::write(path, raw).with_context(|| format!("write schema {}", path.display()))?;
     Ok(())
 }
@@ -1357,29 +1392,137 @@ fn ensure_repository_config(repo_root: &Path, schema_path: &Path) -> Result<()> 
     {
         let raw = fs::read_to_string(&config_path)
             .with_context(|| format!("read {}", config_path.display()))?;
-        serde_yaml::from_str::<YamlValue>(&raw)
+        alembic_engine::yaml::from_str::<OrderedYaml>(&raw)
             .with_context(|| format!("parse {}", config_path.display()))?
     } else {
-        YamlValue::Mapping(YamlMapping::new())
+        OrderedYaml::Map(Vec::new())
     };
 
-    let mapping = root
-        .as_mapping_mut()
-        .ok_or_else(|| anyhow!(".infrahub.yml must be a mapping"))?;
-    let schemas_key = YamlValue::String("schemas".to_string());
-    let entry = mapping
-        .entry(schemas_key)
-        .or_insert_with(|| YamlValue::Sequence(Vec::new()));
-    let list = entry
-        .as_sequence_mut()
-        .ok_or_else(|| anyhow!("schemas must be a list in .infrahub.yml"))?;
-    if !list.iter().any(|v| v.as_str() == Some(&rel_path)) {
-        list.push(YamlValue::String(rel_path));
+    let OrderedYaml::Map(entries) = &mut root else {
+        return Err(anyhow!(".infrahub.yml must be a mapping"));
+    };
+    let index = match entries.iter().position(|(key, _)| key == "schemas") {
+        Some(index) => index,
+        None => {
+            entries.push(("schemas".to_string(), OrderedYaml::Seq(Vec::new())));
+            entries.len() - 1
+        }
+    };
+    let OrderedYaml::Seq(list) = &mut entries[index].1 else {
+        return Err(anyhow!("schemas must be a list in .infrahub.yml"));
+    };
+    if !list
+        .iter()
+        .any(|v| matches!(v, OrderedYaml::String(path) if *path == rel_path))
+    {
+        list.push(OrderedYaml::String(rel_path));
     }
 
-    let raw = serde_yaml::to_string(&root).context("serialize .infrahub.yml")?;
+    let raw = alembic_engine::yaml::to_string(&root).context("serialize .infrahub.yml")?;
     fs::write(&config_path, raw).with_context(|| format!("write {}", config_path.display()))?;
     Ok(())
+}
+
+/// a yaml node that keeps its mappings in file order. `.infrahub.yml` belongs
+/// to the user, and adding a schema path to it must not reorder their keys.
+#[derive(Debug)]
+enum OrderedYaml {
+    Null,
+    Bool(bool),
+    Number(serde_json::Number),
+    String(String),
+    Seq(Vec<OrderedYaml>),
+    Map(Vec<(String, OrderedYaml)>),
+}
+
+impl Serialize for OrderedYaml {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        match self {
+            OrderedYaml::Null => serializer.serialize_unit(),
+            OrderedYaml::Bool(value) => serializer.serialize_bool(*value),
+            OrderedYaml::Number(value) => value.serialize(serializer),
+            OrderedYaml::String(value) => serializer.serialize_str(value),
+            OrderedYaml::Seq(items) => items.serialize(serializer),
+            OrderedYaml::Map(entries) => {
+                let mut map = serializer.serialize_map(Some(entries.len()))?;
+                for (key, value) in entries {
+                    map.serialize_entry(key, value)?;
+                }
+                map.end()
+            }
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for OrderedYaml {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_any(OrderedYamlVisitor)
+    }
+}
+
+struct OrderedYamlVisitor;
+
+impl<'de> serde::de::Visitor<'de> for OrderedYamlVisitor {
+    type Value = OrderedYaml;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str("a yaml value")
+    }
+
+    fn visit_unit<E>(self) -> Result<OrderedYaml, E> {
+        Ok(OrderedYaml::Null)
+    }
+
+    fn visit_none<E>(self) -> Result<OrderedYaml, E> {
+        Ok(OrderedYaml::Null)
+    }
+
+    fn visit_some<D: serde::Deserializer<'de>>(self, d: D) -> Result<OrderedYaml, D::Error> {
+        OrderedYaml::deserialize(d)
+    }
+
+    fn visit_bool<E>(self, value: bool) -> Result<OrderedYaml, E> {
+        Ok(OrderedYaml::Bool(value))
+    }
+
+    fn visit_i64<E>(self, value: i64) -> Result<OrderedYaml, E> {
+        Ok(OrderedYaml::Number(value.into()))
+    }
+
+    fn visit_u64<E>(self, value: u64) -> Result<OrderedYaml, E> {
+        Ok(OrderedYaml::Number(value.into()))
+    }
+
+    fn visit_f64<E: serde::de::Error>(self, value: f64) -> Result<OrderedYaml, E> {
+        serde_json::Number::from_f64(value)
+            .map(OrderedYaml::Number)
+            .ok_or_else(|| E::custom(format!("unsupported number {value}")))
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<OrderedYaml, E> {
+        Ok(OrderedYaml::String(value.to_string()))
+    }
+
+    fn visit_string<E>(self, value: String) -> Result<OrderedYaml, E> {
+        Ok(OrderedYaml::String(value))
+    }
+
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<OrderedYaml, A::Error> {
+        let mut items = Vec::new();
+        while let Some(item) = seq.next_element()? {
+            items.push(item);
+        }
+        Ok(OrderedYaml::Seq(items))
+    }
+
+    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<OrderedYaml, A::Error> {
+        let mut entries = Vec::new();
+        while let Some(entry) = map.next_entry()? {
+            entries.push(entry);
+        }
+        Ok(OrderedYaml::Map(entries))
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -2107,13 +2250,54 @@ fn extract_ref_uids(value: &Value) -> Vec<Uid> {
 
 #[cfg(test)]
 mod tests {
+    use super::{bound_ids, node_query};
+
+    #[test]
+    fn a_filtered_node_query_declares_and_passes_ids() {
+        let query = node_query("InfraDevice", "name { value }", true);
+        assert!(query.contains("$ids: [ID]"), "{query}");
+        assert!(query.contains("InfraDevice(ids: $ids, offset:"), "{query}");
+    }
+
+    #[test]
+    fn an_unfiltered_node_query_mentions_no_ids() {
+        let query = node_query("InfraDevice", "name { value }", false);
+        assert!(!query.contains("ids"), "{query}");
+        assert!(query.contains("InfraDevice(offset:"), "{query}");
+    }
+
+    #[test]
+    fn bound_ids_separates_unbound_from_unaddressable() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = StateStore::load(dir.path().join("state.json")).unwrap();
+        let bound = TypeName::new("infra.device");
+        let odd = TypeName::new("infra.other");
+
+        // A type with no state bindings needs no query.
+        assert_eq!(bound_ids(&state, &bound), Some(Vec::new()));
+
+        state.set_backend_id(
+            bound.clone(),
+            Uid::parse_str("00000000-0000-0000-0000-0000000000a1").unwrap(),
+            BackendId::String("abc".to_string()),
+        );
+        assert_eq!(bound_ids(&state, &bound), Some(vec!["abc".to_string()]));
+
+        // an id infrahub does not address nodes by: fall back to the full query.
+        state.set_backend_id(
+            odd.clone(),
+            Uid::parse_str("00000000-0000-0000-0000-0000000000a2").unwrap(),
+            BackendId::Int(7),
+        );
+        assert_eq!(bound_ids(&state, &odd), None);
+    }
+
     use super::*;
+    use alembic_adapter_sdk::{AdapterApplyError, StateData, StateMappings};
     use alembic_core::{
         key_string, FieldSchema, FieldType, JsonMap, Key, Object, Schema, TypeName, TypeSchema,
     };
-    use alembic_engine::{
-        backend_id_from_value, AdapterApplyError, BackendId, Op, StateData, StateStore,
-    };
+    use alembic_engine::{backend_id_from_value, StateStore};
     use httpmock::prelude::*;
     use httpmock::Mock;
     use serde_json::json;
@@ -2607,6 +2791,26 @@ schema { query: Query }
         assert!(err.to_string().contains("must be inside repository root"));
     }
 
+    #[test]
+    fn ensure_repository_config_keeps_the_users_key_order() {
+        let repo_dir = temp_dir("ordered");
+        let repo_root = repo_dir.path();
+        fs::write(
+            repo_root.join(".infrahub.yml"),
+            "queries:\n  - name: q\n    file_path: q.gql\nschemas:\n  - a.yaml\nmenus: []\n",
+        )
+        .unwrap();
+        let schema = repo_root.join("b.yaml");
+        ensure_repository_config(repo_root, &schema).unwrap();
+
+        let config = fs::read_to_string(repo_root.join(".infrahub.yml")).unwrap();
+        let order = |needle: &str| config.find(needle).unwrap();
+        assert!(order("queries") < order("schemas"), "{config}");
+        assert!(order("schemas") < order("menus"), "{config}");
+        assert!(order("name") < order("file_path"), "{config}");
+        assert!(order("a.yaml") < order("b.yaml"), "{config}");
+    }
+
     /// a repo root that is a regular file makes the stat fail with
     /// `NotADirectory` rather than answering absent. starting from an empty
     /// mapping on that answer would write back a config stripped of every key
@@ -2860,7 +3064,7 @@ schema { query: Query }
         );
 
         let err = anyhow::Error::new(AdapterApplyError::MissingRef { uid: uid_missing });
-        assert!(is_missing_ref_error(&err));
+        assert!(is_missing_ref_error(err.as_ref()));
     }
 
     #[test]

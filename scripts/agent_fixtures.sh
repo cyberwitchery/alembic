@@ -167,7 +167,9 @@ seed
 converge_base
 $ALEMBIC plan -f device-removed.yaml -o kept-plan.json --backend-config backend.yaml >/dev/null
 expect "a plan without --allow-delete holds no delete" "" "$(plan_ops kept-plan.json)"
-$ALEMBIC plan -f device-removed.yaml --report -o drift.json --backend-config backend.yaml >/dev/null
+rc=0
+$ALEMBIC plan -f device-removed.yaml --report -o drift.json --backend-config backend.yaml >/dev/null || rc=$?
+expect "a drift report with drift exits 2" "2" "$rc"
 expect "the drift report reports it as extra" "1" "$(doc_query drift.json 'len(doc["extra"])')"
 expect "naming the object the inventory dropped" \
   "dcim.device" "$(doc_query drift.json 'doc["extra"][0]["type_name"]')"

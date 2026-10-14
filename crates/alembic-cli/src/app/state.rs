@@ -1,4 +1,4 @@
-use alembic_engine::{BackendIdentity, PostgresTlsMode, StateLock, StateStore};
+use alembic_engine::{BackendIdentity, PostgresTlsMode, StateContext, StateLock, StateStore};
 use anyhow::{anyhow, Result};
 use std::path::{Path, PathBuf};
 
@@ -18,17 +18,56 @@ pub(super) enum StateBackendConfig {
 /// the default path is scoped per backend, an explicit ALEMBIC_STATE_PATH still
 /// answers to the stamp inside the file, and a mismatch is a hard error.
 pub(super) async fn load_state(lock: StateLock, identity: &BackendIdentity) -> Result<StateStore> {
+    Ok(load_state_with_context(lock, identity).await?.0)
+}
+
+/// `load_state`, plus what was loaded, taken before `ensure_backend` stamps an
+/// empty store.
+pub(super) async fn load_state_with_context(
+    lock: StateLock,
+    identity: &BackendIdentity,
+) -> Result<(StateStore, StateContext)> {
     let root = Path::new(".");
-    let mut store = match resolve_state_backend_config(root, identity)? {
-        StateBackendConfig::Local { path } => StateStore::load_with(path, lock)?,
-        StateBackendConfig::Postgres { url, key, tls_mode } => {
-            StateStore::load_postgres(url, key, tls_mode).await?
-        }
+    let (mut store, storage, location, present) =
+        match resolve_state_backend_config(root, identity)? {
+            StateBackendConfig::Local { path } => {
+                let store = StateStore::load_with(&path, lock)?;
+                let present = path.try_exists()?;
+                (store, "local", path.display().to_string(), present)
+            }
+            StateBackendConfig::Postgres { url, key, tls_mode } => {
+                let store = StateStore::load_postgres(url, key.clone(), tls_mode).await?;
+                // a saved row is stamped, a new one is not. the location is the
+                // row key: the url may carry credentials.
+                let present = store.backend_identity().is_some();
+                (store, "postgres", key, present)
+            }
+        };
+    let context = StateContext {
+        storage: storage.to_string(),
+        location,
+        present,
+        backend: identity.clone(),
+        bindings_loaded: store.all_mappings().values().map(|m| m.len()).sum(),
     };
     store.ensure_backend(identity)?;
     // apply journals are local scratch; keep them alongside state under `.alembic/`
     // even when the state backend is postgres.
-    Ok(store.with_journal_dir(root.join(".alembic")))
+    Ok((store.with_journal_dir(root.join(".alembic")), context))
+}
+
+pub(super) fn print_state_context(context: &StateContext) {
+    if context.present {
+        eprintln!(
+            "state: {} for {}, {} bindings",
+            context.location, context.backend, context.bindings_loaded
+        );
+    } else {
+        eprintln!(
+            "state: none at {} for {}, 0 bindings",
+            context.location, context.backend
+        );
+    }
 }
 
 pub(super) fn state_path(root: &Path, identity: &BackendIdentity) -> PathBuf {
