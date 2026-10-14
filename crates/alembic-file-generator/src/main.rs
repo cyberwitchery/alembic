@@ -151,8 +151,11 @@ fn objects(num_devices: usize, num_interfaces: usize) -> Result<Vec<Object>> {
         objects.push(interface(i, i % num_devices)?);
     }
 
-    // neighbours sit on neighbouring devices, so a cable joins two devices
-    // whenever there are at least two.
+    // neighbours sit on neighbouring devices, so a cable joins two devices;
+    // with only one there is nothing to cable it to.
+    if num_devices < 2 {
+        return Ok(objects);
+    }
     for i in 0..num_interfaces / 2 {
         let (a, b) = (2 * i, 2 * i + 1);
         objects.push(cable(
@@ -588,7 +591,7 @@ mod tests {
         let ports = INTERFACES + INTERFACES / 2;
         let pools = MANUFACTURERS + MODELS + ROLES + SITES + ports;
         assert_eq!(support(0), 0);
-        assert_eq!(support(1), 4 + ports);
+        assert_eq!(support(1), 4 + INTERFACES);
         assert_eq!(support(1000), pools);
         assert_eq!(support(2000), pools);
     }
@@ -635,6 +638,13 @@ mod tests {
     fn no_devices_means_no_interfaces() {
         let objects = objects(0, 8).expect("objects should build");
         assert!(objects.is_empty());
+    }
+
+    #[test]
+    fn one_device_means_no_cables() {
+        let objects = objects(1, 8).expect("objects should build");
+        assert_eq!(interface_devices(&objects).len(), 8);
+        assert!(cables(&objects).is_empty());
     }
 
     #[test]
