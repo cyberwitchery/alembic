@@ -1,0 +1,1 @@
+- `alembic-file-generator` emits interfaces spread over the devices and connects them with cables
