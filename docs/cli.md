@@ -32,9 +32,16 @@ file is written, so it means the whole command succeeded. the json shape:
     {
       "error": {
         "kind": "extra_attr_field",
-        "detail": { "type_name": "dcim.site", "field": "bogus" }
+        "detail": {
+          "type_name": "dcim.site",
+          "field": "bogus"
+        }
       },
-      "source": { "file": "/srv/intent/inventory.yaml", "line": 13, "column": null }
+      "source": {
+        "file": "/srv/intent/inventory.yaml",
+        "line": 13,
+        "column": null
+      }
     }
   ]
 }
@@ -100,7 +107,7 @@ external process adapter:
 ```yaml
 backend: external
 command: ./bin/alembic-adapter-mybackend
-args: ["--verbose"]
+args: [ "--verbose" ]
 working_dir: ./adapters/mybackend
 env:
   MY_BACKEND_URL: https://backend.example.com
@@ -141,20 +148,51 @@ NETBOX_URL=https://netbox.example.com NETBOX_TOKEN=$NETBOX_TOKEN \
 ```
 
 - creates a deterministic plan
-- against a write-only (emitter) backend such as `django`, which cannot report existing state, plain `plan` produces an all-creates plan against an empty observation, while `--report` is rejected up front (see below)
-- writes json plan to the `-o`/`--output` path (required only for this default write path), and prints a human-readable per-op summary of that plan (create/update/delete, with per-field `from -> to` for updates; long categories are truncated) so you can read what apply would do before applying
-- honors `--allow-delete` if you want delete ops; delete candidates are the observed objects the inventory asserts completeness over — bounded by its `scope:` block when one is declared (`docs/inventory.md`), the whole backend per declared type otherwise
-- says first, on stderr, which state it loaded: `state: <path or row key> for <backend>, N bindings`, or `state: none at <path> for <backend>, 0 bindings` when nothing was saved there yet. the plan's `summary.state` records the same, as loaded before any adoption (`storage`, `location`, `present`, `backend`, `bindings_loaded`); postgres state names the row key, never the url
-- prints how declared objects matched, under the operation counts: `matching: 12 by state, 3 by key (3 adopted), 2 to create`, also in `summary.matching` (`by_state`, `by_key`, `adopted`, `to_create`). `adopted` is the part of `by_key` the run bound by key; a state binding that no longer resolves can still match by key without one. a write-only backend matches nothing and omits `matching`
-- reports what bootstrapping wrote into identity memory, on stderr like the schema preview so `--dry-run`'s stdout stays raw json: `adopted N existing object(s) by key` names each backend object the run bound to a declared uid, and `superseded:` names any binding an adoption displaced. adoption persists with the plan's state save, so it is never silent; `--no-adopt` disables key adoption (state-known objects still match, everything else plans as a create). it conflicts with `--allow-delete` at parse time: refusing to identify a backend object by key is refusing to know enough to replace it, and their combination would plan the unidentified twin of every declared object as a delete beside its create
-- a uid planned as one create and one delete under two types renders as a `retype`: one logical object re-materialized (see `docs/identity.md`), created under the new type before the old one is deleted
-- without `--provision`, plan asks the backend for a read-only schema preview (what `apply`'s `ensure_schema` would create/delete, writing nothing) and prints it to stderr as `schema preview: ...`; the machine-readable copy rides in the plan's `schema_preview`, and under `--report` (which writes no plan) in the drift report's. backends that cannot preview report `schema preview: unavailable for this backend`, and a preview that fails is reported as `schema preview failed: ...` while the plan goes on. a preview that finds a schema the backend will reject (a netbox custom object field name outside `[A-Za-z0-9_]`) fails the plan instead, since apply would refuse it
-- `--provision` runs adapter provisioning (`ensure_schema`) before observing backend state; provisioning that would delete custom object types/fields the inventory no longer declares is blocked unless `--allow-delete` is also given (such deletes cascade to their objects on the backend)
-- `--dry-run` prints the raw plan json instead of writing it; it writes no file, so `-o`/`--output` is rejected with it at parse time rather than accepted and ignored
-- `--report` prints a read-only drift report and exits without writing a plan file or saving state; `-o`/`--output` writes that report as json (optional: without it the report is the printed summary only). it exits `2` when the report finds drift and `0` when it finds none; an error exits `1`
-- saving nothing, `--report` and `--dry-run` take the state lock shared (see [state](state.md)), so two of them can run at once in the same directory; adding `--provision` makes the run exclusive again, since it writes backend schema
+- against a write-only (emitter) backend such as `django`, which cannot report existing state, plain `plan` produces an
+  all-creates plan against an empty observation, while `--report` is rejected up front (see below)
+- writes json plan to the `-o`/`--output` path (required only for this default write path), and prints a human-readable
+  per-op summary of that plan (create/update/delete, with per-field `from -> to` for updates; long categories are
+  truncated) so you can read what apply would do before applying
+- honors `--allow-delete` if you want delete ops; delete candidates are the observed objects the inventory asserts
+  completeness over — bounded by its `scope:` block when one is declared (`docs/inventory.md`), the whole backend per
+  declared type otherwise
+- says first, on stderr, which state it loaded: `state: <path or row key> for <backend>, N bindings`, or
+  `state: none at <path> for <backend>, 0 bindings` when nothing was saved there yet. the plan's `summary.state` records
+  the same, as loaded before any adoption (`storage`, `location`, `present`, `backend`, `bindings_loaded`); postgres
+  state names the row key, never the url
+- prints how declared objects matched, under the operation counts:
+  `matching: 12 by state, 3 by key (3 adopted), 2 to create`, also in `summary.matching` (`by_state`, `by_key`,
+  `adopted`, `to_create`). `adopted` is the part of `by_key` the run bound by key; a state binding that no longer
+  resolves can still match by key without one. a write-only backend matches nothing and omits `matching`
+- reports what bootstrapping wrote into identity memory, on stderr like the schema preview so `--dry-run`'s stdout stays
+  raw json: `adopted N existing object(s) by key` names each backend object the run bound to a declared uid, and
+  `superseded:` names any binding an adoption displaced. adoption persists with the plan's state save, so it is never
+  silent; `--no-adopt` disables key adoption (state-known objects still match, everything else plans as a create). it
+  conflicts with `--allow-delete` at parse time: refusing to identify a backend object by key is refusing to know enough
+  to replace it, and their combination would plan the unidentified twin of every declared object as a delete beside its
+  create
+- a uid planned as one create and one delete under two types renders as a `retype`: one logical object re-materialized (
+  see `docs/identity.md`), created under the new type before the old one is deleted
+- without `--provision`, plan asks the backend for a read-only schema preview (what `apply`'s `ensure_schema` would
+  create/delete, writing nothing) and prints it to stderr as `schema preview: ...`; the machine-readable copy rides in
+  the plan's `schema_preview`, and under `--report` (which writes no plan) in the drift report's. backends that cannot
+  preview report `schema preview: unavailable for this backend`, and a preview that fails is reported as
+  `schema preview failed: ...` while the plan goes on. a preview that finds a schema the backend will reject (a netbox
+  custom object field name outside `[A-Za-z0-9_]`) fails the plan instead, since apply would refuse it
+- `--provision` runs adapter provisioning (`ensure_schema`) before observing backend state; provisioning that would
+  delete custom object types/fields the inventory no longer declares is blocked unless `--allow-delete` is also given (
+  such deletes cascade to their objects on the backend)
+- `--dry-run` prints the raw plan json instead of writing it; it writes no file, so `-o`/`--output` is rejected with it
+  at parse time rather than accepted and ignored
+- `--report` prints a read-only drift report and exits without writing a plan file or saving state; `-o`/`--output`
+  writes that report as json (optional: without it the report is the printed summary only). it exits `2` when the report
+  finds drift and `0` when it finds none; an error exits `1`
+- saving nothing, `--report` and `--dry-run` take the state lock shared (see [state](state.md)), so two of them can run
+  at once in the same directory; adding `--provision` makes the run exclusive again, since it writes backend schema
 - `--report` and `--dry-run` are mutually exclusive (both exit without applying); passing both is rejected at parse time
-- `--provision` cannot be combined with `--dry-run` (rejected at parse time): a `--dry-run` preview promises not to write, but `--provision` still writes backend schema (`ensure_schema`). combining `--provision` with `--report` stays allowed as the documented "provision schema, then preview drift" workflow (see below)
+- `--provision` cannot be combined with `--dry-run` (rejected at parse time): a `--dry-run` preview promises not to
+  write, but `--provision` still writes backend schema (`ensure_schema`). combining `--provision` with `--report` stays
+  allowed as the documented "provision schema, then preview drift" workflow (see below)
 - accepts any type string and arbitrary attrs (schema validation is required)
 
 ### drift report
@@ -172,7 +210,8 @@ standalone human-readable summary grouped into three categories:
 
 - **changed**: declared and present on the backend, but one or more fields diverge (lists the per-field `from -> to`)
 - **missing**: declared in intent but absent from the backend
-- **extra**: present on the backend but not declared in intent, within what the inventory asserts completeness over (its `scope:` when declared, every declared type otherwise; `docs/inventory.md`)
+- **extra**: present on the backend but not declared in intent, within what the inventory asserts completeness over (its
+  `scope:` when declared, every declared type otherwise; `docs/inventory.md`)
 
 the json report also carries the plan's `state` and `matching`; neither is a
 drift category, and neither changes the exit code.
@@ -213,13 +252,39 @@ truncated. the json shape:
   "changed": [
     {
       "type_name": "dcim.site",
-      "key": { "slug": "fra1" },
-      "changes": [{ "field": "status", "from": "planned", "to": "active" }]
+      "key": {
+        "slug": "fra1"
+      },
+      "changes": [
+        {
+          "field": "status",
+          "from": "planned",
+          "to": "active"
+        }
+      ]
     }
   ],
-  "missing": [{ "type_name": "dcim.device", "key": { "name": "leaf02" } }],
-  "extra": [{ "type_name": "dcim.device", "key": { "name": "leaf01" } }],
-  "schema_preview": { "created_fields": ["dcim.device.asset_tag"] }
+  "missing": [
+    {
+      "type_name": "dcim.device",
+      "key": {
+        "name": "leaf02"
+      }
+    }
+  ],
+  "extra": [
+    {
+      "type_name": "dcim.device",
+      "key": {
+        "name": "leaf01"
+      }
+    }
+  ],
+  "schema_preview": {
+    "created_fields": [
+      "dcim.device.asset_tag"
+    ]
+  }
 }
 ```
 
@@ -265,8 +330,11 @@ alembic plan -f examples/inventory.yaml --dry-run \
 
 - applies a plan file; `-p -` reads a json plan from stdin, matching the json emitted by `plan --dry-run`
 - says on stderr which state it loaded, in `plan`'s `state:` line
-- an applied update re-asserts every declared field of its object, not only the changes the plan listed: a backend edit to a declared field between plan and apply is converged back, and approving an update under `--interactive` approves that full write. undeclared fields stay untouched (`docs/engine.md`, diff rules)
-- deletes are blocked unless `--allow-delete` is provided; this covers both object deletes and destructive schema provisioning (deleting custom object types/fields the inventory no longer declares, which cascades to their objects)
+- an applied update re-asserts every declared field of its object, not only the changes the plan listed: a backend edit
+  to a declared field between plan and apply is converged back, and approving an update under `--interactive` approves
+  that full write. undeclared fields stay untouched (`docs/engine.md`, diff rules)
+- deletes are blocked unless `--allow-delete` is provided; this covers both object deletes and destructive schema
+  provisioning (deleting custom object types/fields the inventory no longer declares, which cascades to their objects)
 - `--interactive` prompts per operation and applies only approved ops
   through the same engine path used by non-interactive apply. one answer is read
   from stdin per operation, so scripted answers work (`printf 'y\nn\ny\n' |
@@ -284,7 +352,9 @@ alembic plan -f examples/inventory.yaml --dry-run \
   configured in the backend config
 - `-o`/`--output` writes the apply report as json (optional; without it apply writes no artifact, as before)
 
-note that apply has no transaction semantics. writes land on the backend one at a time and there is no rollback, so a crash partway through leaves backend objects behind with no corresponding cleanup. state is saved once, after the whole apply returns, not per write; the journal is what carries a crashed run's progress until then (see below).
+note that apply has no transaction semantics. writes land on the backend one at a time and there is no rollback, so a
+crash partway through leaves backend objects behind with no corresponding cleanup. state is saved once, after the whole
+apply returns, not per write; the journal is what carries a crashed run's progress until then (see below).
 
 ### apply report
 
@@ -402,7 +472,8 @@ alembic map transform --spec examples/map.yaml site_code '"fra1"'
   writing a spec's starlark transforms (see `docs/map.md`, transforms)
 - extra positional arguments are json-encoded transform arguments
 - prints the typed result as json; `fail()` exits non-zero with the message
-- it carries its own `--spec` and prints to stdout, so `map`'s own `-f`/`--file`, `--spec` and `-o`/`--output` have nowhere to go here and are rejected at parse time rather than dropped
+- it carries its own `--spec` and prints to stdout, so `map`'s own `-f`/`--file`, `--spec` and `-o`/`--output` have
+  nowhere to go here and are rejected at parse time rather than dropped
 
 ## import
 
@@ -416,9 +487,12 @@ alembic import -f examples/inventory.yaml -o observed.json \
 - `-f` is your inventory; its `schema` selects which types to observe.
 - `-o` receives the observed inventory (ir).
 - output is validated against the inventory's schema before it is written; see `docs/engine.md`.
-- identity is assigned state-first: a backend object state already binds keeps its uid across backend-side renames, and only never-met objects are minted from their `(type, key)`. import takes the state lock shared and never saves
-- an inventory cannot hold two objects under one `(type, key)`, so a key named by several backend objects fails the import, every ambiguous key and its holders named at once
-- `--stateless` drops the identity memory: every uid is minted from the observed `(type, key)`, so a rename reads as a new object. the mode for one-shot audits and reproducible snapshots
+- identity is assigned state-first: a backend object state already binds keeps its uid across backend-side renames, and
+  only never-met objects are minted from their `(type, key)`. import takes the state lock shared and never saves
+- an inventory cannot hold two objects under one `(type, key)`, so a key named by several backend objects fails the
+  import, every ambiguous key and its holders named at once
+- `--stateless` drops the identity memory: every uid is minted from the observed `(type, key)`, so a rename reads as a
+  new object. the mode for one-shot audits and reproducible snapshots
 - `peeringdb` uses `PEERINGDB_API_KEY` for authentication
 
 ## skill
@@ -459,7 +533,7 @@ shell completion script to stdout, which can be piped to a suitable
 location, e.g:
 
 ```bash
-$ alembic complete zsh > ~/alembic/alembic.zsh
+$ alembic completion zsh > ~/alembic/alembic.zsh
 ```
 
 ## environment variables
@@ -476,6 +550,7 @@ $ alembic complete zsh > ~/alembic/alembic.zsh
 - `ALEMBIC_STATE_BACKEND` (`local`/`file`/`postgres`, default: `local`)
 - `ALEMBIC_STATE_PATH` (optional local state file path override)
 - `ALEMBIC_STATE_POSTGRES_URL` (required when `ALEMBIC_STATE_BACKEND=postgres`)
-- `ALEMBIC_STATE_KEY` (optional workspace namespace for postgres state rows, default: `default`; the row key is `<workspace>/<adapter>-<hash>`)
+- `ALEMBIC_STATE_KEY` (optional workspace namespace for postgres state rows, default: `default`; the row key is
+  `<workspace>/<adapter>-<hash>`)
 - `ALEMBIC_STATE_POSTGRES_TLS` (`disable`/`require`, default: `disable`)
 - `RUST_LOG` (optional; defaults to `warn`, used by cli tracing output)
