@@ -1,0 +1,1 @@
+- cli: `completion` command prints a shell completion script for bash, elvish, zsh, fish and powershell (#507)
