@@ -147,7 +147,7 @@ fn validate_writes_a_yaml_output_as_yaml_and_announces_it() {
     // too, so this only proves the extension drove serialization rather than that
     // the document is structurally unchanged.
     assert!(
-        serde_yaml::from_str::<serde_yaml::Value>(&raw).is_ok(),
+        alembic_engine::yaml::from_str::<serde_json::Value>(&raw).is_ok(),
         "{raw}"
     );
     assert!(!raw.contains("\"errors\""), "{raw}");

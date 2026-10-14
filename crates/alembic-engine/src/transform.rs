@@ -26,7 +26,6 @@ use anyhow::{anyhow, Context, Result};
 use serde::de::{self, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 use serde_json::Value as JsonValue;
-use serde_yaml::Value as YamlValue;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -217,14 +216,14 @@ pub struct MapEmit {
     /// target type name (templates allowed).
     #[serde(rename = "type", alias = "kind")]
     pub type_name: String,
-    pub key: BTreeMap<String, YamlValue>,
+    pub key: BTreeMap<String, JsonValue>,
     /// optional uid override. absent, a one-to-one emit inherits the source
     /// uid and a group emit mints from the rendered target `(type, key)`; a
     /// multi-emit must set it on every emitted object.
     #[serde(default)]
     pub uid: Option<EmitUid>,
     #[serde(default)]
-    pub attrs: BTreeMap<String, YamlValue>,
+    pub attrs: BTreeMap<String, JsonValue>,
 }
 
 /// a compiled `match` selector: a type-name pattern plus field predicates over
@@ -309,7 +308,7 @@ pub fn load_map_spec(path: impl AsRef<Path>) -> Result<MapSpec> {
     let path = path.as_ref();
     let raw = std::fs::read_to_string(path)
         .with_context(|| format!("read map spec: {}", path.display()))?;
-    let mut spec: MapSpec = serde_yaml::from_str(&raw)
+    let mut spec: MapSpec = crate::yaml::from_str(&raw)
         .with_context(|| format!("parse map spec: {}", path.display()))?;
     spec.base_dir = path.parent().map(Path::to_path_buf);
     Ok(spec)
@@ -818,7 +817,7 @@ fn resolve_uid_spec(spec: &EmitUid, ctx: &RenderCtx, context: &str) -> Result<Ui
 /// render an `objects:` key, resolving `v5:` expressions in its ref fields first.
 fn render_spec_object_key(
     type_name: &TypeName,
-    key: &BTreeMap<String, YamlValue>,
+    key: &BTreeMap<String, JsonValue>,
     schema: &Schema,
     ctx: &RenderCtx,
 ) -> Result<Key> {
@@ -831,13 +830,13 @@ fn render_spec_object_key(
         if !matches!(field_schema.r#type, FieldType::Ref { .. }) {
             continue;
         }
-        let Some(value @ YamlValue::Mapping(_)) = resolved.get_mut(field) else {
+        let Some(value @ JsonValue::Object(_)) = resolved.get_mut(field) else {
             continue;
         };
         let context = format!("key.{field}");
-        let spec: EmitUid = serde_yaml::from_value(value.clone())
+        let spec: EmitUid = serde_json::from_value(value.clone())
             .with_context(|| format!("rule {}: invalid uid expression in {context}", ctx.rule))?;
-        *value = YamlValue::String(resolve_uid_spec(&spec, ctx, &context)?.to_string());
+        *value = JsonValue::String(resolve_uid_spec(&spec, ctx, &context)?.to_string());
     }
     render_key(&resolved, ctx)
 }
@@ -1214,11 +1213,11 @@ mod tests {
     }
 
     fn spec(yaml: &str) -> MapSpec {
-        serde_yaml::from_str(yaml).unwrap()
+        crate::yaml::from_str(yaml).unwrap()
     }
 
     fn spec_err(yaml: &str) -> String {
-        serde_yaml::from_str::<MapSpec>(yaml)
+        crate::yaml::from_str::<MapSpec>(yaml)
             .unwrap_err()
             .to_string()
     }

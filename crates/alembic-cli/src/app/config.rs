@@ -1,11 +1,12 @@
 //! configuration for the cli tool
 
-use figment::providers::{Serialized, Yaml};
+use figment::providers::Serialized;
 use figment::{
     providers::{Env, Format},
     Figment,
 };
 use serde::{Deserialize, Serialize};
+use serde_saphyr::figment::Yaml;
 use std::error::Error;
 use std::fmt::Display;
 use std::path::PathBuf;

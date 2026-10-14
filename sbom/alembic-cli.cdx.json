@@ -2,9 +2,9 @@
   "bomFormat": "CycloneDX",
   "specVersion": "1.3",
   "version": 1,
-  "serialNumber": "urn:uuid:51fe6600-de5c-4d3f-8bc7-e3a0c7996309",
+  "serialNumber": "urn:uuid:4a2b575c-a8c0-4cef-bc88-b6342739ef81",
   "metadata": {
-    "timestamp": "2026-10-04T15:07:19.808634000Z",
+    "timestamp": "2026-10-13T09:56:18.402274000Z",
     "tools": [
       {
         "vendor": "CycloneDX",
@@ -14,7 +14,7 @@
     ],
     "component": {
       "type": "application",
-      "bom-ref": "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl/3e53fc7b-d6ef-4ada-80e9-76e477a8e107/scratchpad/wt-alembic/crates/alembic-cli#0.10.0",
+      "bom-ref": "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl-sec-divinate/4a3f5dce-4ce6-4f41-b541-9b0d44dc8a61/scratchpad/wt/alembic/crates/alembic-cli#0.10.0",
       "name": "alembic-cli",
       "version": "0.10.0",
       "description": "Command line interface for Alembic.",
@@ -42,7 +42,7 @@
       "components": [
         {
           "type": "application",
-          "bom-ref": "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl/3e53fc7b-d6ef-4ada-80e9-76e477a8e107/scratchpad/wt-alembic/crates/alembic-cli#0.10.0 bin-target-0",
+          "bom-ref": "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl-sec-divinate/4a3f5dce-4ce6-4f41-b541-9b0d44dc8a61/scratchpad/wt/alembic/crates/alembic-cli#0.10.0 bin-target-0",
           "name": "alembic",
           "version": "0.10.0",
           "purl": "pkg:cargo/alembic-cli@0.10.0?download_url=file://.#src/main.rs"
@@ -59,7 +59,7 @@
   "components": [
     {
       "type": "library",
-      "bom-ref": "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl/3e53fc7b-d6ef-4ada-80e9-76e477a8e107/scratchpad/wt-alembic/crates/alembic-adapter-django#0.10.0",
+      "bom-ref": "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl-sec-divinate/4a3f5dce-4ce6-4f41-b541-9b0d44dc8a61/scratchpad/wt/alembic/crates/alembic-adapter-django#0.10.0",
       "name": "alembic-adapter-django",
       "version": "0.10.0",
       "description": "Django app scaffolding for Alembic.",
@@ -87,7 +87,7 @@
     },
     {
       "type": "library",
-      "bom-ref": "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl/3e53fc7b-d6ef-4ada-80e9-76e477a8e107/scratchpad/wt-alembic/crates/alembic-adapter-generic#0.10.0",
+      "bom-ref": "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl-sec-divinate/4a3f5dce-4ce6-4f41-b541-9b0d44dc8a61/scratchpad/wt/alembic/crates/alembic-adapter-generic#0.10.0",
       "name": "alembic-adapter-generic",
       "version": "0.10.0",
       "description": "Generic REST adapter for Alembic.",
@@ -115,7 +115,7 @@
     },
     {
       "type": "library",
-      "bom-ref": "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl/3e53fc7b-d6ef-4ada-80e9-76e477a8e107/scratchpad/wt-alembic/crates/alembic-adapter-infrahub#0.10.0",
+      "bom-ref": "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl-sec-divinate/4a3f5dce-4ce6-4f41-b541-9b0d44dc8a61/scratchpad/wt/alembic/crates/alembic-adapter-infrahub#0.10.0",
       "name": "alembic-adapter-infrahub",
       "version": "0.10.0",
       "description": "Infrahub GraphQL adapter for Alembic.",
@@ -143,7 +143,7 @@
     },
     {
       "type": "library",
-      "bom-ref": "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl/3e53fc7b-d6ef-4ada-80e9-76e477a8e107/scratchpad/wt-alembic/crates/alembic-adapter-nautobot#0.10.0",
+      "bom-ref": "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl-sec-divinate/4a3f5dce-4ce6-4f41-b541-9b0d44dc8a61/scratchpad/wt/alembic/crates/alembic-adapter-nautobot#0.10.0",
       "name": "alembic-adapter-nautobot",
       "version": "0.10.0",
       "description": "Nautobot adapter for Alembic.",
@@ -171,7 +171,7 @@
     },
     {
       "type": "library",
-      "bom-ref": "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl/3e53fc7b-d6ef-4ada-80e9-76e477a8e107/scratchpad/wt-alembic/crates/alembic-adapter-netbox#0.10.0",
+      "bom-ref": "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl-sec-divinate/4a3f5dce-4ce6-4f41-b541-9b0d44dc8a61/scratchpad/wt/alembic/crates/alembic-adapter-netbox#0.10.0",
       "name": "alembic-adapter-netbox",
       "version": "0.10.0",
       "description": "NetBox adapter for Alembic.",
@@ -199,7 +199,7 @@
     },
     {
       "type": "library",
-      "bom-ref": "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl/3e53fc7b-d6ef-4ada-80e9-76e477a8e107/scratchpad/wt-alembic/crates/alembic-adapter-peeringdb#0.10.0",
+      "bom-ref": "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl-sec-divinate/4a3f5dce-4ce6-4f41-b541-9b0d44dc8a61/scratchpad/wt/alembic/crates/alembic-adapter-peeringdb#0.10.0",
       "name": "alembic-adapter-peeringdb",
       "version": "0.10.0",
       "description": "PeeringDB adapter for Alembic.",
@@ -227,7 +227,7 @@
     },
     {
       "type": "library",
-      "bom-ref": "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl/3e53fc7b-d6ef-4ada-80e9-76e477a8e107/scratchpad/wt-alembic/crates/alembic-adapter-registry#0.10.0",
+      "bom-ref": "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl-sec-divinate/4a3f5dce-4ce6-4f41-b541-9b0d44dc8a61/scratchpad/wt/alembic/crates/alembic-adapter-registry#0.10.0",
       "name": "alembic-adapter-registry",
       "version": "0.10.0",
       "description": "Adapter registry and configuration for Alembic.",
@@ -255,7 +255,7 @@
     },
     {
       "type": "library",
-      "bom-ref": "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl/3e53fc7b-d6ef-4ada-80e9-76e477a8e107/scratchpad/wt-alembic/crates/alembic-adapter-sdk#0.10.0",
+      "bom-ref": "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl-sec-divinate/4a3f5dce-4ce6-4f41-b541-9b0d44dc8a61/scratchpad/wt/alembic/crates/alembic-adapter-sdk#0.10.0",
       "name": "alembic-adapter-sdk",
       "version": "0.10.0",
       "description": "SDK for developing external alembic adapters.",
@@ -283,7 +283,7 @@
     },
     {
       "type": "library",
-      "bom-ref": "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl/3e53fc7b-d6ef-4ada-80e9-76e477a8e107/scratchpad/wt-alembic/crates/alembic-core#0.10.0",
+      "bom-ref": "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl-sec-divinate/4a3f5dce-4ce6-4f41-b541-9b0d44dc8a61/scratchpad/wt/alembic/crates/alembic-core#0.10.0",
       "name": "alembic-core",
       "version": "0.10.0",
       "description": "Core IR types and validation for Alembic.",
@@ -311,7 +311,7 @@
     },
     {
       "type": "library",
-      "bom-ref": "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl/3e53fc7b-d6ef-4ada-80e9-76e477a8e107/scratchpad/wt-alembic/crates/alembic-engine#0.10.0",
+      "bom-ref": "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl-sec-divinate/4a3f5dce-4ce6-4f41-b541-9b0d44dc8a61/scratchpad/wt/alembic/crates/alembic-engine#0.10.0",
       "name": "alembic-engine",
       "version": "0.10.0",
       "description": "Planning, apply, and state engine for Alembic.",
@@ -537,6 +537,32 @@
     },
     {
       "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#annotate-snippets@0.12.16",
+      "name": "annotate-snippets",
+      "version": "0.12.16",
+      "description": "Format diagnostic reports, including highlighting snippets of text",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "f211a51805bc641f3ad5b7664c77d2547af685cc33b4cd8d31964027a46f13f1"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/annotate-snippets@0.12.16",
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/rust-lang/annotate-snippets-rs"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#annotate-snippets@0.9.2",
       "author": "Zibi Braniecki <gandalf@mozilla.com>",
       "name": "annotate-snippets",
@@ -720,6 +746,41 @@
         {
           "type": "vcs",
           "url": "https://github.com/dtolnay/anyhow"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#arraydeque@0.5.1",
+      "author": "andylokandy",
+      "name": "arraydeque",
+      "version": "0.5.1",
+      "description": "A ring buffer with a fixed capacity, which can be stored on the stack.",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "7d902e3d592a523def97af8f317b08ce16b7ab854c1985a0c671e6f15cebc236"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/arraydeque@0.5.1",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/arraydeque"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/andylokandy/arraydeque"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/andylokandy/arraydeque"
         }
       ]
     },
@@ -3473,6 +3534,37 @@
     },
     {
       "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#encoding_rs_io@0.1.8",
+      "author": "Andrew Gallant <jamslam@gmail.com>",
+      "name": "encoding_rs_io",
+      "version": "0.1.8",
+      "description": "Streaming transcoding for encoding_rs",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "fba3fe847045ecff794b9c138293a80db914678c453ad63fbf0c6a9eb6e00b22"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/encoding_rs_io@0.1.8",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/encoding_rs_io"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/BurntSushi/encoding_rs_io"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#endian-type@0.1.2",
       "author": "Lolirofle <lolipopple@hotmail.com>",
       "name": "endian-type",
@@ -4566,6 +4658,37 @@
         {
           "type": "vcs",
           "url": "https://github.com/rust-random/getrandom"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#granit-parser@1.3.0",
+      "author": "Ethiraric <ethiraric@gmail.com>, David Aguilar <davvid@gmail.com>, Yuheng Chen <yuhengchen@sensetime.com>, Bourumir Wyngs <bourumir-wyngs@gmail.com>",
+      "name": "granit-parser",
+      "version": "1.3.0",
+      "description": "A YAML parser with comment and style support, written in pure Rust",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "e20f99e46474f56bd905c56e817ebddcf377a611f94c53ac4649e4d3fa3c0cd0"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/granit-parser@1.3.0",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/granit-parser/latest/granit_parser"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/bourumir-wyngs/granit-parser"
         }
       ]
     },
@@ -5755,15 +5878,15 @@
     },
     {
       "type": "library",
-      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#infrahub@0.4.4",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#infrahub@0.4.5",
       "name": "infrahub",
-      "version": "0.4.4",
+      "version": "0.4.5",
       "description": "small graphql client for infrahub",
       "scope": "required",
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "4173af1dae97bac1e5d9115a928f978ea3534ba74ec3335c39f90920254695e9"
+          "content": "b5adf4080942123a4e4807dd38515b55d0c4859f919b8eb743ddd4f020b53412"
         }
       ],
       "licenses": [
@@ -5771,7 +5894,7 @@
           "expression": "MIT"
         }
       ],
-      "purl": "pkg:cargo/infrahub@0.4.4",
+      "purl": "pkg:cargo/infrahub@0.4.5",
       "externalReferences": [
         {
           "type": "documentation",
@@ -7248,6 +7371,33 @@
         {
           "type": "vcs",
           "url": "https://github.com/nix-rust/nix"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#nohash-hasher@0.2.0",
+      "author": "Parity Technologies <admin@parity.io>",
+      "name": "nohash-hasher",
+      "version": "0.2.0",
+      "description": "An implementation of `std::hash::Hasher` which does not hash at all.",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "2bf50223579dc7cdcfb3bfcacf7069ff68243f8c363f62ffa99cf000a6b9c451"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR MIT"
+        }
+      ],
+      "purl": "pkg:cargo/nohash-hasher@0.2.0",
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/paritytech/nohash-hasher"
         }
       ]
     },
@@ -9817,6 +9967,36 @@
     },
     {
       "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#serde-saphyr@1.3.0",
+      "name": "serde-saphyr",
+      "version": "1.3.0",
+      "description": "YAML (de)serializer for Serde, emphasizing panic-free parsing, fast builds and good error reporting. Supports properties, include, tag and comment capture",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "b8050abb251097357e24aff63ba2c52a6309ecb7d23a5474023df960a02694d8"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/serde-saphyr@1.3.0",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/serde-saphyr/latest/serde-saphyr/"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/bourumir-wyngs/serde-saphyr"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.229",
       "author": "Erick Tryzelaar <erick.tryzelaar@gmail.com>, David Tolnay <dtolnay@gmail.com>",
       "name": "serde",
@@ -10072,68 +10252,6 @@
         {
           "type": "vcs",
           "url": "https://github.com/jonasbb/serde_with/"
-        }
-      ]
-    },
-    {
-      "type": "library",
-      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#serde_yaml@0.9.34+deprecated",
-      "author": "David Tolnay <dtolnay@gmail.com>",
-      "name": "serde_yaml",
-      "version": "0.9.34+deprecated",
-      "description": "YAML data format for Serde",
-      "scope": "required",
-      "hashes": [
-        {
-          "alg": "SHA-256",
-          "content": "6a8b1a1a2ebf674015cc02edccce75287f1a0130d394307b36743c2f5d504b47"
-        }
-      ],
-      "licenses": [
-        {
-          "expression": "MIT OR Apache-2.0"
-        }
-      ],
-      "purl": "pkg:cargo/serde_yaml@0.9.34+deprecated",
-      "externalReferences": [
-        {
-          "type": "documentation",
-          "url": "https://docs.rs/serde_yaml/"
-        },
-        {
-          "type": "vcs",
-          "url": "https://github.com/dtolnay/serde-yaml"
-        }
-      ]
-    },
-    {
-      "type": "library",
-      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#serde_yaml_ng@0.10.0",
-      "author": "Antoine Catton <devel@antoine.catton.fr>",
-      "name": "serde_yaml_ng",
-      "version": "0.10.0",
-      "description": "YAML data format for Serde",
-      "scope": "required",
-      "hashes": [
-        {
-          "alg": "SHA-256",
-          "content": "7b4db627b98b36d4203a7b458cf3573730f2bb591b28871d916dfa9efabfd41f"
-        }
-      ],
-      "licenses": [
-        {
-          "expression": "MIT"
-        }
-      ],
-      "purl": "pkg:cargo/serde_yaml_ng@0.10.0",
-      "externalReferences": [
-        {
-          "type": "documentation",
-          "url": "https://docs.rs/serde_yaml_ng/"
-        },
-        {
-          "type": "vcs",
-          "url": "https://github.com/acatton/serde-yaml-ng"
         }
       ]
     },
@@ -12505,6 +12623,37 @@
     },
     {
       "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#unicode-width@0.2.2",
+      "author": "kwantam <kwantam@gmail.com>, Manish Goregaokar <manishsmail@gmail.com>",
+      "name": "unicode-width",
+      "version": "0.2.2",
+      "description": "Determine displayed width of `char` and `str` types according to Unicode Standard Annex #11 rules. ",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "b4ac048d71ede7ee76d585517add45da530660ef4390e49b098733c6e897f254"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/unicode-width@0.2.2",
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/unicode-rs/unicode-width"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/unicode-rs/unicode-width"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#unicode-xid@0.2.6",
       "author": "erick.tryzelaar <erick.tryzelaar@gmail.com>, kwantam <kwantam@gmail.com>, Manish Goregaokar <manishsmail@gmail.com>",
       "name": "unicode-xid",
@@ -12535,37 +12684,6 @@
         {
           "type": "vcs",
           "url": "https://github.com/unicode-rs/unicode-xid"
-        }
-      ]
-    },
-    {
-      "type": "library",
-      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#unsafe-libyaml@0.2.11",
-      "author": "David Tolnay <dtolnay@gmail.com>",
-      "name": "unsafe-libyaml",
-      "version": "0.2.11",
-      "description": "libyaml transpiled to rust by c2rust",
-      "scope": "required",
-      "hashes": [
-        {
-          "alg": "SHA-256",
-          "content": "673aac59facbab8a9007c7f6108d11f63b603f7cabff99fabf650fea5c32b861"
-        }
-      ],
-      "licenses": [
-        {
-          "expression": "MIT"
-        }
-      ],
-      "purl": "pkg:cargo/unsafe-libyaml@0.2.11",
-      "externalReferences": [
-        {
-          "type": "documentation",
-          "url": "https://docs.rs/unsafe-libyaml"
-        },
-        {
-          "type": "vcs",
-          "url": "https://github.com/dtolnay/unsafe-libyaml"
         }
       ]
     },
@@ -12699,16 +12817,16 @@
     },
     {
       "type": "library",
-      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#uuid@1.26.1",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#uuid@1.27.0",
       "author": "Ashley Mannix<ashleymannix@live.com.au>, Dylan DPC<dylan.dpc@gmail.com>, Hunar Roop Kahlon<hunar.roop@gmail.com>",
       "name": "uuid",
-      "version": "1.26.1",
+      "version": "1.27.0",
       "description": "A library to generate and parse UUIDs.",
       "scope": "required",
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "2ef6dac1e96601b4fb3acccccff2139741fcb757cb9a36089bf5be91cfb285ce"
+          "content": "97277d36b9c3ace13e58fa6e753f8b0bbbf302a18dd193240d70f9e29681059a"
         }
       ],
       "licenses": [
@@ -12716,7 +12834,7 @@
           "expression": "Apache-2.0 OR MIT"
         }
       ],
-      "purl": "pkg:cargo/uuid@1.26.1",
+      "purl": "pkg:cargo/uuid@1.27.0",
       "externalReferences": [
         {
           "type": "documentation",
@@ -14774,11 +14892,11 @@
   ],
   "dependencies": [
     {
-      "ref": "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl/3e53fc7b-d6ef-4ada-80e9-76e477a8e107/scratchpad/wt-alembic/crates/alembic-adapter-django#0.10.0",
+      "ref": "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl-sec-divinate/4a3f5dce-4ce6-4f41-b541-9b0d44dc8a61/scratchpad/wt/alembic/crates/alembic-adapter-django#0.10.0",
       "dependsOn": [
-        "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl/3e53fc7b-d6ef-4ada-80e9-76e477a8e107/scratchpad/wt-alembic/crates/alembic-adapter-sdk#0.10.0",
-        "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl/3e53fc7b-d6ef-4ada-80e9-76e477a8e107/scratchpad/wt-alembic/crates/alembic-core#0.10.0",
-        "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl/3e53fc7b-d6ef-4ada-80e9-76e477a8e107/scratchpad/wt-alembic/crates/alembic-engine#0.10.0",
+        "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl-sec-divinate/4a3f5dce-4ce6-4f41-b541-9b0d44dc8a61/scratchpad/wt/alembic/crates/alembic-adapter-sdk#0.10.0",
+        "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl-sec-divinate/4a3f5dce-4ce6-4f41-b541-9b0d44dc8a61/scratchpad/wt/alembic/crates/alembic-core#0.10.0",
+        "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl-sec-divinate/4a3f5dce-4ce6-4f41-b541-9b0d44dc8a61/scratchpad/wt/alembic/crates/alembic-engine#0.10.0",
         "registry+https://github.com/rust-lang/crates.io-index#anyhow@1.0.104",
         "registry+https://github.com/rust-lang/crates.io-index#async-trait@0.1.92",
         "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.229",
@@ -14787,11 +14905,11 @@
       ]
     },
     {
-      "ref": "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl/3e53fc7b-d6ef-4ada-80e9-76e477a8e107/scratchpad/wt-alembic/crates/alembic-adapter-generic#0.10.0",
+      "ref": "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl-sec-divinate/4a3f5dce-4ce6-4f41-b541-9b0d44dc8a61/scratchpad/wt/alembic/crates/alembic-adapter-generic#0.10.0",
       "dependsOn": [
-        "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl/3e53fc7b-d6ef-4ada-80e9-76e477a8e107/scratchpad/wt-alembic/crates/alembic-adapter-sdk#0.10.0",
-        "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl/3e53fc7b-d6ef-4ada-80e9-76e477a8e107/scratchpad/wt-alembic/crates/alembic-core#0.10.0",
-        "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl/3e53fc7b-d6ef-4ada-80e9-76e477a8e107/scratchpad/wt-alembic/crates/alembic-engine#0.10.0",
+        "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl-sec-divinate/4a3f5dce-4ce6-4f41-b541-9b0d44dc8a61/scratchpad/wt/alembic/crates/alembic-adapter-sdk#0.10.0",
+        "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl-sec-divinate/4a3f5dce-4ce6-4f41-b541-9b0d44dc8a61/scratchpad/wt/alembic/crates/alembic-core#0.10.0",
+        "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl-sec-divinate/4a3f5dce-4ce6-4f41-b541-9b0d44dc8a61/scratchpad/wt/alembic/crates/alembic-engine#0.10.0",
         "registry+https://github.com/rust-lang/crates.io-index#anyhow@1.0.104",
         "registry+https://github.com/rust-lang/crates.io-index#async-trait@0.1.92",
         "registry+https://github.com/rust-lang/crates.io-index#futures@0.3.34",
@@ -14803,29 +14921,27 @@
       ]
     },
     {
-      "ref": "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl/3e53fc7b-d6ef-4ada-80e9-76e477a8e107/scratchpad/wt-alembic/crates/alembic-adapter-infrahub#0.10.0",
+      "ref": "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl-sec-divinate/4a3f5dce-4ce6-4f41-b541-9b0d44dc8a61/scratchpad/wt/alembic/crates/alembic-adapter-infrahub#0.10.0",
       "dependsOn": [
-        "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl/3e53fc7b-d6ef-4ada-80e9-76e477a8e107/scratchpad/wt-alembic/crates/alembic-adapter-sdk#0.10.0",
-        "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl/3e53fc7b-d6ef-4ada-80e9-76e477a8e107/scratchpad/wt-alembic/crates/alembic-core#0.10.0",
-        "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl/3e53fc7b-d6ef-4ada-80e9-76e477a8e107/scratchpad/wt-alembic/crates/alembic-engine#0.10.0",
+        "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl-sec-divinate/4a3f5dce-4ce6-4f41-b541-9b0d44dc8a61/scratchpad/wt/alembic/crates/alembic-adapter-sdk#0.10.0",
+        "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl-sec-divinate/4a3f5dce-4ce6-4f41-b541-9b0d44dc8a61/scratchpad/wt/alembic/crates/alembic-core#0.10.0",
+        "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl-sec-divinate/4a3f5dce-4ce6-4f41-b541-9b0d44dc8a61/scratchpad/wt/alembic/crates/alembic-engine#0.10.0",
         "registry+https://github.com/rust-lang/crates.io-index#anyhow@1.0.104",
         "registry+https://github.com/rust-lang/crates.io-index#async-trait@0.1.92",
         "registry+https://github.com/rust-lang/crates.io-index#graphql-parser@0.4.1",
-        "registry+https://github.com/rust-lang/crates.io-index#infrahub@0.4.4",
-        "registry+https://github.com/rust-lang/crates.io-index#reqwest@0.13.5",
+        "registry+https://github.com/rust-lang/crates.io-index#infrahub@0.4.5",
         "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.229",
         "registry+https://github.com/rust-lang/crates.io-index#serde_json@1.0.151",
-        "registry+https://github.com/rust-lang/crates.io-index#serde_yaml_ng@0.10.0",
         "registry+https://github.com/rust-lang/crates.io-index#tokio@1.50.0",
         "registry+https://github.com/rust-lang/crates.io-index#tracing@0.1.44"
       ]
     },
     {
-      "ref": "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl/3e53fc7b-d6ef-4ada-80e9-76e477a8e107/scratchpad/wt-alembic/crates/alembic-adapter-nautobot#0.10.0",
+      "ref": "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl-sec-divinate/4a3f5dce-4ce6-4f41-b541-9b0d44dc8a61/scratchpad/wt/alembic/crates/alembic-adapter-nautobot#0.10.0",
       "dependsOn": [
-        "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl/3e53fc7b-d6ef-4ada-80e9-76e477a8e107/scratchpad/wt-alembic/crates/alembic-adapter-sdk#0.10.0",
-        "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl/3e53fc7b-d6ef-4ada-80e9-76e477a8e107/scratchpad/wt-alembic/crates/alembic-core#0.10.0",
-        "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl/3e53fc7b-d6ef-4ada-80e9-76e477a8e107/scratchpad/wt-alembic/crates/alembic-engine#0.10.0",
+        "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl-sec-divinate/4a3f5dce-4ce6-4f41-b541-9b0d44dc8a61/scratchpad/wt/alembic/crates/alembic-adapter-sdk#0.10.0",
+        "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl-sec-divinate/4a3f5dce-4ce6-4f41-b541-9b0d44dc8a61/scratchpad/wt/alembic/crates/alembic-core#0.10.0",
+        "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl-sec-divinate/4a3f5dce-4ce6-4f41-b541-9b0d44dc8a61/scratchpad/wt/alembic/crates/alembic-engine#0.10.0",
         "registry+https://github.com/rust-lang/crates.io-index#anyhow@1.0.104",
         "registry+https://github.com/rust-lang/crates.io-index#async-trait@0.1.92",
         "registry+https://github.com/rust-lang/crates.io-index#futures@0.3.34",
@@ -14835,15 +14951,15 @@
         "registry+https://github.com/rust-lang/crates.io-index#serde_json@1.0.151",
         "registry+https://github.com/rust-lang/crates.io-index#tokio@1.50.0",
         "registry+https://github.com/rust-lang/crates.io-index#tracing@0.1.44",
-        "registry+https://github.com/rust-lang/crates.io-index#uuid@1.26.1"
+        "registry+https://github.com/rust-lang/crates.io-index#uuid@1.27.0"
       ]
     },
     {
-      "ref": "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl/3e53fc7b-d6ef-4ada-80e9-76e477a8e107/scratchpad/wt-alembic/crates/alembic-adapter-netbox#0.10.0",
+      "ref": "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl-sec-divinate/4a3f5dce-4ce6-4f41-b541-9b0d44dc8a61/scratchpad/wt/alembic/crates/alembic-adapter-netbox#0.10.0",
       "dependsOn": [
-        "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl/3e53fc7b-d6ef-4ada-80e9-76e477a8e107/scratchpad/wt-alembic/crates/alembic-adapter-sdk#0.10.0",
-        "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl/3e53fc7b-d6ef-4ada-80e9-76e477a8e107/scratchpad/wt-alembic/crates/alembic-core#0.10.0",
-        "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl/3e53fc7b-d6ef-4ada-80e9-76e477a8e107/scratchpad/wt-alembic/crates/alembic-engine#0.10.0",
+        "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl-sec-divinate/4a3f5dce-4ce6-4f41-b541-9b0d44dc8a61/scratchpad/wt/alembic/crates/alembic-adapter-sdk#0.10.0",
+        "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl-sec-divinate/4a3f5dce-4ce6-4f41-b541-9b0d44dc8a61/scratchpad/wt/alembic/crates/alembic-core#0.10.0",
+        "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl-sec-divinate/4a3f5dce-4ce6-4f41-b541-9b0d44dc8a61/scratchpad/wt/alembic/crates/alembic-engine#0.10.0",
         "registry+https://github.com/rust-lang/crates.io-index#anyhow@1.0.104",
         "registry+https://github.com/rust-lang/crates.io-index#async-trait@0.1.92",
         "registry+https://github.com/rust-lang/crates.io-index#netbox@0.9.1",
@@ -14854,11 +14970,11 @@
       ]
     },
     {
-      "ref": "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl/3e53fc7b-d6ef-4ada-80e9-76e477a8e107/scratchpad/wt-alembic/crates/alembic-adapter-peeringdb#0.10.0",
+      "ref": "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl-sec-divinate/4a3f5dce-4ce6-4f41-b541-9b0d44dc8a61/scratchpad/wt/alembic/crates/alembic-adapter-peeringdb#0.10.0",
       "dependsOn": [
-        "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl/3e53fc7b-d6ef-4ada-80e9-76e477a8e107/scratchpad/wt-alembic/crates/alembic-adapter-sdk#0.10.0",
-        "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl/3e53fc7b-d6ef-4ada-80e9-76e477a8e107/scratchpad/wt-alembic/crates/alembic-core#0.10.0",
-        "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl/3e53fc7b-d6ef-4ada-80e9-76e477a8e107/scratchpad/wt-alembic/crates/alembic-engine#0.10.0",
+        "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl-sec-divinate/4a3f5dce-4ce6-4f41-b541-9b0d44dc8a61/scratchpad/wt/alembic/crates/alembic-adapter-sdk#0.10.0",
+        "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl-sec-divinate/4a3f5dce-4ce6-4f41-b541-9b0d44dc8a61/scratchpad/wt/alembic/crates/alembic-core#0.10.0",
+        "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl-sec-divinate/4a3f5dce-4ce6-4f41-b541-9b0d44dc8a61/scratchpad/wt/alembic/crates/alembic-engine#0.10.0",
         "registry+https://github.com/rust-lang/crates.io-index#anyhow@1.0.104",
         "registry+https://github.com/rust-lang/crates.io-index#async-trait@0.1.92",
         "registry+https://github.com/rust-lang/crates.io-index#peeringdb-rs@0.2.0",
@@ -14868,88 +14984,86 @@
       ]
     },
     {
-      "ref": "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl/3e53fc7b-d6ef-4ada-80e9-76e477a8e107/scratchpad/wt-alembic/crates/alembic-adapter-registry#0.10.0",
+      "ref": "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl-sec-divinate/4a3f5dce-4ce6-4f41-b541-9b0d44dc8a61/scratchpad/wt/alembic/crates/alembic-adapter-registry#0.10.0",
       "dependsOn": [
-        "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl/3e53fc7b-d6ef-4ada-80e9-76e477a8e107/scratchpad/wt-alembic/crates/alembic-adapter-django#0.10.0",
-        "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl/3e53fc7b-d6ef-4ada-80e9-76e477a8e107/scratchpad/wt-alembic/crates/alembic-adapter-generic#0.10.0",
-        "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl/3e53fc7b-d6ef-4ada-80e9-76e477a8e107/scratchpad/wt-alembic/crates/alembic-adapter-infrahub#0.10.0",
-        "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl/3e53fc7b-d6ef-4ada-80e9-76e477a8e107/scratchpad/wt-alembic/crates/alembic-adapter-nautobot#0.10.0",
-        "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl/3e53fc7b-d6ef-4ada-80e9-76e477a8e107/scratchpad/wt-alembic/crates/alembic-adapter-netbox#0.10.0",
-        "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl/3e53fc7b-d6ef-4ada-80e9-76e477a8e107/scratchpad/wt-alembic/crates/alembic-adapter-peeringdb#0.10.0",
-        "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl/3e53fc7b-d6ef-4ada-80e9-76e477a8e107/scratchpad/wt-alembic/crates/alembic-adapter-sdk#0.10.0",
-        "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl/3e53fc7b-d6ef-4ada-80e9-76e477a8e107/scratchpad/wt-alembic/crates/alembic-core#0.10.0",
-        "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl/3e53fc7b-d6ef-4ada-80e9-76e477a8e107/scratchpad/wt-alembic/crates/alembic-engine#0.10.0",
+        "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl-sec-divinate/4a3f5dce-4ce6-4f41-b541-9b0d44dc8a61/scratchpad/wt/alembic/crates/alembic-adapter-django#0.10.0",
+        "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl-sec-divinate/4a3f5dce-4ce6-4f41-b541-9b0d44dc8a61/scratchpad/wt/alembic/crates/alembic-adapter-generic#0.10.0",
+        "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl-sec-divinate/4a3f5dce-4ce6-4f41-b541-9b0d44dc8a61/scratchpad/wt/alembic/crates/alembic-adapter-infrahub#0.10.0",
+        "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl-sec-divinate/4a3f5dce-4ce6-4f41-b541-9b0d44dc8a61/scratchpad/wt/alembic/crates/alembic-adapter-nautobot#0.10.0",
+        "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl-sec-divinate/4a3f5dce-4ce6-4f41-b541-9b0d44dc8a61/scratchpad/wt/alembic/crates/alembic-adapter-netbox#0.10.0",
+        "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl-sec-divinate/4a3f5dce-4ce6-4f41-b541-9b0d44dc8a61/scratchpad/wt/alembic/crates/alembic-adapter-peeringdb#0.10.0",
+        "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl-sec-divinate/4a3f5dce-4ce6-4f41-b541-9b0d44dc8a61/scratchpad/wt/alembic/crates/alembic-adapter-sdk#0.10.0",
+        "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl-sec-divinate/4a3f5dce-4ce6-4f41-b541-9b0d44dc8a61/scratchpad/wt/alembic/crates/alembic-core#0.10.0",
+        "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl-sec-divinate/4a3f5dce-4ce6-4f41-b541-9b0d44dc8a61/scratchpad/wt/alembic/crates/alembic-engine#0.10.0",
         "registry+https://github.com/rust-lang/crates.io-index#anyhow@1.0.104",
         "registry+https://github.com/rust-lang/crates.io-index#async-trait@0.1.92",
         "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.229",
         "registry+https://github.com/rust-lang/crates.io-index#serde_json@1.0.151",
-        "registry+https://github.com/rust-lang/crates.io-index#serde_yaml_ng@0.10.0",
         "registry+https://github.com/rust-lang/crates.io-index#tokio@1.50.0"
       ]
     },
     {
-      "ref": "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl/3e53fc7b-d6ef-4ada-80e9-76e477a8e107/scratchpad/wt-alembic/crates/alembic-adapter-sdk#0.10.0",
+      "ref": "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl-sec-divinate/4a3f5dce-4ce6-4f41-b541-9b0d44dc8a61/scratchpad/wt/alembic/crates/alembic-adapter-sdk#0.10.0",
       "dependsOn": [
-        "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl/3e53fc7b-d6ef-4ada-80e9-76e477a8e107/scratchpad/wt-alembic/crates/alembic-core#0.10.0",
+        "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl-sec-divinate/4a3f5dce-4ce6-4f41-b541-9b0d44dc8a61/scratchpad/wt/alembic/crates/alembic-core#0.10.0",
         "registry+https://github.com/rust-lang/crates.io-index#async-trait@0.1.92",
         "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.229",
+        "registry+https://github.com/rust-lang/crates.io-index#serde-saphyr@1.3.0",
         "registry+https://github.com/rust-lang/crates.io-index#serde_json@1.0.151",
-        "registry+https://github.com/rust-lang/crates.io-index#serde_yaml_ng@0.10.0",
         "registry+https://github.com/rust-lang/crates.io-index#tempfile@3.27.0",
         "registry+https://github.com/rust-lang/crates.io-index#thiserror@2.0.21",
         "registry+https://github.com/rust-lang/crates.io-index#tracing@0.1.44",
-        "registry+https://github.com/rust-lang/crates.io-index#uuid@1.26.1"
+        "registry+https://github.com/rust-lang/crates.io-index#uuid@1.27.0"
       ]
     },
     {
-      "ref": "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl/3e53fc7b-d6ef-4ada-80e9-76e477a8e107/scratchpad/wt-alembic/crates/alembic-cli#0.10.0",
+      "ref": "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl-sec-divinate/4a3f5dce-4ce6-4f41-b541-9b0d44dc8a61/scratchpad/wt/alembic/crates/alembic-cli#0.10.0",
       "dependsOn": [
-        "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl/3e53fc7b-d6ef-4ada-80e9-76e477a8e107/scratchpad/wt-alembic/crates/alembic-adapter-django#0.10.0",
-        "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl/3e53fc7b-d6ef-4ada-80e9-76e477a8e107/scratchpad/wt-alembic/crates/alembic-adapter-registry#0.10.0",
-        "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl/3e53fc7b-d6ef-4ada-80e9-76e477a8e107/scratchpad/wt-alembic/crates/alembic-adapter-sdk#0.10.0",
-        "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl/3e53fc7b-d6ef-4ada-80e9-76e477a8e107/scratchpad/wt-alembic/crates/alembic-core#0.10.0",
-        "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl/3e53fc7b-d6ef-4ada-80e9-76e477a8e107/scratchpad/wt-alembic/crates/alembic-engine#0.10.0",
+        "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl-sec-divinate/4a3f5dce-4ce6-4f41-b541-9b0d44dc8a61/scratchpad/wt/alembic/crates/alembic-adapter-django#0.10.0",
+        "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl-sec-divinate/4a3f5dce-4ce6-4f41-b541-9b0d44dc8a61/scratchpad/wt/alembic/crates/alembic-adapter-registry#0.10.0",
+        "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl-sec-divinate/4a3f5dce-4ce6-4f41-b541-9b0d44dc8a61/scratchpad/wt/alembic/crates/alembic-adapter-sdk#0.10.0",
+        "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl-sec-divinate/4a3f5dce-4ce6-4f41-b541-9b0d44dc8a61/scratchpad/wt/alembic/crates/alembic-core#0.10.0",
+        "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl-sec-divinate/4a3f5dce-4ce6-4f41-b541-9b0d44dc8a61/scratchpad/wt/alembic/crates/alembic-engine#0.10.0",
         "registry+https://github.com/rust-lang/crates.io-index#anyhow@1.0.104",
         "registry+https://github.com/rust-lang/crates.io-index#clap@4.6.7",
         "registry+https://github.com/rust-lang/crates.io-index#figment@0.10.19",
         "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.229",
+        "registry+https://github.com/rust-lang/crates.io-index#serde-saphyr@1.3.0",
         "registry+https://github.com/rust-lang/crates.io-index#serde_json@1.0.151",
-        "registry+https://github.com/rust-lang/crates.io-index#serde_yaml_ng@0.10.0",
         "registry+https://github.com/rust-lang/crates.io-index#tokio@1.50.0",
         "registry+https://github.com/rust-lang/crates.io-index#tracing@0.1.44",
         "registry+https://github.com/rust-lang/crates.io-index#tracing-subscriber@0.3.23"
       ]
     },
     {
-      "ref": "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl/3e53fc7b-d6ef-4ada-80e9-76e477a8e107/scratchpad/wt-alembic/crates/alembic-core#0.10.0",
+      "ref": "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl-sec-divinate/4a3f5dce-4ce6-4f41-b541-9b0d44dc8a61/scratchpad/wt/alembic/crates/alembic-core#0.10.0",
       "dependsOn": [
         "registry+https://github.com/rust-lang/crates.io-index#ipnet@2.12.2",
         "registry+https://github.com/rust-lang/crates.io-index#regex@1.13.1",
         "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.229",
         "registry+https://github.com/rust-lang/crates.io-index#serde_json@1.0.151",
         "registry+https://github.com/rust-lang/crates.io-index#thiserror@2.0.21",
-        "registry+https://github.com/rust-lang/crates.io-index#uuid@1.26.1"
+        "registry+https://github.com/rust-lang/crates.io-index#uuid@1.27.0"
       ]
     },
     {
-      "ref": "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl/3e53fc7b-d6ef-4ada-80e9-76e477a8e107/scratchpad/wt-alembic/crates/alembic-engine#0.10.0",
+      "ref": "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl-sec-divinate/4a3f5dce-4ce6-4f41-b541-9b0d44dc8a61/scratchpad/wt/alembic/crates/alembic-engine#0.10.0",
       "dependsOn": [
-        "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl/3e53fc7b-d6ef-4ada-80e9-76e477a8e107/scratchpad/wt-alembic/crates/alembic-adapter-sdk#0.10.0",
-        "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl/3e53fc7b-d6ef-4ada-80e9-76e477a8e107/scratchpad/wt-alembic/crates/alembic-core#0.10.0",
+        "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl-sec-divinate/4a3f5dce-4ce6-4f41-b541-9b0d44dc8a61/scratchpad/wt/alembic/crates/alembic-adapter-sdk#0.10.0",
+        "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl-sec-divinate/4a3f5dce-4ce6-4f41-b541-9b0d44dc8a61/scratchpad/wt/alembic/crates/alembic-core#0.10.0",
         "registry+https://github.com/rust-lang/crates.io-index#anyhow@1.0.104",
         "registry+https://github.com/rust-lang/crates.io-index#async-trait@0.1.92",
         "registry+https://github.com/rust-lang/crates.io-index#native-tls@0.2.18",
         "registry+https://github.com/rust-lang/crates.io-index#postgres-native-tls@0.5.3",
         "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.229",
         "registry+https://github.com/rust-lang/crates.io-index#serde_json@1.0.151",
-        "registry+https://github.com/rust-lang/crates.io-index#serde_yaml_ng@0.10.0",
         "registry+https://github.com/rust-lang/crates.io-index#starlark@0.14.2",
         "registry+https://github.com/rust-lang/crates.io-index#tempfile@3.27.0",
         "registry+https://github.com/rust-lang/crates.io-index#thiserror@2.0.21",
         "registry+https://github.com/rust-lang/crates.io-index#tokio@1.50.0",
         "registry+https://github.com/rust-lang/crates.io-index#tokio-postgres@0.7.18",
         "registry+https://github.com/rust-lang/crates.io-index#tracing@0.1.44",
-        "registry+https://github.com/rust-lang/crates.io-index#uuid@1.26.1"
+        "registry+https://github.com/rust-lang/crates.io-index#uuid@1.27.0"
       ]
     },
     {
@@ -14990,6 +15104,14 @@
       "ref": "registry+https://github.com/rust-lang/crates.io-index#android_system_properties@0.1.5",
       "dependsOn": [
         "registry+https://github.com/rust-lang/crates.io-index#libc@0.2.189"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#annotate-snippets@0.12.16",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#anstyle@1.0.14",
+        "registry+https://github.com/rust-lang/crates.io-index#memchr@2.8.1",
+        "registry+https://github.com/rust-lang/crates.io-index#unicode-width@0.2.2"
       ]
     },
     {
@@ -15035,6 +15157,9 @@
     },
     {
       "ref": "registry+https://github.com/rust-lang/crates.io-index#anyhow@1.0.104"
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#arraydeque@0.5.1"
     },
     {
       "ref": "registry+https://github.com/rust-lang/crates.io-index#arrayref@0.3.9"
@@ -15564,6 +15689,12 @@
       ]
     },
     {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#encoding_rs_io@0.1.8",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#encoding_rs@0.8.35"
+      ]
+    },
+    {
       "ref": "registry+https://github.com/rust-lang/crates.io-index#endian-type@0.1.2"
     },
     {
@@ -15635,7 +15766,6 @@
         "registry+https://github.com/rust-lang/crates.io-index#atomic@0.6.1",
         "registry+https://github.com/rust-lang/crates.io-index#pear@0.2.9",
         "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.229",
-        "registry+https://github.com/rust-lang/crates.io-index#serde_yaml@0.9.34+deprecated",
         "registry+https://github.com/rust-lang/crates.io-index#uncased@0.9.10",
         "registry+https://github.com/rust-lang/crates.io-index#version_check@0.9.5"
       ]
@@ -15790,6 +15920,13 @@
         "registry+https://github.com/rust-lang/crates.io-index#wasip2@1.0.2+wasi-0.2.9",
         "registry+https://github.com/rust-lang/crates.io-index#wasip3@0.4.0+wasi-0.3.0-rc-2026-01-06",
         "registry+https://github.com/rust-lang/crates.io-index#wasm-bindgen@0.2.108"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#granit-parser@1.3.0",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#arraydeque@0.5.1",
+        "registry+https://github.com/rust-lang/crates.io-index#smallvec@1.15.1"
       ]
     },
     {
@@ -16093,7 +16230,7 @@
       ]
     },
     {
-      "ref": "registry+https://github.com/rust-lang/crates.io-index#infrahub@0.4.4",
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#infrahub@0.4.5",
       "dependsOn": [
         "registry+https://github.com/rust-lang/crates.io-index#graphql-parser@0.4.1",
         "registry+https://github.com/rust-lang/crates.io-index#reqwest@0.13.5",
@@ -16362,7 +16499,7 @@
         "registry+https://github.com/rust-lang/crates.io-index#serde_json@1.0.151",
         "registry+https://github.com/rust-lang/crates.io-index#serde_with@3.21.0",
         "registry+https://github.com/rust-lang/crates.io-index#url@2.5.8",
-        "registry+https://github.com/rust-lang/crates.io-index#uuid@1.26.1"
+        "registry+https://github.com/rust-lang/crates.io-index#uuid@1.27.0"
       ]
     },
     {
@@ -16387,7 +16524,7 @@
         "registry+https://github.com/rust-lang/crates.io-index#serde_json@1.0.151",
         "registry+https://github.com/rust-lang/crates.io-index#serde_with@3.21.0",
         "registry+https://github.com/rust-lang/crates.io-index#url@2.5.8",
-        "registry+https://github.com/rust-lang/crates.io-index#uuid@1.26.1"
+        "registry+https://github.com/rust-lang/crates.io-index#uuid@1.27.0"
       ]
     },
     {
@@ -16417,6 +16554,9 @@
         "registry+https://github.com/rust-lang/crates.io-index#cfg_aliases@0.1.1",
         "registry+https://github.com/rust-lang/crates.io-index#libc@0.2.189"
       ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#nohash-hasher@0.2.0"
     },
     {
       "ref": "registry+https://github.com/rust-lang/crates.io-index#nu-ansi-term@0.50.3",
@@ -17164,6 +17304,21 @@
       "ref": "registry+https://github.com/rust-lang/crates.io-index#sequence_trie@0.3.6"
     },
     {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#serde-saphyr@1.3.0",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#annotate-snippets@0.12.16",
+        "registry+https://github.com/rust-lang/crates.io-index#base64@0.23.1",
+        "registry+https://github.com/rust-lang/crates.io-index#encoding_rs_io@0.1.8",
+        "registry+https://github.com/rust-lang/crates.io-index#figment@0.10.19",
+        "registry+https://github.com/rust-lang/crates.io-index#granit-parser@1.3.0",
+        "registry+https://github.com/rust-lang/crates.io-index#nohash-hasher@0.2.0",
+        "registry+https://github.com/rust-lang/crates.io-index#num-traits@0.2.19",
+        "registry+https://github.com/rust-lang/crates.io-index#serde_core@1.0.229",
+        "registry+https://github.com/rust-lang/crates.io-index#smallvec@1.15.1",
+        "registry+https://github.com/rust-lang/crates.io-index#zmij@1.0.14"
+      ]
+    },
+    {
       "ref": "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.229",
       "dependsOn": [
         "registry+https://github.com/rust-lang/crates.io-index#serde_core@1.0.229",
@@ -17235,26 +17390,6 @@
         "registry+https://github.com/rust-lang/crates.io-index#proc-macro2@1.0.106",
         "registry+https://github.com/rust-lang/crates.io-index#quote@1.0.45",
         "registry+https://github.com/rust-lang/crates.io-index#syn@2.0.117"
-      ]
-    },
-    {
-      "ref": "registry+https://github.com/rust-lang/crates.io-index#serde_yaml@0.9.34+deprecated",
-      "dependsOn": [
-        "registry+https://github.com/rust-lang/crates.io-index#indexmap@2.14.0",
-        "registry+https://github.com/rust-lang/crates.io-index#itoa@1.0.17",
-        "registry+https://github.com/rust-lang/crates.io-index#ryu@1.0.22",
-        "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.229",
-        "registry+https://github.com/rust-lang/crates.io-index#unsafe-libyaml@0.2.11"
-      ]
-    },
-    {
-      "ref": "registry+https://github.com/rust-lang/crates.io-index#serde_yaml_ng@0.10.0",
-      "dependsOn": [
-        "registry+https://github.com/rust-lang/crates.io-index#indexmap@2.14.0",
-        "registry+https://github.com/rust-lang/crates.io-index#itoa@1.0.17",
-        "registry+https://github.com/rust-lang/crates.io-index#ryu@1.0.22",
-        "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.229",
-        "registry+https://github.com/rust-lang/crates.io-index#unsafe-libyaml@0.2.11"
       ]
     },
     {
@@ -17815,10 +17950,10 @@
       "ref": "registry+https://github.com/rust-lang/crates.io-index#unicode-width@0.1.14"
     },
     {
-      "ref": "registry+https://github.com/rust-lang/crates.io-index#unicode-xid@0.2.6"
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#unicode-width@0.2.2"
     },
     {
-      "ref": "registry+https://github.com/rust-lang/crates.io-index#unsafe-libyaml@0.2.11"
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#unicode-xid@0.2.6"
     },
     {
       "ref": "registry+https://github.com/rust-lang/crates.io-index#untrusted@0.9.0"
@@ -17839,7 +17974,7 @@
       "ref": "registry+https://github.com/rust-lang/crates.io-index#utf8parse@0.2.2"
     },
     {
-      "ref": "registry+https://github.com/rust-lang/crates.io-index#uuid@1.26.1",
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#uuid@1.27.0",
       "dependsOn": [
         "registry+https://github.com/rust-lang/crates.io-index#getrandom@0.4.2",
         "registry+https://github.com/rust-lang/crates.io-index#js-sys@0.3.85",

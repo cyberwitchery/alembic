@@ -1,6 +1,6 @@
 [package]
 name = "alembic-cli"
-version = "0.10.0"
+version = "0.11.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -26,7 +26,7 @@ anyhow.workspace = true
 clap.workspace = true
 clap_complete.workspace = true
 serde_json.workspace = true
-serde_yaml.workspace = true
+serde-saphyr = { workspace = true, features = ["figment"] }
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

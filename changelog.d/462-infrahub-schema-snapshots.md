@@ -1,1 +1,0 @@
-- infrahub adapter: use `infrahub.rs` 0.4.5 for `/api/schema` snapshots, so schema preview/provisioning shares the client's transient-error retry and `Retry-After` handling; Infrahub e2e coverage now runs against 1.11.4 (#462)

@@ -1,1 +1,0 @@
-- `plan` and `apply` say which state they loaded and how many bindings it held; `plan` prints how declared objects matched (by state, by key, adopted, to create), and the plan and drift report json carry both (#500)

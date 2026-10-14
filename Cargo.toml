@@ -24,23 +24,23 @@ repository = "https://github.com/cyberwitchery/alembic"
 homepage = "https://github.com/cyberwitchery/alembic"
 
 [workspace.dependencies]
-alembic-core = { version = "0.10.0", path = "crates/alembic-core" }
-alembic-adapter-sdk = { version = "0.10.0", path = "crates/alembic-adapter-sdk" }
-alembic-engine = { version = "0.10.0", path = "crates/alembic-engine" }
-alembic-adapter-registry = { version = "0.10.0", path = "crates/alembic-adapter-registry" }
-alembic-adapter-netbox = { version = "0.10.0", path = "crates/alembic-adapter-netbox" }
-alembic-adapter-nautobot = { version = "0.10.0", path = "crates/alembic-adapter-nautobot" }
-alembic-adapter-infrahub = { version = "0.10.0", path = "crates/alembic-adapter-infrahub" }
-alembic-adapter-generic = { version = "0.10.0", path = "crates/alembic-adapter-generic" }
-alembic-adapter-peeringdb = { version = "0.10.0", path = "crates/alembic-adapter-peeringdb" }
-alembic-adapter-django = { version = "0.10.0", path = "crates/alembic-adapter-django" }
+alembic-core = { version = "0.11.0", path = "crates/alembic-core" }
+alembic-adapter-sdk = { version = "0.11.0", path = "crates/alembic-adapter-sdk" }
+alembic-engine = { version = "0.11.0", path = "crates/alembic-engine" }
+alembic-adapter-registry = { version = "0.11.0", path = "crates/alembic-adapter-registry" }
+alembic-adapter-netbox = { version = "0.11.0", path = "crates/alembic-adapter-netbox" }
+alembic-adapter-nautobot = { version = "0.11.0", path = "crates/alembic-adapter-nautobot" }
+alembic-adapter-infrahub = { version = "0.11.0", path = "crates/alembic-adapter-infrahub" }
+alembic-adapter-generic = { version = "0.11.0", path = "crates/alembic-adapter-generic" }
+alembic-adapter-peeringdb = { version = "0.11.0", path = "crates/alembic-adapter-peeringdb" }
+alembic-adapter-django = { version = "0.11.0", path = "crates/alembic-adapter-django" }
 anyhow = "1"
 async-trait = "0.1"
 clap = { version = "4", features = ["derive"] }
 clap_complete = { version = "4" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-serde_yaml = { package = "serde_yaml_ng", version = "0.10" }
+serde-saphyr = { version = "1.3", default-features = false }
 starlark = { version = "0.14.2", default-features = false }
 thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
@@ -59,4 +59,4 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 httpmock = "0.8"
 tempfile = "3"
 futures = "0.3"
-figment = { version = "0.10", features = ["yaml", "env"] }
+figment = { version = "0.10", features = ["env"] }

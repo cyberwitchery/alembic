@@ -130,7 +130,7 @@ fn probe_path(path: &Path) -> PathBuf {
 fn write_output<T: Serialize>(path: &Path, what: &str, value: &T) -> Result<()> {
     ensure_parent_dir(path)?;
     let raw = match output_kind(path) {
-        OutputKind::Yaml => serde_yaml::to_string(value)?.into_bytes(),
+        OutputKind::Yaml => alembic_engine::yaml::to_string(value)?.into_bytes(),
         OutputKind::Json => serde_json::to_string_pretty(value)?.into_bytes(),
     };
     fs::write(path, raw).with_context(|| format!("write {what}: {}", path.display()))
@@ -210,7 +210,7 @@ pub(super) fn read_plan(path: &Path) -> Result<Plan> {
 
 fn parse_as<T: DeserializeOwned>(kind: &OutputKind, raw: &str) -> Result<T> {
     Ok(match kind {
-        OutputKind::Yaml => serde_yaml::from_str(raw)?,
+        OutputKind::Yaml => alembic_engine::yaml::from_str(raw)?,
         OutputKind::Json => serde_json::from_str(raw)?,
     })
 }

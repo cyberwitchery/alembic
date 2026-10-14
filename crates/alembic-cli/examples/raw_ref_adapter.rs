@@ -35,7 +35,7 @@ fn attrs_of(value: serde_json::Value) -> JsonMap {
 impl ExternalAdapter for RawRefAdapter {
     type Error = anyhow::Error;
 
-    fn setup(&mut self, _configuration: &serde_yaml::Value) -> Result<()> {
+    fn setup(&mut self, _configuration: &serde_json::Value) -> Result<()> {
         Ok(())
     }
 

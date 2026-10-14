@@ -52,10 +52,10 @@ struct MyAdapter;
 impl ExternalAdapter for MyAdapter {
     type Error = anyhow::Error;
 
-    fn setup(&mut self, configuration: &serde_yaml::Value) -> anyhow::Result<()> {
+    fn setup(&mut self, configuration: &serde_json::Value) -> anyhow::Result<()> {
         if let Some(x) = configuration
             .get("my_backend_variable_x")
-            .and_then(serde_yaml::Value::as_f64) {
+            .and_then(serde_json::Value::as_f64) {
             ...
         }
         Ok(())
@@ -103,7 +103,7 @@ formatted with `{:#}`, as `error`; nothing else about the error reaches alembic.
 impl ExternalAdapter for MyAdapter {
     type Error = String;
 
-    fn setup(&mut self, configuration: &serde_yaml::Value) -> Result<(), String> {
+    fn setup(&mut self, configuration: &serde_json::Value) -> Result<(), String> {
         configuration
             .get("my_backend_variable_x")
             .ok_or_else(|| "setup needs `my_backend_variable_x`".to_string())?;

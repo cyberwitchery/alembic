@@ -1,6 +1,6 @@
 [package]
 name = "alembic-adapter-test"
-version = "0.10.0"
+version = "0.11.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -21,5 +21,4 @@ serde_json.workspace = true
 
 # the example adapters the conformance tests run against
 [dev-dependencies]
-serde_yaml.workspace = true
 tempfile.workspace = true

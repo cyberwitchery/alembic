@@ -11,7 +11,7 @@ pub struct AppliedOpsAdapter {}
 impl ExternalAdapter for AppliedOpsAdapter {
     type Error = anyhow::Error;
 
-    fn setup(&mut self, _configuration: &serde_yaml::Value) -> Result<()> {
+    fn setup(&mut self, _configuration: &serde_json::Value) -> Result<()> {
         Ok(())
     }
 
