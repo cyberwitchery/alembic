@@ -3,7 +3,7 @@
 use alembic_adapter_sdk::Op;
 use alembic_core::{key_string, uid_v5, Inventory, JsonMap, Key, Object, Schema, TypeName, Uid};
 use alembic_engine::Plan;
-use anyhow::{Context, Result};
+use anyhow::{ensure, Context, Result};
 use clap::{Parser, ValueEnum};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -46,10 +46,12 @@ impl Kind {
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
 struct Args {
-    /// the number of devices to generate; the support objects they reference come on top.
+    /// the number of devices to generate; the support objects, interfaces and cables come on top.
     #[clap(short, long, alias = "num-ops", default_value = "10")]
     num_devices: usize,
     /// the number of interfaces, spread over the devices; defaults to one per device.
+    /// neighbours are paired with a cable, so an odd one out, or every interface on
+    /// a single device, stays uncabled. needs at least one device.
     #[clap(short = 'i', long)]
     num_interfaces: Option<usize>,
     /// the kind of file to generate.
@@ -61,14 +63,19 @@ struct Args {
 }
 
 impl Args {
-    fn num_interfaces(&self) -> usize {
-        self.num_interfaces.unwrap_or(self.num_devices)
+    fn num_interfaces(&self) -> Result<usize> {
+        let num_interfaces = self.num_interfaces.unwrap_or(self.num_devices);
+        ensure!(
+            self.num_devices > 0 || num_interfaces == 0,
+            "{num_interfaces} interfaces need at least one device to sit on"
+        );
+        Ok(num_interfaces)
     }
 }
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    let num_interfaces = args.num_interfaces();
+    let num_interfaces = args.num_interfaces()?;
     let output = args
         .output
         .unwrap_or_else(|| PathBuf::from(args.kind.default_output()));
@@ -153,11 +160,8 @@ fn objects(num_devices: usize, num_interfaces: usize) -> Result<Vec<Object>> {
     if num_devices == 0 {
         return Ok(objects);
     }
-    let mut interfaces = Vec::with_capacity(num_interfaces);
     for i in 0..num_interfaces {
-        let interface = interface(i, i % num_devices)?;
-        interfaces.push(interface.uid);
-        objects.push(interface);
+        objects.push(interface(i, i % num_devices)?);
     }
 
     // neighbours sit on neighbouring devices, so a cable joins two devices;
@@ -165,8 +169,8 @@ fn objects(num_devices: usize, num_interfaces: usize) -> Result<Vec<Object>> {
     if num_devices < 2 {
         return Ok(objects);
     }
-    for (i, pair) in interfaces.chunks_exact(2).enumerate() {
-        objects.push(cable(i, pair[0], pair[1])?);
+    for a in (0..num_interfaces / 2).map(|pair| 2 * pair) {
+        objects.push(cable((a, a % num_devices), (a + 1, (a + 1) % num_devices))?);
     }
 
     Ok(objects)
@@ -245,44 +249,46 @@ fn device_key(i: usize) -> Key {
     )]))
 }
 
-fn device_uid(i: usize) -> Uid {
-    uid_v5(DEVICE, &key_string(&device_key(i)))
-}
-
 /// build a single `dcim.interface` on device `device`.
 fn interface(i: usize, device: usize) -> Result<Object> {
-    let name = json!(interface_name(i));
-    let device = json!(device_uid(device).to_string());
+    let key = interface_key(i, device);
     // `device` and `name` are declared in both `key` and `fields`, so they are carried in both.
-    object(
-        INTERFACE,
-        Key::from(BTreeMap::from([
-            ("device".to_string(), device.clone()),
-            ("name".to_string(), name.clone()),
-        ])),
-        [
-            ("name".to_string(), name),
-            ("type".to_string(), json!("25gbase-x-sfp28")),
-            ("device".to_string(), device),
-            ("enabled".to_string(), Value::Bool(true)),
-        ],
-    )
+    let mut attrs = BTreeMap::clone(&key);
+    attrs.extend([
+        ("type".to_string(), json!("25gbase-x-sfp28")),
+        ("enabled".to_string(), Value::Bool(true)),
+    ]);
+    object(INTERFACE, key, attrs)
 }
 
 fn interface_name(i: usize) -> String {
     format!("interface_{i}")
 }
 
-/// build a single `dcim.cable` joining two interfaces.
-fn cable(i: usize, interface_a: Uid, interface_b: Uid) -> Result<Object> {
-    let label = format!("label_{i}");
+fn interface_key(i: usize, device: usize) -> Key {
+    Key::from(BTreeMap::from([
+        (
+            "device".to_string(),
+            json!(uid_of(DEVICE, &device_key(device)).to_string()),
+        ),
+        ("name".to_string(), json!(interface_name(i))),
+    ]))
+}
+
+/// build a single `dcim.cable` joining interfaces `a` and `b`, each given as
+/// `(interface, device)`. the label names both ends, so a cable is the same
+/// identity across runs only while it joins the same two interfaces.
+fn cable(a: (usize, usize), b: (usize, usize)) -> Result<Object> {
+    let end = |(i, device)| format!("{}:{}", device_name(device), interface_name(i));
+    let label = json!(format!("{}-{}", end(a), end(b)));
+    let termination = |(i, device)| json!([uid_of(INTERFACE, &interface_key(i, device))]);
     object(
         CABLE,
-        Key::from(BTreeMap::from([("label".to_string(), json!(label))])),
+        Key::from(BTreeMap::from([("label".to_string(), label.clone())])),
         [
-            ("label".to_string(), json!(label)),
-            ("a_terminations".to_string(), json!([interface_a])),
-            ("b_terminations".to_string(), json!([interface_b])),
+            ("label".to_string(), label),
+            ("a_terminations".to_string(), termination(a)),
+            ("b_terminations".to_string(), termination(b)),
         ],
     )
 }
@@ -306,7 +312,7 @@ fn object(
     key: Key,
     attrs: impl IntoIterator<Item = (String, Value)>,
 ) -> Result<Object> {
-    let uid = uid_v5(type_name, &key_string(&key));
+    let uid = uid_of(type_name, &key);
     Object::new(
         uid,
         TypeName::new(type_name),
@@ -314,6 +320,11 @@ fn object(
         JsonMap::from(BTreeMap::from_iter(attrs)),
     )
     .with_context(|| format!("building a {type_name}"))
+}
+
+/// the uid of the `type_name` object keyed on `key`.
+fn uid_of(type_name: &str, key: &Key) -> Uid {
+    uid_v5(type_name, &key_string(key))
 }
 
 fn slug_of(type_name: &str, i: usize) -> String {
@@ -331,7 +342,7 @@ fn object_ref(type_name: &str, i: usize) -> Value {
 }
 
 fn support_uid(type_name: &str, i: usize) -> Uid {
-    uid_v5(type_name, &key_string(&slug_key(&slug_of(type_name, i))))
+    uid_of(type_name, &slug_key(&slug_of(type_name, i)))
 }
 
 /// the schema shared by every generated artifact.
@@ -437,15 +448,28 @@ mod tests {
             .expect("args should parse")
     }
 
+    fn num_interfaces(args: &[&str]) -> usize {
+        parse(args)
+            .num_interfaces()
+            .expect("interface count should be accepted")
+    }
+
     #[test]
     fn interfaces_default_to_one_per_device() {
-        assert_eq!(parse(&["-n", "1000"]).num_interfaces(), 1000);
-        assert_eq!(parse(&[]).num_interfaces(), 10);
+        assert_eq!(num_interfaces(&["-n", "1000"]), 1000);
+        assert_eq!(num_interfaces(&[]), 10);
+        assert_eq!(num_interfaces(&["-n", "0"]), 0);
     }
 
     #[test]
     fn an_explicit_interface_count_wins() {
-        assert_eq!(parse(&["-n", "1000", "-i", "8"]).num_interfaces(), 8);
+        assert_eq!(num_interfaces(&["-n", "1000", "-i", "8"]), 8);
+    }
+
+    #[test]
+    fn interfaces_without_devices_are_rejected() {
+        assert!(parse(&["-n", "0", "-i", "5"]).num_interfaces().is_err());
+        assert_eq!(num_interfaces(&["-n", "0", "-i", "0"]), 0);
     }
 
     fn create_ops(plan: &Plan) -> Vec<&Op> {
@@ -572,35 +596,46 @@ mod tests {
         }
     }
 
+    /// the uids some object's attrs point at.
+    fn referenced(objects: &[Object]) -> BTreeSet<Uid> {
+        objects
+            .iter()
+            .flat_map(|object| object.attrs.values())
+            .flat_map(|value| {
+                value
+                    .as_array()
+                    .map_or(std::slice::from_ref(value), Vec::as_slice)
+            })
+            .filter_map(|value| value.as_str())
+            .filter_map(|raw| Uid::parse_str(raw).ok())
+            .collect()
+    }
+
+    /// the names of the interfaces no cable ends on.
+    fn uncabled(objects: &[Object]) -> Vec<String> {
+        let referenced = referenced(objects);
+        objects
+            .iter()
+            .filter(|object| object.type_name.as_str() == INTERFACE)
+            .filter(|object| !referenced.contains(&object.uid))
+            .map(|object| object.attrs["name"].as_str().expect("a name").to_string())
+            .collect()
+    }
+
     #[test]
     fn every_support_object_is_referenced() {
-        // an unreferenced pool member is dead weight in every generated file.
-        for n in [1, 3, 9, 40] {
-            let inventory = build_inventory(n, INTERFACES).expect("inventory should build");
-            let referenced: BTreeSet<_> = inventory
-                .objects
-                .iter()
-                .flat_map(|object| object.attrs.values())
-                .flat_map(|value| {
-                    value
-                        .as_array()
-                        .map_or(std::slice::from_ref(value), Vec::as_slice)
-                })
-                .filter_map(|value| value.as_str())
-                .filter_map(|raw| Uid::parse_str(raw).ok())
-                .collect();
-            // with one device there is nothing to cable an interface to.
-            let mut root_types = vec![DEVICE, CABLE];
-            if n < 2 {
-                root_types.push(INTERFACE);
-            }
+        // an unreferenced pool member is dead weight in every generated file;
+        // which interfaces stay uncabled is pinned by its own tests below.
+        for (n, i) in [(1, 8), (3, 8), (9, 7), (40, 8), (40, 40)] {
+            let inventory = build_inventory(n, i).expect("inventory should build");
+            let referenced = referenced(&inventory.objects);
             for object in &inventory.objects {
-                if root_types.contains(&object.type_name.as_str()) {
+                if [DEVICE, INTERFACE, CABLE].contains(&object.type_name.as_str()) {
                     continue;
                 }
                 assert!(
                     referenced.contains(&object.uid),
-                    "nothing references {} at n = {n}",
+                    "nothing references {} at n = {n}, i = {i}",
                     key_string(&object.key)
                 );
             }
@@ -608,17 +643,56 @@ mod tests {
     }
 
     #[test]
+    fn every_interface_is_cabled_at_an_even_count() {
+        for (n, i) in [(2, 8), (3, 8), (9, 2), (40, 40)] {
+            let objects = objects(n, i).expect("objects should build");
+            assert_eq!(
+                uncabled(&objects),
+                Vec::<String>::new(),
+                "at n = {n}, i = {i}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_odd_interface_out_is_left_uncabled() {
+        for (n, i) in [(2, 1), (5, 7), (9, 9)] {
+            let objects = objects(n, i).expect("objects should build");
+            assert_eq!(
+                uncabled(&objects),
+                vec![interface_name(i - 1)],
+                "at n = {n}, i = {i}"
+            );
+        }
+    }
+
+    #[test]
     fn support_pools_are_fixed_so_growth_is_linear() {
+        // interfaces and cables scale with their own count, so only the pools
+        // are counted here.
         let support = |n| {
-            let inventory = build_inventory(n, INTERFACES).expect("inventory should build");
-            inventory.objects.len() - devices(&inventory.objects).len()
+            let inventory = build_inventory(n, n).expect("inventory should build");
+            inventory
+                .objects
+                .iter()
+                .filter(|object| ![DEVICE, INTERFACE, CABLE].contains(&object.type_name.as_str()))
+                .count()
         };
-        let ports = INTERFACES + INTERFACES / 2;
-        let pools = MANUFACTURERS + MODELS + ROLES + SITES + ports;
+        let pools = MANUFACTURERS + MODELS + ROLES + SITES;
         assert_eq!(support(0), 0);
-        assert_eq!(support(1), 4 + INTERFACES);
+        assert_eq!(support(1), 4);
         assert_eq!(support(1000), pools);
         assert_eq!(support(2000), pools);
+    }
+
+    #[test]
+    fn the_default_interface_count_grows_with_the_devices() {
+        let pools = MANUFACTURERS + MODELS + ROLES + SITES;
+        for n in [1000, 2001] {
+            let objects = objects(n, n).expect("objects should build");
+            // a device, an interface and half a cable each.
+            assert_eq!(objects.len(), pools + n + n + n / 2, "at n = {n}");
+        }
     }
 
     /// the device each interface sits on, by interface uid.
@@ -670,6 +744,20 @@ mod tests {
         let objects = objects(1, 8).expect("objects should build");
         assert_eq!(interface_devices(&objects).len(), 8);
         assert!(cables(&objects).is_empty());
+        assert_eq!(uncabled(&objects).len(), 8);
+    }
+
+    #[test]
+    fn a_cable_is_labelled_by_both_of_its_ends() {
+        let joined = cable((0, 0), (1, 1)).expect("cable should build");
+        assert_eq!(
+            joined.key.get("label"),
+            Some(&json!("device_0:interface_0-device_1:interface_1"))
+        );
+
+        // the same pair of interface names on other devices is another cable.
+        let elsewhere = cable((0, 0), (1, 2)).expect("cable should build");
+        assert_ne!(joined.uid, elsewhere.uid);
     }
 
     #[test]
