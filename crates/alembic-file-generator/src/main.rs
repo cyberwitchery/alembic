@@ -221,10 +221,13 @@ fn device_name(i: usize) -> String {
 fn interface(i: usize, devices: &[Object]) -> Result<Object> {
     let name = interface_name(i);
     let dev = json!(devices[i % devices.len()].uid.to_string());
-    // `name` is declared in both `key` and `fields`, so it is carried in both.
+    // `device` and `name` are declared in both `key` and `fields`, so they are carried in both.
     object(
         INTERFACE,
-        Key::from(BTreeMap::from([("name".to_string(), json!(name))])),
+        Key::from(BTreeMap::from([
+            ("device".to_string(), dev.clone()),
+            ("name".to_string(), json!(name)),
+        ])),
         [
             ("name".to_string(), json!(name)),
             ("type".to_string(), json!("25gbase-x-sfp28")),
@@ -364,6 +367,9 @@ types:
           type: string
     dcim.interface:
       key:
+        device:
+          type: ref
+          target: dcim.device
         name:
           type: slug
       fields:
@@ -620,6 +626,19 @@ mod tests {
         assert_eq!(device.attrs.get("site"), Some(&object_ref(SITE, 2)));
         assert_eq!(device.attrs.get("role"), Some(&object_ref(ROLE, 2)));
         assert_eq!(device.attrs.get("device_type"), Some(&object_ref(MODEL, 2)));
+    }
+
+    #[test]
+    fn interface_names_are_unique_per_device_not_globally() {
+        let on = |i| {
+            let device = device(i).expect("device should build");
+            interface(0, &[device]).expect("interface should build")
+        };
+        let (a, b) = (on(1), on(2));
+        assert_eq!(a.key.get("name"), b.key.get("name"));
+        assert_eq!(a.key.get("device"), a.attrs.get("device"));
+        assert_ne!(key_string(&a.key), key_string(&b.key));
+        assert_ne!(a.uid, b.uid);
     }
 
     #[test]
