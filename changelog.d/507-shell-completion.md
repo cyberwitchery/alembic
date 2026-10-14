@@ -1,1 +1,1 @@
-- add cli command for generating shell completion scripts (supports 'elvish', 'zsh', 'fish', 'bash' & 'powershell')
+- cli: `completion` command prints a shell completion script for bash, elvish, zsh, fish and powershell (#507)
