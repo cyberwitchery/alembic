@@ -4012,6 +4012,59 @@ async fn run_skill_without_a_name_lists_what_this_binary_carries() {
 }
 
 #[test]
+fn completion_parses_every_documented_shell() {
+    use clap::Parser;
+    for shell in ["bash", "elvish", "fish", "powershell", "zsh"] {
+        assert!(
+            Cli::try_parse_from(["alembic", "completion", shell]).is_ok(),
+            "{shell} must parse"
+        );
+    }
+}
+
+#[test]
+fn completion_rejects_an_unknown_shell() {
+    use clap::Parser;
+    let result = Cli::try_parse_from(["alembic", "completion", "tcsh"]);
+    let err = result.err().expect("an unknown shell must be rejected");
+    assert_eq!(err.kind(), clap::error::ErrorKind::InvalidValue);
+}
+
+#[test]
+fn completion_script_names_the_binary_and_its_subcommands() {
+    use clap::ValueEnum;
+    for shell in Shell::value_variants() {
+        let mut script = Vec::new();
+        generate(*shell, &mut Cli::command(), "alembic", &mut script);
+        let script = String::from_utf8(script).unwrap();
+        assert!(script.contains("alembic"), "{shell}: {script:.80}");
+        assert!(script.contains("plan"), "{shell} must complete subcommands");
+    }
+}
+
+#[tokio::test]
+async fn run_completion_writes_no_files() {
+    let dir = tempdir().unwrap();
+    let _cwd = CwdGuard::acquire_async().await;
+    std::env::set_current_dir(dir.path()).unwrap();
+
+    run(
+        Cli {
+            command: Command::Completion { shell: Shell::Zsh },
+        },
+        AppConfig::load().unwrap(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        fs::read_dir(dir.path()).unwrap().count(),
+        0,
+        "completion prints to stdout and leaves no artifact behind"
+    );
+}
+
+#[test]
 fn a_rejected_schema_fails_the_plan_and_a_preview_hiccup_does_not() {
     let rejected = anyhow::Error::from(alembic_adapter_sdk::AdapterApplyError::SchemaMismatch {
         message: "invalid custom object field name 'mgmt-vlan'".to_string(),
