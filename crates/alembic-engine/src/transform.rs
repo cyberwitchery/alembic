@@ -528,6 +528,28 @@ pub fn compile_map(input: &Inventory, spec: &MapSpec) -> Result<Inventory> {
         }
     }
 
+    // types some reshaping rule matches: passthrough leaves their schema to the
+    // spec when no object of theirs comes through.
+    let reshaped_types: BTreeSet<&str> = {
+        let mut reshaped = BTreeSet::new();
+        for rule in &spec.rules {
+            if matches!(rule.emit, EmitSpec::Keyword(EmitKeyword::Passthrough)) {
+                continue;
+            }
+            let matcher = Matcher::parse(&rule.r#match)
+                .with_context(|| format!("rule {}: invalid match selector", rule.name))?;
+            reshaped.extend(
+                input
+                    .schema
+                    .types
+                    .keys()
+                    .map(String::as_str)
+                    .filter(|t| matcher.type_matches(t)),
+            );
+        }
+        reshaped
+    };
+
     // pass 2: passthrough rules copy every matched source no other rule claimed,
     // unchanged -- key, attrs, and uid alike, so a passed-through object keeps
     // its identity and nothing pointing at it moves.
@@ -543,6 +565,16 @@ pub fn compile_map(input: &Inventory, spec: &MapSpec) -> Result<Inventory> {
         }
         let matcher = Matcher::parse(&rule.r#match)
             .with_context(|| format!("rule {}: invalid match selector", rule.name))?;
+        // a matched type carries its schema even with no objects, so a ref
+        // declared to it (say a null `primary_ip4`) still names a known type.
+        passthrough_types.extend(
+            input
+                .schema
+                .types
+                .keys()
+                .filter(|t| matcher.type_matches(t) && !reshaped_types.contains(t.as_str()))
+                .cloned(),
+        );
         for src in input.objects.iter() {
             if claimed.contains_key(&src.uid) || !matcher.type_matches(src.type_name.as_str()) {
                 continue;
@@ -2216,6 +2248,49 @@ rules:
             iface.uid.to_string()
         );
         assert!(ip.attrs.get("assigned_interface").is_none());
+    }
+
+    #[test]
+    fn passthrough_carries_schema_of_types_without_objects() {
+        let input: Inventory = serde_json::from_value(json!({
+            "schema": { "types": {
+                "dcim.device": { "key": { "name": {"type":"slug"} },
+                                 "fields": { "name": {"type":"slug"},
+                                             "primary_ip4": {"type":{"type":"ref","target":"ipam.ip_address"},"nullable":true} } },
+                "dcim.site": { "key": { "slug": {"type":"slug"} },
+                               "fields": { "slug": {"type":"slug"} } },
+                "ipam.ip_address": { "key": { "address": {"type":"string"} },
+                                     "fields": { "address": {"type":"string"} } }
+            }},
+            "objects": [
+                { "uid": Uuid::from_u128(1).to_string(), "type": "dcim.device",
+                  "key": {"name":"leaf01"}, "attrs": {"name":"leaf01", "primary_ip4": null} }
+            ]
+        }))
+        .unwrap();
+        let out = compile_map(
+            &input,
+            &spec(
+                r#"
+schema:
+  types: {}
+rules:
+  - name: sites
+    match: dcim.site
+    emit:
+      type: dcim.location
+      key: { slug: "${key.slug}" }
+  - name: rest
+    match: "*"
+    emit: passthrough
+"#,
+            ),
+        )
+        .unwrap();
+        // no ip passed through, yet the device's ref to it still validates.
+        assert!(out.schema.types.contains_key("ipam.ip_address"));
+        // a type a reshaping rule matches is left to the spec.
+        assert!(!out.schema.types.contains_key("dcim.site"));
     }
 
     #[test]
