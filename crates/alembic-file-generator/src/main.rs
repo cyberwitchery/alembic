@@ -541,6 +541,19 @@ mod tests {
     }
 
     #[test]
+    fn support_pools_are_fixed_so_growth_is_linear() {
+        let support = |n| {
+            let inventory = build_inventory(n).expect("inventory should build");
+            inventory.objects.len() - devices(&inventory.objects).len()
+        };
+        let pools = MANUFACTURERS + MODELS + ROLES + SITES + INTERFACES + INTERFACES / 2;
+        assert_eq!(support(0), 0);
+        assert_eq!(support(1), 5);
+        assert_eq!(support(1000), pools);
+        assert_eq!(support(2000), pools);
+    }
+
+    #[test]
     fn build_plan_has_an_op_per_generated_object() {
         let plan = build_plan(7).expect("plan should build");
         let objects = objects(7).expect("objects should build");
