@@ -49,6 +49,9 @@ struct Args {
     /// the number of devices to generate; the support objects they reference come on top.
     #[clap(short, long, alias = "num-ops", default_value = "10")]
     num_devices: usize,
+    /// the number of interfaces, spread over the devices
+    #[clap(short = 'i', long, default_value_t = INTERFACES)]
+    num_interfaces: usize,
     /// the kind of file to generate.
     #[clap(short, long, value_enum, default_value_t = Kind::Plan)]
     kind: Kind,
@@ -62,21 +65,29 @@ fn main() -> Result<()> {
     let output = args
         .output
         .unwrap_or_else(|| PathBuf::from(args.kind.default_output()));
-    write_json(&render(args.kind, args.num_devices)?, &output)
+    write_json(
+        &render(args.kind, args.num_devices, args.num_interfaces)?,
+        &output,
+    )
 }
 
 /// build the requested artifact and render it as pretty json.
-fn render(kind: Kind, num_devices: usize) -> Result<String> {
+fn render(kind: Kind, num_devices: usize, num_interfaces: usize) -> Result<String> {
     match kind {
-        Kind::Plan => serde_json::to_string_pretty(&build_plan(num_devices)?),
-        Kind::Inventory => serde_json::to_string_pretty(&build_inventory(num_devices)?),
+        Kind::Plan => serde_json::to_string_pretty(&build_plan(num_devices, num_interfaces)?),
+        Kind::Inventory => {
+            serde_json::to_string_pretty(&build_inventory(num_devices, num_interfaces)?)
+        }
     }
     .context("serializing artifact")
 }
 
 /// build a plan of create operations, one per generated object.
-fn build_plan(num_devices: usize) -> Result<Plan> {
-    let ops = objects(num_devices)?.into_iter().map(create_op).collect();
+fn build_plan(num_devices: usize, num_interfaces: usize) -> Result<Plan> {
+    let ops = objects(num_devices, num_interfaces)?
+        .into_iter()
+        .map(create_op)
+        .collect();
     Ok(Plan {
         schema: schema()?,
         ops,
@@ -86,11 +97,11 @@ fn build_plan(num_devices: usize) -> Result<Plan> {
 }
 
 /// build an inventory of the same objects the plan creates.
-fn build_inventory(num_devices: usize) -> Result<Inventory> {
+fn build_inventory(num_devices: usize, num_interfaces: usize) -> Result<Inventory> {
     Ok(Inventory {
         schema: schema()?,
         scope: None,
-        objects: objects(num_devices)?,
+        objects: objects(num_devices, num_interfaces)?,
     })
 }
 
@@ -111,7 +122,7 @@ fn write_json(json: &str, path: &Path) -> Result<()> {
 ///
 /// each pool is capped at the device count as well as its own size, so every
 /// emitted support object is referenced by at least one device.
-fn objects(num_devices: usize) -> Result<Vec<Object>> {
+fn objects(num_devices: usize, num_interfaces: usize) -> Result<Vec<Object>> {
     let mut objects = Vec::new();
     for i in 0..num_devices.min(MANUFACTURERS) {
         objects.push(manufacturer(i)?);
@@ -133,7 +144,11 @@ fn objects(num_devices: usize) -> Result<Vec<Object>> {
         devices.push(device);
     }
 
-    let num_interfaces = num_devices.min(INTERFACES);
+    let num_interfaces = if devices.is_empty() {
+        0
+    } else {
+        num_interfaces
+    };
     let mut interfaces = Vec::with_capacity(num_interfaces);
 
     for i in 0..num_interfaces {
@@ -142,10 +157,10 @@ fn objects(num_devices: usize) -> Result<Vec<Object>> {
         interfaces.push(interface);
     }
 
-    for a in 0..(num_interfaces / 2) {
-        let interface_a = interfaces[a].uid;
-        let interface_b = interfaces[a + (num_interfaces / 2)].uid;
-        objects.push(cable(a, interface_a, interface_b)?);
+    // neighbours sit on neighbouring devices, so a cable joins two devices
+    // whenever there are at least two.
+    for (i, pair) in interfaces.chunks_exact(2).enumerate() {
+        objects.push(cable(i, pair[0].uid, pair[1].uid)?);
     }
 
     Ok(objects)
@@ -457,7 +472,7 @@ mod tests {
     fn every_declared_type_is_generated() {
         // the schema is only worth carrying for the types the generator emits,
         // so the claim is checked against the schema rather than a second list.
-        let inventory = build_inventory(20).expect("inventory should build");
+        let inventory = build_inventory(20, INTERFACES).expect("inventory should build");
         let emitted: BTreeSet<_> = inventory
             .objects
             .iter()
@@ -476,7 +491,7 @@ mod tests {
         // the regression the generator shipped: empty keys made every device
         // one identity, and `validate` rejected the lot.
         for n in [0, 1, 2, 3, 17, 40] {
-            let inventory = build_inventory(n).expect("inventory should build");
+            let inventory = build_inventory(n, INTERFACES).expect("inventory should build");
             assert_eq!(errors(&inventory), Vec::<String>::new(), "at n = {n}");
         }
     }
@@ -484,7 +499,7 @@ mod tests {
     #[test]
     fn generated_plan_objects_validate_as_an_inventory() {
         for n in [0, 1, 3, 17] {
-            let plan = build_plan(n).expect("plan should build");
+            let plan = build_plan(n, INTERFACES).expect("plan should build");
             let inventory = plan_as_inventory(&plan);
             assert_eq!(errors(&inventory), Vec::<String>::new(), "at n = {n}");
         }
@@ -492,7 +507,7 @@ mod tests {
 
     #[test]
     fn devices_are_distinct_identities() {
-        let inventory = build_inventory(50).expect("inventory should build");
+        let inventory = build_inventory(50, INTERFACES).expect("inventory should build");
         let devices = devices(&inventory.objects);
         assert_eq!(devices.len(), 50);
 
@@ -508,7 +523,7 @@ mod tests {
 
     #[test]
     fn every_object_derives_its_uid_from_its_key() {
-        let inventory = build_inventory(30).expect("inventory should build");
+        let inventory = build_inventory(30, INTERFACES).expect("inventory should build");
         for object in &inventory.objects {
             assert_eq!(
                 object.uid,
@@ -524,7 +539,7 @@ mod tests {
     fn every_support_object_is_referenced() {
         // an unreferenced pool member is dead weight in every generated file.
         for n in [1, 3, 9, 40] {
-            let inventory = build_inventory(n).expect("inventory should build");
+            let inventory = build_inventory(n, INTERFACES).expect("inventory should build");
             let referenced: BTreeSet<_> = inventory
                 .objects
                 .iter()
@@ -549,20 +564,84 @@ mod tests {
     #[test]
     fn support_pools_are_fixed_so_growth_is_linear() {
         let support = |n| {
-            let inventory = build_inventory(n).expect("inventory should build");
+            let inventory = build_inventory(n, INTERFACES).expect("inventory should build");
             inventory.objects.len() - devices(&inventory.objects).len()
         };
-        let pools = MANUFACTURERS + MODELS + ROLES + SITES + INTERFACES + INTERFACES / 2;
+        let ports = INTERFACES + INTERFACES / 2;
+        let pools = MANUFACTURERS + MODELS + ROLES + SITES + ports;
         assert_eq!(support(0), 0);
-        assert_eq!(support(1), 5);
+        assert_eq!(support(1), 4 + ports);
         assert_eq!(support(1000), pools);
         assert_eq!(support(2000), pools);
     }
 
+    /// the device each interface sits on, by interface uid.
+    fn interface_devices(objects: &[Object]) -> BTreeMap<String, Value> {
+        objects
+            .iter()
+            .filter(|object| object.type_name.as_str() == INTERFACE)
+            .map(|object| (object.uid.to_string(), object.attrs["device"].clone()))
+            .collect()
+    }
+
+    fn cables(objects: &[Object]) -> Vec<&Object> {
+        objects
+            .iter()
+            .filter(|object| object.type_name.as_str() == CABLE)
+            .collect()
+    }
+
+    #[test]
+    fn interface_count_is_independent_of_the_device_count() {
+        for (n, i) in [(3, 8), (20, 8), (5, 0), (5, 7)] {
+            let objects = objects(n, i).expect("objects should build");
+            assert_eq!(interface_devices(&objects).len(), i, "at n = {n}, i = {i}");
+            assert_eq!(cables(&objects).len(), i / 2, "at n = {n}, i = {i}");
+        }
+    }
+
+    #[test]
+    fn interfaces_are_spread_over_the_devices_in_turn() {
+        let objects = objects(3, 8).expect("objects should build");
+        for (i, object) in objects
+            .iter()
+            .filter(|object| object.type_name.as_str() == INTERFACE)
+            .enumerate()
+        {
+            let device = device(i % 3).expect("device should build");
+            assert_eq!(object.attrs["device"], json!(device.uid.to_string()));
+        }
+    }
+
+    #[test]
+    fn no_devices_means_no_interfaces() {
+        let objects = objects(0, 8).expect("objects should build");
+        assert!(objects.is_empty());
+    }
+
+    #[test]
+    fn cables_join_two_devices_once_there_are_two() {
+        for (n, i) in [(2, 8), (3, 8), (4, 8), (8, 8), (2, 20), (20, 8)] {
+            let objects = objects(n, i).expect("objects should build");
+            let on = interface_devices(&objects);
+            for cable in cables(&objects) {
+                let end = |side: &str| {
+                    let uid = cable.attrs[side][0].as_str().expect("a uid string");
+                    on[uid].clone()
+                };
+                assert_ne!(
+                    end("a_terminations"),
+                    end("b_terminations"),
+                    "a cable loops on one device at n = {n}, i = {i}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn build_plan_has_an_op_per_generated_object() {
-        let plan = build_plan(7).expect("plan should build");
-        let objects = objects(7).expect("objects should build");
+        let plan = build_plan(7, INTERFACES).expect("plan should build");
+        let objects = objects(7, INTERFACES).expect("objects should build");
         assert_eq!(plan.ops.len(), objects.len());
         assert_eq!(create_ops(&plan).len(), objects.len());
         assert_eq!(devices(&objects).len(), 7);
@@ -570,15 +649,15 @@ mod tests {
 
     #[test]
     fn build_plan_with_zero_ops_is_empty() {
-        let plan = build_plan(0).expect("empty plan should build");
+        let plan = build_plan(0, INTERFACES).expect("empty plan should build");
         assert!(plan.ops.is_empty());
-        let inventory = build_inventory(0).expect("empty inventory should build");
+        let inventory = build_inventory(0, INTERFACES).expect("empty inventory should build");
         assert!(inventory.objects.is_empty());
     }
 
     #[test]
     fn build_plan_carries_the_schema() {
-        let plan = build_plan(1).expect("plan should build");
+        let plan = build_plan(1, INTERFACES).expect("plan should build");
         assert!(plan.schema.types.contains_key(DEVICE));
         // the generator never fills in a summary or a schema preview.
         assert!(plan.summary.is_none());
@@ -587,19 +666,19 @@ mod tests {
 
     #[test]
     fn build_inventory_carries_the_same_schema_as_the_plan() {
-        let plan = build_plan(3).expect("plan should build");
-        let inventory = build_inventory(3).expect("inventory should build");
+        let plan = build_plan(3, INTERFACES).expect("plan should build");
+        let inventory = build_inventory(3, INTERFACES).expect("inventory should build");
         assert_eq!(inventory.schema, plan.schema);
         assert_eq!(
             inventory.objects,
-            objects(3).expect("objects should build"),
+            objects(3, INTERFACES).expect("objects should build"),
             "the two kinds describe the same objects"
         );
     }
 
     #[test]
     fn every_op_agrees_with_the_object_it_carries() {
-        let plan = build_plan(9).expect("plan should build");
+        let plan = build_plan(9, INTERFACES).expect("plan should build");
         for op in &plan.ops {
             let Op::Create {
                 uid,
@@ -655,8 +734,8 @@ mod tests {
         );
 
         for kind in [Kind::Plan, Kind::Inventory] {
-            let first = render(kind, 5).expect("artifact should render");
-            let second = render(kind, 5).expect("artifact should render");
+            let first = render(kind, 5, INTERFACES).expect("artifact should render");
+            let second = render(kind, 5, INTERFACES).expect("artifact should render");
             assert_eq!(first, second, "{kind:?} is not byte-stable");
         }
     }
@@ -665,7 +744,7 @@ mod tests {
     fn round_trip(kind: Kind, num_devices: usize) -> String {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("out.json");
-        let json = render(kind, num_devices).expect("artifact should render");
+        let json = render(kind, num_devices, INTERFACES).expect("artifact should render");
         write_json(&json, &path).expect("artifact should write");
         fs::read_to_string(&path).expect("output should exist")
     }
@@ -688,7 +767,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         // a path whose parent directory does not exist cannot be written.
         let path = dir.path().join("does/not/exist/plan.json");
-        let json = render(Kind::Plan, 1).expect("plan should render");
+        let json = render(Kind::Plan, 1, INTERFACES).expect("plan should render");
         assert!(write_json(&json, &path).is_err());
     }
 
