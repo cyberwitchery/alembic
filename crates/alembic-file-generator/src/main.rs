@@ -48,7 +48,7 @@ impl Kind {
 struct Args {
     /// the number of devices to generate; the support objects they reference come on top.
     #[clap(short, long, alias = "num-ops", default_value = "10")]
-    num_devices: u128,
+    num_devices: usize,
     /// the number of interfaces, spread over the devices; defaults to one per device.
     #[clap(short = 'i', long)]
     num_interfaces: Option<usize>,
@@ -62,9 +62,7 @@ struct Args {
 
 impl Args {
     fn num_interfaces(&self) -> usize {
-        // a device count past `usize` saturates here; `render` refuses it.
-        self.num_interfaces
-            .unwrap_or_else(|| usize::try_from(self.num_devices).unwrap_or(usize::MAX))
+        self.num_interfaces.unwrap_or(self.num_devices)
     }
 }
 
@@ -81,9 +79,7 @@ fn main() -> Result<()> {
 }
 
 /// build the requested artifact and render it as pretty json.
-fn render(kind: Kind, num_devices: u128, num_interfaces: usize) -> Result<String> {
-    let num_devices = usize::try_from(num_devices)
-        .with_context(|| format!("too many devices for this platform: {num_devices}"))?;
+fn render(kind: Kind, num_devices: usize, num_interfaces: usize) -> Result<String> {
     match kind {
         Kind::Plan => serde_json::to_string_pretty(&build_plan(num_devices, num_interfaces)?),
         Kind::Inventory => {
@@ -795,7 +791,7 @@ mod tests {
     }
 
     /// render an artifact through the write path and read it back.
-    fn round_trip(kind: Kind, num_devices: u128) -> String {
+    fn round_trip(kind: Kind, num_devices: usize) -> String {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("out.json");
         let json = render(kind, num_devices, INTERFACES).expect("artifact should render");
