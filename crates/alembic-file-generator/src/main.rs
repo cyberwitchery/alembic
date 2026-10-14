@@ -27,10 +27,6 @@ const MODELS: usize = 4;
 const ROLES: usize = 4;
 const SITES: usize = 8;
 
-// the default `--num-interfaces`. unlike the pools it is not capped at the
-// device count, so it adds its own term to the artifact's size.
-const INTERFACES: usize = 8;
-
 /// what the generator emits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 enum Kind {
@@ -53,9 +49,9 @@ struct Args {
     /// the number of devices to generate; the support objects they reference come on top.
     #[clap(short, long, alias = "num-ops", default_value = "10")]
     num_devices: u128,
-    /// the number of interfaces, spread over the devices
-    #[clap(short = 'i', long, default_value_t = INTERFACES)]
-    num_interfaces: usize,
+    /// the number of interfaces, spread over the devices; defaults to one per device.
+    #[clap(short = 'i', long)]
+    num_interfaces: Option<usize>,
     /// the kind of file to generate.
     #[clap(short, long, value_enum, default_value_t = Kind::Plan)]
     kind: Kind,
@@ -64,13 +60,22 @@ struct Args {
     output: Option<PathBuf>,
 }
 
+impl Args {
+    fn num_interfaces(&self) -> usize {
+        // a device count past `usize` saturates here; `render` refuses it.
+        self.num_interfaces
+            .unwrap_or_else(|| usize::try_from(self.num_devices).unwrap_or(usize::MAX))
+    }
+}
+
 fn main() -> Result<()> {
     let args = Args::parse();
+    let num_interfaces = args.num_interfaces();
     let output = args
         .output
         .unwrap_or_else(|| PathBuf::from(args.kind.default_output()));
     write_json(
-        &render(args.kind, args.num_devices, args.num_interfaces)?,
+        &render(args.kind, args.num_devices, num_interfaces)?,
         &output,
     )
 }
@@ -428,6 +433,24 @@ mod tests {
     use super::*;
     use alembic_core::validate_inventory;
     use std::collections::BTreeSet;
+
+    const INTERFACES: usize = 8;
+
+    fn parse(args: &[&str]) -> Args {
+        Args::try_parse_from(["alembic-file-generator"].iter().chain(args))
+            .expect("args should parse")
+    }
+
+    #[test]
+    fn interfaces_default_to_one_per_device() {
+        assert_eq!(parse(&["-n", "1000"]).num_interfaces(), 1000);
+        assert_eq!(parse(&[]).num_interfaces(), 10);
+    }
+
+    #[test]
+    fn an_explicit_interface_count_wins() {
+        assert_eq!(parse(&["-n", "1000", "-i", "8"]).num_interfaces(), 8);
+    }
 
     fn create_ops(plan: &Plan) -> Vec<&Op> {
         plan.ops
