@@ -26,6 +26,9 @@ const MANUFACTURERS: usize = 2;
 const MODELS: usize = 4;
 const ROLES: usize = 4;
 const SITES: usize = 8;
+
+// the default `--num-interfaces`. unlike the pools it is not capped at the
+// device count, so it adds its own term to the artifact's size.
 const INTERFACES: usize = 8;
 
 /// what the generator emits.
@@ -49,7 +52,7 @@ impl Kind {
 struct Args {
     /// the number of devices to generate; the support objects they reference come on top.
     #[clap(short, long, alias = "num-ops", default_value = "10")]
-    num_devices: usize,
+    num_devices: u128,
     /// the number of interfaces, spread over the devices
     #[clap(short = 'i', long, default_value_t = INTERFACES)]
     num_interfaces: usize,
@@ -73,7 +76,9 @@ fn main() -> Result<()> {
 }
 
 /// build the requested artifact and render it as pretty json.
-fn render(kind: Kind, num_devices: usize, num_interfaces: usize) -> Result<String> {
+fn render(kind: Kind, num_devices: u128, num_interfaces: usize) -> Result<String> {
+    let num_devices = usize::try_from(num_devices)
+        .with_context(|| format!("too many devices for this platform: {num_devices}"))?;
     match kind {
         Kind::Plan => serde_json::to_string_pretty(&build_plan(num_devices, num_interfaces)?),
         Kind::Inventory => {
@@ -147,8 +152,11 @@ fn objects(num_devices: usize, num_interfaces: usize) -> Result<Vec<Object>> {
     if num_devices == 0 {
         return Ok(objects);
     }
+    let mut interfaces = Vec::with_capacity(num_interfaces);
     for i in 0..num_interfaces {
-        objects.push(interface(i, i % num_devices)?);
+        let interface = interface(i, i % num_devices)?;
+        interfaces.push(interface.uid);
+        objects.push(interface);
     }
 
     // neighbours sit on neighbouring devices, so a cable joins two devices;
@@ -156,13 +164,8 @@ fn objects(num_devices: usize, num_interfaces: usize) -> Result<Vec<Object>> {
     if num_devices < 2 {
         return Ok(objects);
     }
-    for i in 0..num_interfaces / 2 {
-        let (a, b) = (2 * i, 2 * i + 1);
-        objects.push(cable(
-            i,
-            interface_uid(a, a % num_devices),
-            interface_uid(b, b % num_devices),
-        )?);
+    for (i, pair) in interfaces.chunks_exact(2).enumerate() {
+        objects.push(cable(i, pair[0], pair[1])?);
     }
 
     Ok(objects)
@@ -245,16 +248,21 @@ fn device_uid(i: usize) -> Uid {
     uid_v5(DEVICE, &key_string(&device_key(i)))
 }
 
-/// build a single `dcim.interface`, and connect it
+/// build a single `dcim.interface` on device `device`.
 fn interface(i: usize, device: usize) -> Result<Object> {
+    let name = json!(interface_name(i));
+    let device = json!(device_uid(device).to_string());
     // `device` and `name` are declared in both `key` and `fields`, so they are carried in both.
     object(
         INTERFACE,
-        interface_key(i, device),
+        Key::from(BTreeMap::from([
+            ("device".to_string(), device.clone()),
+            ("name".to_string(), name.clone()),
+        ])),
         [
-            ("name".to_string(), json!(interface_name(i))),
+            ("name".to_string(), name),
             ("type".to_string(), json!("25gbase-x-sfp28")),
-            ("device".to_string(), json!(device_uid(device).to_string())),
+            ("device".to_string(), device),
             ("enabled".to_string(), Value::Bool(true)),
         ],
     )
@@ -264,18 +272,7 @@ fn interface_name(i: usize) -> String {
     format!("interface_{i}")
 }
 
-fn interface_key(i: usize, device: usize) -> Key {
-    Key::from(BTreeMap::from([
-        ("device".to_string(), json!(device_uid(device).to_string())),
-        ("name".to_string(), json!(interface_name(i))),
-    ]))
-}
-
-fn interface_uid(i: usize, device: usize) -> Uid {
-    uid_v5(INTERFACE, &key_string(&interface_key(i, device)))
-}
-
-/// build a single `dcim.cable`, and connect two interfaces using it
+/// build a single `dcim.cable` joining two interfaces.
 fn cable(i: usize, interface_a: Uid, interface_b: Uid) -> Result<Object> {
     let label = format!("label_{i}");
     object(
@@ -565,10 +562,19 @@ mod tests {
                 .objects
                 .iter()
                 .flat_map(|object| object.attrs.values())
+                .flat_map(|value| {
+                    value
+                        .as_array()
+                        .map_or(std::slice::from_ref(value), Vec::as_slice)
+                })
                 .filter_map(|value| value.as_str())
                 .filter_map(|raw| Uid::parse_str(raw).ok())
                 .collect();
-            let root_types = [DEVICE, INTERFACE, CABLE];
+            // with one device there is nothing to cable an interface to.
+            let mut root_types = vec![DEVICE, CABLE];
+            if n < 2 {
+                root_types.push(INTERFACE);
+            }
             for object in &inventory.objects {
                 if root_types.contains(&object.type_name.as_str()) {
                     continue;
@@ -766,7 +772,7 @@ mod tests {
     }
 
     /// render an artifact through the write path and read it back.
-    fn round_trip(kind: Kind, num_devices: usize) -> String {
+    fn round_trip(kind: Kind, num_devices: u128) -> String {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("out.json");
         let json = render(kind, num_devices, INTERFACES).expect("artifact should render");
