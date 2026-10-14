@@ -47,7 +47,7 @@ impl Kind {
 #[clap(author, version, about, long_about = None)]
 struct Args {
     /// the number of devices to generate; the support objects, interfaces and cables come on top.
-    #[clap(short, long, alias = "num-ops", default_value = "10")]
+    #[clap(short, long, default_value = "10")]
     num_devices: usize,
     /// the number of interfaces, spread over the devices; defaults to one per device.
     /// neighbours are paired with a cable, so an odd one out, or every interface on
@@ -63,19 +63,14 @@ struct Args {
 }
 
 impl Args {
-    fn num_interfaces(&self) -> Result<usize> {
-        let num_interfaces = self.num_interfaces.unwrap_or(self.num_devices);
-        ensure!(
-            self.num_devices > 0 || num_interfaces == 0,
-            "{num_interfaces} interfaces need at least one device to sit on"
-        );
-        Ok(num_interfaces)
+    fn num_interfaces(&self) -> usize {
+        self.num_interfaces.unwrap_or(self.num_devices)
     }
 }
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    let num_interfaces = args.num_interfaces()?;
+    let num_interfaces = args.num_interfaces();
     let output = args
         .output
         .unwrap_or_else(|| PathBuf::from(args.kind.default_output()));
@@ -156,10 +151,10 @@ fn objects(num_devices: usize, num_interfaces: usize) -> Result<Vec<Object>> {
         objects.push(device(i)?);
     }
 
-    // with no devices there is nothing to put an interface on.
-    if num_devices == 0 {
-        return Ok(objects);
-    }
+    ensure!(
+        num_devices > 0 || num_interfaces == 0,
+        "{num_interfaces} interfaces need at least one device to sit on"
+    );
     for i in 0..num_interfaces {
         objects.push(interface(i, i % num_devices)?);
     }
@@ -449,9 +444,7 @@ mod tests {
     }
 
     fn num_interfaces(args: &[&str]) -> usize {
-        parse(args)
-            .num_interfaces()
-            .expect("interface count should be accepted")
+        parse(args).num_interfaces()
     }
 
     #[test]
@@ -464,12 +457,6 @@ mod tests {
     #[test]
     fn an_explicit_interface_count_wins() {
         assert_eq!(num_interfaces(&["-n", "1000", "-i", "8"]), 8);
-    }
-
-    #[test]
-    fn interfaces_without_devices_are_rejected() {
-        assert!(parse(&["-n", "0", "-i", "5"]).num_interfaces().is_err());
-        assert_eq!(num_interfaces(&["-n", "0", "-i", "0"]), 0);
     }
 
     fn create_ops(plan: &Plan) -> Vec<&Op> {
@@ -552,7 +539,7 @@ mod tests {
         // the regression the generator shipped: empty keys made every device
         // one identity, and `validate` rejected the lot.
         for n in [0, 1, 2, 3, 17, 40] {
-            let inventory = build_inventory(n, INTERFACES).expect("inventory should build");
+            let inventory = build_inventory(n, n).expect("inventory should build");
             assert_eq!(errors(&inventory), Vec::<String>::new(), "at n = {n}");
         }
     }
@@ -560,7 +547,7 @@ mod tests {
     #[test]
     fn generated_plan_objects_validate_as_an_inventory() {
         for n in [0, 1, 3, 17] {
-            let plan = build_plan(n, INTERFACES).expect("plan should build");
+            let plan = build_plan(n, n).expect("plan should build");
             let inventory = plan_as_inventory(&plan);
             assert_eq!(errors(&inventory), Vec::<String>::new(), "at n = {n}");
         }
@@ -734,8 +721,10 @@ mod tests {
     }
 
     #[test]
-    fn no_devices_means_no_interfaces() {
-        let objects = objects(0, 8).expect("objects should build");
+    fn interfaces_without_devices_are_rejected() {
+        assert!(objects(0, 8).is_err());
+        assert!(render(Kind::Plan, 0, 8).is_err());
+        let objects = objects(0, 0).expect("objects should build");
         assert!(objects.is_empty());
     }
 
@@ -790,9 +779,9 @@ mod tests {
 
     #[test]
     fn build_plan_with_zero_ops_is_empty() {
-        let plan = build_plan(0, INTERFACES).expect("empty plan should build");
+        let plan = build_plan(0, 0).expect("empty plan should build");
         assert!(plan.ops.is_empty());
-        let inventory = build_inventory(0, INTERFACES).expect("empty inventory should build");
+        let inventory = build_inventory(0, 0).expect("empty inventory should build");
         assert!(inventory.objects.is_empty());
     }
 
