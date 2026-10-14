@@ -24,7 +24,7 @@ alembic-adapter-registry = { workspace = true, features = ["all"] }
 alembic-adapter-django.workspace = true
 anyhow.workspace = true
 clap.workspace = true
-clap_complete = { workspace = true }
+clap_complete.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true
 tokio.workspace = true

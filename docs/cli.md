@@ -527,13 +527,27 @@ alembic skill install alembic --dir /srv/intent/.agents/skills
 
 ## completion
 
-this command takes a subcommand of one of the following values:
-'elvish', 'zsh', 'fish', 'bash' or 'powershell'. it will print a
+this command takes an positional argument with one of the following values:
+`elvish`, `zsh`, `fish`, `bash` or `powershell`. it will print a
 shell completion script to stdout, which can be piped to a suitable
-location, e.g:
+location.
 
 ```bash
-$ alembic completion zsh > ~/alembic/alembic.zsh
+# bash (needs bash-completion)
+alembic completion bash > ~/.local/share/bash-completion/completions/alembic
+
+# zsh: the file must be named _alembic, in a directory on $fpath
+alembic completion zsh > ~/.zfunc/_alembic
+
+# fish
+alembic completion fish > ~/.config/fish/completions/alembic.fish
+```
+
+for zsh, note that `~/.zfunc` has to be on $fpath before compinit runs, i.e. in `.zshrc`:
+
+```zsh
+fpath+=~/.zfunc
+autoload -Uz compinit && compinit
 ```
 
 ## environment variables

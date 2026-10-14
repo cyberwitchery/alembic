@@ -626,12 +626,9 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<ExitCode> {
             }
         },
         Command::Completion { shell } => {
-            generate(
-                shell,
-                &mut Cli::command(),
-                "alembic".to_string(),
-                &mut std::io::stdout(),
-            );
+            let mut command = Cli::command();
+            let name = command.get_name().to_string();
+            generate(shell, &mut command, name, &mut std::io::stdout());
         }
     }
 
