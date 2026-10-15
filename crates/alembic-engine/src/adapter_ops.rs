@@ -780,322 +780,180 @@ mod tests {
 
     // --- resolve_value_for_type ---
 
-    #[test]
-    fn resolve_value_scalar_passthrough() {
-        let val = json!("hello");
-        let result = resolve_value_for_type(
-            &FieldType::String,
-            val.clone(),
-            &empty_resolved(),
-            encode_ref,
-        )
-        .unwrap();
-        assert_eq!(result, val);
+    fn list_of(item: FieldType) -> FieldType {
+        FieldType::List {
+            item: Box::new(item),
+        }
+    }
+
+    fn map_of(value: FieldType) -> FieldType {
+        FieldType::Map {
+            value: Box::new(value),
+        }
+    }
+
+    fn list_ref_type(target: &str) -> FieldType {
+        FieldType::ListRef {
+            target: target.to_string(),
+        }
     }
 
     #[test]
-    fn resolve_value_ref() {
-        let uid = Uuid::from_u128(5);
-        let mut resolved = BTreeMap::new();
-        resolved.insert(uid, 42_i64);
-        let result = resolve_value_for_type(
-            &FieldType::Ref {
-                target: "t".to_string(),
-            },
-            json!(uid.to_string()),
-            &resolved,
-            encode_ref,
-        )
-        .unwrap();
-        assert_eq!(result, json!(42));
+    fn resolve_value_resolves_refs_at_any_depth() {
+        let uid = |n| Uuid::from_u128(n).to_string();
+        let resolved: BTreeMap<Uid, i64> = BTreeMap::from([
+            (Uuid::from_u128(1), 10),
+            (Uuid::from_u128(2), 20),
+            (Uuid::from_u128(3), 7),
+            (Uuid::from_u128(4), 50),
+        ]);
+        let cases = [
+            (list_ref_type("t"), json!([uid(1), uid(2)]), json!([10, 20])),
+            (
+                list_of(FieldType::String),
+                json!(["a", "b"]),
+                json!(["a", "b"]),
+            ),
+            (list_of(ref_type("t")), json!([uid(3)]), json!([7])),
+            (
+                map_of(FieldType::Int),
+                json!({"a": 1, "b": 2}),
+                json!({"a": 1, "b": 2}),
+            ),
+            (
+                map_of(ref_type("t")),
+                json!({"x": uid(4)}),
+                json!({"x": 50}),
+            ),
+        ];
+        for (field_type, input, expected) in cases {
+            let result =
+                resolve_value_for_type(&field_type, input.clone(), &resolved, encode_ref).unwrap();
+            assert_eq!(result, expected, "{field_type:?} {input}");
+        }
     }
 
     #[test]
-    fn resolve_value_ref_missing_uid_errors() {
-        let uid = Uuid::from_u128(99);
-        let err = resolve_value_for_type(
-            &FieldType::Ref {
-                target: "t".to_string(),
-            },
-            json!(uid.to_string()),
-            &empty_resolved(),
-            encode_ref,
-        )
-        .unwrap_err();
-        assert!(err.to_string().contains("missing referenced uid"));
-    }
-
-    #[test]
-    fn resolve_value_ref_non_string_errors() {
-        let err = resolve_value_for_type(
-            &FieldType::Ref {
-                target: "t".to_string(),
-            },
-            json!(123),
-            &empty_resolved(),
-            encode_ref,
-        )
-        .unwrap_err();
-        assert!(err.to_string().contains("ref value must be a uuid string"));
-    }
-
-    #[test]
-    fn resolve_value_ref_invalid_uuid_errors() {
-        let err = resolve_value_for_type(
-            &FieldType::Ref {
-                target: "t".to_string(),
-            },
-            json!("not-a-uuid"),
-            &empty_resolved(),
-            encode_ref,
-        )
-        .unwrap_err();
-        assert!(err.to_string().contains("ref value is not a uuid"));
-    }
-
-    #[test]
-    fn resolve_value_list_ref() {
-        let uid1 = Uuid::from_u128(1);
-        let uid2 = Uuid::from_u128(2);
-        let mut resolved = BTreeMap::new();
-        resolved.insert(uid1, 10_i64);
-        resolved.insert(uid2, 20_i64);
-        let result = resolve_value_for_type(
-            &FieldType::ListRef {
-                target: "t".to_string(),
-            },
-            json!([uid1.to_string(), uid2.to_string()]),
-            &resolved,
-            encode_ref,
-        )
-        .unwrap();
-        assert_eq!(result, json!([10, 20]));
-    }
-
-    #[test]
-    fn resolve_value_list_ref_non_array_errors() {
-        let err = resolve_value_for_type(
-            &FieldType::ListRef {
-                target: "t".to_string(),
-            },
-            json!("not-array"),
-            &empty_resolved(),
-            encode_ref,
-        )
-        .unwrap_err();
-        assert!(err.to_string().contains("list_ref value must be an array"));
-    }
-
-    #[test]
-    fn resolve_value_list_scalars() {
-        let result = resolve_value_for_type(
-            &FieldType::List {
-                item: Box::new(FieldType::String),
-            },
-            json!(["a", "b"]),
-            &empty_resolved(),
-            encode_ref,
-        )
-        .unwrap();
-        assert_eq!(result, json!(["a", "b"]));
-    }
-
-    #[test]
-    fn resolve_value_list_of_refs() {
-        let uid = Uuid::from_u128(3);
-        let mut resolved = BTreeMap::new();
-        resolved.insert(uid, 7_i64);
-        let result = resolve_value_for_type(
-            &FieldType::List {
-                item: Box::new(FieldType::Ref {
-                    target: "t".to_string(),
-                }),
-            },
-            json!([uid.to_string()]),
-            &resolved,
-            encode_ref,
-        )
-        .unwrap();
-        assert_eq!(result, json!([7]));
-    }
-
-    #[test]
-    fn resolve_value_list_non_array_errors() {
-        let err = resolve_value_for_type(
-            &FieldType::List {
-                item: Box::new(FieldType::String),
-            },
-            json!("not-array"),
-            &empty_resolved(),
-            encode_ref,
-        )
-        .unwrap_err();
-        assert!(err.to_string().contains("list value must be an array"));
-    }
-
-    #[test]
-    fn resolve_value_map_scalars() {
-        let result = resolve_value_for_type(
-            &FieldType::Map {
-                value: Box::new(FieldType::Int),
-            },
-            json!({"a": 1, "b": 2}),
-            &empty_resolved(),
-            encode_ref,
-        )
-        .unwrap();
-        let obj = result.as_object().unwrap();
-        assert_eq!(obj.get("a"), Some(&json!(1)));
-        assert_eq!(obj.get("b"), Some(&json!(2)));
-    }
-
-    #[test]
-    fn resolve_value_map_with_refs() {
-        let uid = Uuid::from_u128(4);
-        let mut resolved = BTreeMap::new();
-        resolved.insert(uid, 50_i64);
-        let result = resolve_value_for_type(
-            &FieldType::Map {
-                value: Box::new(FieldType::Ref {
-                    target: "t".to_string(),
-                }),
-            },
-            json!({"x": uid.to_string()}),
-            &resolved,
-            encode_ref,
-        )
-        .unwrap();
-        assert_eq!(result.as_object().unwrap().get("x"), Some(&json!(50)));
-    }
-
-    #[test]
-    fn resolve_value_map_non_object_errors() {
-        let err = resolve_value_for_type(
-            &FieldType::Map {
-                value: Box::new(FieldType::String),
-            },
-            json!("not-object"),
-            &empty_resolved(),
-            encode_ref,
-        )
-        .unwrap_err();
-        assert!(err.to_string().contains("map value must be an object"));
+    fn resolve_value_errors_name_the_cause() {
+        let cases = [
+            (
+                ref_type("t"),
+                json!(Uuid::from_u128(99).to_string()),
+                "missing referenced uid",
+            ),
+            (ref_type("t"), json!(123), "ref value must be a uuid string"),
+            (
+                ref_type("t"),
+                json!("not-a-uuid"),
+                "ref value is not a uuid",
+            ),
+            (
+                list_ref_type("t"),
+                json!("not-array"),
+                "list_ref value must be an array",
+            ),
+            (
+                list_of(FieldType::String),
+                json!("not-array"),
+                "list value must be an array",
+            ),
+            (
+                map_of(FieldType::String),
+                json!("not-object"),
+                "map value must be an object",
+            ),
+        ];
+        for (field_type, input, expected) in cases {
+            let err = resolve_value_for_type(&field_type, input, &empty_resolved(), encode_ref)
+                .unwrap_err();
+            assert!(
+                err.to_string().contains(expected),
+                "{field_type:?}: {err:#}"
+            );
+        }
     }
 
     // --- query_filters_from_key ---
 
     #[test]
-    fn query_filters_scalar_key() {
-        let schema = simple_type_schema();
-        let key = Key::from(BTreeMap::from([("slug".to_string(), json!("fra1"))]));
-        let filters = query_filters_from_key(&schema, &key, &empty_resolved()).unwrap();
-        assert_eq!(filters, vec![("slug".to_string(), "fra1".to_string())]);
-    }
-
-    #[test]
-    fn query_filters_numeric_key() {
-        let schema = TypeSchema {
-            key: BTreeMap::from([("id".to_string(), field_schema(FieldType::Int))]),
-            fields: BTreeMap::new(),
-        };
-        let key = Key::from(BTreeMap::from([("id".to_string(), json!(42))]));
-        let filters = query_filters_from_key(&schema, &key, &empty_resolved()).unwrap();
-        assert_eq!(filters, vec![("id".to_string(), "42".to_string())]);
-    }
-
-    #[test]
-    fn query_filters_bool_key() {
-        let schema = TypeSchema {
-            key: BTreeMap::from([("active".to_string(), field_schema(FieldType::Bool))]),
-            fields: BTreeMap::new(),
-        };
-        let key = Key::from(BTreeMap::from([("active".to_string(), json!(true))]));
-        let filters = query_filters_from_key(&schema, &key, &empty_resolved()).unwrap();
-        assert_eq!(filters, vec![("active".to_string(), "true".to_string())]);
-    }
-
-    #[test]
-    fn query_filters_ref_key() {
-        let uid = Uuid::from_u128(10);
-        let schema = TypeSchema {
-            key: BTreeMap::from([(
-                "site".to_string(),
-                field_schema(FieldType::Ref {
-                    target: "dcim.site".to_string(),
-                }),
-            )]),
-            fields: BTreeMap::new(),
-        };
-        let key = Key::from(BTreeMap::from([(
-            "site".to_string(),
-            json!(uid.to_string()),
-        )]));
-        let mut resolved = BTreeMap::new();
-        resolved.insert(uid, 77_i64);
-        let filters = query_filters_from_key(&schema, &key, &resolved).unwrap();
-        assert_eq!(filters, vec![("site".to_string(), "77".to_string())]);
-    }
-
-    #[test]
-    fn query_filters_list_ref_key() {
-        let uid1 = Uuid::from_u128(1);
-        let uid2 = Uuid::from_u128(2);
-        let schema = TypeSchema {
-            key: BTreeMap::from([(
-                "tags".to_string(),
-                field_schema(FieldType::ListRef {
-                    target: "extras.tag".to_string(),
-                }),
-            )]),
-            fields: BTreeMap::new(),
-        };
-        let key = Key::from(BTreeMap::from([(
-            "tags".to_string(),
-            json!([uid1.to_string(), uid2.to_string()]),
-        )]));
-        let mut resolved = BTreeMap::new();
-        resolved.insert(uid1, 100_i64);
-        resolved.insert(uid2, 200_i64);
-        let filters = query_filters_from_key(&schema, &key, &resolved).unwrap();
-        assert_eq!(
-            filters,
-            vec![
-                ("tags".to_string(), "100".to_string()),
-                ("tags".to_string(), "200".to_string()),
-            ]
-        );
-    }
-
-    #[test]
-    fn query_filters_missing_key_schema_errors() {
-        let schema = simple_type_schema();
+    fn query_filters_follow_the_key_field_type() {
+        let filter = |field: &str, value: &str| (field.to_string(), value.to_string());
+        let resolved: BTreeMap<Uid, i64> = BTreeMap::from([
+            (Uuid::from_u128(1), 100),
+            (Uuid::from_u128(2), 200),
+            (Uuid::from_u128(10), 77),
+        ]);
+        let uid = |n| Uuid::from_u128(n).to_string();
+        type Filters = Result<Vec<(String, String)>, &'static str>;
+        let cases: Vec<(&str, FieldType, Value, Filters)> = vec![
+            (
+                "slug",
+                FieldType::Slug,
+                json!("fra1"),
+                Ok(vec![filter("slug", "fra1")]),
+            ),
+            (
+                "id",
+                FieldType::Int,
+                json!(42),
+                Ok(vec![filter("id", "42")]),
+            ),
+            (
+                "active",
+                FieldType::Bool,
+                json!(true),
+                Ok(vec![filter("active", "true")]),
+            ),
+            (
+                "site",
+                ref_type("dcim.site"),
+                json!(uid(10)),
+                Ok(vec![filter("site", "77")]),
+            ),
+            (
+                "tags",
+                list_ref_type("extras.tag"),
+                json!([uid(1), uid(2)]),
+                Ok(vec![filter("tags", "100"), filter("tags", "200")]),
+            ),
+            (
+                "slug",
+                FieldType::Slug,
+                Value::Null,
+                Err("key value is null"),
+            ),
+            (
+                "tags",
+                list_ref_type("t"),
+                json!("not-array"),
+                Err("key field tags must be an array"),
+            ),
+        ];
+        for (field, field_type, value, expected) in cases {
+            let schema = TypeSchema {
+                key: BTreeMap::from([(field.to_string(), field_schema(field_type))]),
+                fields: BTreeMap::new(),
+            };
+            let key = Key::from(BTreeMap::from([(field.to_string(), value.clone())]));
+            match expected {
+                Ok(filters) => assert_eq!(
+                    query_filters_from_key(&schema, &key, &resolved).unwrap(),
+                    filters,
+                    "{field} {value}"
+                ),
+                Err(message) => {
+                    let err = query_filters_from_key(&schema, &key, &resolved).unwrap_err();
+                    assert!(err.to_string().contains(message), "{field}: {err:#}");
+                }
+            }
+        }
+        // a key field the schema does not declare.
         let key = Key::from(BTreeMap::from([("nonexistent".to_string(), json!("x"))]));
-        let err = query_filters_from_key(&schema, &key, &empty_resolved()).unwrap_err();
-        assert!(err.to_string().contains("missing schema for key field"));
-    }
-
-    #[test]
-    fn query_filters_null_scalar_errors() {
-        let schema = simple_type_schema();
-        let key = Key::from(BTreeMap::from([("slug".to_string(), Value::Null)]));
-        let err = query_filters_from_key(&schema, &key, &empty_resolved()).unwrap_err();
-        assert!(err.to_string().contains("key value is null"));
-    }
-
-    #[test]
-    fn query_filters_list_ref_non_array_errors() {
-        let schema = TypeSchema {
-            key: BTreeMap::from([(
-                "tags".to_string(),
-                field_schema(FieldType::ListRef {
-                    target: "t".to_string(),
-                }),
-            )]),
-            fields: BTreeMap::new(),
-        };
-        let key = Key::from(BTreeMap::from([("tags".to_string(), json!("not-array"))]));
-        let err = query_filters_from_key(&schema, &key, &empty_resolved()).unwrap_err();
-        assert!(err.to_string().contains("key field tags must be an array"));
+        let err = query_filters_from_key(&simple_type_schema(), &key, &resolved).unwrap_err();
+        assert!(
+            err.to_string().contains("missing schema for key field"),
+            "{err:#}"
+        );
     }
 
     // --- state projection helpers ---
@@ -1170,67 +1028,33 @@ mod tests {
     }
 
     #[test]
-    fn normalize_value_ref_maps_backend_id_to_uid() {
-        let uid = Uuid::from_u128(1);
-        let m = mappings_with("t", BackendId::Int(7), uid);
-        let out = normalize_value_for_type(&ref_type("t"), json!(7), &m);
-        assert_eq!(out, json!(uid.to_string()));
-    }
-
-    #[test]
-    fn normalize_value_ref_unknown_id_passes_through() {
-        let out = normalize_value_for_type(&ref_type("t"), json!(7), &StateMappings::default());
-        assert_eq!(out, json!(7));
-    }
-
-    #[test]
-    fn normalize_value_list_ref_maps_each_known() {
-        let uid = Uuid::from_u128(2);
-        let m = mappings_with("t", BackendId::Int(8), uid);
-        let out = normalize_value_for_type(
-            &FieldType::ListRef {
-                target: "t".to_string(),
-            },
-            json!([8, 9]),
-            &m,
-        );
-        assert_eq!(out, json!([uid.to_string(), 9]));
-    }
-
-    #[test]
-    fn normalize_value_ref_nested_in_list() {
-        let uid = Uuid::from_u128(3);
-        let m = mappings_with("t", BackendId::Int(10), uid);
-        let out = normalize_value_for_type(
-            &FieldType::List {
-                item: Box::new(ref_type("t")),
-            },
-            json!([10]),
-            &m,
-        );
-        assert_eq!(out, json!([uid.to_string()]));
-    }
-
-    #[test]
-    fn normalize_value_ref_nested_in_map() {
-        let uid = Uuid::from_u128(4);
-        let m = mappings_with("t", BackendId::String("s".to_string()), uid);
-        let out = normalize_value_for_type(
-            &FieldType::Map {
-                value: Box::new(ref_type("t")),
-            },
-            json!({ "k": "s" }),
-            &m,
-        );
-        assert_eq!(out, json!({ "k": uid.to_string() }));
-    }
-
-    #[test]
-    fn normalize_ref_value_object_shaped_brief() {
-        let uid = Uuid::from_u128(5);
-        let m = mappings_with("t", BackendId::Int(11), uid);
-        let out = normalize_ref_value(json!({ "id": 11, "display": "x" }), "t", &m);
-        assert_eq!(out, json!(uid.to_string()));
+    fn normalize_value_maps_known_backend_ids_to_uids() {
+        let uid = |n| Uuid::from_u128(n);
+        let mut m = StateMappings::default();
+        m.insert("t", BackendId::Int(7), uid(1));
+        m.insert("t", BackendId::Int(8), uid(2));
+        m.insert("t", BackendId::Int(10), uid(3));
+        m.insert("t", BackendId::String("s".to_string()), uid(4));
+        m.insert("t", BackendId::Int(11), uid(5));
+        let s = |n| json!(uid(n).to_string());
+        let cases = [
+            (ref_type("t"), json!(7), s(1)),
+            // an id state does not know passes through.
+            (ref_type("t"), json!(9), json!(9)),
+            (list_ref_type("t"), json!([8, 9]), json!([s(2), 9])),
+            (list_of(ref_type("t")), json!([10]), json!([s(3)])),
+            (
+                map_of(ref_type("t")),
+                json!({ "k": "s" }),
+                json!({ "k": s(4) }),
+            ),
+            // an object-shaped brief resolves through its `id`.
+            (ref_type("t"), json!({ "id": 11, "display": "x" }), s(5)),
+        ];
+        for (field_type, input, expected) in cases {
+            let out = normalize_value_for_type(&field_type, input.clone(), &m);
+            assert_eq!(out, expected, "{field_type:?} {input}");
+        }
     }
 
     #[test]
@@ -1324,35 +1148,30 @@ mod tests {
     }
 
     #[test]
-    fn resolve_nested_ref_uid_int_backend_via_mappings() {
-        let uid = Uuid::from_u128(1);
+    fn resolve_nested_ref_uid_via_mappings() {
+        // int and string backend ids both resolve through the url's endpoint.
         let schema = schema_with(vec![("dcim.site", simple_type_schema())]);
-        let map = brief(json!({ "id": 5, "url": "/api/dcim/sites/5/" }));
-        let lookup = |type_name: &str, id: &BackendId| match id {
-            BackendId::Int(5) if type_name == "dcim.site" => Some(uid),
-            _ => None,
-        };
-        let endpoint = |url: &str| (url == "/api/dcim/sites/5/").then(|| "dcim.site".to_string());
-        assert_eq!(
-            resolve_nested_ref_uid(&map, None, &schema, lookup, endpoint),
-            Some(uid)
-        );
-    }
-
-    #[test]
-    fn resolve_nested_ref_uid_string_backend_via_mappings() {
-        let uid = Uuid::from_u128(2);
-        let schema = schema_with(vec![("dcim.site", simple_type_schema())]);
-        let map = brief(json!({ "id": "abc-uuid", "url": "/api/dcim/sites/abc-uuid/" }));
-        let lookup = |type_name: &str, id: &BackendId| match id {
-            BackendId::String(s) if type_name == "dcim.site" && s == "abc-uuid" => Some(uid),
-            _ => None,
-        };
-        let endpoint = |_: &str| Some("dcim.site".to_string());
-        assert_eq!(
-            resolve_nested_ref_uid(&map, None, &schema, lookup, endpoint),
-            Some(uid)
-        );
+        for (id, backend_id, n) in [
+            (json!(5), BackendId::Int(5), 1),
+            (
+                json!("abc-uuid"),
+                BackendId::String("abc-uuid".to_string()),
+                2,
+            ),
+        ] {
+            let uid = Uuid::from_u128(n);
+            let url = format!("/api/dcim/sites/{}/", id.to_string().trim_matches('"'));
+            let map = brief(json!({ "id": id, "url": url }));
+            let lookup = |type_name: &str, found: &BackendId| {
+                (type_name == "dcim.site" && *found == backend_id).then_some(uid)
+            };
+            let endpoint = |candidate: &str| (candidate == url).then(|| "dcim.site".to_string());
+            assert_eq!(
+                resolve_nested_ref_uid(&map, None, &schema, lookup, endpoint),
+                Some(uid),
+                "{id}"
+            );
+        }
     }
 
     #[test]

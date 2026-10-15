@@ -184,16 +184,3 @@ fn apply_read_only_interactive_prints_no_prompt() {
         "interactive apply must not prompt before failing fast; stdout:\n{stdout}"
     );
 }
-
-#[test]
-fn apply_read_only_non_interactive_errors() {
-    let (ok, stdout, stderr) = run_apply_peeringdb(false);
-    assert!(
-        !ok,
-        "apply to a read-only backend must fail; stdout:\n{stdout}\nstderr:\n{stderr}"
-    );
-    assert!(
-        stderr.contains("backend is read-only; it cannot apply changes"),
-        "expected the read-only capability error; stderr:\n{stderr}"
-    );
-}

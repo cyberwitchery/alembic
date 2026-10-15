@@ -144,505 +144,197 @@ fn field_schema(r#type: FieldType) -> FieldSchema {
 
 // tests for resolve_path
 #[test]
-fn test_resolve_path_simple() {
-    let value = serde_json::json!({"id": 42, "name": "test"});
-    let result = resolve_path(&value, "id").unwrap();
-    assert_eq!(result, serde_json::json!(42));
-}
-
-#[test]
-fn test_resolve_path_nested() {
-    let value = serde_json::json!({"data": {"results": [1, 2, 3]}});
-    let result = resolve_path(&value, "data.results").unwrap();
-    assert_eq!(result, serde_json::json!([1, 2, 3]));
-}
-
-#[test]
-fn test_resolve_path_empty() {
-    let value = serde_json::json!({"id": 42});
-    let result = resolve_path(&value, "").unwrap();
-    assert_eq!(result, serde_json::json!({"id": 42}));
-}
-
-#[test]
-fn test_resolve_path_not_found() {
-    let value = serde_json::json!({"id": 42});
-    let err = resolve_path(&value, "missing").unwrap_err();
-    assert!(err.to_string().contains("path segment not found"));
+fn test_resolve_path() {
+    let value = serde_json::json!({"id": 42, "data": {"results": [1, 2, 3]}});
+    for (path, expected) in [
+        ("id", Ok(serde_json::json!(42))),
+        ("data.results", Ok(serde_json::json!([1, 2, 3]))),
+        ("", Ok(value.clone())),
+        ("missing", Err("path segment not found")),
+    ] {
+        match (resolve_path(&value, path), expected) {
+            (Ok(actual), Ok(expected)) => assert_eq!(actual, expected, "{path}"),
+            (Err(err), Err(expected)) => {
+                assert!(err.to_string().contains(expected), "{path}: {err}")
+            }
+            (actual, expected) => panic!("{path}: got {actual:?}, expected {expected:?}"),
+        }
+    }
 }
 
 // tests for parse_backend_id
 #[test]
-fn test_parse_backend_id_number() {
-    assert_eq!(
-        parse_backend_id(serde_json::json!(42)).unwrap(),
-        BackendId::Int(42)
-    );
+fn test_parse_backend_id() {
+    for (value, expected) in [
+        (serde_json::json!(42), Ok(BackendId::Int(42))),
+        (
+            serde_json::json!("abc-123"),
+            Ok(BackendId::String("abc-123".to_string())),
+        ),
+        (serde_json::json!(-1), Err("invalid integer id")),
+        (serde_json::json!(true), Err("id must be number or string")),
+    ] {
+        match (parse_backend_id(value.clone()), expected) {
+            (Ok(actual), Ok(expected)) => assert_eq!(actual, expected, "{value}"),
+            (Err(err), Err(expected)) => {
+                assert!(err.to_string().contains(expected), "{value}: {err}")
+            }
+            (actual, expected) => panic!("{value}: got {actual:?}, expected {expected:?}"),
+        }
+    }
 }
 
-#[test]
-fn test_parse_backend_id_string() {
-    assert_eq!(
-        parse_backend_id(serde_json::json!("abc-123")).unwrap(),
-        BackendId::String("abc-123".to_string())
-    );
-}
-
-#[test]
-fn test_parse_backend_id_negative_rejected() {
-    let err = parse_backend_id(serde_json::json!(-1)).unwrap_err();
-    assert!(err.to_string().contains("invalid integer id"));
-}
-
-#[test]
-fn test_parse_backend_id_non_scalar_rejected() {
-    let err = parse_backend_id(serde_json::json!(true)).unwrap_err();
-    assert!(err.to_string().contains("id must be number or string"));
-}
-
-// tests for resolved_ids_identity
-#[test]
-fn test_resolved_ids_identity_empty() {
-    let state = new_state_store();
-    let resolved = resolved_ids_identity(&state);
-    assert!(resolved.is_empty());
-}
-
-#[test]
-fn test_resolved_ids_identity_with_mappings() {
-    let mut state = new_state_store();
-    let uid = Uid::new_v4();
-    state.set_backend_id(TypeName::new("device".to_string()), uid, BackendId::Int(42));
-    let resolved = resolved_ids_identity(&state);
-    assert_eq!(resolved.get(&uid), Some(&BackendId::Int(42)));
+enum Body {
+    Ok(serde_json::Value),
+    Err(&'static str),
+    MissingRef,
 }
 
 // these drive resolve_attrs (which delegates to the shared engine
-// build_request_body) with a one-field schema, exercising the generic encode
-// closure for int/string backend ids, the ref/list-ref resolution and MissingRef
-// path surfaced by the shared helper, and the null passthrough that clears a
-// nullable field.
-fn body_field(
-    field_type: FieldType,
-    nullable: bool,
-    value: serde_json::Value,
-    resolved: &BTreeMap<Uid, BackendId>,
-) -> Result<serde_json::Value> {
-    let mut fields = BTreeMap::new();
-    fields.insert(
-        "f".to_string(),
-        FieldSchema {
-            r#type: field_type,
-            required: false,
-            nullable,
-            description: None,
-            format: None,
-            pattern: None,
-        },
-    );
-    let type_schema = TypeSchema {
-        key: BTreeMap::new(),
-        fields,
+// build_request_body), exercising the generic encode closure for int/string
+// backend ids, the ref/list-ref resolution and MissingRef path surfaced by the
+// shared helper, refs nested in list and map fields (matching netbox/nautobot),
+// and the null passthrough that clears a nullable field.
+#[test]
+fn test_resolve_attrs() {
+    let uid = |n: u128| Uid::from_u128(0x550e8400_e29b_41d4_a716_446655440000 + n);
+    let ref_to = |target: &str| FieldType::Ref {
+        target: target.to_string(),
     };
-    let attrs: JsonMap = serde_json::json!({ "f": value })
-        .as_object()
-        .unwrap()
-        .clone()
-        .into_iter()
-        .collect::<BTreeMap<_, _>>()
-        .into();
-    resolve_attrs(&attrs, &type_schema, resolved)
-}
-
-#[test]
-fn test_resolve_attrs_encodes_ref_int_backend_id() {
-    let mut resolved = BTreeMap::new();
-    let uid = Uid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
-    resolved.insert(uid, BackendId::Int(123));
-
-    let body = body_field(
-        FieldType::Ref {
-            target: "site".to_string(),
-        },
-        false,
-        serde_json::json!("550e8400-e29b-41d4-a716-446655440000"),
-        &resolved,
-    )
-    .unwrap();
-    assert_eq!(body, serde_json::json!({ "f": 123 }));
-}
-
-#[test]
-fn test_resolve_attrs_encodes_list_ref() {
-    let mut resolved = BTreeMap::new();
-    let uid1 = Uid::parse_str("550e8400-e29b-41d4-a716-446655440001").unwrap();
-    let uid2 = Uid::parse_str("550e8400-e29b-41d4-a716-446655440002").unwrap();
-    resolved.insert(uid1, BackendId::Int(1));
-    resolved.insert(uid2, BackendId::String("abc".to_string()));
-
-    let body = body_field(
-        FieldType::ListRef {
-            target: "tag".to_string(),
-        },
-        false,
-        serde_json::json!([
-            "550e8400-e29b-41d4-a716-446655440001",
-            "550e8400-e29b-41d4-a716-446655440002"
-        ]),
-        &resolved,
-    )
-    .unwrap();
-    assert_eq!(body, serde_json::json!({ "f": [1, "abc"] }));
-}
-
-// exercises the encode closure for a string backend id.
-#[test]
-fn test_resolve_attrs_encodes_ref_string_backend_id() {
-    let mut resolved = BTreeMap::new();
-    let uid = Uid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
-    resolved.insert(uid, BackendId::String("abc-123".to_string()));
-
-    let body = body_field(
-        FieldType::Ref {
-            target: "site".to_string(),
-        },
-        false,
-        serde_json::json!("550e8400-e29b-41d4-a716-446655440000"),
-        &resolved,
-    )
-    .unwrap();
-    assert_eq!(body, serde_json::json!({ "f": "abc-123" }));
-}
-
-// an unresolved ref uid still surfaces the shared MissingRef error.
-#[test]
-fn test_resolve_attrs_ref_missing_uid_errors() {
-    let resolved = BTreeMap::new();
-    let err = body_field(
-        FieldType::Ref {
-            target: "site".to_string(),
-        },
-        false,
-        serde_json::json!("550e8400-e29b-41d4-a716-446655440000"),
-        &resolved,
-    )
-    .unwrap_err();
-    assert!(err.to_string().contains("missing referenced uid"));
-}
-
-// a null value for a nullable ref must pass straight through as json null (to
-// clear the field on the backend), not reach the ref encoder and error with
-// "ref value must be a uuid string".
-#[test]
-fn test_resolve_attrs_passes_null_ref_through() {
-    let resolved = BTreeMap::new();
-    let body = body_field(
-        FieldType::Ref {
-            target: "site".to_string(),
-        },
-        true,
-        serde_json::Value::Null,
-        &resolved,
-    )
-    .unwrap();
-    assert_eq!(body, serde_json::json!({ "f": null }));
-}
-
-// tests for resolve_attrs
-#[test]
-fn test_resolve_attrs_success() {
-    let schema = test_schema();
-    let type_schema = schema.types.get("site").unwrap();
-    let attrs: JsonMap = serde_json::json!({"name": "site1"})
-        .as_object()
-        .unwrap()
-        .clone()
-        .into_iter()
-        .collect::<BTreeMap<_, _>>()
-        .into();
-    let resolved = BTreeMap::new();
-    let result = resolve_attrs(&attrs, type_schema, &resolved).unwrap();
-    assert_eq!(result, serde_json::json!({"name": "site1"}));
-}
-
-#[test]
-fn test_resolve_attrs_missing_schema() {
-    let schema = test_schema();
-    let type_schema = schema.types.get("site").unwrap();
-    let attrs: JsonMap = serde_json::json!({"unknown_field": "value"})
-        .as_object()
-        .unwrap()
-        .clone()
-        .into_iter()
-        .collect::<BTreeMap<_, _>>()
-        .into();
-    let resolved = BTreeMap::new();
-    let err = resolve_attrs(&attrs, type_schema, &resolved).unwrap_err();
-    assert!(err.to_string().contains("missing schema for field"));
-}
-
-// the shared `resolve_value_for_type` resolves refs nested inside `List` and
-// `Map` fields when building the request body, matching netbox/nautobot.
-#[test]
-fn test_resolve_attrs_resolves_refs_nested_in_list() {
-    let type_schema = TypeSchema {
-        key: BTreeMap::new(),
-        fields: BTreeMap::from([(
-            "members".to_string(),
-            field_schema(FieldType::List {
-                item: Box::new(FieldType::Ref {
-                    target: "site".to_string(),
-                }),
-            }),
-        )]),
-    };
-    let uid = Uid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
-    let mut resolved = BTreeMap::new();
-    resolved.insert(uid, BackendId::Int(123));
-
-    let attrs: JsonMap = serde_json::json!({
-        "members": ["550e8400-e29b-41d4-a716-446655440000"]
-    })
-    .as_object()
-    .unwrap()
-    .clone()
-    .into_iter()
-    .collect::<BTreeMap<_, _>>()
-    .into();
-
-    let body = resolve_attrs(&attrs, &type_schema, &resolved).unwrap();
-    assert_eq!(body, serde_json::json!({"members": [123]}));
-}
-
-#[test]
-fn test_resolve_attrs_resolves_refs_nested_in_map() {
-    let type_schema = TypeSchema {
-        key: BTreeMap::new(),
-        fields: BTreeMap::from([(
-            "links".to_string(),
-            field_schema(FieldType::Map {
-                value: Box::new(FieldType::Ref {
-                    target: "site".to_string(),
-                }),
-            }),
-        )]),
-    };
-    let uid = Uid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
-    let mut resolved = BTreeMap::new();
-    resolved.insert(uid, BackendId::String("dev-9".to_string()));
-
-    let attrs: JsonMap = serde_json::json!({
-        "links": {"primary": "550e8400-e29b-41d4-a716-446655440000"}
-    })
-    .as_object()
-    .unwrap()
-    .clone()
-    .into_iter()
-    .collect::<BTreeMap<_, _>>()
-    .into();
-
-    let body = resolve_attrs(&attrs, &type_schema, &resolved).unwrap();
-    assert_eq!(body, serde_json::json!({"links": {"primary": "dev-9"}}));
-}
-
-#[test]
-fn test_resolve_attrs_unresolved_nested_ref_surfaces_missing_ref() {
-    let type_schema = TypeSchema {
-        key: BTreeMap::new(),
-        fields: BTreeMap::from([(
-            "members".to_string(),
-            field_schema(FieldType::List {
-                item: Box::new(FieldType::Ref {
-                    target: "site".to_string(),
-                }),
-            }),
-        )]),
-    };
-    // empty `resolved` -> the nested uid cannot be resolved.
-    let resolved = BTreeMap::new();
-
-    let attrs: JsonMap = serde_json::json!({
-        "members": ["550e8400-e29b-41d4-a716-446655440000"]
-    })
-    .as_object()
-    .unwrap()
-    .clone()
-    .into_iter()
-    .collect::<BTreeMap<_, _>>()
-    .into();
-
-    let err = resolve_attrs(&attrs, &type_schema, &resolved).unwrap_err();
-    assert!(
-        is_missing_ref_error(err.as_ref()),
-        "nested unresolved ref must surface MissingRef for the retry loop, got: {err}"
-    );
-}
-
-#[test]
-fn test_normalize_attrs_refs_resolves_refs_nested_in_list() {
-    let type_schema = TypeSchema {
-        key: BTreeMap::new(),
-        fields: BTreeMap::from([(
-            "members".to_string(),
-            field_schema(FieldType::List {
-                item: Box::new(FieldType::Ref {
-                    target: "site".to_string(),
-                }),
-            }),
-        )]),
-    };
-    let site_uid = Uid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
-    let mut state = new_state_store();
-    state.set_backend_id(
-        TypeName::new("site".to_string()),
-        site_uid,
-        BackendId::Int(7),
-    );
-    let mappings = state_mappings_from_state(&state);
-
-    let attrs: JsonMap = serde_json::json!({ "members": [7] })
-        .as_object()
-        .unwrap()
-        .clone()
-        .into_iter()
-        .collect::<BTreeMap<_, _>>()
-        .into();
-
-    let normalized = normalize_attrs_refs(&attrs, &type_schema, &mappings);
-    assert_eq!(
-        normalized.get("members"),
-        Some(&serde_json::json!([site_uid.to_string()]))
-    );
-}
-
-#[test]
-fn test_normalize_attrs_refs_resolves_refs_nested_in_map() {
-    let type_schema = TypeSchema {
-        key: BTreeMap::new(),
-        fields: BTreeMap::from([(
-            "links".to_string(),
-            field_schema(FieldType::Map {
-                value: Box::new(FieldType::Ref {
-                    target: "site".to_string(),
-                }),
-            }),
-        )]),
-    };
-    let site_uid = Uid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
-    let mut state = new_state_store();
-    state.set_backend_id(
-        TypeName::new("site".to_string()),
-        site_uid,
-        BackendId::Int(7),
-    );
-    let mappings = state_mappings_from_state(&state);
-
-    let attrs: JsonMap = serde_json::json!({ "links": {"primary": 7} })
-        .as_object()
-        .unwrap()
-        .clone()
-        .into_iter()
-        .collect::<BTreeMap<_, _>>()
-        .into();
-
-    let normalized = normalize_attrs_refs(&attrs, &type_schema, &mappings);
-    assert_eq!(
-        normalized.get("links"),
-        Some(&serde_json::json!({"primary": site_uid.to_string()}))
-    );
-}
-
-#[test]
-fn test_normalize_attrs_refs_resolves_list_ref() {
-    let type_schema = TypeSchema {
-        key: BTreeMap::new(),
-        fields: BTreeMap::from([(
-            "peers".to_string(),
-            field_schema(FieldType::ListRef {
-                target: "site".to_string(),
-            }),
-        )]),
-    };
-    let site_uid = Uid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
-    let mut state = new_state_store();
-    state.set_backend_id(
-        TypeName::new("site".to_string()),
-        site_uid,
-        BackendId::Int(7),
-    );
-    let mappings = state_mappings_from_state(&state);
-
-    let attrs: JsonMap = serde_json::json!({ "peers": [7] })
-        .as_object()
-        .unwrap()
-        .clone()
-        .into_iter()
-        .collect::<BTreeMap<_, _>>()
-        .into();
-
-    let normalized = normalize_attrs_refs(&attrs, &type_schema, &mappings);
-    assert_eq!(
-        normalized.get("peers"),
-        Some(&serde_json::json!([site_uid.to_string()]))
-    );
-}
-
-#[test]
-fn test_normalize_attrs_refs_resolves_object_shaped_ref() {
-    let type_schema = TypeSchema {
-        key: BTreeMap::new(),
-        fields: BTreeMap::from([(
-            "site".to_string(),
-            field_schema(FieldType::Ref {
-                target: "site".to_string(),
-            }),
-        )]),
-    };
-    let site_uid = Uid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
-    let mut state = new_state_store();
-    state.set_backend_id(
-        TypeName::new("site".to_string()),
-        site_uid,
-        BackendId::Int(7),
-    );
-    let mappings = state_mappings_from_state(&state);
-
-    let attrs: JsonMap = serde_json::json!({ "site": {"id": 7} })
-        .as_object()
-        .unwrap()
-        .clone()
-        .into_iter()
-        .collect::<BTreeMap<_, _>>()
-        .into();
-
-    let normalized = normalize_attrs_refs(&attrs, &type_schema, &mappings);
-    assert_eq!(
-        normalized.get("site"),
-        Some(&serde_json::json!(site_uid.to_string()))
-    );
+    let cases = vec![
+        (
+            "f",
+            ref_to("site"),
+            false,
+            serde_json::json!({"f": uid(0).to_string()}),
+            BTreeMap::from([(uid(0), BackendId::Int(123))]),
+            Body::Ok(serde_json::json!({"f": 123})),
+        ),
+        (
+            "f",
+            FieldType::ListRef {
+                target: "tag".to_string(),
+            },
+            false,
+            serde_json::json!({"f": [uid(1).to_string(), uid(2).to_string()]}),
+            BTreeMap::from([
+                (uid(1), BackendId::Int(1)),
+                (uid(2), BackendId::String("abc".to_string())),
+            ]),
+            Body::Ok(serde_json::json!({"f": [1, "abc"]})),
+        ),
+        // the encode closure for a string backend id.
+        (
+            "f",
+            ref_to("site"),
+            false,
+            serde_json::json!({"f": uid(0).to_string()}),
+            BTreeMap::from([(uid(0), BackendId::String("abc-123".to_string()))]),
+            Body::Ok(serde_json::json!({"f": "abc-123"})),
+        ),
+        // an unresolved ref uid still surfaces the shared MissingRef error.
+        (
+            "f",
+            ref_to("site"),
+            false,
+            serde_json::json!({"f": uid(0).to_string()}),
+            BTreeMap::new(),
+            Body::Err("missing referenced uid"),
+        ),
+        // a null value for a nullable ref must pass straight through as json null
+        // (to clear the field on the backend), not reach the ref encoder and error
+        // with "ref value must be a uuid string".
+        (
+            "f",
+            ref_to("site"),
+            true,
+            serde_json::json!({"f": null}),
+            BTreeMap::new(),
+            Body::Ok(serde_json::json!({"f": null})),
+        ),
+        (
+            "name",
+            FieldType::String,
+            false,
+            serde_json::json!({"name": "site1"}),
+            BTreeMap::new(),
+            Body::Ok(serde_json::json!({"name": "site1"})),
+        ),
+        (
+            "name",
+            FieldType::String,
+            false,
+            serde_json::json!({"unknown_field": "value"}),
+            BTreeMap::new(),
+            Body::Err("missing schema for field"),
+        ),
+        (
+            "members",
+            FieldType::List {
+                item: Box::new(ref_to("site")),
+            },
+            false,
+            serde_json::json!({"members": [uid(0).to_string()]}),
+            BTreeMap::from([(uid(0), BackendId::Int(123))]),
+            Body::Ok(serde_json::json!({"members": [123]})),
+        ),
+        (
+            "links",
+            FieldType::Map {
+                value: Box::new(ref_to("site")),
+            },
+            false,
+            serde_json::json!({"links": {"primary": uid(0).to_string()}}),
+            BTreeMap::from([(uid(0), BackendId::String("dev-9".to_string()))]),
+            Body::Ok(serde_json::json!({"links": {"primary": "dev-9"}})),
+        ),
+        // the nested uid cannot be resolved, and the retry loop needs MissingRef.
+        (
+            "members",
+            FieldType::List {
+                item: Box::new(ref_to("site")),
+            },
+            false,
+            serde_json::json!({"members": [uid(0).to_string()]}),
+            BTreeMap::new(),
+            Body::MissingRef,
+        ),
+    ];
+    for (field, field_type, nullable, attrs, resolved, expected) in cases {
+        let label = format!("{field_type:?} {attrs}");
+        let type_schema = TypeSchema {
+            key: BTreeMap::new(),
+            fields: BTreeMap::from([(
+                field.to_string(),
+                FieldSchema {
+                    nullable,
+                    ..field_schema(field_type)
+                },
+            )]),
+        };
+        let attrs: JsonMap = attrs
+            .as_object()
+            .unwrap()
+            .clone()
+            .into_iter()
+            .collect::<BTreeMap<_, _>>()
+            .into();
+        let result = resolve_attrs(&attrs, &type_schema, &resolved);
+        match expected {
+            Body::Ok(body) => assert_eq!(result.unwrap(), body, "{label}"),
+            Body::Err(message) => {
+                let err = result.unwrap_err();
+                assert!(err.to_string().contains(message), "{label}: {err}");
+            }
+            Body::MissingRef => {
+                let err = result.unwrap_err();
+                assert!(is_missing_ref_error(err.as_ref()), "{label}: {err}");
+            }
+        }
+    }
 }
 
 // tests for GenericAdapter::new
-#[test]
-fn test_generic_adapter_new_success() {
-    let config = test_config("http://example.com");
-    let adapter = GenericAdapter::new(config);
-    assert!(adapter.is_ok());
-}
-
-#[test]
-fn test_generic_adapter_new_with_headers() {
-    let mut config = test_config("http://example.com");
-    config
-        .headers
-        .insert("Authorization".to_string(), "Bearer token".to_string());
-    config
-        .headers
-        .insert("Content-Type".to_string(), "application/json".to_string());
-    let adapter = GenericAdapter::new(config);
-    assert!(adapter.is_ok());
-}
-
 #[test]
 fn test_generic_adapter_new_invalid_header_name() {
     let mut config = test_config("http://example.com");
@@ -655,57 +347,26 @@ fn test_generic_adapter_new_invalid_header_name() {
 
 // tests for backend_id_to_url
 #[test]
-fn test_backend_id_to_url_int() {
-    let config = test_config("http://example.com/");
-    let adapter = GenericAdapter::new(config).unwrap();
-    let endpoint = adapter.config.types.get("device").unwrap();
-    let url = adapter.backend_id_to_url(endpoint, &BackendId::Int(42));
-    assert_eq!(url, "http://example.com/api/devices/42");
-}
-
-#[test]
-fn test_backend_id_to_url_string() {
-    let config = test_config("http://example.com");
-    let adapter = GenericAdapter::new(config).unwrap();
-    let endpoint = adapter.config.types.get("device").unwrap();
-    let url = adapter.backend_id_to_url(endpoint, &BackendId::String("abc-123".to_string()));
-    assert_eq!(url, "http://example.com/api/devices/abc-123");
+fn test_backend_id_to_url() {
+    for (base_url, id, expected) in [
+        (
+            "http://example.com/",
+            BackendId::Int(42),
+            "http://example.com/api/devices/42",
+        ),
+        (
+            "http://example.com",
+            BackendId::String("abc-123".to_string()),
+            "http://example.com/api/devices/abc-123",
+        ),
+    ] {
+        let adapter = GenericAdapter::new(test_config(base_url)).unwrap();
+        let endpoint = adapter.config.types.get("device").unwrap();
+        assert_eq!(adapter.backend_id_to_url(endpoint, &id), expected);
+    }
 }
 
 // tests for observe with mocked server
-#[tokio::test]
-async fn test_observe_with_results_path() {
-    let server = MockServer::start();
-    let mock = server.mock(|when, then| {
-        when.method(GET).path("/api/devices");
-        then.status(200)
-            .header("content-type", "application/json")
-            .json_body(serde_json::json!({
-                "results": [
-                    {"id": 1, "name": "device1"},
-                    {"id": 2, "name": "device2"}
-                ]
-            }));
-    });
-
-    let config = test_config(&server.base_url());
-    let adapter = GenericAdapter::new(config).unwrap();
-    let schema = test_schema();
-    let state_store = new_state_store();
-
-    let state = adapter
-        .read(
-            &schema,
-            &[TypeName::new("device".to_string())],
-            &state_store,
-        )
-        .await
-        .unwrap();
-
-    mock.assert();
-    assert_eq!(state.len(), 2);
-}
-
 #[tokio::test]
 async fn test_observe_resolves_ref_ids_to_uids() {
     let server = MockServer::start();
@@ -797,33 +458,6 @@ async fn test_import_resolves_bare_ref_ids_from_the_observation() {
             .and_then(|v| v.as_str()),
         Some(object_of("site").uid.to_string().as_str())
     );
-}
-
-#[tokio::test]
-async fn test_observe_without_results_path() {
-    let server = MockServer::start();
-    let mock = server.mock(|when, then| {
-        when.method(GET).path("/api/sites");
-        then.status(200)
-            .header("content-type", "application/json")
-            .json_body(serde_json::json!([
-                {"id": 1, "name": "site1"},
-                {"id": 2, "name": "site2"}
-            ]));
-    });
-
-    let config = test_config(&server.base_url());
-    let adapter = GenericAdapter::new(config).unwrap();
-    let schema = test_schema();
-    let state_store = new_state_store();
-
-    let state = adapter
-        .read(&schema, &[TypeName::new("site".to_string())], &state_store)
-        .await
-        .unwrap();
-
-    mock.assert();
-    assert_eq!(state.len(), 2);
 }
 
 #[tokio::test]
@@ -1224,7 +858,9 @@ async fn test_apply_create_retries_out_of_order_dependencies() {
 async fn test_apply_update_patch() {
     let server = MockServer::start();
     let mock = server.mock(|when, then| {
-        when.method(PATCH).path("/api/devices/42");
+        when.method(PATCH)
+            .path("/api/devices/42")
+            .json_body(serde_json::json!({"name": "updated", "site": 1}));
         then.status(200)
             .header("content-type", "application/json")
             .json_body(serde_json::json!({"id": 42, "name": "updated"}));
@@ -1269,6 +905,7 @@ async fn test_apply_update_patch() {
     let report = adapter.write(&schema, &ops, &state).await.unwrap();
     mock.assert();
     assert_eq!(report.applied.len(), 1);
+    assert_eq!(report.applied[0].backend_id, Some(BackendId::Int(42)));
 }
 
 #[tokio::test]
@@ -1472,32 +1109,6 @@ async fn test_apply_delete_standard() {
     assert_eq!(report.applied[0].backend_id, None);
 }
 
-#[tokio::test]
-async fn test_apply_delete_none_strategy() {
-    // site has DeleteStrategy::None, so delete should fail with an explicit error
-    let config = test_config("http://example.com");
-    let adapter = GenericAdapter::new(config).unwrap();
-    let schema = test_schema();
-
-    let uid = Uid::new_v4();
-    let mut key = BTreeMap::new();
-    key.insert("name".to_string(), serde_json::json!("to-delete"));
-
-    let ops = vec![Op::Delete {
-        uid,
-        type_name: TypeName::new("site".to_string()),
-        key: Key::from(key),
-        backend_id: Some(BackendId::Int(42)),
-    }];
-
-    let state = new_state_store();
-    let err = adapter.write(&schema, &ops, &state).await.unwrap_err();
-    assert!(
-        err.to_string().contains("delete not supported"),
-        "unexpected error: {err}"
-    );
-}
-
 /// the create and update endpoints a refused plan must leave untouched.
 fn site_write_mocks(server: &MockServer) -> (httpmock::Mock<'_>, httpmock::Mock<'_>) {
     let create = server.mock(|when, then| {
@@ -1599,30 +1210,6 @@ async fn test_apply_delete_none_strategy_refuses_before_writing() {
 }
 
 #[tokio::test]
-async fn test_apply_delete_missing_backend_id_refuses_before_writing() {
-    let server = MockServer::start();
-    let (create, update) = site_write_mocks(&server);
-
-    let config = test_config(&server.base_url());
-    let adapter = GenericAdapter::new(config).unwrap();
-    let schema = test_schema();
-
-    let mut ops = site_write_ops();
-    ops.push(delete_op("device", "to-delete", None));
-
-    let state = new_state_store();
-    let err = adapter.write(&schema, &ops, &state).await.unwrap_err();
-    let message = err.to_string();
-    assert!(
-        message.contains("delete requires backend id")
-            && message.contains(r#"device {"name":"to-delete"}"#),
-        "error does not name the object: {message}"
-    );
-    create.assert_calls(0);
-    update.assert_calls(0);
-}
-
-#[tokio::test]
 async fn test_apply_delete_refusal_names_every_cause() {
     let server = MockServer::start();
     let (create, update) = site_write_mocks(&server);
@@ -1712,50 +1299,6 @@ async fn test_apply_delete_standard_alongside_create() {
     create.assert();
     delete.assert();
     assert_eq!(report.applied.len(), 2);
-}
-
-#[tokio::test]
-async fn test_apply_delete_unconfigured_type() {
-    let server = MockServer::start();
-    let (create, update) = site_write_mocks(&server);
-
-    let config = test_config(&server.base_url());
-    let adapter = GenericAdapter::new(config).unwrap();
-    let schema = test_schema();
-
-    let mut ops = site_write_ops();
-    ops.push(delete_op("unknown", "to-delete", Some(BackendId::Int(42))));
-
-    let state = new_state_store();
-    let err = adapter.write(&schema, &ops, &state).await.unwrap_err();
-    assert!(
-        err.to_string().contains("no config for unknown"),
-        "unexpected error: {err}"
-    );
-    create.assert_calls(0);
-    update.assert_calls(0);
-}
-
-#[tokio::test]
-async fn test_apply_delete_missing_backend_id() {
-    let config = test_config("http://example.com");
-    let adapter = GenericAdapter::new(config).unwrap();
-    let schema = test_schema();
-
-    let uid = Uid::new_v4();
-    let mut key = BTreeMap::new();
-    key.insert("name".to_string(), serde_json::json!("to-delete"));
-
-    let ops = vec![Op::Delete {
-        uid,
-        type_name: TypeName::new("device".to_string()),
-        key: Key::from(key),
-        backend_id: None,
-    }];
-
-    let state = new_state_store();
-    let err = adapter.write(&schema, &ops, &state).await.unwrap_err();
-    assert!(err.to_string().contains("delete requires backend id"));
 }
 
 #[tokio::test]
@@ -1902,14 +1445,7 @@ async fn test_observe_non_object_in_results() {
         .await
         .unwrap_err();
 
-    // the error could be about missing id path since strings don't have "id"
-    let err_str = err.to_string();
-    assert!(
-        err_str.contains("expected object in results")
-            || err_str.contains("path segment not found"),
-        "unexpected error: {}",
-        err_str
-    );
+    assert_eq!(err.to_string(), "path segment not found: id");
 }
 
 #[tokio::test]

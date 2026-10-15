@@ -1,5 +1,6 @@
-//! drives the commands the published walkthroughs and case studies print, over
-//! the fixtures they link, and pins the output each page states. every step here
+//! drives the commands the published walkthroughs, case studies and cli
+//! reference print, over the fixtures they link, and pins the output each page
+//! states. every step here
 //! is backend-free, so the pages stay checkable without a live netbox or
 //! nautobot. the pages are the specification: if one of these fails, the page is
 //! right and the code or the fixture is wrong.
@@ -12,7 +13,7 @@ use std::path::Path;
 use std::process::Command;
 
 use serde_json::Value;
-use support::{bin_path, run_command, walkthrough_path, walkthroughs_dir};
+use support::{bin_path, run_command, run_command_capture, walkthrough_path, walkthroughs_dir};
 use tempfile::tempdir;
 
 /// the parsed ir `alembic map` writes for a documented inventory + spec pair.
@@ -274,4 +275,34 @@ fn case_study_02_migrates_nautobot_shaped_ir_into_netbox() {
         BTreeSet::from(["dcim.site".to_string(), "dcim.device".to_string()])
     );
     assert_eq!(ir["objects"].as_array().unwrap().len(), 2, "{ir:#}");
+}
+
+/// docs/cli.md, map transform: prints the typed result as json.
+#[test]
+fn map_transform_prints_the_typed_result_as_json() {
+    let dir = tempdir().expect("temp dir");
+    let spec = dir.path().join("map.yaml");
+    fs::write(
+        &spec,
+        "transforms:\n  inline: |\n    def cidr_host(v):\n        return v.split(\"/\")[0]\n",
+    )
+    .expect("write spec");
+    let mut cmd = Command::new(bin_path());
+    cmd.args(["map", "transform", "--spec"])
+        .arg(&spec)
+        .args(["cidr_host", "\"10.0.0.1/24\""]);
+    let stdout = run_command_capture(cmd, "map transform cidr_host");
+    assert_eq!(stdout, "\"10.0.0.1\"\n");
+}
+
+/// docs/cli.md, completion: a script for each documented shell, on stdout.
+#[test]
+fn completion_prints_a_script_naming_the_binary_and_its_subcommands() {
+    for shell in ["bash", "elvish", "fish", "powershell", "zsh"] {
+        let mut cmd = Command::new(bin_path());
+        cmd.args(["completion", shell]);
+        let script = run_command_capture(cmd, &format!("completion {shell}"));
+        assert!(script.contains("alembic"), "{shell}: {script:.80}");
+        assert!(script.contains("plan"), "{shell} must complete subcommands");
+    }
 }

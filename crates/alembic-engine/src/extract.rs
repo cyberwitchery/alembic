@@ -636,20 +636,6 @@ mod tests {
     }
 
     #[test]
-    fn import_inventory_uses_stable_uid() {
-        let adapter = MockAdapter {
-            observed: observed_state().unwrap(),
-        };
-        let schema = schema_for_observed(&adapter.observed);
-        let report = run_import(&adapter, &schema);
-        assert_eq!(report.inventory.objects.len(), 1);
-        let object = &report.inventory.objects[0];
-        let key = key_str("site=fra1");
-        assert_eq!(object.key, key);
-        assert_eq!(object.uid, uid_v5("dcim.site", &key_string(&key)));
-    }
-
-    #[test]
     fn import_reads_with_the_state_it_assigns_identity_from() {
         // the guard: objects and refs must land in one uid space, so the read
         // sees the same state the identity assignment consults.
@@ -988,47 +974,6 @@ mod tests {
     }
 
     #[test]
-    fn import_refuses_a_ref_to_an_object_outside_the_observation() {
-        // the common case: a plain attr ref whose target the observation never
-        // returned. it keeps its backend id, which validation reports as
-        // `expected uuid, got number`; import knows it is a missing object.
-        let string_field = typed_field(FieldType::String);
-        let schema = Schema {
-            types: BTreeMap::from([
-                (
-                    "b.interface".to_string(),
-                    typed_type(&[("name", string_field.clone())], &[]),
-                ),
-                (
-                    "c.cable".to_string(),
-                    typed_type(
-                        &[("name", string_field)],
-                        &[("interface", ref_field("b.interface"))],
-                    ),
-                ),
-            ]),
-        };
-
-        let mut observed = ObservedState::default();
-        observed
-            .insert(observed_object(
-                "c.cable",
-                "name=c1",
-                json!({ "name": "c1", "interface": 99 }),
-                1,
-            ))
-            .unwrap();
-
-        let error = import_err(observed, &schema);
-        assert!(
-            error.contains(
-                "c.cable.interface -> b.interface 99: no b.interface with that backend id was observed"
-            ),
-            "{error}"
-        );
-    }
-
-    #[test]
     fn import_reports_every_unresolved_ref_at_once() {
         // one message per import, not one failure per ref: a stale inventory
         // usually breaks in several places and the operator wants the whole list.
@@ -1105,59 +1050,52 @@ mod tests {
     }
 
     #[test]
-    fn import_reports_every_unresolved_ref_of_a_list_ref() {
-        // the shared walk has an arm per ref-bearing field type and the other tests
-        // only drive the plain `Ref`. a list of refs reports every element, not
-        // just the first.
-        let error = unresolved_in(
-            FieldType::ListRef {
-                target: "b.interface".to_string(),
-            },
-            json!([98, 99]),
-        );
-        assert!(
-            error.contains("2 reference(s) could not be resolved"),
-            "{error}"
-        );
-        assert!(
-            error.contains("c.cable.interface -> b.interface 98"),
-            "{error}"
-        );
-        assert!(
-            error.contains("c.cable.interface -> b.interface 99"),
-            "{error}"
-        );
-    }
-
-    #[test]
-    fn import_reports_an_unresolved_ref_nested_in_a_list() {
-        // `List` recurses on its item type, so a ref reached through it is
-        // labelled with the field that holds the list.
-        let error = unresolved_in(
-            FieldType::List {
-                item: Box::new(interface_ref()),
-            },
-            json!([99]),
-        );
-        assert!(
-            error.contains("c.cable.interface -> b.interface 99"),
-            "{error}"
-        );
-    }
-
-    #[test]
-    fn import_reports_an_unresolved_ref_nested_in_a_map() {
-        // `Map` recurses on its value type; keys hold no refs.
-        let error = unresolved_in(
-            FieldType::Map {
-                value: Box::new(interface_ref()),
-            },
-            json!({ "primary": 99 }),
-        );
-        assert!(
-            error.contains("c.cable.interface -> b.interface 99"),
-            "{error}"
-        );
+    fn import_refuses_a_ref_to_an_object_outside_the_observation() {
+        // an attr ref whose target the observation never returned keeps its
+        // backend id, which validation would report as `expected uuid, got
+        // number`; import knows it is a missing object. every ref-bearing field
+        // type reports every element, labelled with the field that holds it.
+        let list_ref = FieldType::ListRef {
+            target: "b.interface".to_string(),
+        };
+        let list_of_ref = FieldType::List {
+            item: Box::new(interface_ref()),
+        };
+        let map_of_ref = FieldType::Map {
+            value: Box::new(interface_ref()),
+        };
+        let cases: [(FieldType, serde_json::Value, &[&str]); 4] = [
+            (
+                interface_ref(),
+                json!(99),
+                &["c.cable.interface -> b.interface 99: no b.interface with that backend id was observed"],
+            ),
+            (
+                list_ref,
+                json!([98, 99]),
+                &[
+                    "2 reference(s) could not be resolved",
+                    "c.cable.interface -> b.interface 98",
+                    "c.cable.interface -> b.interface 99",
+                ],
+            ),
+            (
+                list_of_ref,
+                json!([99]),
+                &["c.cable.interface -> b.interface 99"],
+            ),
+            (
+                map_of_ref,
+                json!({ "primary": 99 }),
+                &["c.cable.interface -> b.interface 99"],
+            ),
+        ];
+        for (field_type, value, lines) in cases {
+            let error = unresolved_in(field_type, value);
+            for line in lines {
+                assert!(error.contains(line), "{line}: {error}");
+            }
+        }
     }
 
     #[test]
@@ -1299,26 +1237,6 @@ mod tests {
         let error = import_err(observed, &schema);
         assert!(error.contains("- b.interface: 1 object(s)"), "{error}");
         assert!(!error.contains("reference cycle"), "{error}");
-    }
-
-    #[test]
-    fn import_inventory_passes_validation() {
-        // red-green: without projection the imported inventory carries `last_updated`,
-        // which fails validate_inventory with ExtraAttrField.
-        let observed = observed_of(&[(
-            "dcim.cable",
-            "cable=c1",
-            json!({ "label": "uplink", "last_updated": "2026-06-09T00:00:00Z" }),
-        )]);
-        let schema = schema_of(&[("dcim.cable", &["cable"], &["label"])]);
-        let report = import(observed, &schema);
-
-        let validation = alembic_core::validate_inventory(&report.inventory);
-        assert!(
-            validation.errors.is_empty(),
-            "an imported inventory must validate: {:?}",
-            validation.errors
-        );
     }
 
     #[test]

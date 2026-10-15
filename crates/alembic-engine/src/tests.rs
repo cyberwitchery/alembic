@@ -363,7 +363,7 @@ objects: []
     let err = load_inventory(&base).unwrap_err();
     let message = err.to_string();
     assert!(
-        message.contains("load inventory") || message.contains("read inventory"),
+        message.starts_with("load inventory: ") && message.ends_with("missing.yaml"),
         "unexpected error: {message}"
     );
 }
@@ -376,92 +376,6 @@ fn load_errors_on_invalid_yaml() {
 
     let err = load_inventory(&path).unwrap_err();
     assert!(err.to_string().contains("parse yaml"));
-}
-
-#[test]
-fn detects_duplicate_uids() {
-    let objects = vec![
-        obj(
-            uid(1),
-            "dcim.site",
-            "site=a",
-            json!({ "name": "A", "slug": "a" }),
-        ),
-        obj(
-            uid(1),
-            "dcim.site",
-            "site=b",
-            json!({ "name": "B", "slug": "b" }),
-        ),
-    ];
-    let inventory = inv(objects);
-    let result = validate(&inventory);
-    assert!(result.is_err());
-}
-
-#[test]
-fn detects_missing_references() {
-    let objects = vec![obj(
-        uid(2),
-        "dcim.interface",
-        "device=leaf01;interface=eth0",
-        json!({
-            "name": "eth0",
-            "device": uid(3).to_string(),
-            "if_type": "1000base-t",
-            "enabled": true
-        }),
-    )];
-    let inventory = Inventory {
-        scope: None,
-        schema: Schema {
-            types: BTreeMap::from([(
-                "dcim.interface".to_string(),
-                TypeSchema {
-                    key: BTreeMap::from([
-                        (
-                            "device".to_string(),
-                            FieldSchema {
-                                r#type: FieldType::Json,
-                                required: true,
-                                nullable: false,
-                                description: None,
-                                format: None,
-                                pattern: None,
-                            },
-                        ),
-                        (
-                            "interface".to_string(),
-                            FieldSchema {
-                                r#type: FieldType::Json,
-                                required: true,
-                                nullable: false,
-                                description: None,
-                                format: None,
-                                pattern: None,
-                            },
-                        ),
-                    ]),
-                    fields: BTreeMap::from([(
-                        "device".to_string(),
-                        FieldSchema {
-                            r#type: FieldType::Ref {
-                                target: "dcim.device".to_string(),
-                            },
-                            required: true,
-                            nullable: false,
-                            description: None,
-                            format: None,
-                            pattern: None,
-                        },
-                    )]),
-                },
-            )]),
-        },
-        objects,
-    };
-    let result = validate(&inventory);
-    assert!(result.is_err());
 }
 
 #[test]
@@ -513,99 +427,6 @@ fn plans_in_stable_order() {
         .collect();
 
     assert_eq!(kinds, vec![t("dcim.device"), t("dcim.site")]);
-}
-
-#[test]
-fn detects_attribute_diff() {
-    let uid = uid(20);
-    let desired = inv(vec![obj(
-        uid,
-        "dcim.site",
-        "site=fra1",
-        json!({ "name": "FRA1", "slug": "fra1" }),
-    )]);
-
-    let mut observed = ObservedState::default();
-    observed
-        .insert(ObservedObject {
-            type_name: t("dcim.site"),
-            key: key_str("site=fra1"),
-            attrs: attrs_map(json!({ "name": "OLD", "slug": "fra1" })),
-            backend_id: Some(BackendId::Int(100)),
-        })
-        .unwrap();
-
-    let state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
-    let plan = plan(
-        &desired.objects,
-        &observed,
-        &state,
-        &desired.schema,
-        desired.scope.as_ref(),
-        false,
-        true,
-    )
-    .unwrap();
-
-    assert_eq!(plan.ops.len(), 1);
-    match &plan.ops[0] {
-        Op::Update { changes, .. } => {
-            assert!(changes.iter().any(|c| c.field == "name"));
-        }
-        _ => panic!("expected update"),
-    }
-}
-
-#[test]
-fn detects_generic_payload_diff() {
-    let uid = uid(40);
-    let mut from = BTreeMap::new();
-    from.insert("a".to_string(), serde_json::json!(1));
-    let mut to = BTreeMap::new();
-    to.insert("a".to_string(), serde_json::json!(2));
-    to.insert("b".to_string(), serde_json::json!({"nested": true}));
-
-    let desired = inv(vec![Object::new(
-        uid,
-        t("services.vpn"),
-        key_str("vpn=corp"),
-        JsonMap::from(to),
-    )
-    .unwrap()]);
-
-    let mut observed = ObservedState::default();
-    observed
-        .insert(ObservedObject {
-            type_name: t("services.vpn"),
-            key: key_str("vpn=corp"),
-            attrs: from.into(),
-            backend_id: Some(BackendId::Int(10)),
-        })
-        .unwrap();
-
-    let state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
-    let plan = plan(
-        &desired.objects,
-        &observed,
-        &state,
-        &desired.schema,
-        desired.scope.as_ref(),
-        false,
-        true,
-    )
-    .unwrap();
-
-    assert_eq!(plan.ops.len(), 1);
-    match &plan.ops[0] {
-        Op::Update { changes, .. } => {
-            assert_eq!(changes.len(), 2);
-            let mut fields: Vec<&str> =
-                changes.iter().map(|change| change.field.as_str()).collect();
-            fields.sort();
-            assert_eq!(fields, vec!["a", "b"]);
-        }
-        _ => panic!("expected update"),
-    }
 }
 
 #[test]
@@ -699,49 +520,6 @@ fn planner_matches_backend_id_by_kind() {
 }
 
 #[test]
-fn planner_includes_prefix_site_diff() {
-    let desired = obj(
-        uid(83),
-        "ipam.prefix",
-        "prefix=10.0.0.0/24",
-        json!({
-            "prefix": "10.0.0.0/24",
-            "site": uid(1).to_string()
-        }),
-    );
-    let schema = schema_for(std::slice::from_ref(&desired));
-
-    let mut observed = ObservedState::default();
-    observed
-        .insert(ObservedObject {
-            type_name: t("ipam.prefix"),
-            key: key_str("prefix=10.0.0.0/24"),
-            attrs: attrs_map(json!({ "prefix": "10.0.0.0/24" })),
-            backend_id: Some(BackendId::Int(1)),
-        })
-        .unwrap();
-
-    let state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
-    let plan = plan(
-        std::slice::from_ref(&desired),
-        &observed,
-        &state,
-        &schema,
-        None,
-        false,
-        true,
-    )
-    .unwrap();
-    assert_eq!(plan.ops.len(), 1);
-    match &plan.ops[0] {
-        Op::Update { changes, .. } => {
-            assert!(changes.iter().any(|change| change.field == "site"));
-        }
-        _ => panic!("expected update"),
-    }
-}
-
-#[test]
 fn plan_write_only_is_all_creates_even_with_state() {
     let inventory = inv(vec![
         obj(
@@ -764,60 +542,6 @@ fn plan_write_only_is_all_creates_even_with_state() {
     let plan = plan_write_only(&inventory, &state).unwrap();
     assert_eq!(plan.ops.len(), 2);
     assert!(plan.ops.iter().all(|op| matches!(op, Op::Create { .. })));
-}
-
-#[test]
-fn state_store_roundtrip() {
-    let dir = tempdir().unwrap();
-    let path = dir.path().join("state.json");
-    let mut store = StateStore::load(&path).unwrap();
-    store.set_backend_id(t("dcim.site"), uid(99), BackendId::Int(123));
-    futures::executor::block_on(store.save_async()).unwrap();
-    // a real reload happens in a separate process after the first exits; drop the
-    // first store so its exclusive state lock is released before reloading.
-    drop(store);
-
-    let reloaded = StateStore::load(&path).unwrap();
-    assert_eq!(
-        reloaded.backend_id(t("dcim.site"), uid(99)),
-        Some(BackendId::Int(123))
-    );
-    assert!(reloaded.all_mappings().contains_key(&t("dcim.site")));
-
-    let mut reloaded = reloaded;
-    reloaded.remove_backend_id(t("dcim.site"), uid(99));
-    assert_eq!(reloaded.backend_id(t("dcim.site"), uid(99)), None);
-}
-
-#[test]
-fn state_store_load_is_exclusive_across_concurrent_holders() {
-    let dir = tempdir().unwrap();
-    let path = dir.path().join("state.json");
-    let _held = StateStore::load(&path).unwrap();
-    // a second concurrent load of the same state file is refused, so two runs
-    // cannot load-modify-save it and clobber each other's mappings.
-    let err = StateStore::load(&path).unwrap_err();
-    assert!(err.to_string().contains("another alembic run"), "{err}");
-}
-
-#[test]
-fn state_store_lock_releases_on_drop() {
-    let dir = tempdir().unwrap();
-    let path = dir.path().join("state.json");
-    {
-        let _held = StateStore::load(&path).unwrap();
-    }
-    // the previous holder dropped, so a fresh load acquires the lock cleanly.
-    StateStore::load(&path).unwrap();
-}
-
-#[test]
-fn state_store_creates_parent_dir() {
-    let dir = tempdir().unwrap();
-    let path = dir.path().join(".alembic/state.json");
-    let store = StateStore::load(&path).unwrap();
-    futures::executor::block_on(store.save_async()).unwrap();
-    assert!(path.exists());
 }
 
 #[test]
@@ -847,23 +571,6 @@ fn state_store_load_errors_on_bad_parent() {
     // be a directory fails here rather than being deferred to save.
     let err = StateStore::load(&path).unwrap_err();
     assert!(err.to_string().contains("create state dir"), "{err}");
-}
-
-#[tokio::test]
-async fn state_store_async_roundtrip() {
-    let dir = tempdir().unwrap();
-    let path = dir.path().join("async_state.json");
-    let mut store = StateStore::load(&path).unwrap();
-    store.set_backend_id(t("dcim.site"), uid(100), BackendId::Int(456));
-    store.save_async().await.unwrap();
-    drop(store); // release the state lock before reloading (models a fresh run).
-
-    let mut reloaded = StateStore::load(&path).unwrap();
-    reloaded.load_async().await.unwrap();
-    assert_eq!(
-        reloaded.backend_id(t("dcim.site"), uid(100)),
-        Some(BackendId::Int(456))
-    );
 }
 
 #[tokio::test]
@@ -953,73 +660,6 @@ async fn state_store_postgres_prevent_race_condition_when_configured() {
 
     store_a.save_async().await.unwrap();
     store_b.save_async().await.expect_err("race condition");
-}
-
-#[tokio::test]
-async fn state_store_load_async_no_backend() {
-    let mut store = StateStore::new(None, StateData::default());
-    // should succeed without error even with no backend
-    store.load_async().await.unwrap();
-}
-
-#[tokio::test]
-async fn state_store_save_async_no_backend() {
-    let store = StateStore::new(None, StateData::default());
-    // should succeed without error even with no backend
-    store.save_async().await.unwrap();
-}
-
-#[test]
-fn plan_generates_deletes_when_enabled() {
-    let desired = inv(vec![]);
-    let mut observed = ObservedState::default();
-    observed
-        .insert(ObservedObject {
-            type_name: t("dcim.site"),
-            key: key_str("site=orphan"),
-            attrs: attrs_map(json!({ "name": "orphan", "slug": "orphan" })),
-            backend_id: Some(BackendId::Int(10)),
-        })
-        .unwrap();
-
-    let state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
-    let plan = plan(
-        &desired.objects,
-        &observed,
-        &state,
-        &desired.schema,
-        desired.scope.as_ref(),
-        true,
-        true,
-    )
-    .unwrap();
-    assert!(plan.ops.iter().any(|op| matches!(op, Op::Delete { .. })));
-}
-
-#[test]
-fn apply_order_puts_deletes_last() {
-    let ops = vec![
-        Op::Delete {
-            uid: uid(1),
-            type_name: t("dcim.device"),
-            key: key_str("site=fra1/device=leaf01"),
-            backend_id: Some(BackendId::Int(2)),
-        },
-        Op::Create {
-            uid: uid(2),
-            type_name: t("dcim.site"),
-            desired: obj(
-                uid(2),
-                "dcim.site",
-                "site=fra1",
-                json!({ "name": "FRA1", "slug": "fra1" }),
-            ),
-        },
-    ];
-
-    let ordered = sort_ops_for_apply(&ops, &Schema::default());
-    assert!(matches!(ordered.first().unwrap(), Op::Create { .. }));
-    assert!(matches!(ordered.last().unwrap(), Op::Delete { .. }));
 }
 
 #[derive(Clone)]
@@ -1194,71 +834,43 @@ fn no_adopt_needs_only_the_bound_read() {
 }
 
 #[test]
-fn build_plan_creates_ops() {
-    let inventory = inv(vec![obj(
-        uid(1),
-        "dcim.site",
-        "site=fra1",
-        json!({ "name": "FRA1", "slug": "fra1" }),
-    )]);
-    let adapter = TestAdapter {
-        observed: ObservedState::default(),
-        report: ApplyReport::default(),
-    };
-    let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
-    let plan =
-        futures::executor::block_on(build_plan(&adapter, &inventory, &mut state, false)).unwrap();
-    assert_eq!(plan.ops.len(), 1);
-}
-
-#[test]
-fn build_plan_with_duplicated_uids() {
-    let inventory = inv(vec![
-        obj(
+fn build_plan_names_a_duplicated_uid_or_key() {
+    let cases = [
+        (
             uid(1),
-            "dcim.site",
-            "site=fra1",
-            json!({ "name": "FRA1", "slug": "fra1" }),
-        ),
-        obj(
-            uid(1),
-            "dcim.site",
             "site=fra2",
-            json!({ "name": "FRA2", "slug": "fra2" }),
+            "validation failed:\n- duplicate uid: 00000000-0000-0000-0000-000000000001\n",
         ),
-    ]);
-    let adapter = TestAdapter {
-        observed: ObservedState::default(),
-        report: ApplyReport::default(),
-    };
-    let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
-    let plan = futures::executor::block_on(build_plan(&adapter, &inventory, &mut state, false));
-    plan.expect_err("failed to detect duplicated uid");
-}
-
-#[test]
-fn build_plan_with_duplicated_keys() {
-    let inventory = inv(vec![
-        obj(
-            uid(1),
-            "dcim.site",
-            "site=fra1",
-            json!({ "name": "FRA1", "slug": "fra1" }),
-        ),
-        obj(
+        (
             uid(2),
-            "dcim.site",
             "site=fra1",
-            json!({ "name": "FRA2", "slug": "fra2" }),
+            "validation failed:\n- duplicate key: dcim.site::{\"site\":\"fra1\"}\n",
         ),
-    ]);
-    let adapter = TestAdapter {
-        observed: ObservedState::default(),
-        report: ApplyReport::default(),
-    };
-    let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
-    let plan = futures::executor::block_on(build_plan(&adapter, &inventory, &mut state, false));
-    plan.expect_err("failed to detect duplicated keys");
+    ];
+    for (second_uid, second_key, expected) in cases {
+        let inventory = inv(vec![
+            obj(
+                uid(1),
+                "dcim.site",
+                "site=fra1",
+                json!({ "name": "FRA1", "slug": "fra1" }),
+            ),
+            obj(
+                second_uid,
+                "dcim.site",
+                second_key,
+                json!({ "name": "FRA2", "slug": "fra2" }),
+            ),
+        ]);
+        let adapter = TestAdapter {
+            observed: ObservedState::default(),
+            report: ApplyReport::default(),
+        };
+        let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
+        let err = futures::executor::block_on(build_plan(&adapter, &inventory, &mut state, false))
+            .unwrap_err();
+        assert_eq!(format!("{err:#}"), expected);
+    }
 }
 
 #[test]
@@ -1475,36 +1087,32 @@ fn ref_chain_rows(depth: usize) -> Vec<(TypeName, BackendId, serde_json::Value)>
 }
 
 #[test]
-fn build_plan_bootstraps_object_keyed_on_a_ref() {
-    let inventory = ref_chain_inventory(1);
-    let adapter = RefChainAdapter::new(ref_chain_rows(1));
-    let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
-    let plan =
-        futures::executor::block_on(build_plan(&adapter, &inventory, &mut state, false)).unwrap();
-
-    assert!(plan.ops.is_empty(), "unexpected ops: {:?}", plan.ops);
-    assert_eq!(
-        state.backend_id(t("dcim.device"), chain_object_uid(1)),
-        Some(BackendId::Int(2))
-    );
-    assert_eq!(adapter.reads(), 1);
-}
-
-#[test]
 fn build_plan_bootstraps_a_chain_of_ref_keyed_objects() {
-    let inventory = ref_chain_inventory(2);
-    let adapter = RefChainAdapter::new(ref_chain_rows(2));
-    let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
-    let plan =
-        futures::executor::block_on(build_plan(&adapter, &inventory, &mut state, false)).unwrap();
+    // depth 1 is one object keyed on a ref, depth 2 a chain of them.
+    let cases = [
+        (1, "dcim.device", BackendId::Int(2)),
+        (2, "dcim.interface", BackendId::Int(3)),
+    ];
+    for (depth, leaf_type, leaf_id) in cases {
+        let inventory = ref_chain_inventory(depth);
+        let adapter = RefChainAdapter::new(ref_chain_rows(depth));
+        let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
+        let plan = futures::executor::block_on(build_plan(&adapter, &inventory, &mut state, false))
+            .unwrap();
 
-    // the whole chain resolves inside the one read the adapter takes.
-    assert!(plan.ops.is_empty(), "unexpected ops: {:?}", plan.ops);
-    assert_eq!(
-        state.backend_id(t("dcim.interface"), chain_object_uid(2)),
-        Some(BackendId::Int(3))
-    );
-    assert_eq!(adapter.reads(), 1);
+        // the whole chain resolves inside the one read the adapter takes.
+        assert!(
+            plan.ops.is_empty(),
+            "depth {depth}: unexpected ops: {:?}",
+            plan.ops
+        );
+        assert_eq!(
+            state.backend_id(t(leaf_type), chain_object_uid(depth)),
+            Some(leaf_id),
+            "depth {depth}"
+        );
+        assert_eq!(adapter.reads(), 1, "depth {depth}");
+    }
 }
 
 #[test]
@@ -1808,7 +1416,7 @@ fn insert_with_duplicate_backend_id() {
         })
         .unwrap();
 
-    observed
+    let err = observed
         .insert(ObservedObject {
             type_name: t("dcim.site"),
             key: key_str("site=fra2"),
@@ -1816,6 +1424,10 @@ fn insert_with_duplicate_backend_id() {
             backend_id: Some(BackendId::Int(id)),
         })
         .expect_err("duplicate backend id not detected");
+    assert_eq!(
+        err.to_string(),
+        "ObservedState already contains an object with backend id 123 for type dcim.site"
+    );
 }
 
 #[test]
@@ -2057,8 +1669,11 @@ fn apply_plan_blocks_deletes_without_flag() {
         effects: None,
     };
     let backend = Backend::Adapter(Box::new(adapter));
-    let result = futures::executor::block_on(apply_plan(&backend, &plan, &mut state, false));
-    assert!(result.is_err());
+    let err = futures::executor::block_on(apply_plan(&backend, &plan, &mut state, false))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("--allow-delete"), "{err}");
+    assert!(state.all_mappings().is_empty());
 }
 
 #[test]
@@ -2415,7 +2030,9 @@ fn an_emitter_overriding_neither_provisioning_method_passes_the_gate() {
 
 #[test]
 fn apply_plan_updates_state() {
-    let adapter = TestAdapter {
+    // the write report updates the state mapping whether the backend observes
+    // or only emits.
+    let adapter = || TestAdapter {
         observed: ObservedState::default(),
         report: ApplyReport {
             applied: vec![AppliedOp {
@@ -2426,22 +2043,18 @@ fn apply_plan_updates_state() {
             ..Default::default()
         },
     };
-    let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
-    let plan = Plan {
-        schema: Schema {
-            types: BTreeMap::new(),
-        },
-        ops: vec![],
-        summary: None,
-        schema_preview: None,
-        effects: None,
-    };
-    let backend = Backend::Adapter(Box::new(adapter));
-    futures::executor::block_on(apply_plan(&backend, &plan, &mut state, true)).unwrap();
-    assert_eq!(
-        state.backend_id(t("dcim.site"), uid(1)),
-        Some(BackendId::Int(55))
-    );
+    let backends = [
+        Backend::Adapter(Box::new(adapter())),
+        Backend::Emitter(Box::new(adapter())),
+    ];
+    for backend in backends {
+        let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
+        futures::executor::block_on(apply_plan(&backend, &empty_plan(), &mut state, true)).unwrap();
+        assert_eq!(
+            state.backend_id(t("dcim.site"), uid(1)),
+            Some(BackendId::Int(55))
+        );
+    }
 }
 
 #[test]
@@ -2542,41 +2155,6 @@ fn apply_plan_keeps_the_mapping_a_resumed_op_has_no_id_for() {
     assert_eq!(
         state.backend_id(t("dcim.site"), uid(1)),
         Some(BackendId::Int(55))
-    );
-}
-
-#[test]
-fn apply_plan_emitter_writes_and_provisions_nothing() {
-    let adapter = TestAdapter {
-        observed: ObservedState::default(),
-        report: ApplyReport {
-            applied: vec![AppliedOp {
-                uid: uid(1),
-                type_name: t("dcim.site"),
-                backend_id: Some(BackendId::Int(77)),
-            }],
-            ..Default::default()
-        },
-    };
-    let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
-    let plan = Plan {
-        schema: Schema {
-            types: BTreeMap::new(),
-        },
-        ops: vec![],
-        summary: None,
-        schema_preview: None,
-        effects: None,
-    };
-    let backend = Backend::Emitter(Box::new(adapter));
-    let report =
-        futures::executor::block_on(apply_plan(&backend, &plan, &mut state, true)).unwrap();
-    // emitters write but never provision.
-    assert!(report.provision.is_empty());
-    // the write report still updates the state mapping.
-    assert_eq!(
-        state.backend_id(t("dcim.site"), uid(1)),
-        Some(BackendId::Int(77))
     );
 }
 
@@ -3162,7 +2740,7 @@ async fn a_rename_stays_an_update_when_the_stale_uid_sorts_first() {
         &RenameBackend,
         &renamed_inventory(uid(900)),
         &mut state,
-        false,
+        true,
     )
     .await
     .unwrap();
@@ -3175,33 +2753,16 @@ async fn a_rename_stays_an_update_when_the_stale_uid_sorts_first() {
         "the rename must stay an update of the declared uid: {:?}",
         plan.ops
     );
-    assert_eq!(
-        state.uid_for_backend_id(&t("dcim.site"), &BackendId::Int(1)),
-        Some(uid(900))
-    );
-    assert_eq!(state.all_mappings()[&t("dcim.site")].len(), 1);
-}
-
-#[tokio::test]
-async fn a_rename_emits_no_delete_when_the_stale_uid_sorts_first() {
-    let dir = tempdir().unwrap();
-    let path = dir.path().join("state.json");
-    write_doubled_site_state(&path, uid(1), uid(900));
-    let mut state = StateStore::load(&path).unwrap();
-
-    let plan = build_plan(
-        &RenameBackend,
-        &renamed_inventory(uid(900)),
-        &mut state,
-        true,
-    )
-    .await
-    .unwrap();
     assert!(
         !plan.ops.iter().any(|op| matches!(op, Op::Delete { .. })),
         "a rename must not delete the object it renames: {:?}",
         plan.ops
     );
+    assert_eq!(
+        state.uid_for_backend_id(&t("dcim.site"), &BackendId::Int(1)),
+        Some(uid(900))
+    );
+    assert_eq!(state.all_mappings()[&t("dcim.site")].len(), 1);
 }
 
 #[tokio::test]

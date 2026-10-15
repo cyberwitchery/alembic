@@ -41,45 +41,47 @@ mod tests {
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
-    fn build_filter_defaults_to_warn() {
+    fn build_filter_reads_rust_log() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let old = std::env::var("RUST_LOG").ok();
-        std::env::remove_var("RUST_LOG");
-        let (filter, warning) = build_filter();
-        assert_eq!(filter.to_string(), "warn");
-        assert!(warning.is_none(), "an unset RUST_LOG is not reported");
-        if let Some(value) = old {
-            std::env::set_var("RUST_LOG", value);
-        } else {
-            std::env::remove_var("RUST_LOG");
+        // (RUST_LOG, filter, warning): an unset RUST_LOG is not reported, a
+        // rejected one is. a bare `trce` would parse as a target at trace level;
+        // the misspelt level needs an explicit target to be rejected.
+        let cases = [
+            (None, &["warn"][..], None),
+            (
+                Some("info,alembic_engine=debug"),
+                &["alembic_engine=debug", "info"][..],
+                None,
+            ),
+            (
+                Some("info,alembic_engine=trce"),
+                &["warn"][..],
+                Some("warning: ignoring RUST_LOG `info,alembic_engine=trce`: "),
+            ),
+        ];
+        for (value, expected_directives, expected_warning) in cases {
+            match value {
+                Some(value) => std::env::set_var("RUST_LOG", value),
+                None => std::env::remove_var("RUST_LOG"),
+            }
+            let (filter, warning) = build_filter();
+            // the directives, in whatever order the filter renders them
+            let filter = filter.to_string();
+            let mut directives: Vec<&str> = filter.split(',').collect();
+            directives.sort_unstable();
+            assert_eq!(directives, expected_directives, "{value:?}");
+            match expected_warning {
+                None => assert_eq!(warning, None, "{value:?}"),
+                Some(prefix) => {
+                    let warning = warning.expect("a rejected RUST_LOG is reported");
+                    assert!(
+                        warning.starts_with(prefix) && warning.ends_with("; using `warn`"),
+                        "{warning}"
+                    );
+                }
+            }
         }
-    }
-
-    #[test]
-    fn build_filter_uses_rust_log() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let old = std::env::var("RUST_LOG").ok();
-        std::env::set_var("RUST_LOG", "info,alembic_engine=debug");
-        let filter = build_filter().0.to_string();
-        assert!(filter.contains("info"));
-        assert!(filter.contains("alembic_engine=debug"));
-        if let Some(value) = old {
-            std::env::set_var("RUST_LOG", value);
-        } else {
-            std::env::remove_var("RUST_LOG");
-        }
-    }
-
-    #[test]
-    fn build_filter_reports_a_rejected_rust_log() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let old = std::env::var("RUST_LOG").ok();
-        // a bare `trce` would parse as a target at trace level; the misspelt level
-        // needs an explicit target to be rejected.
-        std::env::set_var("RUST_LOG", "info,alembic_engine=trce");
-        let (filter, warning) = build_filter();
-        assert_eq!(filter.to_string(), "warn");
-        assert!(warning.is_some(), "a rejected RUST_LOG is reported");
         if let Some(value) = old {
             std::env::set_var("RUST_LOG", value);
         } else {

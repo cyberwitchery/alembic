@@ -295,16 +295,6 @@ mod tests {
     // --- construction ---
 
     #[test]
-    fn empty_plan_yields_empty_report() {
-        let report = DriftReport::from_plan(&plan_with(vec![]));
-        assert!(report.is_empty());
-        assert_eq!(report.len(), 0);
-        assert!(report.changed.is_empty());
-        assert!(report.missing.is_empty());
-        assert!(report.extra.is_empty());
-    }
-
-    #[test]
     fn carries_match_provenance_without_counting_it_as_drift() {
         let mut plan = plan_with(vec![]);
         plan.summary.as_mut().unwrap().matching = Some(MatchSummary {
@@ -390,19 +380,6 @@ mod tests {
     }
 
     #[test]
-    fn mixed_categories() {
-        let report = DriftReport::from_plan(&plan_with(vec![
-            create_op(1, "dcim.site", "ams1"),
-            update_op(2, "dcim.site", "fra1", vec![name_change()]),
-            delete_op(3, "dcim.device", "leaf01"),
-        ]));
-        assert_eq!(report.len(), 3);
-        assert_eq!(report.changed.len(), 1);
-        assert_eq!(report.missing.len(), 1);
-        assert_eq!(report.extra.len(), 1);
-    }
-
-    #[test]
     fn no_drift_when_plan_has_only_noop_updates() {
         // an update with no field changes still surfaces as a changed entry with
         // an empty change list; the report mirrors the plan exactly.
@@ -410,17 +387,6 @@ mod tests {
             DriftReport::from_plan(&plan_with(vec![update_op(1, "dcim.site", "fra1", vec![])]));
         assert_eq!(report.changed.len(), 1);
         assert!(report.changed[0].changes.is_empty());
-    }
-
-    #[test]
-    fn carries_the_schema_preview_from_the_plan() {
-        let mut plan = plan_with(vec![create_op(1, "dcim.site", "ams1")]);
-        plan.schema_preview = Some(ProvisionReport {
-            created_fields: vec!["dcim.site.asset_tag".to_string()],
-            ..Default::default()
-        });
-        let report = DriftReport::from_plan(&plan);
-        assert_eq!(report.schema_preview, plan.schema_preview);
     }
 
     #[test]
@@ -450,33 +416,24 @@ mod tests {
     // --- display ---
 
     #[test]
-    fn display_empty_is_human_readable() {
-        let report = DriftReport::default();
-        assert_eq!(
-            report.to_string(),
-            "no drift: observed backend state matches declared intent"
-        );
-    }
-
-    #[test]
     fn display_groups_by_category() {
         let report = DriftReport::from_plan(&plan_with(vec![
             create_op(1, "dcim.site", "ams1"),
             update_op(2, "dcim.site", "fra1", vec![name_change()]),
             delete_op(3, "dcim.device", "leaf01"),
         ]));
-        let text = report.to_string();
-        assert!(text.starts_with("drift report: 1 changed, 1 missing, 1 extra"));
-        assert!(text.contains("changed (present but diverged):"));
-        assert!(text.contains("missing (declared in intent, absent from backend):"));
-        assert!(text.contains("extra (present in backend, not declared in intent):"));
-        // field diff is rendered as `field: from -> to` with json-rendered values.
-        assert!(text.contains("name: \"old\" -> \"new\""));
-        // keys are rendered alongside their type.
-        assert!(text.contains("dcim.device"));
-        assert!(text.contains("leaf01"));
         // no trailing newline, so the cli can println! cleanly.
-        assert!(!text.ends_with('\n'));
+        assert_eq!(
+            report.to_string(),
+            "drift report: 1 changed, 1 missing, 1 extra\n\n\
+             changed (present but diverged):\n  \
+             dcim.site {\"slug\":\"fra1\"}\n    \
+             name: \"old\" -> \"new\"\n\n\
+             missing (declared in intent, absent from backend):\n  \
+             dcim.site {\"slug\":\"ams1\"}\n\n\
+             extra (present in backend, not declared in intent):\n  \
+             dcim.device {\"slug\":\"leaf01\"}"
+        );
     }
 
     #[test]

@@ -11,33 +11,6 @@ pub(crate) struct Call {
     pub(crate) cwd: Option<PathBuf>,
 }
 
-pub(crate) struct MockRunner {
-    calls: RefCell<Vec<Call>>,
-}
-
-impl MockRunner {
-    pub(crate) fn new() -> Self {
-        Self {
-            calls: RefCell::new(Vec::new()),
-        }
-    }
-
-    pub(crate) fn calls(&self) -> Vec<Call> {
-        self.calls.borrow().clone()
-    }
-}
-
-impl Runner for MockRunner {
-    fn run(&self, program: &str, args: &[&str], cwd: Option<&Path>) -> Result<()> {
-        self.calls.borrow_mut().push(Call {
-            program: program.to_string(),
-            args: args.iter().map(|arg| arg.to_string()).collect(),
-            cwd: cwd.map(|dir| dir.to_path_buf()),
-        });
-        Ok(())
-    }
-}
-
 pub(crate) struct FixtureRunner {
     calls: RefCell<Vec<Call>>,
     output_dir: PathBuf,
@@ -139,23 +112,6 @@ pub(crate) fn write_minimal_inventory(dir: &Path) -> PathBuf {
     let inventory = dir.join("inventory.yaml");
     std::fs::write(&inventory, "schema:\n  types: {}\nobjects: []\n").unwrap();
     inventory
-}
-
-pub(crate) fn write_settings(output_dir: &Path, project_name: &str) -> PathBuf {
-    let project_dir = output_dir.join(project_name);
-    std::fs::create_dir_all(&project_dir).unwrap();
-    let settings = project_dir.join("settings.py");
-    std::fs::write(
-        &settings,
-        "INSTALLED_APPS = [\n    \"django.contrib.admin\",\n]\n",
-    )
-    .unwrap();
-    std::fs::write(
-        project_dir.join("urls.py"),
-        "from django.contrib import admin\nfrom django.urls import path\n\nurlpatterns = [\n    path('admin/', admin.site.urls),\n]\n",
-    )
-    .unwrap();
-    settings
 }
 
 pub(crate) fn write_site_inventory(dir: &Path) -> PathBuf {

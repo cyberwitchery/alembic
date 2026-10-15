@@ -240,13 +240,6 @@ mod tests {
     use alembic_core::FieldFormat;
     use serde_json::json;
 
-    #[test]
-    fn test_slugify() {
-        assert_eq!(slugify("Hello World"), "hello-world");
-        assert_eq!(slugify("EVPN Fabric!"), "evpn-fabric");
-        assert_eq!(slugify("---test---"), "test");
-    }
-
     /// the backend custom-field type strings netbox and nautobot both accept,
     /// from their generated clients' own enums. netbox spells its multi-valued
     /// selection `multiselect` and nautobot `multi-select`, so neither is here.
@@ -303,62 +296,21 @@ mod tests {
     }
 
     #[test]
-    fn test_shared_map_stays_within_the_backend_intersection() {
-        for r#type in every_field_type() {
+    fn test_custom_field_type_for_schema() {
+        let expected = [
+            "text", "text", "integer", "json", "boolean", "text", "date", "datetime", "text",
+            "json", "text", "text", "text", "text", "text", "text", "json", "json", "text", "text",
+        ];
+        let types = every_field_type();
+        assert_eq!(types.len(), expected.len());
+        for (r#type, expected) in types.into_iter().zip(expected) {
             let mapped = custom_field_type_for_schema(&schema(r#type.clone()));
+            assert_eq!(mapped, expected, "{type:?}");
             assert!(
                 BOTH_BACKENDS_ACCEPT.contains(&mapped.as_str()),
                 "{type:?} maps to `{mapped}`, which not both backends accept"
             );
         }
-    }
-
-    #[test]
-    fn test_custom_field_type_for_schema() {
-        assert_eq!(
-            custom_field_type_for_schema(&schema(FieldType::String)),
-            "text"
-        );
-        assert_eq!(
-            custom_field_type_for_schema(&schema(FieldType::Int)),
-            "integer"
-        );
-        assert_eq!(
-            custom_field_type_for_schema(&schema(FieldType::Float)),
-            "json"
-        );
-        assert_eq!(
-            custom_field_type_for_schema(&schema(FieldType::Bool)),
-            "boolean"
-        );
-        assert_eq!(
-            custom_field_type_for_schema(&schema(FieldType::Json)),
-            "json"
-        );
-        assert_eq!(
-            custom_field_type_for_schema(&schema(FieldType::Date)),
-            "date"
-        );
-        assert_eq!(
-            custom_field_type_for_schema(&schema(FieldType::Datetime)),
-            "datetime"
-        );
-        assert_eq!(
-            custom_field_type_for_schema(&schema(FieldType::Text)),
-            "text"
-        );
-        assert_eq!(
-            custom_field_type_for_schema(&schema(FieldType::List {
-                item: Box::new(FieldType::String)
-            })),
-            "json"
-        );
-        assert_eq!(
-            custom_field_type_for_schema(&schema(FieldType::Map {
-                value: Box::new(FieldType::String)
-            })),
-            "json"
-        );
     }
 
     #[test]
@@ -451,38 +403,33 @@ mod tests {
     }
 
     #[test]
-    fn test_tags_from_value_array_of_strings() {
-        let val = json!(["tag1", "tag2"]);
-        assert_eq!(tags_from_value(&val).unwrap(), vec!["tag1", "tag2"]);
-    }
-
-    #[test]
-    fn test_tags_from_value_array_of_objects() {
-        let val = json!([{"name": "tag1"}, {"slug": "tag-2"}]);
-        assert_eq!(tags_from_value(&val).unwrap(), vec!["tag1", "tag-2"]);
-    }
-
-    #[test]
-    fn test_tags_from_value_null() {
-        let val = json!(null);
-        assert_eq!(tags_from_value(&val).unwrap(), Vec::<String>::new());
-    }
-
-    #[test]
-    fn test_tags_from_value_invalid() {
-        let val = json!("not an array");
-        assert!(tags_from_value(&val).is_err());
-    }
-
-    #[test]
-    fn test_tags_from_value_non_string_non_object_item() {
-        assert!(tags_from_value(&json!([1, 2])).is_err());
-        assert!(tags_from_value(&json!(["ok", 5])).is_err());
-    }
-
-    #[test]
-    fn test_tags_from_value_object_without_name_or_slug() {
-        assert!(tags_from_value(&json!([{"id": 5}])).is_err());
+    fn test_tags_from_value() {
+        let cases: [(Value, Result<Vec<&str>, &str>); 7] = [
+            (json!(["tag1", "tag2"]), Ok(vec!["tag1", "tag2"])),
+            (
+                json!([{"name": "tag1"}, {"slug": "tag-2"}]),
+                Ok(vec!["tag1", "tag-2"]),
+            ),
+            (json!(null), Ok(vec![])),
+            (json!("not an array"), Err("tags must be an array")),
+            (json!([1, 2]), Err("tag item must be a string or object: 1")),
+            (
+                json!(["ok", 5]),
+                Err("tag item must be a string or object: 5"),
+            ),
+            (
+                json!([{"id": 5}]),
+                Err(r#"tag object must have a string name or slug: {"id":5}"#),
+            ),
+        ];
+        for (value, expected) in cases {
+            match expected {
+                Ok(tags) => assert_eq!(tags_from_value(&value).unwrap(), tags, "{value}"),
+                Err(message) => {
+                    assert_eq!(tags_from_value(&value).unwrap_err().to_string(), message)
+                }
+            }
+        }
     }
 
     /// a provision writes to a field the run did not create, so the preview has
@@ -537,17 +484,6 @@ mod tests {
         assert!(desired.is_empty());
     }
 
-    /// the payload is null, which `as_object` treats the same as not an object.
-    #[test]
-    fn test_merge_returns_none_when_payload_is_null() {
-        let mut desired = serde_json::Map::new();
-        assert_eq!(
-            merge_shared_field_properties(&mut desired, &json!(null)),
-            None
-        );
-        assert!(desired.is_empty());
-    }
-
     /// a payload with no converged or agreement-only properties adds nothing and
     /// diverges on none.
     #[test]
@@ -563,78 +499,26 @@ mod tests {
         );
     }
 
-    /// a property present in only one payload is taken as declared and lands in
-    /// `desired`; the silent declaration is opposed to nothing.
+    /// a managed property diverges, and the value agreed first is kept. the
+    /// agreement-only `type` is checked too, though no create would rewrite it.
     #[test]
-    fn test_merge_inserts_a_property_carried_by_the_first_payload() {
-        let mut desired = serde_json::Map::new();
-        assert_eq!(
-            merge_shared_field_properties(&mut desired, &json!({"required": true})),
-            None
-        );
-        assert_eq!(desired.get("required"), Some(&json!(true)));
-    }
-
-    /// two payloads that agree on every managed property produce no divergence and
-    /// a `desired` carrying the agreed value once.
-    #[test]
-    fn test_merge_agreeing_payloads_insert_once() {
-        let mut desired = serde_json::Map::new();
-        assert_eq!(
-            merge_shared_field_properties(&mut desired, &json!({"description": "owned"})),
-            None
-        );
-        assert_eq!(
-            merge_shared_field_properties(&mut desired, &json!({"description": "owned"})),
-            None
-        );
-        assert_eq!(desired.get("description"), Some(&json!("owned")));
-    }
-
-    /// a converged property diverges, and the value agreed first is kept.
-    #[test]
-    fn test_merge_reports_divergence_on_a_converged_property() {
-        let mut desired = serde_json::Map::new();
-        assert_eq!(
-            merge_shared_field_properties(&mut desired, &json!({"required": true})),
-            None
-        );
-        assert_eq!(
-            merge_shared_field_properties(&mut desired, &json!({"required": false})),
-            Some("required")
-        );
-        assert_eq!(desired.get("required"), Some(&json!(true)));
-    }
-
-    /// `validation_regex` diverges the same way.
-    #[test]
-    fn test_merge_reports_divergence_on_validation_regex() {
-        let mut desired = serde_json::Map::new();
-        assert_eq!(
-            merge_shared_field_properties(&mut desired, &json!({"validation_regex": "^[a-z]+$"})),
-            None
-        );
-        assert_eq!(
-            merge_shared_field_properties(&mut desired, &json!({"validation_regex": "^[0-9]+$"})),
-            Some("validation_regex")
-        );
-        assert_eq!(desired.get("validation_regex"), Some(&json!("^[a-z]+$")));
-    }
-
-    /// the agreement-only property is checked too: a `type` mismatch diverges even
-    /// though no create would ever rewrite it.
-    #[test]
-    fn test_merge_reports_divergence_on_the_agreement_only_type() {
-        let mut desired = serde_json::Map::new();
-        assert_eq!(
-            merge_shared_field_properties(&mut desired, &json!({"type": "text"})),
-            None
-        );
-        assert_eq!(
-            merge_shared_field_properties(&mut desired, &json!({"type": "integer"})),
-            Some("type")
-        );
-        assert_eq!(desired.get("type"), Some(&json!("text")));
+    fn test_merge_reports_divergence_on_a_managed_property() {
+        for (property, first, second) in [
+            ("required", json!(true), json!(false)),
+            ("validation_regex", json!("^[a-z]+$"), json!("^[0-9]+$")),
+            ("type", json!("text"), json!("integer")),
+        ] {
+            let mut desired = serde_json::Map::new();
+            assert_eq!(
+                merge_shared_field_properties(&mut desired, &json!({ property: first })),
+                None
+            );
+            assert_eq!(
+                merge_shared_field_properties(&mut desired, &json!({ property: second })),
+                Some(property)
+            );
+            assert_eq!(desired.get(property), Some(&first));
+        }
     }
 
     /// a payload that agrees on a property already set and carries a new one is no

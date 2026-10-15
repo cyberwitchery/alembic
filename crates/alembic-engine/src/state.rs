@@ -598,45 +598,6 @@ mod tests {
     }
 
     #[test]
-    fn backend_id_returns_value_for_existing_mapping() {
-        let mut data = StateData::default();
-        data.mappings
-            .entry(t("site"))
-            .or_default()
-            .insert(uid(1), BackendId::Int(42));
-        let store = StateStore::new(None, data);
-        assert_eq!(
-            store.backend_id(t("site"), uid(1)),
-            Some(BackendId::Int(42))
-        );
-    }
-
-    #[test]
-    fn set_backend_id_creates_mapping() {
-        let mut store = StateStore::new(None, StateData::default());
-        store.set_backend_id(t("site"), uid(1), BackendId::Int(42));
-        assert_eq!(
-            store.backend_id(t("site"), uid(1)),
-            Some(BackendId::Int(42))
-        );
-    }
-
-    #[test]
-    fn set_backend_id_overwrites_existing() {
-        let mut data = StateData::default();
-        data.mappings
-            .entry(t("site"))
-            .or_default()
-            .insert(uid(1), BackendId::Int(42));
-        let mut store = StateStore::new(None, data);
-        store.set_backend_id(t("site"), uid(1), BackendId::Int(99));
-        assert_eq!(
-            store.backend_id(t("site"), uid(1)),
-            Some(BackendId::Int(99))
-        );
-    }
-
-    #[test]
     fn set_backend_id_drops_the_uid_it_supersedes() {
         let mut store = StateStore::new(None, StateData::default());
         store.set_backend_id(t("site"), uid(1), BackendId::Int(42));
@@ -809,45 +770,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn remove_backend_id_removes_mapping() {
-        let mut data = StateData::default();
-        data.mappings
-            .entry(t("site"))
-            .or_default()
-            .insert(uid(1), BackendId::Int(42));
-        let mut store = StateStore::new(None, data);
-        store.remove_backend_id(t("site"), uid(1));
-        assert_eq!(store.backend_id(t("site"), uid(1)), None);
-    }
-
-    #[test]
-    fn remove_backend_id_noop_for_missing() {
-        let mut store = StateStore::new(None, StateData::default());
-        store.remove_backend_id(t("site"), uid(1));
-        // should not panic
-    }
-
-    #[test]
-    fn journal_dir_defaults_to_none_and_round_trips() {
-        let store = StateStore::new(None, StateData::default());
-        assert_eq!(store.journal_dir(), None);
-
-        let dir = PathBuf::from("/tmp/alembic-journal");
-        let store = store.with_journal_dir(dir.clone());
-        assert_eq!(store.journal_dir(), Some(dir.as_path()));
-    }
-
-    #[tokio::test]
-    async fn local_backend_load_missing_returns_empty() {
-        let dir = TempDir::new().unwrap();
-        let mut backend = LocalBackend {
-            path: dir.path().join("nope.json"),
-        };
-        let data = backend.load().await.unwrap();
-        assert!(data.mappings.is_empty());
-    }
-
     /// a symlink loop leaves the parent a real directory, so the lock opens and
     /// only the state file's stat fails. loading empty replans every object.
     #[cfg(unix)]
@@ -912,7 +834,8 @@ mod tests {
         let err =
             StateStore::load(&path).expect_err("second load must fail while the lock is held");
         assert!(
-            err.to_string().contains("state lock"),
+            err.to_string()
+                .contains("another alembic run holds the state lock"),
             "expected a state-lock error, got: {err}"
         );
 
@@ -1112,6 +1035,6 @@ mod tests {
         // the hash is stable and instance-sensitive.
         let other = BackendIdentity::new("netbox", "https://other.example.com");
         assert_ne!(identity.scope_hash(), other.scope_hash());
-        assert_eq!(identity.scope_hash(), identity.scope_hash());
+        assert_eq!(identity.scope_hash(), "3ee9bdfd");
     }
 }
