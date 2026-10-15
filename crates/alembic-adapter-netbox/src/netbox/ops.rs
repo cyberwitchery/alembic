@@ -2648,15 +2648,9 @@ mod test_normalization {
 
         normalize_attrs(&mut attrs, &parent_schema, &schema, &registry, &mappings);
 
-        // the target's identity: uid_v5 over its type and canonical key.
-        let expected = alembic_core::uid_v5(
-            "dcim.device",
-            &alembic_core::key_string(&Key::from(BTreeMap::from([(
-                "name".to_string(),
-                json!("router-01"),
-            )]))),
-        );
-        assert_eq!(attrs.get("device").unwrap(), &json!(expected.to_string()));
+        // the target's identity: the uid dcim.device keyed name=router-01 mints, pinned.
+        let expected = "7a51777d-8570-58e8-9a41-ba0da285f7b6";
+        assert_eq!(attrs.get("device").unwrap(), &json!(expected));
     }
 
     #[test]

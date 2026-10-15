@@ -1369,7 +1369,8 @@ mod tests {
         assert_eq!(
             result.ops,
             vec![Op::Delete {
-                uid: uid_v5("dcim.site", &key_string(&make_key("fra1"))),
+                // the uid dcim.site keyed slug=fra1 mints, pinned.
+                uid: Uid::parse_str("8c998348-947f-568d-bbb0-efbed3c3f903").unwrap(),
                 type_name: TypeName::new("dcim.site"),
                 key: make_key("fra1"),
                 backend_id: Some(BackendId::Int(100)),

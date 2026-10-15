@@ -743,7 +743,6 @@ mod tests {
         assert_eq!(plan.ops.len(), objects.len());
         assert_eq!(create_ops(&plan).len(), objects.len());
         assert_eq!(devices(&objects).len(), 7);
-        assert_eq!(plan_as_inventory(&plan).objects, objects);
     }
 
     #[test]

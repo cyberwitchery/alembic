@@ -1470,22 +1470,9 @@ mod tests {
             .types
             .insert("dcim.interface".to_string(), interface_schema);
 
-        // expected: the interface's identity, uid_v5 over its type and canonical
-        // key, with the device key already resolved to the device's identity.
-        let device_uid = alembic_core::uid_v5(
-            "dcim.device",
-            &alembic_core::key_string(&Key::from(BTreeMap::from([(
-                "name".to_string(),
-                json!("router-01"),
-            )]))),
-        );
-        let expected = Some(alembic_core::uid_v5(
-            "dcim.interface",
-            &alembic_core::key_string(&Key::from(BTreeMap::from([
-                ("device".to_string(), json!(device_uid.to_string())),
-                ("name".to_string(), json!("eth1")),
-            ]))),
-        ));
+        // expected: the interface's identity (type dcim.interface, key device =
+        // router-01's identity, name = eth1), pinned.
+        let expected = Some(Uid::parse_str("9bda7c81-ac3b-58b9-b458-e86d5435e968").unwrap());
 
         // actual: interface uid with the device key as a nested brief
         let actual_map = serde_json::Map::from_iter([
@@ -1581,15 +1568,9 @@ mod tests {
 
         normalize_attrs(&mut attrs, &parent_schema, &schema, &registry, &mappings);
 
-        // the target's identity: uid_v5 over its type and canonical key.
-        let expected = alembic_core::uid_v5(
-            "dcim.device",
-            &alembic_core::key_string(&Key::from(BTreeMap::from([(
-                "name".to_string(),
-                json!("router-01"),
-            )]))),
-        );
-        assert_eq!(attrs.get("device").unwrap(), &json!(expected.to_string()));
+        // the target's identity: the uid dcim.device keyed name=router-01 mints, pinned.
+        let expected = "7a51777d-8570-58e8-9a41-ba0da285f7b6";
+        assert_eq!(attrs.get("device").unwrap(), &json!(expected));
     }
 
     #[test]

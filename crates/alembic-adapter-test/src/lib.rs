@@ -832,6 +832,12 @@ mod tests {
     }
 
     #[test]
+    fn an_empty_case_directory_loads_no_cases() {
+        let dir = tempdir().expect("create case dir");
+        assert!(load_cases(dir.path()).unwrap().is_empty());
+    }
+
+    #[test]
     fn a_case_directory_holding_no_json_files_loads_no_cases() {
         let dir = tempdir().expect("create case dir");
         std::fs::write(dir.path().join("read.yaml"), "name: read").expect("write case");

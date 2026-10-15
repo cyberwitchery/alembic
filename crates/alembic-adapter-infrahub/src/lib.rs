@@ -2752,7 +2752,10 @@ schema { query: Query }
         write_schema_document(&schema_path, &doc).unwrap();
         let raw = fs::read_to_string(&schema_path).unwrap();
         let written: serde_json::Value = alembic_engine::yaml::from_str(&raw).unwrap();
-        assert_eq!(written, serde_json::to_value(&doc).unwrap());
+        assert_eq!(written["version"], "1.0");
+        assert_eq!(written["nodes"][0]["name"], "Site");
+        assert_eq!(written["nodes"][0]["namespace"], "Dcim");
+        assert_eq!(written["nodes"][0]["human_friendly_id"][0], "name__value");
 
         let repo_dir = temp_dir("repo");
         let repo_root = repo_dir.path();

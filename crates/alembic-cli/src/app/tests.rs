@@ -300,6 +300,20 @@ fn read_plan_rejects_a_misspelled_key() {
     assert!(format!("{err:#}").contains("schema_preveiw"), "{err:#}");
 }
 
+#[test]
+fn preflight_output_path_rejects_a_directory() {
+    // `-o outdir` where outdir exists: creating the parent says nothing, and the
+    // real write fails with EISDIR after a full observation.
+    let dir = tempdir().unwrap();
+    let target = dir.path().join("outdir");
+    std::fs::create_dir(&target).unwrap();
+    let err = io::preflight_output_path(&target).expect_err("a directory is not a writable output");
+    assert!(
+        format!("{err:#}").contains("is a directory"),
+        "the error must name the reason: {err:#}"
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn preflight_output_path_rejects_an_unwritable_parent() {
@@ -349,6 +363,41 @@ fn preflight_output_path_leaves_no_probe_and_no_directory() {
 
 #[cfg(unix)]
 #[test]
+fn preflight_output_path_rejects_an_unwritable_existing_file() {
+    use std::os::unix::fs::PermissionsExt;
+    // the parent accepts writes, so the sibling probe passes it and the real
+    // write fails with EACCES after a full observation.
+    let dir = tempdir().unwrap();
+
+    // root ignores the mode bits; ask the os on a separate file rather than
+    // skipping, and assert whichever answer it gives
+    let sentinel = dir.path().join("sentinel");
+    std::fs::write(&sentinel, b"x").unwrap();
+    std::fs::set_permissions(&sentinel, std::fs::Permissions::from_mode(0o444)).unwrap();
+    let denied = std::fs::write(&sentinel, b"y").is_err();
+
+    let target = dir.path().join("plan.json");
+    std::fs::write(&target, "previous").unwrap();
+    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o444)).unwrap();
+    let result = io::preflight_output_path(&target);
+
+    // restore before asserting, so a failure still lets tempdir clean up
+    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644)).unwrap();
+    if denied {
+        let err = result.expect_err("an unwritable target is not a writable output");
+        assert!(
+            format!("{err:#}").contains("write output"),
+            "the error must name the output write: {err:#}"
+        );
+    } else {
+        result.expect("a target this user can write to is a valid output");
+    }
+    // and the probe reads the permission without touching the contents
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "previous");
+}
+
+#[cfg(unix)]
+#[test]
 fn preflight_output_path_does_not_hang_on_a_fifo() {
     // opening a fifo for write blocks until a reader attaches, so only a regular
     // target is probed directly. without that guard this never returns.
@@ -366,6 +415,16 @@ fn preflight_output_path_does_not_hang_on_a_fifo() {
     });
     rx.recv_timeout(std::time::Duration::from_secs(10))
         .expect("the preflight must not block on a fifo");
+}
+
+#[cfg(unix)]
+#[test]
+fn preflight_output_path_accepts_a_character_device() {
+    // the other side of that guard: /dev/null settles its own open at once, and
+    // its parent takes no new file, so the sibling probe answers the wrong
+    // question and refuses a target the write accepts.
+    let target = Path::new("/dev/null");
+    io::preflight_output_path(target).expect("/dev/null is a writable output");
 }
 
 #[test]
@@ -525,6 +584,44 @@ fn located_report_prefers_source_locations() {
     );
 }
 
+#[tokio::test]
+async fn run_validate_inventory() {
+    let dir = tempdir().unwrap();
+    let inventory = dir.path().join("inventory.yaml");
+    std::fs::write(
+        &inventory,
+        r#"schema:
+  types:
+    dcim.site:
+      key:
+        site:
+          type: slug
+      fields:
+        name:
+          type: string
+        slug:
+          type: slug
+objects:
+  - uid: "00000000-0000-0000-0000-000000000001"
+    type: dcim.site
+    key:
+      site: "fra1"
+    attrs:
+      name: "FRA1"
+      slug: "fra1"
+"#,
+    )
+    .unwrap();
+
+    let cli = Cli {
+        command: Command::Validate {
+            file: inventory,
+            output: None,
+        },
+    };
+    run(cli, AppConfig::load().unwrap()).await.unwrap();
+}
+
 /// an inventory declaring `dcim.site`, with `attrs` extended by `extra`.
 fn validate_fixture(dir: &Path, extra: &str) -> PathBuf {
     let inventory = dir.join("inventory.yaml");
@@ -552,6 +649,29 @@ objects:
     )
     .unwrap();
     inventory
+}
+
+#[tokio::test]
+async fn run_validate_writes_an_empty_report_when_the_inventory_validates() {
+    // the success path writes too: a ci gate wants an artifact either way, and an
+    // absent file would be indistinguishable from a crash.
+    let dir = tempdir().unwrap();
+    let out = dir.path().join("nested/validation.json");
+    let cli = Cli {
+        command: Command::Validate {
+            file: validate_fixture(dir.path(), ""),
+            output: Some(out.clone()),
+        },
+    };
+    run(cli, AppConfig::load().unwrap()).await.unwrap();
+
+    let raw = std::fs::read_to_string(&out).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(
+        value["errors"],
+        serde_json::json!([]),
+        "a passing run writes an empty list, not a missing key: {raw}"
+    );
 }
 
 #[tokio::test]
@@ -584,6 +704,97 @@ async fn run_validate_writes_the_located_errors_and_still_fails() {
     let source = report.errors[0].source.as_ref().expect("source location");
     assert!(source.file.ends_with("inventory.yaml"), "{source:?}");
     assert_eq!(source.line, Some(11));
+}
+
+#[tokio::test]
+async fn run_map_ir() {
+    let _cwd = CwdGuard::acquire_async().await;
+    let dir = tempdir().unwrap();
+    let input = dir.path().join("in.json");
+    let spec = dir.path().join("map.yaml");
+    let out = dir.path().join("out.json");
+    // an ir inventory (dcim.site) to be renamed to location.site.
+    std::fs::write(
+        &input,
+        r#"{
+  "schema": {
+    "types": {
+      "dcim.site": {
+        "key": { "site": { "type": "slug" } },
+        "fields": { "name": { "type": "string" } }
+      }
+    }
+  },
+  "objects": [
+    { "uid": "00000000-0000-0000-0000-000000000001", "type": "dcim.site",
+      "key": { "site": "fra1" }, "attrs": { "name": "FRA1" } }
+  ]
+}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        &spec,
+        r#"schema:
+  types:
+    location.site:
+      key:
+        slug:
+          type: slug
+      fields:
+        label:
+          type: string
+rules:
+  - name: sites
+    match: "dcim.site"
+    emit:
+      type: location.site
+      key:
+        slug: "${key.site}"
+      attrs:
+        label: "${attrs.name}"
+"#,
+    )
+    .unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
+
+    let cli = Cli {
+        command: Command::Map {
+            action: None,
+            file: Some(input),
+            spec: Some(spec),
+            output: Some(out.clone()),
+        },
+    };
+    run(cli, AppConfig::load().unwrap()).await.unwrap();
+    let raw = std::fs::read_to_string(out).unwrap();
+    assert!(raw.contains("location.site"));
+    assert!(raw.contains("\"label\""));
+    assert!(!raw.contains("dcim.site"));
+}
+
+#[tokio::test]
+async fn run_map_transform_evaluates_a_transform() {
+    let dir = tempdir().unwrap();
+    let spec = dir.path().join("map.yaml");
+    std::fs::write(
+        &spec,
+        "transforms:\n  inline: |\n    def cidr_host(v):\n        return v.split(\"/\")[0]\n",
+    )
+    .unwrap();
+    let cli = Cli {
+        command: Command::Map {
+            action: Some(MapAction::Transform {
+                spec,
+                name: "cidr_host".to_string(),
+                value: "\"10.0.0.1/24\"".to_string(),
+                args: vec![],
+            }),
+            file: None,
+            spec: None,
+            output: None,
+        },
+    };
+    run(cli, AppConfig::load().unwrap()).await.unwrap();
 }
 
 #[tokio::test]
@@ -1722,6 +1933,144 @@ async fn run_plan_report_carries_an_empty_schema_preview_for_a_backend_that_prov
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn run_plan_report_rejects_a_bad_output_path_before_observing() {
+    let _cwd = CwdGuard::acquire_async().await;
+    let server = httpmock::MockServer::start();
+    let mock = server.mock(|when, then| {
+        when.any_request();
+        then.status(500);
+    });
+
+    let dir = tempdir().unwrap();
+    let state_path = dir.path().join(".alembic").join("state.json");
+    let _env = EnvVarGuard::acquire_async(&[
+        ("ALEMBIC_STATE_BACKEND", Some("local")),
+        ("ALEMBIC_STATE_PATH", Some(state_path.to_str().unwrap())),
+    ])
+    .await;
+    // a declared type, so observing would issue requests if it were reached
+    let inventory = write_site_inventory(dir.path());
+    let config = dir.path().join("adapter.yaml");
+    std::fs::write(
+        &config,
+        format!(
+            "backend: nautobot\nurl: {}\ntoken: token\n",
+            server.base_url()
+        ),
+    )
+    .unwrap();
+    // the report path's parent is a file, so it can never be created
+    let blocker = dir.path().join("blocker");
+    std::fs::write(&blocker, "").unwrap();
+
+    std::env::set_current_dir(dir.path()).unwrap();
+    let cli = Cli {
+        command: Command::Plan {
+            file: inventory,
+            output: Some(blocker.join("drift.json")),
+            backend: None,
+            backend_config: Some(config),
+            provision: false,
+            dry_run: false,
+            report: true,
+            allow_delete: false,
+            no_adopt: false,
+        },
+    };
+    let result = run(cli, AppConfig::load().unwrap()).await;
+
+    let err = result.expect_err("a bad -o must fail the run");
+    assert!(
+        format!("{err:#}").contains("create output directory"),
+        "the run must fail on the output path: {err:#}"
+    );
+    assert_eq!(
+        mock.calls(),
+        0,
+        "the output path must be rejected before the backend is observed"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn run_plan_rejects_an_unwritable_existing_output_file_before_observing() {
+    use std::os::unix::fs::PermissionsExt;
+    let _cwd = CwdGuard::acquire_async().await;
+    let server = httpmock::MockServer::start();
+    let mock = server.mock(|when, then| {
+        when.any_request();
+        then.status(500);
+    });
+
+    let dir = tempdir().unwrap();
+    let state_path = dir.path().join(".alembic").join("state.json");
+    let _env = EnvVarGuard::acquire_async(&[
+        ("ALEMBIC_STATE_BACKEND", Some("local")),
+        ("ALEMBIC_STATE_PATH", Some(state_path.to_str().unwrap())),
+    ])
+    .await;
+    let inventory = write_site_inventory(dir.path());
+    let config = dir.path().join("adapter.yaml");
+    std::fs::write(
+        &config,
+        format!(
+            "backend: nautobot\nurl: {}\ntoken: token\n",
+            server.base_url()
+        ),
+    )
+    .unwrap();
+    // an existing target that denies writes: the parent accepts them, so only a
+    // probe of the target itself catches it before the observation is paid for
+    let target = dir.path().join("plan.json");
+    std::fs::write(&target, "previous").unwrap();
+    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o444)).unwrap();
+    // root ignores the mode bits, so ask the os rather than skipping
+    let sentinel = dir.path().join("sentinel");
+    std::fs::write(&sentinel, b"x").unwrap();
+    std::fs::set_permissions(&sentinel, std::fs::Permissions::from_mode(0o444)).unwrap();
+    let denied = std::fs::write(&sentinel, b"y").is_err();
+
+    std::env::set_current_dir(dir.path()).unwrap();
+    let cli = Cli {
+        command: Command::Plan {
+            file: inventory,
+            output: Some(target.clone()),
+            backend: None,
+            backend_config: Some(config),
+            provision: false,
+            dry_run: false,
+            report: false,
+            allow_delete: false,
+            no_adopt: false,
+        },
+    };
+    let result = run(cli, AppConfig::load().unwrap()).await;
+    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+    if denied {
+        let err = result.expect_err("a bad -o must fail the run");
+        assert!(
+            format!("{err:#}").contains("write output"),
+            "the run must fail on the output path: {err:#}"
+        );
+        assert_eq!(
+            mock.calls(),
+            0,
+            "the output path must be rejected before the backend is observed"
+        );
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "previous");
+    } else {
+        // running as root: the path really is writable, so the run gets as far
+        // as the backend and dies there instead
+        let err = result.expect_err("the mock backend answers 500");
+        assert!(
+            !format!("{err:#}").contains("write output"),
+            "a writable target must not be rejected: {err:#}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn run_plan_rejects_an_output_path_that_is_a_directory_before_observing() {
     let _cwd = CwdGuard::acquire_async().await;
     let server = httpmock::MockServer::start();
@@ -2318,6 +2667,17 @@ async fn run_plan_refuses_an_adapter_that_reports_refs_as_backend_ids() {
     assert!(error.contains("docs/external-adapters.md"), "{error}");
 }
 
+#[test]
+fn should_detect_deletes_forces_on_for_report() {
+    // report mode never applies the plan, so it forces delete-detection on to
+    // surface backend-only objects as `extra`.
+    assert!(should_detect_deletes(false, true));
+    assert!(should_detect_deletes(true, true));
+    // non-report paths are governed solely by --allow-delete.
+    assert!(should_detect_deletes(true, false));
+    assert!(!should_detect_deletes(false, false));
+}
+
 async fn planned(
     dir: &Path,
     inventory: PathBuf,
@@ -2622,6 +2982,98 @@ fn apply_output_is_optional_and_takes_the_short_flag() {
         panic!("expected the apply subcommand");
     };
     assert_eq!(output, Some(PathBuf::from("report.json")));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn run_plan_report_surfaces_extra() {
+    // an object present on the backend but not declared in intent must surface
+    // under --report even without --allow-delete.
+    use serde_json::json;
+
+    let _cwd = CwdGuard::acquire_async().await;
+    let server = nautobot_plan_server(json!([{ "id": "uuid-leaf01", "name": "leaf01" }]));
+    let dir = tempdir().unwrap();
+    let state_path = dir.path().join(".alembic").join("state.json");
+    let _env = EnvVarGuard::acquire_async(&[
+        ("ALEMBIC_STATE_BACKEND", Some("local")),
+        ("ALEMBIC_STATE_PATH", Some(state_path.to_str().unwrap())),
+    ])
+    .await;
+    let inventory = dir.path().join("inventory.yaml");
+    let config = dir.path().join("adapter.yaml");
+    // intent declares the schema but no objects; the backend holds an unmanaged
+    // device (leaf01), so the only drift is one `extra`.
+    std::fs::write(
+        &inventory,
+        r#"
+schema:
+  types:
+    dcim.device:
+      key:
+        name:
+          type: string
+      fields:
+        name:
+          type: string
+objects: []
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        &config,
+        format!(
+            "backend: nautobot\nurl: {}\ntoken: token\n",
+            server.base_url()
+        ),
+    )
+    .unwrap();
+
+    std::env::set_current_dir(dir.path()).unwrap();
+
+    let inventory = load_inventory(&inventory).unwrap();
+    let (backend, identity) = create_backend(&[], None, Some(config)).unwrap();
+    let mut state = load_state(StateLock::Exclusive, &identity).await.unwrap();
+
+    // without report-forced delete-detection, allow_delete=false emits no
+    // deletes and the `extra` category stays empty.
+    let (buggy, _) = build_plan(
+        backend.observer().unwrap(),
+        &inventory,
+        &mut state,
+        should_detect_deletes(false, false),
+        true,
+    )
+    .await
+    .unwrap();
+    assert!(
+        DriftReport::from_plan(&buggy).extra.is_empty(),
+        "without report-forced delete-detection the extra is invisible"
+    );
+
+    // report mode forces delete-detection, so the unmanaged backend object
+    // surfaces as an `extra` even though --allow-delete was not passed.
+    let (plan, _) = build_plan(
+        backend.observer().unwrap(),
+        &inventory,
+        &mut state,
+        should_detect_deletes(false, true),
+        true,
+    )
+    .await
+    .unwrap();
+    let drift = DriftReport::from_plan(&plan);
+    assert_eq!(
+        drift.extra.len(),
+        1,
+        "report mode must surface unmanaged backend objects as extra"
+    );
+    assert_eq!(
+        drift.extra[0].type_name,
+        alembic_core::TypeName::new("dcim.device")
+    );
+    assert_eq!(drift.extra[0].key, key_str("name=leaf01"));
+    assert!(drift.missing.is_empty());
+    assert!(drift.changed.is_empty());
 }
 
 // drives the real run() for `plan --provision` against an external adapter whose
