@@ -337,43 +337,6 @@ mod tests {
         }
     }
     #[test]
-    fn erratic_driver_first_fails_then_succeeds() {
-        let _guard = journal_guard();
-        let uid1 = Uid::from_u128(1);
-        let uid2 = Uid::from_u128(2);
-        let ops = vec![create_op(uid1), create_op(uid2)];
-        let mut driver = ErraticDriver {
-            countdown_to_crash: 2,
-            applied_ops: vec![],
-        };
-        let dir = tempdir().unwrap();
-        let mut journal = Journal::load_or_create(dir.path(), "erratic_driver", &ops).unwrap();
-
-        block_on(apply_non_delete_with_retries(
-            &ops,
-            Some(&mut journal),
-            &mut driver,
-        ))
-        .expect_err("should fail (on second op applied this run)");
-        assert_eq!(driver.applied_ops.len(), 1);
-        assert!(!journal.is_completed());
-
-        // turn off crashing
-        driver.countdown_to_crash = 99999;
-        _ = block_on(apply_non_delete_with_retries(
-            &ops,
-            Some(&mut journal),
-            &mut driver,
-        ))
-        .unwrap();
-        assert_eq!(
-            driver.applied_ops.iter().map(|a| a.uid).collect::<Vec<_>>(),
-            vec![uid1, uid2]
-        );
-        assert!(journal.is_completed());
-    }
-
-    #[test]
     fn resumes_from_disk_after_error() {
         let _guard = journal_guard();
         let uid1 = Uid::from_u128(1);

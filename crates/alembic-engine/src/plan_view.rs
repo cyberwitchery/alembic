@@ -199,16 +199,15 @@ mod tests {
                 backend_id: None,
             },
         ]);
-        let out = render_plan(&plan);
-        assert!(
-            out.starts_with("plan: 1 to create, 1 to update, 0 to delete"),
-            "{out}"
+        assert_eq!(
+            render_plan(&plan),
+            "plan: 1 to create, 1 to update, 0 to delete\n\n\
+             create:\n  \
+             dcim.device {\"name\":\"leaf01\"}\n\n\
+             update:\n  \
+             dcim.interface {\"name\":\"eth0\"}\n    \
+             type: \"access\" -> \"trunk\""
         );
-        assert!(out.contains("create:"));
-        assert!(out.contains("dcim.device"));
-        assert!(out.contains("update:"));
-        assert!(out.contains(r#"type: "access" -> "trunk""#), "{out}");
-        assert!(!out.contains("delete:"));
     }
 
     #[test]

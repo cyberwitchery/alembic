@@ -233,36 +233,34 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn output_kind_maps_yaml_extensions_to_yaml() {
-        assert_eq!(output_kind(Path::new("plan.yaml")), OutputKind::Yaml);
-        assert_eq!(output_kind(Path::new("plan.yml")), OutputKind::Yaml);
+    fn output_kind_follows_the_extension() {
+        for (path, kind) in [
+            ("plan.yaml", OutputKind::Yaml),
+            ("plan.yml", OutputKind::Yaml),
+            // case-insensitive on the extension
+            ("PLAN.YAML", OutputKind::Yaml),
+            // no extension and a non-yaml extension both stay json.
+            ("plan", OutputKind::Json),
+            ("plan.txt", OutputKind::Json),
+        ] {
+            assert_eq!(output_kind(Path::new(path)), kind, "{path}");
+        }
     }
 
     #[test]
-    fn output_kind_is_case_insensitive_on_extension() {
-        assert_eq!(output_kind(Path::new("PLAN.YAML")), OutputKind::Yaml);
-    }
-
-    #[test]
-    fn output_kind_defaults_to_json_without_yaml_extension() {
-        // no extension and a non-yaml extension both stay json.
-        assert_eq!(output_kind(Path::new("plan")), OutputKind::Json);
-        assert_eq!(output_kind(Path::new("plan.txt")), OutputKind::Json);
-    }
-
-    #[test]
-    fn read_plan_hints_when_given_a_yml_inventory_instead_of_a_plan() {
-        // the .yml branch of output_kind never ran before this; a plan parsed
-        // off an inventory must still be rejected with the same hint.
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("ir.yml");
-        std::fs::write(
-            &path,
-            "schema:\n  types: {}\nobjects:\n  - uid: 00000000-0000-0000-0000-000000000000\n    type: dcim.site\n    key:\n      slug: fra1\n    attrs:\n      name: FRA1\n",
-        )
-        .unwrap();
-        let msg = format!("{:#}", read_plan(&path).unwrap_err());
-        assert!(msg.contains("inventory"), "{msg}");
-        assert!(msg.contains("unknown field `objects`"), "{msg}");
+    fn read_plan_hints_when_given_an_inventory_instead_of_a_plan() {
+        // the doc is a valid inventory (schema + objects), just not a plan; every
+        // extension the reader takes must reject it with the same hint.
+        let json = r#"{"schema":{"types":{}},"objects":[{"uid":"00000000-0000-0000-0000-000000000000","type":"dcim.site","key":{"slug":"fra1"},"attrs":{"name":"FRA1"}}]}"#;
+        let yaml = "schema:\n  types: {}\nobjects:\n  - uid: 00000000-0000-0000-0000-000000000000\n    type: dcim.site\n    key:\n      slug: fra1\n    attrs:\n      name: FRA1\n";
+        for (file, contents) in [("ir.json", json), ("ir.yaml", yaml), ("ir.yml", yaml)] {
+            let dir = tempdir().unwrap();
+            let path = dir.path().join(file);
+            std::fs::write(&path, contents).unwrap();
+            let msg = format!("{:#}", read_plan(&path).unwrap_err());
+            assert!(msg.contains("inventory"), "{file}: {msg}");
+            // the raw serde reason is still chained underneath.
+            assert!(msg.contains("unknown field `objects`"), "{file}: {msg}");
+        }
     }
 }

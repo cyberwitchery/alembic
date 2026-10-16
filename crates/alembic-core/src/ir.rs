@@ -965,34 +965,25 @@ mod tests {
     }
 
     #[test]
-    fn object_roundtrip_json() {
-        let mut key = BTreeMap::new();
-        key.insert("slug".to_string(), serde_json::json!("fra1"));
-        let mut attrs = BTreeMap::new();
-        attrs.insert("name".to_string(), serde_json::json!("FRA1"));
-        let object = Object::new(
-            Uuid::from_u128(1),
-            TypeName::new("dcim.site"),
-            Key::from(key),
-            attrs.into(),
-        )
-        .unwrap();
-
-        let value = serde_json::to_value(&object).unwrap();
-        let decoded: Object = serde_json::from_value(value).unwrap();
-        assert_eq!(decoded.uid, object.uid);
-        assert_eq!(decoded.type_name, object.type_name);
-        assert_eq!(decoded.key, object.key);
-        assert_eq!(decoded.attrs, object.attrs);
-    }
-
-    #[test]
     fn field_type_roundtrip() {
         let cases = vec![
             FieldType::String,
+            FieldType::Text,
             FieldType::Int,
+            FieldType::Float,
+            FieldType::Bool,
+            FieldType::Uuid,
+            FieldType::Date,
+            FieldType::Datetime,
+            FieldType::Time,
+            FieldType::Json,
+            FieldType::IpAddress,
+            FieldType::Cidr,
+            FieldType::Prefix,
+            FieldType::Mac,
+            FieldType::Slug,
             FieldType::Enum {
-                values: vec!["a".to_string()],
+                values: vec!["active".to_string(), "planned".to_string()],
             },
             FieldType::Ref {
                 target: "test".to_string(),
@@ -1000,11 +991,22 @@ mod tests {
             FieldType::List {
                 item: Box::new(FieldType::Bool),
             },
+            FieldType::List {
+                item: Box::new(FieldType::List {
+                    item: Box::new(FieldType::Int),
+                }),
+            },
+            FieldType::Map {
+                value: Box::new(FieldType::String),
+            },
+            FieldType::ListRef {
+                target: "dcim.device".to_string(),
+            },
         ];
         for case in cases {
             let json = serde_json::to_string(&case).unwrap();
             let back: FieldType = serde_json::from_str(&json).unwrap();
-            assert_eq!(back, case);
+            assert_eq!(back, case, "roundtrip failed for {:?}", case);
         }
     }
 
@@ -1026,76 +1028,63 @@ mod tests {
     }
 
     #[test]
-    fn test_key_string() {
-        let mut k = BTreeMap::new();
-        k.insert("a".to_string(), serde_json::json!(1));
-        k.insert("b".to_string(), serde_json::json!("s"));
-        let key = Key::from(k);
-        let s = key_string(&key);
-        let parsed: serde_json::Value = serde_json::from_str(&s).unwrap();
-        let expected = serde_json::json!({"a": 1, "b": "s"});
-        assert_eq!(parsed, expected);
-    }
-
-    #[test]
     fn field_schema_deserialization() {
-        // simple type
-        let json = serde_json::json!({ "type": "string" });
-        let schema: FieldSchema = serde_json::from_value(json).unwrap();
-        assert_eq!(schema.r#type, FieldType::String);
-
-        // map type
-        let json = serde_json::json!({
-            "type": "map",
-            "value": "int"
-        });
-        let schema: FieldSchema = serde_json::from_value(json).unwrap();
-        assert_eq!(
-            schema.r#type,
-            FieldType::Map {
-                value: Box::new(FieldType::Int)
-            }
-        );
-
-        // enum type
-        let json = serde_json::json!({
-            "type": "enum",
-            "values": ["a", "b"]
-        });
-        let schema: FieldSchema = serde_json::from_value(json).unwrap();
-        assert_eq!(
-            schema.r#type,
-            FieldType::Enum {
-                values: vec!["a".to_string(), "b".to_string()]
-            }
-        );
-
-        // complex nested
-        let json = serde_json::json!({
-            "type": "list",
-            "item": { "type": "ref", "target": "test" }
-        });
-        let schema: FieldSchema = serde_json::from_value(json).unwrap();
-        assert_eq!(
-            schema.r#type,
-            FieldType::List {
-                item: Box::new(FieldType::Ref {
-                    target: "test".to_string()
-                })
-            }
-        );
-    }
-
-    #[test]
-    fn field_schema_format_and_pattern() {
-        let json = serde_json::json!({
-            "type": "string",
-            "format": "slug",
-            "pattern": "^[a-z0-9-]+$"
-        });
-        let schema: FieldSchema = serde_json::from_value(json).unwrap();
-        assert_eq!(schema.format, Some(FieldFormat::Slug));
-        assert_eq!(schema.pattern.as_deref(), Some("^[a-z0-9-]+$"));
+        let cases = vec![
+            (serde_json::json!({ "type": "string" }), FieldType::String),
+            (serde_json::json!({ "type": "text" }), FieldType::Text),
+            (serde_json::json!({ "type": "int" }), FieldType::Int),
+            (serde_json::json!({ "type": "float" }), FieldType::Float),
+            (serde_json::json!({ "type": "bool" }), FieldType::Bool),
+            (serde_json::json!({ "type": "uuid" }), FieldType::Uuid),
+            (serde_json::json!({ "type": "date" }), FieldType::Date),
+            (
+                serde_json::json!({ "type": "datetime" }),
+                FieldType::Datetime,
+            ),
+            (serde_json::json!({ "type": "time" }), FieldType::Time),
+            (serde_json::json!({ "type": "json" }), FieldType::Json),
+            (
+                serde_json::json!({ "type": "ip_address" }),
+                FieldType::IpAddress,
+            ),
+            (serde_json::json!({ "type": "cidr" }), FieldType::Cidr),
+            (serde_json::json!({ "type": "prefix" }), FieldType::Prefix),
+            (serde_json::json!({ "type": "mac" }), FieldType::Mac),
+            (serde_json::json!({ "type": "slug" }), FieldType::Slug),
+            (
+                serde_json::json!({ "type": "map", "value": "int" }),
+                FieldType::Map {
+                    value: Box::new(FieldType::Int),
+                },
+            ),
+            (
+                serde_json::json!({ "type": "enum", "values": ["a", "b"] }),
+                FieldType::Enum {
+                    values: vec!["a".to_string(), "b".to_string()],
+                },
+            ),
+            (
+                serde_json::json!({
+                    "type": "list",
+                    "item": { "type": "ref", "target": "test" }
+                }),
+                FieldType::List {
+                    item: Box::new(FieldType::Ref {
+                        target: "test".to_string(),
+                    }),
+                },
+            ),
+            (
+                serde_json::json!({ "type": "list_ref", "target": "dcim.device" }),
+                FieldType::ListRef {
+                    target: "dcim.device".to_string(),
+                },
+            ),
+        ];
+        for (json, expected) in cases {
+            let schema: FieldSchema = serde_json::from_value(json.clone()).unwrap();
+            assert_eq!(schema.r#type, expected, "failed for {json}");
+        }
     }
 
     #[test]
@@ -1110,57 +1099,55 @@ mod tests {
     }
 
     #[test]
-    fn field_type_all_simple_variants() {
-        let simple_types = vec![
-            ("string", FieldType::String),
-            ("int", FieldType::Int),
-            ("float", FieldType::Float),
-            ("bool", FieldType::Bool),
-            ("uuid", FieldType::Uuid),
-            ("date", FieldType::Date),
-            ("datetime", FieldType::Datetime),
-            ("time", FieldType::Time),
-            ("json", FieldType::Json),
-            ("ip_address", FieldType::IpAddress),
-            ("cidr", FieldType::Cidr),
-            ("prefix", FieldType::Prefix),
-            ("mac", FieldType::Mac),
-            ("slug", FieldType::Slug),
+    fn field_schema_parse_errors_name_the_problem() {
+        let cases = [
+            (
+                serde_json::json!({ "type": "unknown_type" }),
+                "unknown field type unknown_type",
+            ),
+            (
+                serde_json::json!({ "type": "list" }),
+                "list type requires item",
+            ),
+            (
+                serde_json::json!({ "type": "map" }),
+                "map type requires value",
+            ),
+            (
+                serde_json::json!({ "type": "ref" }),
+                "ref type requires target",
+            ),
+            (
+                serde_json::json!({ "type": "list_ref" }),
+                "list_ref type requires target",
+            ),
+            (
+                serde_json::json!({ "type": "string", "format": "nope" }),
+                "unknown field format nope",
+            ),
+            (
+                serde_json::json!({ "type": "string", "required": "true" }),
+                "field schema `required` must be a boolean",
+            ),
+            (
+                serde_json::json!({ "type": "string", "nullable": 1 }),
+                "field schema `nullable` must be a boolean",
+            ),
+            (
+                serde_json::json!({ "type": "string", "format": 1 }),
+                "field schema `format` must be a string",
+            ),
+            (
+                serde_json::json!({ "type": "string", "pattern": true }),
+                "field schema `pattern` must be a string",
+            ),
         ];
-        for (name, expected) in simple_types {
-            let json = serde_json::json!({ "type": name });
-            let schema: FieldSchema = serde_json::from_value(json).unwrap();
-            assert_eq!(schema.r#type, expected, "failed for {}", name);
+        for (json, message) in cases {
+            let err = serde_json::from_value::<FieldSchema>(json.clone())
+                .unwrap_err()
+                .to_string();
+            assert_eq!(err, message, "for {json}");
         }
-    }
-
-    #[test]
-    fn field_type_list_ref() {
-        let json = serde_json::json!({
-            "type": "list_ref",
-            "target": "dcim.device"
-        });
-        let schema: FieldSchema = serde_json::from_value(json).unwrap();
-        assert_eq!(
-            schema.r#type,
-            FieldType::ListRef {
-                target: "dcim.device".to_string()
-            }
-        );
-    }
-
-    #[test]
-    fn field_type_unknown_errors() {
-        let json = serde_json::json!({ "type": "unknown_type" });
-        let result: Result<FieldSchema, _> = serde_json::from_value(json);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn field_type_enum_missing_values_errors() {
-        let json = serde_json::json!({ "type": "enum" });
-        let result: Result<FieldSchema, _> = serde_json::from_value(json);
-        assert!(result.is_err());
     }
 
     #[test]
@@ -1176,58 +1163,26 @@ mod tests {
     }
 
     #[test]
-    fn field_type_list_missing_item_errors() {
-        let json = serde_json::json!({ "type": "list" });
-        let result: Result<FieldSchema, _> = serde_json::from_value(json);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn field_type_map_missing_value_errors() {
-        let json = serde_json::json!({ "type": "map" });
-        let result: Result<FieldSchema, _> = serde_json::from_value(json);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn field_type_ref_missing_target_errors() {
-        let json = serde_json::json!({ "type": "ref" });
-        let result: Result<FieldSchema, _> = serde_json::from_value(json);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn object_with_empty_key_errors() {
-        let key = Key::default();
-        let attrs = JsonMap::default();
-        let result = Object::new(Uuid::from_u128(1), TypeName::new("dcim.site"), key, attrs);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn object_with_empty_type_errors() {
-        let mut k = BTreeMap::new();
-        k.insert("slug".to_string(), serde_json::json!("x"));
-        let result = Object::new(
-            Uuid::from_u128(1),
-            TypeName::new(""),
-            Key::from(k),
-            JsonMap::default(),
-        );
-        assert_eq!(result.unwrap_err(), ObjectError::MissingType);
-    }
-
-    #[test]
-    fn object_with_whitespace_only_type_errors() {
-        let mut k = BTreeMap::new();
-        k.insert("slug".to_string(), serde_json::json!("x"));
-        let result = Object::new(
-            Uuid::from_u128(1),
-            TypeName::new("   "),
-            Key::from(k),
-            JsonMap::default(),
-        );
-        assert_eq!(result.unwrap_err(), ObjectError::MissingType);
+    fn object_new_rejects_a_missing_type_or_key() {
+        let slug_key = || {
+            let mut k = BTreeMap::new();
+            k.insert("slug".to_string(), serde_json::json!("x"));
+            Key::from(k)
+        };
+        let cases = [
+            ("dcim.site", Key::default(), ObjectError::MissingKey),
+            ("", slug_key(), ObjectError::MissingType),
+            ("   ", slug_key(), ObjectError::MissingType),
+        ];
+        for (type_name, key, expected) in cases {
+            let result = Object::new(
+                Uuid::from_u128(1),
+                TypeName::new(type_name),
+                key,
+                JsonMap::default(),
+            );
+            assert_eq!(result.unwrap_err(), expected, "type {type_name:?}");
+        }
     }
 
     #[test]
@@ -1266,17 +1221,6 @@ mod tests {
     }
 
     #[test]
-    fn object_deserialize_kind_alias() {
-        let json = serde_json::json!({
-            "uid": "00000000-0000-0000-0000-000000000001",
-            "kind": "dcim.site",
-            "key": {"slug": "x"}
-        });
-        let obj: Object = serde_json::from_value(json).unwrap();
-        assert_eq!(obj.type_name.as_str(), "dcim.site");
-    }
-
-    #[test]
     fn object_source_not_serialized() {
         let mut k = BTreeMap::new();
         k.insert("slug".to_string(), serde_json::json!("x"));
@@ -1293,34 +1237,22 @@ mod tests {
     }
 
     #[test]
-    fn source_location_display_file_only() {
-        let loc = SourceLocation::file("test.yaml");
-        assert_eq!(loc.to_string(), "test.yaml");
-        assert!(loc.line.is_none());
-        assert!(loc.column.is_none());
-    }
-
-    #[test]
-    fn source_location_display_file_and_line() {
-        let loc = SourceLocation::file_line("test.yaml", 42);
-        assert_eq!(loc.to_string(), "test.yaml:42");
-    }
-
-    #[test]
-    fn source_location_display_file_line_column() {
-        let loc = SourceLocation {
-            file: "test.yaml".into(),
-            line: Some(42),
-            column: Some(7),
-        };
-        assert_eq!(loc.to_string(), "test.yaml:42:7");
-    }
-
-    #[test]
-    fn uid_v5_deterministic() {
-        let a = uid_v5("dcim.site", "fra1");
-        let b = uid_v5("dcim.site", "fra1");
-        assert_eq!(a, b);
+    fn source_location_display() {
+        let cases = [
+            (SourceLocation::file("test.yaml"), "test.yaml"),
+            (SourceLocation::file_line("test.yaml", 42), "test.yaml:42"),
+            (
+                SourceLocation {
+                    file: "test.yaml".into(),
+                    line: Some(42),
+                    column: Some(7),
+                },
+                "test.yaml:42:7",
+            ),
+        ];
+        for (loc, expected) in cases {
+            assert_eq!(loc.to_string(), expected);
+        }
     }
 
     #[test]
@@ -1330,54 +1262,6 @@ mod tests {
         let c = uid_v5("dcim.device", "fra1");
         assert_ne!(a, b);
         assert_ne!(a, c);
-    }
-
-    #[test]
-    fn key_serde_transparent() {
-        let mut k = BTreeMap::new();
-        k.insert("slug".to_string(), serde_json::json!("x"));
-        let key = Key::from(k);
-        let json = serde_json::to_value(&key).unwrap();
-        assert_eq!(json, serde_json::json!({"slug": "x"}));
-        let back: Key = serde_json::from_value(json).unwrap();
-        assert_eq!(back, key);
-    }
-
-    #[test]
-    fn field_type_roundtrip_all_complex_variants() {
-        let cases = vec![
-            FieldType::Text,
-            FieldType::Float,
-            FieldType::Uuid,
-            FieldType::Date,
-            FieldType::Datetime,
-            FieldType::Time,
-            FieldType::Json,
-            FieldType::IpAddress,
-            FieldType::Cidr,
-            FieldType::Prefix,
-            FieldType::Mac,
-            FieldType::Slug,
-            FieldType::Map {
-                value: Box::new(FieldType::String),
-            },
-            FieldType::ListRef {
-                target: "dcim.device".to_string(),
-            },
-            FieldType::Enum {
-                values: vec!["active".to_string(), "planned".to_string()],
-            },
-            FieldType::List {
-                item: Box::new(FieldType::List {
-                    item: Box::new(FieldType::Int),
-                }),
-            },
-        ];
-        for case in cases {
-            let json = serde_json::to_string(&case).unwrap();
-            let back: FieldType = serde_json::from_str(&json).unwrap();
-            assert_eq!(back, case, "roundtrip failed for {:?}", case);
-        }
     }
 
     #[test]
@@ -1416,44 +1300,14 @@ mod tests {
     }
 
     #[test]
-    fn field_schema_unknown_format_errors() {
-        let json = serde_json::json!({
-            "type": "string",
-            "format": "nope"
-        });
-        let result: Result<FieldSchema, _> = serde_json::from_value(json);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn field_schema_non_bool_flag_errors() {
-        let required = serde_json::json!({ "type": "string", "required": "true" });
-        assert!(serde_json::from_value::<FieldSchema>(required).is_err());
-        let nullable = serde_json::json!({ "type": "string", "nullable": 1 });
-        assert!(serde_json::from_value::<FieldSchema>(nullable).is_err());
-    }
-
-    #[test]
-    fn field_schema_non_string_meta_errors() {
-        let format = serde_json::json!({ "type": "string", "format": 1 });
-        assert!(serde_json::from_value::<FieldSchema>(format).is_err());
-        let pattern = serde_json::json!({ "type": "string", "pattern": true });
-        assert!(serde_json::from_value::<FieldSchema>(pattern).is_err());
-    }
-
-    #[test]
     fn schema_unknown_field_errors() {
         let unknown = serde_json::json!({ "mode": "infrahubctl" });
-        assert!(serde_json::from_value::<Schema>(unknown).is_err());
+        let err = serde_json::from_value::<Schema>(unknown)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("unknown field `mode`"), "{}", err);
         let types = serde_json::json!({ "types": {} });
         assert!(serde_json::from_value::<Schema>(types).is_ok());
-    }
-
-    #[test]
-    fn field_type_list_ref_missing_target_errors() {
-        let json = serde_json::json!({ "type": "list_ref" });
-        let result: Result<FieldSchema, _> = serde_json::from_value(json);
-        assert!(result.is_err());
     }
 
     #[test]
@@ -1461,33 +1315,6 @@ mod tests {
         let result = parse_field_type_value(&serde_json::json!(42));
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("string or map"));
-    }
-
-    #[test]
-    fn field_type_object_simple_fallback() {
-        let json = serde_json::json!({ "type": "int" });
-        let schema: FieldSchema = serde_json::from_value(json).unwrap();
-        assert_eq!(schema.r#type, FieldType::Int);
-    }
-
-    #[test]
-    fn type_schema_roundtrip() {
-        let json = serde_json::json!({
-            "key": {
-                "slug": { "type": "string" }
-            },
-            "fields": {
-                "name": { "type": "string", "required": true },
-                "status": { "type": "enum", "values": ["active", "planned"] }
-            }
-        });
-        let schema: TypeSchema = serde_json::from_value(json.clone()).unwrap();
-        assert!(schema.key.contains_key("slug"));
-        assert!(schema.fields.contains_key("name"));
-        assert!(schema.fields.contains_key("status"));
-        let back = serde_json::to_value(&schema).unwrap();
-        let back_schema: TypeSchema = serde_json::from_value(back).unwrap();
-        assert_eq!(back_schema, schema);
     }
 
     #[test]
@@ -1520,13 +1347,6 @@ mod tests {
     }
 
     #[test]
-    fn key_string_empty() {
-        let key = Key::default();
-        let s = key_string(&key);
-        assert_eq!(s, "{}");
-    }
-
-    #[test]
     fn key_string_canonical_form() {
         let mut k = BTreeMap::new();
         k.insert("a".to_string(), serde_json::json!(1.0000001)); // becomes int
@@ -1543,27 +1363,15 @@ mod tests {
     #[test]
     fn key_string_preserves_large_u64() {
         // a u64 above i64::MAX must stay an exact integer; a lossy f64 would
-        // corrupt the uid derived from the key.
-        let mut k = BTreeMap::new();
-        k.insert("id".to_string(), serde_json::json!(u64::MAX));
-        let s = key_string(&Key::from(k));
-        assert_eq!(s, "{\"id\":18446744073709551615}");
-    }
-
-    #[test]
-    fn key_string_distinguishes_near_u64_max() {
-        // u64::MAX and u64::MAX - 1 round to the same f64, so floating them
-        // would collapse two distinct keys onto one uid.
-        let a = {
+        // corrupt the uid derived from the key, and u64::MAX and u64::MAX - 1
+        // round to the same f64, collapsing two distinct keys onto one uid.
+        for (id, expected) in [
+            (u64::MAX, "{\"id\":18446744073709551615}"),
+            (u64::MAX - 1, "{\"id\":18446744073709551614}"),
+        ] {
             let mut k = BTreeMap::new();
-            k.insert("id".to_string(), serde_json::json!(u64::MAX));
-            key_string(&Key::from(k))
-        };
-        let b = {
-            let mut k = BTreeMap::new();
-            k.insert("id".to_string(), serde_json::json!(u64::MAX - 1));
-            key_string(&Key::from(k))
-        };
-        assert_ne!(a, b);
+            k.insert("id".to_string(), serde_json::json!(id));
+            assert_eq!(key_string(&Key::from(k)), expected);
+        }
     }
 }

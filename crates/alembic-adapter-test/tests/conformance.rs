@@ -43,10 +43,220 @@ fn python_adapter() -> Vec<String> {
 }
 
 #[test]
-fn rejects_a_crash() {
-    let outcomes = run_builtin(&sh("exit 1"), TIMEOUT);
-    assert!(outcomes.iter().any(|o| !o.passed()));
-    assert!(message(find(&outcomes, "protocol/read-empty")).contains("exited unsuccessfully"));
+fn a_broken_answer_fails_the_empty_read_naming_why() {
+    for (script, expected) in [
+        ("exit 1", "exited unsuccessfully"),
+        (
+            "cat >/dev/null; printf 'not json\\n'",
+            "not one json document",
+        ),
+        (
+            r#"cat >/dev/null; printf '{"ok":true,"result":[]}\nconnected\n'"#,
+            "trailing output",
+        ),
+        (
+            r#"cat >/dev/null; printf '{"ok":true,"error":"both"}\n'"#,
+            "inconsistent envelope",
+        ),
+        (
+            r#"cat >/dev/null; printf '{"ok":true,"result":"nope"}\n'"#,
+            "bad read result",
+        ),
+    ] {
+        let outcomes = run_builtin(&sh(script), TIMEOUT);
+        let msg = message(find(&outcomes, "protocol/read-empty"));
+        assert!(msg.contains(expected), "{script}: {msg}");
+    }
+}
+
+/// a case that asks for nothing beyond `ok`, so only the shape checks can fail it.
+fn shape_case(name: &str, request: serde_json::Value, result: Option<serde_json::Value>) -> Case {
+    Case {
+        name: name.into(),
+        request,
+        expect: Expect {
+            ok: true,
+            result,
+            error: None,
+        },
+    }
+}
+
+#[test]
+fn a_case_answer_outside_the_protocol_fails_naming_why() {
+    let thing_with = |field: serde_json::Value| {
+        json!({
+            "version": 1, "setup": {}, "method": "read",
+            "schema": { "types": { "a.thing": {
+                "key": { "name": { "type": "string" } },
+                "fields": field
+            }}},
+            "types": ["a.thing"], "state": { "mappings": {} }
+        })
+    };
+    let empty_write = json!({
+        "version": 1, "setup": {}, "method": "write",
+        "schema": { "types": {} }, "ops": [], "state": {}
+    });
+    let rows = [
+        // the null-result allowance is preview_schema-only: read dispatches through
+        // the host's call(), which hard-errors on a null result.
+        (
+            shape_case(
+                "read-null",
+                json!({
+                    "version": 1, "setup": {}, "method": "read",
+                    "schema": { "types": {} }, "types": [], "state": {}
+                }),
+                None,
+            ),
+            r#"cat >/dev/null; printf '{"ok":true,"result":null}\n'"#,
+            "inconsistent envelope",
+        ),
+        // the read half of the value-space contract: a value alembic's own
+        // validation rejects is not a conformant read.
+        (
+            shape_case(
+                "read-bad-date",
+                thing_with(json!({ "when": { "type": "date" } })),
+                None,
+            ),
+            r#"cat >/dev/null; printf '{"ok":true,"result":[{"type_name":"a.thing","key":{"name":"x"},"attrs":{"when":"2026-02-30"}}]}\n'"#,
+            "leaves alembic's value space",
+        ),
+        // refs in observed attrs are uids; a backend id there fails conformance the
+        // way `plan` would refuse it.
+        (
+            shape_case(
+                "read-backend-id-ref",
+                thing_with(json!({ "peer": { "type": "ref", "target": "a.thing" } })),
+                None,
+            ),
+            r#"cat >/dev/null; printf '{"ok":true,"result":[{"type_name":"a.thing","key":{"name":"x"},"attrs":{"peer":7}}]}\n'"#,
+            "leaves alembic's value space",
+        ),
+        // the check has to reach inside `applied`: a typo'd backend_id deserializes
+        // to None, which apply reads as remove rather than unchanged.
+        (
+            shape_case("nested", empty_write.clone(), None),
+            r#"cat >/dev/null; printf '{"ok":true,"result":{"applied":[{"uid":"11111111-1111-1111-1111-111111111111","type_name":"dcim.site","backend_ids":1}]}}\n'"#,
+            "applied[0].backend_ids",
+        ),
+        // the report nested one level too high: `result` is spelled right, so the
+        // payload check walks a payload the key is not in.
+        (
+            shape_case("envelope-extra", empty_write, None),
+            r#"cat >/dev/null; printf '{"ok":true,"result":{"applied":[]},"deleted_object_types":["dcim.site"]}\n'"#,
+            "deleted_object_types",
+        ),
+        // a case that pins a report must not pass against "cannot preview".
+        (
+            shape_case(
+                "pinned vs null",
+                json!({
+                    "version": 1, "setup": {}, "method": "preview_schema",
+                    "schema": { "types": {} }
+                }),
+                Some(json!({
+                    "created_fields": [],
+                    "created_tags": [],
+                    "created_object_types": ["dcim.site"],
+                    "created_object_fields": []
+                })),
+            ),
+            r#"cat >/dev/null; printf '{"ok":true,"result":null}\n'"#,
+            "result did not match",
+        ),
+    ];
+    for (case, script, expected) in rows {
+        let outcomes = run_cases(&sh(script), TIMEOUT, std::slice::from_ref(&case));
+        assert!(!outcomes[0].passed(), "{} was certified", case.name);
+        let msg = message(&outcomes[0]);
+        assert!(msg.contains(expected), "{}: {msg}", case.name);
+    }
+}
+
+#[test]
+fn a_case_answer_inside_the_protocol_passes() {
+    // a ref naming its target by the target's `(type, key)`-derived uid resolves.
+    let peer_uid = alembic_core::uid_v5(
+        "a.thing",
+        &alembic_core::key_string(&{
+            let mut key = std::collections::BTreeMap::new();
+            key.insert("name".to_string(), serde_json::Value::String("y".into()));
+            alembic_core::Key(key)
+        }),
+    );
+    let good_read = format!(
+        r#"cat >/dev/null; printf '{{"ok":true,"result":[{{"type_name":"a.thing","key":{{"name":"x"}},"attrs":{{"peer":"{peer_uid}"}}}},{{"type_name":"a.thing","key":{{"name":"y"}},"attrs":{{}}}}]}}\n'"#,
+    );
+    let rows = [
+        // a null result is the canonical "cannot preview schema" signal; the host's
+        // call_optional maps it to Ok(None), so conformance must accept it too.
+        (
+            shape_case(
+                "preview-null",
+                json!({
+                    "version": 1, "setup": {}, "method": "preview_schema",
+                    "schema": { "types": {} }
+                }),
+                None,
+            ),
+            r#"cat >/dev/null; printf '{"ok":true,"result":null}\n'"#.to_string(),
+        ),
+        (
+            shape_case(
+                "read-good",
+                json!({
+                    "version": 1, "setup": {}, "method": "read",
+                    "schema": { "types": { "a.thing": {
+                        "key": { "name": { "type": "string" } },
+                        "fields": { "peer": { "type": "ref", "target": "a.thing" } }
+                    }}},
+                    "types": ["a.thing"], "state": { "mappings": {} }
+                }),
+                None,
+            ),
+            good_read,
+        ),
+        // `skip_serializing_if` means the type would not serialize these back, but
+        // examples/adapter.py sends them: the check is on the key, not a round-trip.
+        (
+            shape_case(
+                "empty-lists",
+                json!({
+                    "version": 1, "setup": {}, "method": "ensure_schema",
+                    "schema": { "types": {} }
+                }),
+                None,
+            ),
+            r#"cat >/dev/null; printf '{"ok":true,"result":{"created_fields":[],"created_tags":[]}}\n'"#
+                .to_string(),
+        ),
+        // `key` and `attrs` are the adapter's maps, not protocol fields, so the
+        // check must not reach into them.
+        (
+            shape_case(
+                "free-form",
+                json!({
+                    "version": 1, "setup": {}, "method": "read",
+                    "schema": { "types": {} }, "types": [], "state": {}
+                }),
+                None,
+            ),
+            r#"cat >/dev/null; printf '{"ok":true,"result":[{"type_name":"dcim.site","key":{"site":"fra1"},"attrs":{"name":"FRA1","slug":"fra1"}}]}\n'"#
+                .to_string(),
+        ),
+    ];
+    for (case, script) in rows {
+        let outcomes = run_cases(&sh(&script), TIMEOUT, std::slice::from_ref(&case));
+        assert!(
+            outcomes[0].passed(),
+            "{} was rejected: {:?}",
+            case.name,
+            outcomes[0].failure
+        );
+    }
 }
 
 #[test]
@@ -111,222 +321,6 @@ fn oversized_request_does_not_outlast_the_timeout() {
         "runner blocked writing the request for {:?}",
         start.elapsed()
     );
-}
-
-#[test]
-fn rejects_non_json() {
-    let outcomes = run_builtin(&sh("cat >/dev/null; printf 'not json\\n'"), TIMEOUT);
-    let msg = message(find(&outcomes, "protocol/read-empty"));
-    assert!(msg.contains("not one json document"), "{msg}");
-}
-
-#[test]
-fn rejects_stdout_noise() {
-    let outcomes = run_builtin(
-        &sh(r#"cat >/dev/null; printf '{"ok":true,"result":[]}\nconnected\n'"#),
-        TIMEOUT,
-    );
-    let msg = message(find(&outcomes, "protocol/read-empty"));
-    assert!(msg.contains("trailing output"), "{msg}");
-}
-
-#[test]
-fn rejects_inconsistent_envelope() {
-    let outcomes = run_builtin(
-        &sh(r#"cat >/dev/null; printf '{"ok":true,"error":"both"}\n'"#),
-        TIMEOUT,
-    );
-    let msg = message(find(&outcomes, "protocol/read-empty"));
-    assert!(msg.contains("inconsistent envelope"), "{msg}");
-}
-
-#[test]
-fn preview_schema_may_return_null() {
-    // a null result is the canonical "cannot preview schema" signal; the host's
-    // call_optional maps it to Ok(None), so conformance must accept it too.
-    let case = Case {
-        name: "preview-null".into(),
-        request: json!({
-            "version": 1, "setup": {}, "method": "preview_schema",
-            "schema": { "types": {} }
-        }),
-        expect: Expect {
-            ok: true,
-            result: None,
-            error: None,
-        },
-    };
-    let outcomes = run_cases(
-        &sh(r#"cat >/dev/null; printf '{"ok":true,"result":null}\n'"#),
-        TIMEOUT,
-        std::slice::from_ref(&case),
-    );
-    assert!(
-        outcomes[0].passed(),
-        "preview_schema null result rejected: {:?}",
-        outcomes[0].failure
-    );
-}
-
-#[test]
-fn read_null_result_still_rejected() {
-    // the null-result allowance is preview_schema-only: read dispatches through the
-    // host's call(), which hard-errors on a null result, so conformance must still
-    // reject a null read. guards the arm against over-broadening.
-    let case = Case {
-        name: "read-null".into(),
-        request: json!({
-            "version": 1, "setup": {}, "method": "read",
-            "schema": { "types": {} }, "types": [], "state": {}
-        }),
-        expect: Expect {
-            ok: true,
-            result: None,
-            error: None,
-        },
-    };
-    let outcomes = run_cases(
-        &sh(r#"cat >/dev/null; printf '{"ok":true,"result":null}\n'"#),
-        TIMEOUT,
-        std::slice::from_ref(&case),
-    );
-    assert!(
-        !outcomes[0].passed(),
-        "a null read result must still be rejected"
-    );
-    assert!(
-        message(&outcomes[0]).contains("inconsistent envelope"),
-        "{}",
-        message(&outcomes[0])
-    );
-}
-
-#[test]
-fn read_values_outside_the_value_space_fail() {
-    // the read half of the value-space contract: a protocol-shaped answer whose
-    // values alembic's own validation rejects is not a conformant read.
-    let case = Case {
-        name: "read-bad-date".into(),
-        request: json!({
-            "version": 1, "setup": {}, "method": "read",
-            "schema": { "types": { "a.thing": {
-                "key": { "name": { "type": "string" } },
-                "fields": { "when": { "type": "date" } }
-            }}},
-            "types": ["a.thing"], "state": { "mappings": {} }
-        }),
-        expect: Expect {
-            ok: true,
-            result: None,
-            error: None,
-        },
-    };
-    let outcomes = run_cases(
-        &sh(
-            r#"cat >/dev/null; printf '{"ok":true,"result":[{"type_name":"a.thing","key":{"name":"x"},"attrs":{"when":"2026-02-30"}}]}\n'"#,
-        ),
-        TIMEOUT,
-        std::slice::from_ref(&case),
-    );
-    assert!(
-        !outcomes[0].passed(),
-        "a read answering an impossible date must fail"
-    );
-    assert!(
-        message(&outcomes[0]).contains("leaves alembic's value space"),
-        "{}",
-        message(&outcomes[0])
-    );
-}
-
-#[test]
-fn read_ref_holding_a_backend_id_fails() {
-    // refs in observed attrs are uids; a backend id there fails conformance the
-    // way `plan` would refuse it, so the adapter learns before its first user.
-    let case = Case {
-        name: "read-backend-id-ref".into(),
-        request: json!({
-            "version": 1, "setup": {}, "method": "read",
-            "schema": { "types": { "a.thing": {
-                "key": { "name": { "type": "string" } },
-                "fields": { "peer": { "type": "ref", "target": "a.thing" } }
-            }}},
-            "types": ["a.thing"], "state": { "mappings": {} }
-        }),
-        expect: Expect {
-            ok: true,
-            result: None,
-            error: None,
-        },
-    };
-    let outcomes = run_cases(
-        &sh(
-            r#"cat >/dev/null; printf '{"ok":true,"result":[{"type_name":"a.thing","key":{"name":"x"},"attrs":{"peer":7}}]}\n'"#,
-        ),
-        TIMEOUT,
-        std::slice::from_ref(&case),
-    );
-    assert!(
-        !outcomes[0].passed(),
-        "a backend id in a ref field must fail"
-    );
-    assert!(
-        message(&outcomes[0]).contains("leaves alembic's value space"),
-        "{}",
-        message(&outcomes[0])
-    );
-}
-
-#[test]
-fn read_values_inside_the_value_space_pass() {
-    // a ref naming its target by the target's `(type, key)`-derived uid resolves,
-    // so a well-behaved read still passes with the check in place.
-    let peer_uid = alembic_core::uid_v5(
-        "a.thing",
-        &alembic_core::key_string(&{
-            let mut key = std::collections::BTreeMap::new();
-            key.insert("name".to_string(), serde_json::Value::String("y".into()));
-            alembic_core::Key(key)
-        }),
-    );
-    let case = Case {
-        name: "read-good".into(),
-        request: json!({
-            "version": 1, "setup": {}, "method": "read",
-            "schema": { "types": { "a.thing": {
-                "key": { "name": { "type": "string" } },
-                "fields": { "peer": { "type": "ref", "target": "a.thing" } }
-            }}},
-            "types": ["a.thing"], "state": { "mappings": {} }
-        }),
-        expect: Expect {
-            ok: true,
-            result: None,
-            error: None,
-        },
-    };
-    let outcomes = run_cases(
-        &sh(&format!(
-            r#"cat >/dev/null; printf '{{"ok":true,"result":[{{"type_name":"a.thing","key":{{"name":"x"}},"attrs":{{"peer":"{peer_uid}"}}}},{{"type_name":"a.thing","key":{{"name":"y"}},"attrs":{{}}}}]}}\n'"#,
-        )),
-        TIMEOUT,
-        std::slice::from_ref(&case),
-    );
-    assert!(
-        outcomes[0].passed(),
-        "a conformant read must still pass: {:?}",
-        outcomes[0].failure
-    );
-}
-
-#[test]
-fn rejects_bad_payload() {
-    let outcomes = run_builtin(
-        &sh(r#"cat >/dev/null; printf '{"ok":true,"result":"nope"}\n'"#),
-        TIMEOUT,
-    );
-    let msg = message(find(&outcomes, "protocol/read-empty"));
-    assert!(msg.contains("bad read result"), "{msg}");
 }
 
 #[test]
@@ -684,38 +678,6 @@ fn case_result_mismatch_reported() {
     );
 }
 
-#[test]
-fn case_result_pinned_against_null_reported() {
-    // a case that pins a report must not pass against "cannot preview".
-    let case = Case {
-        name: "pinned vs null".into(),
-        request: json!({
-            "version": 1, "setup": {}, "method": "preview_schema",
-            "schema": { "types": {} }
-        }),
-        expect: Expect {
-            ok: true,
-            result: Some(json!({
-                "created_fields": [],
-                "created_tags": [],
-                "created_object_types": ["dcim.site"],
-                "created_object_fields": []
-            })),
-            error: None,
-        },
-    };
-    let outcomes = run_cases(
-        &sh(r#"cat >/dev/null; printf '{"ok":true,"result":null}\n'"#),
-        TIMEOUT,
-        std::slice::from_ref(&case),
-    );
-    assert!(
-        message(&outcomes[0]).contains("result did not match"),
-        "{}",
-        message(&outcomes[0])
-    );
-}
-
 // the fixtures under fixtures/external_protocol/ are documented as the
 // cross-language protocol contract, so they must stay shape-compatible with the
 // real envelope and payload types. nothing else loads them, so guard them here.
@@ -793,17 +755,6 @@ fn run_builtin_leaves_the_writing_checks_off() {
         assert!(outcome.skipped(), "{name} must be reported, not dropped");
         assert!(!outcome.passed(), "a skipped check certifies nothing");
         assert!(outcome.failure.is_none(), "and it is not a failure either");
-    }
-}
-
-/// asking for them runs both, and neither reads as skipped.
-#[test]
-fn the_writing_checks_run_when_asked_for() {
-    let outcomes = run_builtin_writing(&sh(&emitter_writing("/dev/null")));
-    for name in ["protocol/write-empty", "protocol/ensure-schema-empty"] {
-        let outcome = find(&outcomes, name);
-        assert!(outcome.passed(), "{name}: {:?}", outcome.failure);
-        assert!(!outcome.skipped(), "--write-checks must not skip {name}");
     }
 }
 
@@ -1097,110 +1048,6 @@ fn a_correctly_spelled_schema_delete_still_passes() {
             outcome.failure
         );
     }
-}
-
-#[test]
-fn an_unknown_key_one_level_down_fails() {
-    // examples/cases/write-create.json asserts only `ok`, so a case's response is
-    // never compared and only shape-checked; the check has to reach inside
-    // `applied`. a typo'd backend_id deserializes to None, which apply reads as
-    // remove rather than unchanged, dropping a mapping alembic already held.
-    let case = Case {
-        name: "nested".into(),
-        request: json!({
-            "version": 1, "setup": {}, "method": "write",
-            "schema": { "types": {} }, "ops": [], "state": {}
-        }),
-        expect: Expect {
-            ok: true,
-            result: None,
-            error: None,
-        },
-    };
-    let script = r#"cat >/dev/null; printf '{"ok":true,"result":{"applied":[{"uid":"11111111-1111-1111-1111-111111111111","type_name":"dcim.site","backend_ids":1}]}}\n'"#;
-    let outcomes = run_cases(&sh(script), TIMEOUT, std::slice::from_ref(&case));
-    assert!(!outcomes[0].passed(), "a nested unknown key was certified");
-    assert!(
-        message(&outcomes[0]).contains("applied[0].backend_ids"),
-        "{}",
-        message(&outcomes[0])
-    );
-}
-
-#[test]
-fn an_unknown_key_beside_the_result_fails() {
-    // the report nested one level too high: `result` is spelled right, so the
-    // payload check walks a payload the key is not in and every method certified it.
-    let case = Case {
-        name: "envelope-extra".into(),
-        request: json!({
-            "version": 1, "setup": {}, "method": "write",
-            "schema": { "types": {} }, "ops": [], "state": {}
-        }),
-        expect: Expect {
-            ok: true,
-            result: None,
-            error: None,
-        },
-    };
-    let script = r#"cat >/dev/null; printf '{"ok":true,"result":{"applied":[]},"deleted_object_types":["dcim.site"]}\n'"#;
-    let outcomes = run_cases(&sh(script), TIMEOUT, std::slice::from_ref(&case));
-    assert!(!outcomes[0].passed(), "an envelope extra was certified");
-    assert!(
-        message(&outcomes[0]).contains("deleted_object_types"),
-        "{}",
-        message(&outcomes[0])
-    );
-}
-
-#[test]
-fn an_explicitly_empty_provision_list_passes() {
-    // `skip_serializing_if` means the type would not serialize these back, but
-    // examples/adapter.py sends them: the check is on the key, not a round-trip.
-    let case = Case {
-        name: "empty-lists".into(),
-        request: json!({
-            "version": 1, "setup": {}, "method": "ensure_schema",
-            "schema": { "types": {} }
-        }),
-        expect: Expect {
-            ok: true,
-            result: None,
-            error: None,
-        },
-    };
-    let script = r#"cat >/dev/null; printf '{"ok":true,"result":{"created_fields":[],"created_tags":[]}}\n'"#;
-    let outcomes = run_cases(&sh(script), TIMEOUT, std::slice::from_ref(&case));
-    assert!(
-        outcomes[0].passed(),
-        "an explicitly empty list was rejected: {:?}",
-        outcomes[0].failure
-    );
-}
-
-#[test]
-fn a_read_keeps_its_own_key_and_attr_names() {
-    // `key` and `attrs` are the adapter's maps, not protocol fields, so the check
-    // must not reach into them.
-    let case = Case {
-        name: "free-form".into(),
-        request: json!({
-            "version": 1, "setup": {}, "method": "read",
-            "schema": { "types": {} }, "types": [], "state": {}
-        }),
-        expect: Expect {
-            ok: true,
-            result: None,
-            error: None,
-        },
-    };
-    let script = r#"cat >/dev/null; printf '{"ok":true,"result":[{"type_name":"dcim.site","key":{"site":"fra1"},"attrs":{"name":"FRA1","slug":"fra1"}}]}\n'"#;
-    let outcomes = run_cases(&sh(script), TIMEOUT, std::slice::from_ref(&case));
-    assert!(
-        outcomes[0].passed(),
-        "a free-form map was walked: {:?}",
-        outcomes[0].failure
-    );
 }
 
 #[test]

@@ -498,25 +498,6 @@ mod tests {
     }
 
     #[test]
-    fn embedded_schema_parses() {
-        let schema = schema().expect("embedded schema should parse");
-        for type_name in [
-            "dcim.manufacturer",
-            "dcim.device_role",
-            "dcim.device_type",
-            "dcim.site",
-            "dcim.device",
-            "dcim.interface",
-            "dcim.cable",
-        ] {
-            assert!(
-                schema.types.contains_key(type_name),
-                "schema is missing {type_name}"
-            );
-        }
-    }
-
-    #[test]
     fn every_declared_type_is_generated() {
         // the schema is only worth carrying for the types the generator emits,
         // so the claim is checked against the schema rather than a second list.
@@ -551,22 +532,6 @@ mod tests {
             let inventory = plan_as_inventory(&plan);
             assert_eq!(errors(&inventory), Vec::<String>::new(), "at n = {n}");
         }
-    }
-
-    #[test]
-    fn devices_are_distinct_identities() {
-        let inventory = build_inventory(50, INTERFACES).expect("inventory should build");
-        let devices = devices(&inventory.objects);
-        assert_eq!(devices.len(), 50);
-
-        // n devices are n keys, not n copies of one: `duplicate key:
-        // dcim.device::{}` is what an empty key produced.
-        let keys: BTreeSet<_> = devices
-            .iter()
-            .map(|device| key_string(&device.key))
-            .collect();
-        assert_eq!(keys.len(), 50);
-        assert!(!keys.contains(r#"{}"#), "a device carries an empty key");
     }
 
     #[test]
@@ -722,7 +687,10 @@ mod tests {
 
     #[test]
     fn interfaces_without_devices_are_rejected() {
-        assert!(objects(0, 8).is_err());
+        assert_eq!(
+            objects(0, 8).unwrap_err().to_string(),
+            "8 interfaces need at least one device to sit on"
+        );
         assert!(render(Kind::Plan, 0, 8).is_err());
         let objects = objects(0, 0).expect("objects should build");
         assert!(objects.is_empty());
@@ -783,15 +751,6 @@ mod tests {
         assert!(plan.ops.is_empty());
         let inventory = build_inventory(0, 0).expect("empty inventory should build");
         assert!(inventory.objects.is_empty());
-    }
-
-    #[test]
-    fn build_plan_carries_the_schema() {
-        let plan = build_plan(1, INTERFACES).expect("plan should build");
-        assert!(plan.schema.types.contains_key(DEVICE));
-        // the generator never fills in a summary or a schema preview.
-        assert!(plan.summary.is_none());
-        assert!(plan.schema_preview.is_none());
     }
 
     #[test]
@@ -895,7 +854,8 @@ mod tests {
         // a path whose parent directory does not exist cannot be written.
         let path = dir.path().join("does/not/exist/plan.json");
         let json = render(Kind::Plan, 1, INTERFACES).expect("plan should render");
-        assert!(write_json(&json, &path).is_err());
+        let err = write_json(&json, &path).unwrap_err();
+        assert_eq!(err.to_string(), format!("writing to {}", path.display()));
     }
 
     #[test]

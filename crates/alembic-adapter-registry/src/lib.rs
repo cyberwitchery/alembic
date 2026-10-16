@@ -727,7 +727,7 @@ mod tests {
     use super::InfrahubSchemaConfig;
     #[cfg(unix)]
     use super::ProcessAdapter;
-    use alembic_adapter_sdk::{BackendId, Op, StateData};
+    use alembic_adapter_sdk::{BackendId, Op, ProvisionReport, StateData};
     use alembic_core::{JsonMap, Key, Object, Schema, TypeName, Uid};
     use alembic_engine::{Backend, StateStore};
     use serde_json::json;
@@ -805,8 +805,11 @@ mod tests {
         std::env::remove_var("NETBOX_URL");
         std::env::remove_var("NETBOX_TOKEN");
 
-        let result = resolve_credentials("NETBOX", None, None);
-        assert!(result.is_err());
+        let err = resolve_credentials("NETBOX", None, None).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "missing NETBOX_URL (or url in backend config)"
+        );
 
         if let Some(value) = old_url {
             std::env::set_var("NETBOX_URL", value);
@@ -980,6 +983,20 @@ fi
             .await
             .unwrap();
         assert_eq!(observed.len(), 1);
+        let site = observed.objects().next().unwrap();
+        assert_eq!(site.type_name, TypeName::new("dcim.site"));
+        assert_eq!(
+            site.key,
+            Key::from(BTreeMap::from([("name".to_string(), json!("site-a"))]))
+        );
+        assert_eq!(
+            site.attrs,
+            JsonMap::from(BTreeMap::from([("name".to_string(), json!("Site A"))]))
+        );
+        assert_eq!(
+            site.backend_id,
+            Some(BackendId::String("site-1".to_string()))
+        );
 
         let uid = Uid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
         let key = Key::from(BTreeMap::from([("name".to_string(), json!("site-a"))]));
@@ -1013,9 +1030,15 @@ fi
             .ensure_schema(&schema)
             .await
             .unwrap();
-        assert!(provision
-            .created_object_types
-            .contains(&"dcim.site".to_string()));
+        assert_eq!(
+            provision,
+            ProvisionReport {
+                created_fields: vec!["field1".to_string()],
+                created_object_types: vec!["dcim.site".to_string()],
+                created_object_fields: vec!["dcim.site.name".to_string()],
+                ..ProvisionReport::default()
+            }
+        );
     }
 
     /// write a script to `name` in `dir` and build an external backend around it.

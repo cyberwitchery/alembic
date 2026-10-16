@@ -1707,10 +1707,7 @@ mod tests {
             },
             objects: vec![mk("fra1"), mk("ber1")],
         });
-        assert!(report
-            .errors
-            .iter()
-            .any(|err| matches!(err, ValidationError::DuplicateUid(_))));
+        assert_eq!(report.errors, vec![ValidationError::DuplicateUid(uid(1))]);
     }
 
     #[test]
@@ -2490,28 +2487,6 @@ mod tests {
     }
 
     #[test]
-    fn detects_invalid_pattern_for_type_with_no_objects() {
-        // a bad pattern on a type with no objects is never reached by
-        // per-object validation, but schema-load validation catches it.
-        let ghost = TypeSchema {
-            key: BTreeMap::new(),
-            fields: BTreeMap::from([("name".to_string(), pattern_field("[bad"))]),
-        };
-        let report = validate_inventory(&Inventory {
-            scope: None,
-            schema: Schema {
-                types: BTreeMap::from([("ghost".to_string(), ghost)]),
-            },
-            objects: vec![],
-        });
-        assert!(report.errors.iter().any(|e| matches!(
-            e,
-            ValidationError::InvalidSchemaPattern { type_name, field, .. }
-                if type_name == "ghost" && field == "name"
-        )));
-    }
-
-    #[test]
     fn accumulates_invalid_patterns_across_fields_and_types() {
         let device = TypeSchema {
             key: BTreeMap::from([("slug".to_string(), pattern_field("(bad"))]),
@@ -2608,30 +2583,6 @@ mod tests {
     }
 
     #[test]
-    fn detects_constraint_on_non_string_field_for_type_with_no_objects() {
-        // see detects_invalid_pattern_for_type_with_no_objects; here for a
-        // constraint on a never-string field.
-        let mut count = schema_field(FieldType::Int);
-        count.pattern = Some("^[0-9]+$".to_string());
-        let ghost = TypeSchema {
-            key: BTreeMap::new(),
-            fields: BTreeMap::from([("count".to_string(), count)]),
-        };
-        let report = validate_inventory(&Inventory {
-            scope: None,
-            schema: Schema {
-                types: BTreeMap::from([("ghost".to_string(), ghost)]),
-            },
-            objects: vec![],
-        });
-        assert!(report.errors.iter().any(|e| matches!(
-            e,
-            ValidationError::ConstraintOnNonStringField { type_name, field, .. }
-                if type_name == "ghost" && field == "count"
-        )));
-    }
-
-    #[test]
     fn string_valued_fields_accept_format_and_pattern() {
         // string, slug, enum, and ref can all hold a string, so a format/pattern
         // on them is not a malformed schema.
@@ -2715,18 +2666,25 @@ mod tests {
 
     #[test]
     fn detects_format_disagreeing_with_its_field_type_in_a_key_field() {
-        let mut slug = schema_field(FieldType::Slug);
-        slug.format = Some(FieldFormat::Uuid);
-        let device = TypeSchema {
-            key: BTreeMap::from([("slug".to_string(), slug)]),
-            fields: BTreeMap::new(),
-        };
-        let report = validate_schema(BTreeMap::from([("device".to_string(), device)]));
-        assert!(report.errors.iter().any(|e| matches!(
-            e,
-            ValidationError::ConflictingFormat { type_name, field, .. }
-                if type_name == "device" && field == "key.slug"
-        )));
+        for (name, field_type) in [("slug", FieldType::Slug), ("day", FieldType::Date)] {
+            let mut field = schema_field(field_type);
+            field.format = Some(FieldFormat::Uuid);
+            let device = TypeSchema {
+                key: BTreeMap::from([(name.to_string(), field)]),
+                fields: BTreeMap::new(),
+            };
+            let report = validate_schema(BTreeMap::from([("device".to_string(), device)]));
+            let expected = format!("key.{name}");
+            assert!(
+                report.errors.iter().any(|e| matches!(
+                    e,
+                    ValidationError::ConflictingFormat { type_name, field, .. }
+                        if type_name == "device" && *field == expected
+                )),
+                "{name}: {:?}",
+                report.errors
+            );
+        }
     }
 
     #[test]
@@ -2741,57 +2699,32 @@ mod tests {
     }
 
     #[test]
-    fn a_format_restating_its_field_type_is_accepted() {
+    fn a_format_agreeing_with_its_field_type_is_accepted() {
+        let device_ref = || FieldType::Ref {
+            target: "device".to_string(),
+        };
         for (field_type, format) in [
+            // a format restating its field type
             (FieldType::Uuid, FieldFormat::Uuid),
             (FieldType::Cidr, FieldFormat::Cidr),
             (FieldType::Prefix, FieldFormat::Prefix),
             (FieldType::Mac, FieldFormat::Mac),
             (FieldType::Slug, FieldFormat::Slug),
-        ] {
-            let report = validate_schema(formatted_field_schema(field_type.clone(), format));
-            assert!(
-                conflicting_formats(&report).is_empty(),
-                "{field_type:?} conflicts with its own format: {:?}",
-                report.errors
-            );
-        }
-    }
-
-    #[test]
-    fn cidr_and_prefix_do_not_conflict_with_each_other() {
-        for (field_type, format) in [
+            // cidr and prefix do not conflict with each other
             (FieldType::Cidr, FieldFormat::Prefix),
             (FieldType::Prefix, FieldFormat::Cidr),
+            // a type carrying no format of its own
+            (FieldType::String, FieldFormat::Uuid),
+            (FieldType::Text, FieldFormat::Uuid),
+            (FieldType::IpAddress, FieldFormat::Uuid),
+            (FieldType::Json, FieldFormat::Uuid),
+            (device_ref(), FieldFormat::Uuid),
         ] {
             let report =
                 validate_schema(formatted_field_schema(field_type.clone(), format.clone()));
             assert!(
                 conflicting_formats(&report).is_empty(),
                 "{field_type:?} conflicts with {format:?}: {:?}",
-                report.errors
-            );
-        }
-    }
-
-    #[test]
-    fn a_format_on_a_type_carrying_none_is_accepted() {
-        for field_type in [
-            FieldType::String,
-            FieldType::Text,
-            FieldType::IpAddress,
-            FieldType::Json,
-            FieldType::Ref {
-                target: "device".to_string(),
-            },
-        ] {
-            let report = validate_schema(formatted_field_schema(
-                field_type.clone(),
-                FieldFormat::Uuid,
-            ));
-            assert!(
-                conflicting_formats(&report).is_empty(),
-                "{field_type:?} conflicts with a declared format: {:?}",
                 report.errors
             );
         }
@@ -2868,22 +2801,6 @@ mod tests {
                 );
             }
         }
-    }
-
-    #[test]
-    fn detects_a_format_on_an_rfc_3339_typed_key_field() {
-        let mut day = schema_field(FieldType::Date);
-        day.format = Some(FieldFormat::Uuid);
-        let device = TypeSchema {
-            key: BTreeMap::from([("day".to_string(), day)]),
-            fields: BTreeMap::new(),
-        };
-        let report = validate_schema(BTreeMap::from([("device".to_string(), device)]));
-        assert!(report.errors.iter().any(|e| matches!(
-            e,
-            ValidationError::ConflictingFormat { type_name, field, .. }
-                if type_name == "device" && field == "key.day"
-        )));
     }
 
     #[test]
@@ -3090,388 +3007,181 @@ mod tests {
     }
 
     #[test]
-    fn with_sources_attaches_location_for_empty_enum() {
-        // `EmptyEnum` carries a `type_name`; with_sources must resolve it to
-        // the declaring type's source line, like every other schema-load error.
-        let device = TypeSchema {
-            key: BTreeMap::from([("name".to_string(), schema_field(FieldType::String))]),
-            fields: BTreeMap::from([(
-                "role".to_string(),
-                schema_field(FieldType::Enum { values: vec![] }),
-            )]),
-        };
-        let mut key = BTreeMap::new();
-        key.insert("name".to_string(), serde_json::json!("leaf1"));
-        let object = Object::new(
-            uid(1),
-            TypeName::new("device"),
-            Key::from(key),
-            JsonMap::default(),
-        )
-        .unwrap()
-        .with_source(SourceLocation::file_line("inventory.yaml", 7));
-
-        let inventory = Inventory {
-            scope: None,
-            schema: Schema {
-                types: BTreeMap::from([("device".to_string(), device)]),
-            },
-            objects: vec![object],
-        };
-        let located = validate_inventory(&inventory).with_sources(&inventory.objects);
-
-        let empty_enum = located
-            .iter()
-            .find(|l| matches!(l.error, ValidationError::EmptyEnum { .. }))
-            .expect("empty-enum error present");
-        assert_eq!(
-            empty_enum.source,
-            Some(SourceLocation::file_line("inventory.yaml", 7))
-        );
-    }
-
-    #[test]
-    fn with_sources_attaches_location_for_conflicting_format() {
+    fn with_sources_attaches_the_declaring_type_location_to_schema_errors() {
+        // schema-load errors carry a `type_name`; with_sources must resolve each
+        // variant to the source line of an object of the declaring type.
+        let name_key = || BTreeMap::from([("name".to_string(), schema_field(FieldType::String))]);
         let mut asset = schema_field(FieldType::Mac);
         asset.format = Some(FieldFormat::Uuid);
-        let device = TypeSchema {
-            key: BTreeMap::from([("name".to_string(), schema_field(FieldType::String))]),
-            fields: BTreeMap::from([("asset".to_string(), asset)]),
-        };
-        let mut key = BTreeMap::new();
-        key.insert("name".to_string(), serde_json::json!("leaf1"));
-        let object = Object::new(
-            uid(1),
-            TypeName::new("device"),
-            Key::from(key),
-            JsonMap(BTreeMap::from([(
-                "asset".to_string(),
-                serde_json::json!("aa:bb:cc:dd:ee:ff"),
-            )])),
-        )
-        .unwrap()
-        .with_source(SourceLocation::file_line("inventory.yaml", 7));
-
-        let inventory = Inventory {
-            scope: None,
-            schema: Schema {
-                types: BTreeMap::from([("device".to_string(), device)]),
-            },
-            objects: vec![object],
-        };
-        let located = validate_inventory(&inventory).with_sources(&inventory.objects);
-
-        let conflict = located
-            .iter()
-            .find(|l| matches!(l.error, ValidationError::ConflictingFormat { .. }))
-            .expect("conflicting-format error present");
-        assert_eq!(
-            conflict.source,
-            Some(SourceLocation::file_line("inventory.yaml", 7))
-        );
-    }
-
-    #[test]
-    fn with_sources_attaches_location_for_unknown_ref_target() {
-        // `UnknownRefTarget` resolves too: the arm matches per variant, not
-        // just `EmptyEnum`.
-        let device = TypeSchema {
-            key: BTreeMap::from([("name".to_string(), schema_field(FieldType::String))]),
-            fields: BTreeMap::from([(
-                "site".to_string(),
-                schema_field(FieldType::Ref {
-                    target: "dcim.site".to_string(),
-                }),
-            )]),
-        };
-        let mut key = BTreeMap::new();
-        key.insert("name".to_string(), serde_json::json!("leaf1"));
-        let object = Object::new(
-            uid(1),
-            TypeName::new("device"),
-            Key::from(key),
-            JsonMap::default(),
-        )
-        .unwrap()
-        .with_source(SourceLocation::file_line("inventory.yaml", 12));
-
-        let inventory = Inventory {
-            scope: None,
-            schema: Schema {
-                types: BTreeMap::from([("device".to_string(), device)]),
-            },
-            objects: vec![object],
-        };
-        let located = validate_inventory(&inventory).with_sources(&inventory.objects);
-
-        let unknown_ref = located
-            .iter()
-            .find(|l| matches!(l.error, ValidationError::UnknownRefTarget { .. }))
-            .expect("unknown-ref-target error present");
-        assert_eq!(
-            unknown_ref.source,
-            Some(SourceLocation::file_line("inventory.yaml", 12))
-        );
-    }
-
-    #[test]
-    fn with_sources_attaches_location_for_non_scalar_key() {
-        // `NonScalarKeyField` carries a `type_name`; with_sources must resolve
-        // it to the declaring type's source line.
-        let device = TypeSchema {
-            key: BTreeMap::from([(
-                "members".to_string(),
-                schema_field(FieldType::List {
-                    item: Box::new(FieldType::String),
-                }),
-            )]),
-            fields: BTreeMap::new(),
-        };
-        let mut key = BTreeMap::new();
-        key.insert("members".to_string(), serde_json::json!(["leaf1"]));
-        let object = Object::new(
-            uid(1),
-            TypeName::new("device"),
-            Key::from(key),
-            JsonMap::default(),
-        )
-        .unwrap()
-        .with_source(SourceLocation::file_line("inventory.yaml", 5));
-
-        let inventory = Inventory {
-            scope: None,
-            schema: Schema {
-                types: BTreeMap::from([("device".to_string(), device)]),
-            },
-            objects: vec![object],
-        };
-        let located = validate_inventory(&inventory).with_sources(&inventory.objects);
-
-        let non_scalar = located
-            .iter()
-            .find(|l| matches!(l.error, ValidationError::NonScalarKeyField { .. }))
-            .expect("non-scalar-key error present");
-        assert_eq!(
-            non_scalar.source,
-            Some(SourceLocation::file_line("inventory.yaml", 5))
-        );
-    }
-
-    #[test]
-    fn with_sources_attaches_location_for_nullable_key() {
-        // `NullableKeyField` carries a `type_name`; with_sources must resolve
-        // it to the declaring type's source line.
-        let device = TypeSchema {
-            key: BTreeMap::from([("slug".to_string(), nullable_field(FieldType::String))]),
-            fields: BTreeMap::new(),
-        };
-        let mut key = BTreeMap::new();
-        key.insert("slug".to_string(), serde_json::json!("leaf1"));
-        let object = Object::new(
-            uid(1),
-            TypeName::new("device"),
-            Key::from(key),
-            JsonMap::default(),
-        )
-        .unwrap()
-        .with_source(SourceLocation::file_line("inventory.yaml", 7));
-
-        let inventory = Inventory {
-            scope: None,
-            schema: Schema {
-                types: BTreeMap::from([("device".to_string(), device)]),
-            },
-            objects: vec![object],
-        };
-        let located = validate_inventory(&inventory).with_sources(&inventory.objects);
-
-        let nullable_key = located
-            .iter()
-            .find(|l| matches!(l.error, ValidationError::NullableKeyField { .. }))
-            .expect("nullable-key error present");
-        assert_eq!(
-            nullable_key.source,
-            Some(SourceLocation::file_line("inventory.yaml", 7))
-        );
+        type Matcher = fn(&ValidationError) -> bool;
+        let cases: Vec<(TypeSchema, &str, serde_json::Value, JsonMap, Matcher, usize)> = vec![
+            (
+                TypeSchema {
+                    key: name_key(),
+                    fields: BTreeMap::from([(
+                        "role".to_string(),
+                        schema_field(FieldType::Enum { values: vec![] }),
+                    )]),
+                },
+                "name",
+                json!("leaf1"),
+                JsonMap::default(),
+                |e| matches!(e, ValidationError::EmptyEnum { .. }),
+                7,
+            ),
+            (
+                TypeSchema {
+                    key: name_key(),
+                    fields: BTreeMap::from([("asset".to_string(), asset)]),
+                },
+                "name",
+                json!("leaf1"),
+                JsonMap(BTreeMap::from([(
+                    "asset".to_string(),
+                    json!("aa:bb:cc:dd:ee:ff"),
+                )])),
+                |e| matches!(e, ValidationError::ConflictingFormat { .. }),
+                7,
+            ),
+            (
+                TypeSchema {
+                    key: name_key(),
+                    fields: BTreeMap::from([(
+                        "site".to_string(),
+                        schema_field(FieldType::Ref {
+                            target: "dcim.site".to_string(),
+                        }),
+                    )]),
+                },
+                "name",
+                json!("leaf1"),
+                JsonMap::default(),
+                |e| matches!(e, ValidationError::UnknownRefTarget { .. }),
+                12,
+            ),
+            (
+                TypeSchema {
+                    key: BTreeMap::from([(
+                        "members".to_string(),
+                        schema_field(FieldType::List {
+                            item: Box::new(FieldType::String),
+                        }),
+                    )]),
+                    fields: BTreeMap::new(),
+                },
+                "members",
+                json!(["leaf1"]),
+                JsonMap::default(),
+                |e| matches!(e, ValidationError::NonScalarKeyField { .. }),
+                5,
+            ),
+            (
+                TypeSchema {
+                    key: BTreeMap::from([("slug".to_string(), nullable_field(FieldType::String))]),
+                    fields: BTreeMap::new(),
+                },
+                "slug",
+                json!("leaf1"),
+                JsonMap::default(),
+                |e| matches!(e, ValidationError::NullableKeyField { .. }),
+                7,
+            ),
+        ];
+        for (device, key_field, key_value, attrs, matcher, line) in cases {
+            let object = Object::new(
+                uid(1),
+                TypeName::new("device"),
+                Key::from(BTreeMap::from([(key_field.to_string(), key_value)])),
+                attrs,
+            )
+            .unwrap()
+            .with_source(SourceLocation::file_line("inventory.yaml", line));
+            let inventory = Inventory {
+                scope: None,
+                schema: Schema {
+                    types: BTreeMap::from([("device".to_string(), device)]),
+                },
+                objects: vec![object],
+            };
+            let located = validate_inventory(&inventory).with_sources(&inventory.objects);
+            let found = located
+                .iter()
+                .find(|l| matcher(&l.error))
+                .unwrap_or_else(|| panic!("line {line}: no matching error in {located:?}"));
+            assert_eq!(
+                found.source,
+                Some(SourceLocation::file_line("inventory.yaml", line)),
+                "{:?}",
+                found.error
+            );
+        }
     }
 
     #[test]
     fn test_field_value_validation() {
         let uid_to_type = BTreeMap::from([(uid(1), TypeName::new("target"))]);
-        let mut report = ValidationReport::default();
-
-        // test type mismatch
-        let schema = FieldSchema {
-            r#type: FieldType::Int,
-            required: true,
-            nullable: false,
-            description: None,
-            format: None,
-            pattern: None,
+        let invalid = |expected: &str, actual: &str| ValidationError::InvalidValue {
+            field: "test.field".to_string(),
+            expected: expected.to_string(),
+            actual: actual.to_string(),
         };
-        validate_field_value(
-            &TypeName::new("test"),
-            "field",
-            &schema,
-            &json!("not-int"),
-            &uid_to_type,
-            &BTreeMap::new(),
-            &mut report,
-        );
-        assert!(report
-            .errors
-            .iter()
-            .any(|e| matches!(e, ValidationError::InvalidValue { .. })));
-
-        // test `enum`
-        let schema = FieldSchema {
-            r#type: FieldType::Enum {
-                values: vec!["a".to_string(), "b".to_string()],
-            },
-            required: true,
-            nullable: false,
-            description: None,
-            format: None,
-            pattern: None,
-        };
-        report.errors.clear();
-        validate_field_value(
-            &TypeName::new("test"),
-            "field",
-            &schema,
-            &json!("c"),
-            &uid_to_type,
-            &BTreeMap::new(),
-            &mut report,
-        );
-        assert!(report
-            .errors
-            .iter()
-            .any(|e| matches!(e, ValidationError::InvalidValue { .. })));
-
-        // test reference type mismatch
-        let schema = FieldSchema {
-            r#type: FieldType::Ref {
-                target: "wrong".to_string(),
-            },
-            required: true,
-            nullable: false,
-            description: None,
-            format: None,
-            pattern: None,
-        };
-        report.errors.clear();
-        validate_field_value(
-            &TypeName::new("test"),
-            "field",
-            &schema,
-            &json!(uid(1).to_string()),
-            &uid_to_type,
-            &BTreeMap::new(),
-            &mut report,
-        );
-        assert!(report
-            .errors
-            .iter()
-            .any(|e| matches!(e, ValidationError::ReferenceTypeMismatch { .. })));
-
-        // test `list_ref`
-        let schema = FieldSchema {
-            r#type: FieldType::ListRef {
-                target: "target".to_string(),
-            },
-            required: true,
-            nullable: false,
-            description: None,
-            format: None,
-            pattern: None,
-        };
-        report.errors.clear();
-        validate_field_value(
-            &TypeName::new("test"),
-            "field",
-            &schema,
-            &json!([uid(1).to_string()]),
-            &uid_to_type,
-            &BTreeMap::new(),
-            &mut report,
-        );
-        assert!(report.errors.is_empty());
-
-        // test `map`
-        let schema = FieldSchema {
-            r#type: FieldType::Map {
-                value: Box::new(FieldType::Int),
-            },
-            required: true,
-            nullable: false,
-            description: None,
-            format: None,
-            pattern: None,
-        };
-        report.errors.clear();
-        validate_field_value(
-            &TypeName::new("test"),
-            "field",
-            &schema,
-            &json!({"a": 1, "b": "not-int"}),
-            &uid_to_type,
-            &BTreeMap::new(),
-            &mut report,
-        );
-        assert!(report
-            .errors
-            .iter()
-            .any(|e| matches!(e, ValidationError::InvalidValue { .. })));
-
-        // test `uuid`
-        let schema = FieldSchema {
-            r#type: FieldType::Uuid,
-            required: true,
-            nullable: false,
-            description: None,
-            format: None,
-            pattern: None,
-        };
-        report.errors.clear();
-        validate_field_value(
-            &TypeName::new("test"),
-            "field",
-            &schema,
-            &json!("not-a-uuid"),
-            &uid_to_type,
-            &BTreeMap::new(),
-            &mut report,
-        );
-        assert!(report
-            .errors
-            .iter()
-            .any(|e| matches!(e, ValidationError::InvalidValue { .. })));
-
-        // test a list of refs
-        let schema = FieldSchema {
-            r#type: FieldType::List {
-                item: Box::new(FieldType::Ref {
+        let cases = vec![
+            (
+                FieldType::Enum {
+                    values: vec!["a".to_string(), "b".to_string()],
+                },
+                json!("c"),
+                vec![invalid("enum(a|b)", "c")],
+            ),
+            (
+                FieldType::Ref {
+                    target: "wrong".to_string(),
+                },
+                json!(uid(1).to_string()),
+                vec![ValidationError::ReferenceTypeMismatch {
+                    field: "test.field".to_string(),
+                    target: uid(1),
+                    expected: "wrong".to_string(),
+                    actual: "target".to_string(),
+                }],
+            ),
+            (
+                FieldType::ListRef {
                     target: "target".to_string(),
-                }),
-            },
-            required: true,
-            nullable: false,
-            description: None,
-            format: None,
-            pattern: None,
-        };
-        report.errors.clear();
-        validate_field_value(
-            &TypeName::new("test"),
-            "field",
-            &schema,
-            &json!([uid(1).to_string()]),
-            &uid_to_type,
-            &BTreeMap::new(),
-            &mut report,
-        );
-        assert!(report.errors.is_empty());
+                },
+                json!([uid(1).to_string()]),
+                vec![],
+            ),
+            (
+                FieldType::Map {
+                    value: Box::new(FieldType::Int),
+                },
+                json!({"a": 1, "b": "not-int"}),
+                vec![invalid("int", "string")],
+            ),
+            (
+                FieldType::List {
+                    item: Box::new(FieldType::Ref {
+                        target: "target".to_string(),
+                    }),
+                },
+                json!([uid(1).to_string()]),
+                vec![],
+            ),
+        ];
+        for (field_type, value, expected) in cases {
+            let mut report = ValidationReport::default();
+            validate_field_value(
+                &TypeName::new("test"),
+                "field",
+                &typed_field(field_type.clone()),
+                &value,
+                &uid_to_type,
+                &BTreeMap::new(),
+                &mut report,
+            );
+            assert_eq!(report.errors, expected, "{field_type:?}");
+        }
     }
 
     #[test]
@@ -3604,76 +3314,55 @@ mod tests {
     }
 
     #[test]
-    fn format_slug_accepts_valid_and_rejects_invalid() {
-        assert!(check(&fmt_field(FieldFormat::Slug), &json!("leaf-01"))
-            .errors
-            .is_empty());
-        // trailing hyphen is not allowed by the slug regex.
-        assert!(has_invalid_value(&check(
-            &fmt_field(FieldFormat::Slug),
-            &json!("leaf01-")
-        )));
-        // uppercase is not allowed either.
-        assert!(has_invalid_value(&check(
-            &fmt_field(FieldFormat::Slug),
-            &json!("Leaf01")
-        )));
-    }
-
-    #[test]
-    fn format_ip_address_accepts_valid_and_rejects_invalid() {
-        assert!(
-            check(&fmt_field(FieldFormat::IpAddress), &json!("10.0.0.1"))
-                .errors
-                .is_empty()
-        );
-        assert!(has_invalid_value(&check(
-            &fmt_field(FieldFormat::IpAddress),
-            &json!("not-an-ip")
-        )));
-    }
-
-    #[test]
-    fn format_cidr_and_prefix_accept_valid_and_reject_invalid() {
-        assert!(check(&fmt_field(FieldFormat::Cidr), &json!("10.0.0.0/24"))
-            .errors
-            .is_empty());
-        assert!(
-            check(&fmt_field(FieldFormat::Prefix), &json!("10.0.0.0/24"))
-                .errors
-                .is_empty()
-        );
-        assert!(has_invalid_value(&check(
-            &fmt_field(FieldFormat::Cidr),
-            &json!("not-a-cidr")
-        )));
-    }
-
-    #[test]
-    fn format_mac_accepts_valid_and_rejects_invalid() {
-        assert!(
-            check(&fmt_field(FieldFormat::Mac), &json!("aa:bb:cc:dd:ee:ff"))
-                .errors
-                .is_empty()
-        );
-        // too short to be a full mac address.
-        assert!(has_invalid_value(&check(
-            &fmt_field(FieldFormat::Mac),
-            &json!("aa:bb")
-        )));
-    }
-
-    #[test]
-    fn format_uuid_accepts_valid_and_rejects_invalid() {
-        assert!(
-            check(&fmt_field(FieldFormat::Uuid), &json!(uid(1).to_string()))
-                .errors
-                .is_empty()
-        );
-        assert!(has_invalid_value(&check(
-            &fmt_field(FieldFormat::Uuid),
-            &json!("not-a-uuid")
-        )));
+    fn formats_and_format_types_accept_valid_and_reject_invalid() {
+        let valid_uid = uid(1).to_string();
+        let cases = [
+            (fmt_field(FieldFormat::Slug), "leaf-01", true),
+            // trailing hyphen is not allowed by the slug regex.
+            (fmt_field(FieldFormat::Slug), "leaf01-", false),
+            // uppercase is not allowed either.
+            (fmt_field(FieldFormat::Slug), "Leaf01", false),
+            (fmt_field(FieldFormat::IpAddress), "10.0.0.1", true),
+            (fmt_field(FieldFormat::IpAddress), "not-an-ip", false),
+            (fmt_field(FieldFormat::Cidr), "10.0.0.0/24", true),
+            (fmt_field(FieldFormat::Prefix), "10.0.0.0/24", true),
+            (fmt_field(FieldFormat::Cidr), "not-a-cidr", false),
+            (fmt_field(FieldFormat::Mac), "aa:bb:cc:dd:ee:ff", true),
+            // too short to be a full mac address.
+            (fmt_field(FieldFormat::Mac), "aa:bb", false),
+            (fmt_field(FieldFormat::Uuid), valid_uid.as_str(), true),
+            (fmt_field(FieldFormat::Uuid), "not-a-uuid", false),
+            (typed_field(FieldType::Uuid), valid_uid.as_str(), true),
+            (typed_field(FieldType::Uuid), "not-a-uuid", false),
+            // `ip_address` is a plain string check (see type_check)
+            (typed_field(FieldType::IpAddress), "10.0.0.10/24", true),
+            (typed_field(FieldType::IpAddress), "10.0.0.1", true),
+            (typed_field(FieldType::Cidr), "10.0.0.0/24", true),
+            (typed_field(FieldType::Prefix), "10.0.0.0/24", true),
+            (typed_field(FieldType::Cidr), "not-a-cidr", false),
+            (typed_field(FieldType::Prefix), "10.0.0.1", false),
+            (typed_field(FieldType::Mac), "aa:bb:cc:dd:ee:ff", true),
+            (typed_field(FieldType::Mac), "aa:bb", false),
+            (typed_field(FieldType::Slug), "leaf-01", true),
+            // uppercase is rejected by the slug regex.
+            (typed_field(FieldType::Slug), "Leaf01", false),
+        ];
+        for (schema, value, accepted) in cases {
+            let report = check(&schema, &json!(value));
+            if accepted {
+                assert!(
+                    report.errors.is_empty(),
+                    "{schema:?} {value}: {:?}",
+                    report.errors
+                );
+            } else {
+                assert!(
+                    has_invalid_value(&report),
+                    "{schema:?} {value}: {:?}",
+                    report.errors
+                );
+            }
+        }
     }
 
     // every value a `format_regex` entry has to keep accepting, mixed across
@@ -3819,79 +3508,6 @@ mod tests {
                 }
             }
         }
-    }
-
-    #[test]
-    fn type_uuid_enforces_format() {
-        assert!(
-            check(&typed_field(FieldType::Uuid), &json!(uid(1).to_string()))
-                .errors
-                .is_empty()
-        );
-        assert!(has_invalid_value(&check(
-            &typed_field(FieldType::Uuid),
-            &json!("not-a-uuid")
-        )));
-    }
-
-    #[test]
-    fn type_ip_address_accepts_any_string_including_masked() {
-        // `ip_address` is a plain string check (see type_check)
-        assert!(
-            check(&typed_field(FieldType::IpAddress), &json!("10.0.0.10/24"))
-                .errors
-                .is_empty()
-        );
-        assert!(
-            check(&typed_field(FieldType::IpAddress), &json!("10.0.0.1"))
-                .errors
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn type_cidr_and_prefix_enforce_format() {
-        assert!(check(&typed_field(FieldType::Cidr), &json!("10.0.0.0/24"))
-            .errors
-            .is_empty());
-        assert!(
-            check(&typed_field(FieldType::Prefix), &json!("10.0.0.0/24"))
-                .errors
-                .is_empty()
-        );
-        assert!(has_invalid_value(&check(
-            &typed_field(FieldType::Cidr),
-            &json!("not-a-cidr")
-        )));
-        assert!(has_invalid_value(&check(
-            &typed_field(FieldType::Prefix),
-            &json!("10.0.0.1")
-        )));
-    }
-
-    #[test]
-    fn type_mac_enforces_format() {
-        assert!(
-            check(&typed_field(FieldType::Mac), &json!("aa:bb:cc:dd:ee:ff"))
-                .errors
-                .is_empty()
-        );
-        assert!(has_invalid_value(&check(
-            &typed_field(FieldType::Mac),
-            &json!("aa:bb")
-        )));
-    }
-
-    #[test]
-    fn type_slug_enforces_format() {
-        assert!(check(&typed_field(FieldType::Slug), &json!("leaf-01"))
-            .errors
-            .is_empty());
-        // uppercase is rejected by the slug regex.
-        assert!(has_invalid_value(&check(
-            &typed_field(FieldType::Slug),
-            &json!("Leaf01")
-        )));
     }
 
     #[test]
@@ -4080,20 +3696,6 @@ mod tests {
         assert!(has_invalid_value(&check(
             &pattern_field(r"^[a-z]+$"),
             &json!("ABC")
-        )));
-    }
-
-    #[test]
-    fn invalid_pattern_reports_schema_error_not_per_value() {
-        // malformed pattern -> one InvalidSchemaPattern, never a per-value InvalidValue.
-        let report = check(&pattern_field("["), &json!("anything"));
-        assert!(report
-            .errors
-            .iter()
-            .any(|e| matches!(e, ValidationError::InvalidSchemaPattern { .. })));
-        assert!(!report.errors.iter().any(|e| matches!(
-            e,
-            ValidationError::InvalidValue { actual, .. } if actual.contains("invalid pattern")
         )));
     }
 

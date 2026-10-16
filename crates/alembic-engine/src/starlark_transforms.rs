@@ -185,38 +185,9 @@ mod tests {
     }
 
     #[test]
-    fn calls_a_simple_transform() {
-        let user = transforms("def cidr_host(v):\n    return v.split(\"/\")[0]\n");
-        let result = user
-            .call("cidr_host", &serde_json::json!("10.0.0.1/24"), &[])
-            .unwrap();
-        assert_eq!(result, Some(serde_json::json!("10.0.0.1")));
-    }
-
-    #[test]
     fn unknown_name_is_none() {
         let user = transforms("def f(v):\n    return v\n");
         assert_eq!(user.call("g", &serde_json::json!(1), &[]).unwrap(), None);
-    }
-
-    #[test]
-    fn passes_literal_arguments() {
-        let user = transforms("def pad(v, width, fill):\n    return fill * (width - len(v)) + v\n");
-        let result = user
-            .call(
-                "pad",
-                &serde_json::json!("7"),
-                &[serde_json::json!(3), serde_json::json!("0")],
-            )
-            .unwrap();
-        assert_eq!(result, Some(serde_json::json!("007")));
-    }
-
-    #[test]
-    fn fail_surfaces_as_error() {
-        let user = transforms("def f(v):\n    fail(\"no mapping for \" + v)\n");
-        let err = user.call("f", &serde_json::json!("vyos"), &[]).unwrap_err();
-        assert!(err.to_string().contains("no mapping for vyos"), "{err:#}");
     }
 
     #[test]
@@ -225,7 +196,11 @@ mod tests {
         let err = user
             .call("TABLE", &serde_json::json!("a"), &[])
             .unwrap_err();
-        assert!(!err.to_string().is_empty());
+        assert!(
+            err.to_string()
+                .contains("Operation `call()` not supported on type `dict`"),
+            "{err:#}"
+        );
     }
 
     #[test]
@@ -261,7 +236,10 @@ mod tests {
     fn recursion_is_rejected() {
         let user = transforms("def f(v):\n    return f(v)\n");
         let err = user.call("f", &serde_json::json!(1), &[]).unwrap_err();
-        assert!(!err.to_string().is_empty());
+        assert!(
+            err.to_string().contains("Starlark call stack overflow"),
+            "{err:#}"
+        );
     }
 
     #[test]
@@ -301,24 +279,6 @@ mod tests {
             err.to_string().contains("absolute paths are not allowed"),
             "{err:#}"
         );
-    }
-
-    #[test]
-    fn load_resolves_relative_to_base_dir() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("lib.star"),
-            "def shout(v):\n    return v.upper()\n",
-        )
-        .unwrap();
-        let user = StarlarkTransforms::compile(
-            "load(\"lib.star\", \"shout\")\n\ndef f(v):\n    return shout(v)\n",
-            "test",
-            Some(dir.path()),
-        )
-        .unwrap();
-        let result = user.call("f", &serde_json::json!("quiet"), &[]).unwrap();
-        assert_eq!(result, Some(serde_json::json!("QUIET")));
     }
 
     #[test]

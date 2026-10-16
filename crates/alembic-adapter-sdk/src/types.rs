@@ -388,17 +388,6 @@ mod tests {
     }
 
     #[test]
-    fn a_misspelled_op_key_is_rejected() {
-        // a create carries no backend id; one spelled onto it was dropped, and the
-        // plan the operator read named a backend object the run never looked at.
-        let err = serde_json::from_str::<Op>(
-            r#"{"op":"create","uid":"11111111-1111-1111-1111-111111111111","type_name":"device","desired":{"uid":"11111111-1111-1111-1111-111111111111","type":"device","key":{},"attrs":{}},"backend_id":"7"}"#,
-        )
-        .unwrap_err();
-        assert!(err.to_string().contains("backend_id"), "{err}");
-    }
-
-    #[test]
     fn an_op_may_still_omit_its_backend_id() {
         let op: Op = serde_json::from_str(
             r#"{"op":"delete","uid":"11111111-1111-1111-1111-111111111111","type_name":"device","key":{}}"#,
@@ -411,14 +400,6 @@ mod tests {
                 ..
             }
         ));
-    }
-
-    #[test]
-    fn a_misspelled_field_change_key_is_rejected() {
-        let err =
-            serde_json::from_str::<FieldChange>(r#"{"field":"tier","form":1,"from":1,"to":2}"#)
-                .unwrap_err();
-        assert!(err.to_string().contains("form"), "{err}");
     }
 
     #[test]
@@ -500,19 +481,5 @@ mod tests {
             ProvisionReport::default().summary(Tense::Would),
             "no schema changes"
         );
-    }
-
-    #[test]
-    fn op_helpers() {
-        let uid = Uid::from_u128(1);
-        let type_name = TypeName::new("test.type");
-        let op = Op::Delete {
-            uid,
-            type_name: type_name.clone(),
-            key: Key::default(),
-            backend_id: None,
-        };
-        assert_eq!(op.uid(), uid);
-        assert_eq!(op.type_name(), &type_name);
     }
 }

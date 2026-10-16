@@ -262,17 +262,15 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_name_names_what_is_embedded() {
-        let err = find(None).unwrap_err().to_string();
-        assert!(err.contains("name a skill"), "{err}");
-        assert!(err.contains("alembic"), "{err}");
-    }
-
-    #[test]
-    fn an_unknown_skill_names_what_is_embedded() {
-        let err = find(Some("nautobot")).unwrap_err().to_string();
-        assert!(err.contains("no skill named `nautobot`"), "{err}");
-        assert!(err.contains("alembic"), "{err}");
+    fn a_missing_or_unknown_name_names_what_is_embedded() {
+        for (name, reason) in [
+            (None, "name a skill"),
+            (Some("nautobot"), "no skill named `nautobot`"),
+        ] {
+            let err = find(name).unwrap_err().to_string();
+            assert!(err.contains(reason), "{err}");
+            assert!(err.contains("this binary carries: alembic"), "{err}");
+        }
     }
 
     #[test]

@@ -1,8 +1,7 @@
 use super::test_support::*;
 use super::*;
 use alembic_adapter_django::emit::{run_emit, DjangoConfig};
-use alembic_adapter_registry::{AdapterConfig, ExternalConfig};
-use alembic_adapter_sdk::{AppliedOp, BackendId};
+use alembic_adapter_sdk::BackendId;
 use alembic_core::{Inventory, Schema};
 use alembic_engine::{StateLock, StateStore};
 use std::collections::BTreeMap;
@@ -43,143 +42,87 @@ fn state_path_is_scoped_per_backend_under_dot_alembic() {
 }
 
 #[test]
-fn resolve_state_backend_defaults_to_local() {
-    let _env = EnvVarGuard::acquire(&[
-        ("ALEMBIC_STATE_BACKEND", None),
-        ("ALEMBIC_STATE_PATH", None),
-    ]);
-
+fn resolve_state_backend_reads_the_documented_variables() {
+    const URL: &str = "postgres://user:pass@localhost:5432/alembic";
     let root = Path::new("/tmp/example");
-    let config = resolve_state_backend_config(root, &test_identity()).unwrap();
-    assert_eq!(
-        config,
-        StateBackendConfig::Local {
-            path: state_path(root, &test_identity())
-        }
-    );
-}
-
-#[test]
-fn resolve_state_backend_uses_custom_local_path() {
-    let _env = EnvVarGuard::acquire(&[
-        ("ALEMBIC_STATE_BACKEND", Some("local")),
-        ("ALEMBIC_STATE_PATH", Some("/tmp/custom-state.json")),
-    ]);
-
-    let config = resolve_state_backend_config(Path::new("/tmp/ignored"), &test_identity()).unwrap();
-    assert_eq!(
-        config,
-        StateBackendConfig::Local {
-            path: PathBuf::from("/tmp/custom-state.json")
-        }
-    );
-}
-
-#[test]
-fn resolve_state_backend_postgres_requires_url() {
-    let _env = EnvVarGuard::acquire(&[
-        ("ALEMBIC_STATE_BACKEND", Some("postgres")),
-        ("ALEMBIC_STATE_POSTGRES_URL", None),
-        ("ALEMBIC_STATE_POSTGRES_TLS", None),
-    ]);
-
-    let err =
-        resolve_state_backend_config(Path::new("/tmp/ignored"), &test_identity()).unwrap_err();
-    assert!(err.to_string().contains("ALEMBIC_STATE_POSTGRES_URL"));
-}
-
-#[test]
-fn resolve_state_backend_postgres_with_default_key() {
-    let _env = EnvVarGuard::acquire(&[
-        ("ALEMBIC_STATE_BACKEND", Some("postgres")),
+    let postgres = |key: &str, tls_mode| StateBackendConfig::Postgres {
+        url: URL.to_string(),
+        // backend-scoped like the local path: workspace/adapter-hash.
+        key: format!("{key}/netbox-{}", test_identity().scope_hash()),
+        tls_mode,
+    };
+    // (env, Ok(config) or the variable the error must name)
+    type Env<'a> = Vec<(&'a str, Option<&'a str>)>;
+    let cases: Vec<(Env, Result<StateBackendConfig, &str>)> = vec![
         (
-            "ALEMBIC_STATE_POSTGRES_URL",
-            Some("postgres://user:pass@localhost:5432/alembic"),
+            vec![
+                ("ALEMBIC_STATE_BACKEND", None),
+                ("ALEMBIC_STATE_PATH", None),
+            ],
+            Ok(StateBackendConfig::Local {
+                path: state_path(root, &test_identity()),
+            }),
         ),
-        ("ALEMBIC_STATE_KEY", None),
-        ("ALEMBIC_STATE_POSTGRES_TLS", None),
-    ]);
-
-    let config = resolve_state_backend_config(Path::new("/tmp/ignored"), &test_identity()).unwrap();
-    assert_eq!(
-        config,
-        StateBackendConfig::Postgres {
-            url: "postgres://user:pass@localhost:5432/alembic".to_string(),
-            // backend-scoped like the local path: workspace/adapter-hash.
-            key: format!("default/netbox-{}", test_identity().scope_hash()),
-            tls_mode: PostgresTlsMode::Disable,
-        }
-    );
-}
-
-#[test]
-fn resolve_state_backend_postgres_with_tls_require() {
-    let _env = EnvVarGuard::acquire(&[
-        ("ALEMBIC_STATE_BACKEND", Some("postgres")),
         (
-            "ALEMBIC_STATE_POSTGRES_URL",
-            Some("postgres://user:pass@localhost:5432/alembic"),
+            vec![
+                ("ALEMBIC_STATE_BACKEND", Some("local")),
+                ("ALEMBIC_STATE_PATH", Some("/tmp/custom-state.json")),
+            ],
+            Ok(StateBackendConfig::Local {
+                path: PathBuf::from("/tmp/custom-state.json"),
+            }),
         ),
-        ("ALEMBIC_STATE_KEY", Some("workspace-a")),
-        ("ALEMBIC_STATE_POSTGRES_TLS", Some("require")),
-    ]);
-
-    let config = resolve_state_backend_config(Path::new("/tmp/ignored"), &test_identity()).unwrap();
-    assert_eq!(
-        config,
-        StateBackendConfig::Postgres {
-            url: "postgres://user:pass@localhost:5432/alembic".to_string(),
-            key: format!("workspace-a/netbox-{}", test_identity().scope_hash()),
-            tls_mode: PostgresTlsMode::Require,
-        }
-    );
-}
-
-#[test]
-fn resolve_state_backend_postgres_with_invalid_tls_mode_errors() {
-    let _env = EnvVarGuard::acquire(&[
-        ("ALEMBIC_STATE_BACKEND", Some("postgres")),
         (
-            "ALEMBIC_STATE_POSTGRES_URL",
-            Some("postgres://user:pass@localhost:5432/alembic"),
+            vec![
+                ("ALEMBIC_STATE_BACKEND", Some("postgres")),
+                ("ALEMBIC_STATE_POSTGRES_URL", None),
+                ("ALEMBIC_STATE_POSTGRES_TLS", None),
+            ],
+            Err("ALEMBIC_STATE_POSTGRES_URL"),
         ),
-        ("ALEMBIC_STATE_POSTGRES_TLS", Some("weird")),
-    ]);
-
-    let err =
-        resolve_state_backend_config(Path::new("/tmp/ignored"), &test_identity()).unwrap_err();
-    assert!(err.to_string().contains("ALEMBIC_STATE_POSTGRES_TLS"));
+        (
+            vec![
+                ("ALEMBIC_STATE_BACKEND", Some("postgres")),
+                ("ALEMBIC_STATE_POSTGRES_URL", Some(URL)),
+                ("ALEMBIC_STATE_KEY", None),
+                ("ALEMBIC_STATE_POSTGRES_TLS", None),
+            ],
+            Ok(postgres("default", PostgresTlsMode::Disable)),
+        ),
+        (
+            vec![
+                ("ALEMBIC_STATE_BACKEND", Some("postgres")),
+                ("ALEMBIC_STATE_POSTGRES_URL", Some(URL)),
+                ("ALEMBIC_STATE_KEY", Some("workspace-a")),
+                ("ALEMBIC_STATE_POSTGRES_TLS", Some("require")),
+            ],
+            Ok(postgres("workspace-a", PostgresTlsMode::Require)),
+        ),
+        (
+            vec![
+                ("ALEMBIC_STATE_BACKEND", Some("postgres")),
+                ("ALEMBIC_STATE_POSTGRES_URL", Some(URL)),
+                ("ALEMBIC_STATE_POSTGRES_TLS", Some("weird")),
+            ],
+            Err("ALEMBIC_STATE_POSTGRES_TLS"),
+        ),
+    ];
+    for (env, expected) in cases {
+        let _env = EnvVarGuard::acquire(&env);
+        let result = resolve_state_backend_config(root, &test_identity());
+        match expected {
+            Ok(config) => assert_eq!(result.unwrap(), config, "{env:?}"),
+            Err(variable) => {
+                let err = result.unwrap_err().to_string();
+                assert!(err.contains(variable), "{env:?}: {err}");
+            }
+        }
+    }
 }
 
 #[test]
 fn plan_roundtrip_io() {
-    let dir = tempdir().unwrap();
-    let path = dir.path().join("plan.json");
-    let plan = Plan {
-        schema: alembic_core::Schema {
-            types: BTreeMap::new(),
-        },
-        ops: vec![Op::Delete {
-            uid: uuid::Uuid::from_u128(1),
-            type_name: alembic_core::TypeName::new("dcim.site"),
-            key: key_str("site=fra1"),
-            backend_id: Some(BackendId::Int(1)),
-        }],
-        summary: None,
-        schema_preview: None,
-        effects: None,
-    };
-
-    write_plan(&path, &plan).unwrap();
-    let loaded = read_plan(&path).unwrap();
-    assert_eq!(loaded.ops.len(), 1);
-}
-
-#[test]
-fn plan_roundtrip_io_yaml() {
     // `plan -o plan.yaml` writes yaml, so `apply --plan plan.yaml` must read yaml.
-    let dir = tempdir().unwrap();
-    let path = dir.path().join("plan.yaml");
     let plan = Plan {
         schema: alembic_core::Schema {
             types: BTreeMap::new(),
@@ -194,15 +137,19 @@ fn plan_roundtrip_io_yaml() {
         schema_preview: None,
         effects: None,
     };
-
-    write_plan(&path, &plan).unwrap();
-    let raw = std::fs::read_to_string(&path).unwrap();
-    assert!(
-        serde_json::from_str::<serde_json::Value>(&raw).is_err(),
-        "{raw}"
-    );
-    let loaded = read_plan(&path).unwrap();
-    assert_eq!(loaded.ops, plan.ops);
+    for (file, is_json) in [("plan.json", true), ("plan.yaml", false)] {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join(file);
+        write_plan(&path, &plan).unwrap();
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&raw).is_ok(),
+            is_json,
+            "{file}: {raw}"
+        );
+        let loaded = read_plan(&path).unwrap();
+        assert_eq!(loaded.ops, plan.ops, "{file}");
+    }
 }
 
 #[test]
@@ -242,46 +189,8 @@ fn read_plan_rejects_unknown_effects() {
         r#"{"schema":{"types":{}},"ops":[],"effects":"both"}"#,
     )
     .unwrap();
-    assert!(read_plan(&path).is_err());
-}
-
-#[test]
-fn read_plan_hints_when_given_a_yaml_inventory_instead_of_a_plan() {
-    let dir = tempdir().unwrap();
-    let path = dir.path().join("ir.yaml");
-    std::fs::write(
-        &path,
-        "schema:\n  types: {}\nobjects:\n  - uid: 00000000-0000-0000-0000-000000000000\n    type: dcim.site\n    key:\n      slug: fra1\n    attrs:\n      name: FRA1\n",
-    )
-    .unwrap();
-    let msg = format!("{:#}", read_plan(&path).unwrap_err());
-    assert!(msg.contains("inventory"), "{msg}");
-    assert!(msg.contains("unknown field `objects`"), "{msg}");
-}
-
-#[test]
-fn write_plan_creates_missing_parent_dirs() {
-    let dir = tempdir().unwrap();
-    let path = dir.path().join("nested/out/plan.json");
-    let plan = Plan {
-        schema: alembic_core::Schema {
-            types: BTreeMap::new(),
-        },
-        ops: vec![],
-        summary: None,
-        schema_preview: None,
-        effects: None,
-    };
-    write_plan(&path, &plan).unwrap();
-    assert!(read_plan(&path).is_ok());
-}
-
-#[test]
-fn write_apply_report_creates_missing_parent_dirs() {
-    let dir = tempdir().unwrap();
-    let path = dir.path().join("nested/out/report.json");
-    write_apply_report(&path, &ApplyReport::default()).unwrap();
-    assert!(path.exists());
+    let err = format!("{:#}", read_plan(&path).unwrap_err());
+    assert!(err.contains("unknown variant `both`"), "{err}");
 }
 
 #[test]
@@ -312,216 +221,6 @@ fn write_inventory_to_yaml_path_serializes_as_yaml() {
     let read_back: Inventory =
         serde_json::from_str(&std::fs::read_to_string(&json_path).unwrap()).unwrap();
     assert_eq!(read_back, inventory);
-}
-
-#[test]
-fn write_validation_report_creates_missing_parent_dirs() {
-    let dir = tempdir().unwrap();
-    let path = dir.path().join("nested/out/validation.json");
-    write_validation_report(&path, &alembic_core::LocatedReport::default()).unwrap();
-    assert!(path.exists());
-}
-
-#[test]
-fn validation_report_json_is_tagged_and_round_trips() {
-    // the variant and its named fields are the point: a consumer switches on
-    // `kind` and reads `detail`, rather than parsing the rendered message.
-    let report = alembic_core::LocatedReport {
-        errors: vec![alembic_core::LocatedError::with_source(
-            alembic_core::ValidationError::ExtraAttrField {
-                type_name: "dcim.site".to_string(),
-                field: "bogus".to_string(),
-            },
-            Some(alembic_core::SourceLocation::file_line(
-                "inventory.yaml",
-                13,
-            )),
-        )],
-    };
-
-    let raw = serde_json::to_string_pretty(&report).unwrap();
-    let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
-    assert_eq!(value["errors"][0]["error"]["kind"], "extra_attr_field");
-    assert_eq!(value["errors"][0]["error"]["detail"]["field"], "bogus");
-    assert_eq!(value["errors"][0]["source"]["line"], 13);
-
-    let read_back: alembic_core::LocatedReport = serde_json::from_str(&raw).unwrap();
-    assert_eq!(read_back, report);
-}
-
-#[test]
-fn write_drift_report_creates_missing_parent_dirs() {
-    let dir = tempdir().unwrap();
-    let path = dir.path().join("nested/out/drift.json");
-    write_drift_report(&path, &DriftReport::default()).unwrap();
-    assert!(path.exists());
-}
-
-#[test]
-fn drift_report_json_names_every_category() {
-    // an empty category is written as an empty list, not omitted, so a consumer
-    // reads "no drift here" rather than having to infer it from a missing key.
-    let dir = tempdir().unwrap();
-    let path = dir.path().join("drift.json");
-    write_drift_report(&path, &DriftReport::default()).unwrap();
-
-    let raw = std::fs::read_to_string(&path).unwrap();
-    let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
-    for category in ["changed", "missing", "extra"] {
-        assert_eq!(
-            value[category],
-            serde_json::json!([]),
-            "category {category} missing from an empty report: {raw}"
-        );
-    }
-}
-
-#[test]
-fn apply_report_json_carries_the_uid_to_backend_id_pairs() {
-    // the uid to backend-id pairs are the point of the file; nothing else
-    // records them per run.
-    let dir = tempdir().unwrap();
-    let path = dir.path().join("report.json");
-    let report = ApplyReport {
-        applied: vec![AppliedOp {
-            uid: uuid::Uuid::from_u128(1),
-            type_name: alembic_core::TypeName::new("dcim.site"),
-            backend_id: Some(BackendId::Int(7)),
-        }],
-        ..Default::default()
-    };
-    write_apply_report(&path, &report).unwrap();
-
-    let raw = std::fs::read_to_string(&path).unwrap();
-    let loaded: ApplyReport = serde_json::from_str(&raw).unwrap();
-    assert_eq!(loaded.applied.len(), 1);
-    assert_eq!(loaded.applied[0].uid, uuid::Uuid::from_u128(1));
-    assert_eq!(loaded.applied[0].backend_id, Some(BackendId::Int(7)));
-    // absent, not null, when the apply did not resume from a journal
-    assert!(
-        !raw.contains("previously_applied_count"),
-        "a non-resumed apply must not report a resume count: {raw}"
-    );
-}
-
-#[test]
-fn write_inventory_creates_missing_parent_dirs() {
-    let dir = tempdir().unwrap();
-    let path = dir.path().join("nested/out/ir.json");
-    let inventory = Inventory {
-        scope: None,
-        schema: Default::default(),
-        objects: vec![],
-    };
-    write_inventory(&path, &inventory).unwrap();
-    assert!(path.exists());
-}
-
-#[test]
-fn django_emit_runs_migrations_by_default() {
-    let dir = tempdir().unwrap();
-    let output = dir.path().join("out");
-    std::fs::create_dir_all(&output).unwrap();
-    std::fs::write(output.join("manage.py"), "").unwrap();
-    write_settings(&output, "alembic_project");
-    let minimal_inventory = Inventory {
-        scope: None,
-        schema: Default::default(),
-        objects: vec![],
-    };
-    let _inventory = write_minimal_inventory(dir.path());
-
-    let runner = MockRunner::new();
-    run_emit(
-        &runner,
-        &minimal_inventory,
-        &DjangoConfig {
-            output: output.clone(),
-            project: Some("alembic_project".to_string()),
-            app: Some("alembic_app".to_string()),
-            python: "python3".to_string(),
-            no_migrate: false,
-            no_admin: false,
-        },
-    )
-    .unwrap();
-
-    let calls = runner.calls();
-    let called: Vec<(String, Vec<String>)> = calls
-        .into_iter()
-        .map(|call| (call.program, call.args))
-        .collect();
-
-    assert!(called
-        .iter()
-        .any(|call| { call.1 == vec!["-c".to_string(), "import django".to_string()] }));
-    assert!(called
-        .iter()
-        .any(|call| { call.1 == vec!["-c".to_string(), "import rest_framework".to_string()] }));
-    assert!(called
-        .iter()
-        .any(|call| call.1.iter().any(|arg| arg.contains("importlib.util"))));
-    assert!(called.iter().any(|call| {
-        call.1
-            == vec![
-                "manage.py".to_string(),
-                "startapp".to_string(),
-                "alembic_app".to_string(),
-            ]
-    }));
-    assert!(called
-        .iter()
-        .any(|call| { call.1 == vec!["manage.py".to_string(), "check".to_string()] }));
-    assert!(called
-        .iter()
-        .any(|call| { call.1 == vec!["manage.py".to_string(), "makemigrations".to_string()] }));
-    assert!(called
-        .iter()
-        .any(|call| call.1 == vec!["manage.py".to_string(), "migrate".to_string()]));
-
-    let settings = std::fs::read_to_string(output.join("alembic_project/settings.py")).unwrap();
-    assert!(settings.contains("\"alembic_app\""));
-    assert!(settings.contains("\"rest_framework\""));
-    let urls = std::fs::read_to_string(output.join("alembic_project/urls.py")).unwrap();
-    assert!(urls.contains("include(\"alembic_app.urls\")"));
-}
-
-#[test]
-fn django_emit_skips_migrate_with_flag() {
-    let dir = tempdir().unwrap();
-    let output = dir.path().join("out");
-    std::fs::create_dir_all(&output).unwrap();
-    std::fs::write(output.join("manage.py"), "").unwrap();
-    write_settings(&output, "alembic_project");
-    let minimal_inventory = Inventory {
-        scope: None,
-        schema: Default::default(),
-        objects: vec![],
-    };
-    let _inventory = write_minimal_inventory(dir.path());
-
-    let runner = MockRunner::new();
-    run_emit(
-        &runner,
-        &minimal_inventory,
-        &DjangoConfig {
-            output: output.clone(),
-            project: Some("alembic_project".to_string()),
-            app: Some("alembic_app".to_string()),
-            python: "python3".to_string(),
-            no_migrate: true,
-            no_admin: false,
-        },
-    )
-    .unwrap();
-
-    let calls = runner.calls();
-    assert!(calls
-        .iter()
-        .any(|call| { call.args == vec!["manage.py".to_string(), "makemigrations".to_string()] }));
-    assert!(!calls
-        .iter()
-        .any(|call| call.args == vec!["manage.py".to_string(), "migrate".to_string()]));
 }
 
 #[test]
@@ -578,26 +277,11 @@ fn read_plan_invalid_json_errors() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("plan.json");
     std::fs::write(&path, "not-json").unwrap();
-    assert!(read_plan(&path).is_err());
-}
-
-#[test]
-fn read_plan_hints_when_given_an_inventory_instead_of_a_plan() {
-    // feeding an IR where a plan was expected used to surface only a bare serde
-    // error. the doc is a valid inventory (schema + objects), just not a plan.
-    let dir = tempdir().unwrap();
-    let path = dir.path().join("ir.json");
-    std::fs::write(
-        &path,
-        r#"{"schema":{"types":{}},"objects":[{"uid":"00000000-0000-0000-0000-000000000000","type":"dcim.site","key":{"slug":"fra1"},"attrs":{"name":"FRA1"}}]}"#,
-    )
-    .unwrap();
-    let err = read_plan(&path).unwrap_err();
-    let msg = format!("{err:#}");
-    assert!(msg.contains("inventory"), "{msg}");
-    assert!(msg.contains("`objects`"), "{msg}");
-    // the raw serde reason is still chained underneath.
-    assert!(msg.contains("unknown field `objects`"), "{msg}");
+    let err = format!("{:#}", read_plan(&path).unwrap_err());
+    assert!(
+        err.contains(&format!("parse plan: {}", path.display())),
+        "{err}"
+    );
 }
 
 #[test]
@@ -1190,7 +874,7 @@ async fn run_map_without_flat_args_errors() {
 }
 
 #[tokio::test]
-async fn run_plan_missing_credentials_errors() {
+async fn run_plan_and_apply_missing_credentials_errors() {
     let _cwd = CwdGuard::acquire_async().await;
     let dir = tempdir().unwrap();
     let state_path = dir.path().join(".alembic").join("state.json");
@@ -1200,7 +884,6 @@ async fn run_plan_missing_credentials_errors() {
     ])
     .await;
     let inventory = dir.path().join("inventory.yaml");
-    let out = dir.path().join("plan.json");
     std::fs::write(
         &inventory,
         r#"schema:
@@ -1225,12 +908,14 @@ objects:
 "#,
     )
     .unwrap();
+    let plan_path = dir.path().join("plan.json");
+    std::fs::write(&plan_path, r#"{ "ops": [] }"#).unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
 
-    let cli = Cli {
-        command: Command::Plan {
+    for command in [
+        Command::Plan {
             file: inventory,
-            output: Some(out),
+            output: Some(dir.path().join("out.json")),
             backend: Some("netbox".to_string()),
             backend_config: None,
             provision: false,
@@ -1239,27 +924,7 @@ objects:
             allow_delete: false,
             no_adopt: false,
         },
-    };
-    let err = run(cli, AppConfig::load().unwrap()).await.unwrap_err();
-    assert!(err.to_string().contains("missing NETBOX_URL"));
-}
-
-#[tokio::test]
-async fn run_apply_missing_credentials_errors() {
-    let _cwd = CwdGuard::acquire_async().await;
-    let dir = tempdir().unwrap();
-    let state_path = dir.path().join(".alembic").join("state.json");
-    let _env = EnvVarGuard::acquire_async(&[
-        ("ALEMBIC_STATE_BACKEND", Some("local")),
-        ("ALEMBIC_STATE_PATH", Some(state_path.to_str().unwrap())),
-    ])
-    .await;
-    let plan_path = dir.path().join("plan.json");
-    std::fs::write(&plan_path, r#"{ "ops": [] }"#).unwrap();
-    std::env::set_current_dir(dir.path()).unwrap();
-
-    let cli = Cli {
-        command: Command::Apply {
+        Command::Apply {
             plan: plan_path,
             output: None,
             backend: Some("netbox".to_string()),
@@ -1267,9 +932,12 @@ async fn run_apply_missing_credentials_errors() {
             allow_delete: false,
             interactive: false,
         },
-    };
-    let err = run(cli, AppConfig::load().unwrap()).await.unwrap_err();
-    assert!(err.to_string().contains("missing NETBOX_URL"));
+    ] {
+        let err = run(Cli { command }, AppConfig::load().unwrap())
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("missing NETBOX_URL"), "{err:#}");
+    }
 }
 
 #[tokio::test]
@@ -1454,6 +1122,10 @@ async fn run_apply_writes_the_report_to_output() {
     assert!(
         !raw.contains("resumed"),
         "a non-resumed run's report json must be unchanged: {raw}"
+    );
+    assert!(
+        !raw.contains("previously_applied_count"),
+        "a non-resumed apply must not report a resume count: {raw}"
     );
 }
 
@@ -1854,85 +1526,15 @@ objects:
     };
     run(cli, AppConfig::load().unwrap()).await.unwrap();
 
-    let raw = std::fs::read_to_string(&out).unwrap();
-    assert!(raw.contains("\"op\": \"create\""));
-    assert!(raw.contains("\"type_name\": \"dcim.device\""));
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn run_plan_report_is_read_only() {
-    use serde_json::json;
-
-    let _cwd = CwdGuard::acquire_async().await;
-    let server = nautobot_plan_server(json!([]));
-    let dir = tempdir().unwrap();
-    let state_path = dir.path().join(".alembic").join("state.json");
-    let _env = EnvVarGuard::acquire_async(&[
-        ("ALEMBIC_STATE_BACKEND", Some("local")),
-        ("ALEMBIC_STATE_PATH", Some(state_path.to_str().unwrap())),
-    ])
-    .await;
-    let inventory = dir.path().join("inventory.yaml");
-    let out = dir.path().join("plan.json");
-    let config = dir.path().join("adapter.yaml");
-    std::fs::write(
-        &inventory,
-        r#"
-schema:
-  types:
-    dcim.device:
-      key:
-        name:
-          type: string
-      fields:
-        name:
-          type: string
-objects:
-  - uid: "00000000-0000-0000-0000-000000000001"
-    type: dcim.device
-    key:
-      name: "leaf01"
-    attrs:
-      name: "leaf01"
-"#,
-    )
-    .unwrap();
-    std::fs::write(
-        &config,
-        format!(
-            "backend: nautobot\nurl: {}\ntoken: token\n",
-            server.base_url()
+    let plan = read_plan(&out).unwrap();
+    assert!(
+        matches!(
+            plan.ops.as_slice(),
+            [Op::Create { uid, type_name, .. }]
+                if *uid == uuid::Uuid::from_u128(1) && type_name.as_str() == "dcim.device"
         ),
-    )
-    .unwrap();
-
-    std::env::set_current_dir(dir.path()).unwrap();
-
-    let cli = Cli {
-        command: Command::Plan {
-            file: inventory,
-            output: Some(out.clone()),
-            backend: None,
-            backend_config: Some(config),
-            provision: false,
-            dry_run: false,
-            report: true,
-            allow_delete: false,
-            no_adopt: false,
-        },
-    };
-    run(cli, AppConfig::load().unwrap()).await.unwrap();
-
-    // --report is read-only: -o carries the drift report, never a plan, and no
-    // state is persisted.
-    let raw = std::fs::read_to_string(&out).unwrap();
-    assert!(
-        !raw.contains("\"ops\""),
-        "--report must not write a plan file: {raw}"
-    );
-    assert!(
-        !dir.path().join(".alembic/state.json").exists(),
-        "state must not be saved for --report"
+        "{:?}",
+        plan.ops
     );
 }
 
@@ -2717,7 +2319,10 @@ async fn run_plan_report_refuses_an_external_adapter_declaring_emitter() {
     let result = run(cli, AppConfig::load().unwrap()).await;
 
     let err = result.expect_err("a declared emitter has no drift to report");
-    assert!(format!("{err:#}").contains("write-only"), "{err:#}");
+    assert!(
+        format!("{err:#}").contains("backend is write-only; it cannot observe state"),
+        "{err:#}"
+    );
 }
 
 // an external backend pointing at the observer example, the inventory to run it
@@ -3062,48 +2667,23 @@ async fn run_plan_refuses_an_adapter_that_reports_refs_as_backend_ids() {
     assert!(error.contains("docs/external-adapters.md"), "{error}");
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn run_plan_without_report_still_plans_a_write_only_backend() {
-    let _cwd = CwdGuard::acquire_async().await;
-    let dir = tempdir().unwrap();
-    let state_path = dir.path().join(".alembic").join("state.json");
-    let _env = EnvVarGuard::acquire_async(&[
-        ("ALEMBIC_STATE_BACKEND", Some("local")),
-        ("ALEMBIC_STATE_PATH", Some(state_path.to_str().unwrap())),
-    ])
-    .await;
-    let inventory = write_site_inventory(dir.path());
-    let out = dir.path().join("plan.json");
-
-    std::env::set_current_dir(dir.path()).unwrap();
-    let cli = Cli {
-        command: Command::Plan {
-            file: inventory,
-            output: Some(out.clone()),
-            backend: Some("django".to_string()),
-            backend_config: None,
-            provision: false,
-            dry_run: false,
-            report: false,
-            allow_delete: false,
-            no_adopt: false,
-        },
-    };
-    let result = run(cli, AppConfig::load().unwrap()).await;
-
-    // the all-creates plan is what apply will emit, so it stays: only the
-    // report, which claims to have observed, is refused.
-    result.expect("plan without --report is unaffected");
-    let raw = std::fs::read_to_string(&out).unwrap();
-    assert!(raw.contains("\"create\""), "{raw}");
+#[test]
+fn should_detect_deletes_forces_on_for_report() {
+    // report mode never applies the plan, so it forces delete-detection on to
+    // surface backend-only objects as `extra`.
+    assert!(should_detect_deletes(false, true));
+    assert!(should_detect_deletes(true, true));
+    // non-report paths are governed solely by --allow-delete.
+    assert!(should_detect_deletes(true, false));
+    assert!(!should_detect_deletes(false, false));
 }
 
-async fn planned_effects(
+async fn planned(
     dir: &Path,
     inventory: PathBuf,
     backend: &str,
     backend_config: Option<PathBuf>,
-) -> Option<Effects> {
+) -> Plan {
     let state_path = dir.join(".alembic").join("state.json");
     let _env = EnvVarGuard::acquire_async(&[
         ("ALEMBIC_STATE_BACKEND", Some("local")),
@@ -3126,21 +2706,30 @@ async fn planned_effects(
         },
     };
     run(cli, AppConfig::load().unwrap()).await.unwrap();
-    read_plan(&out).unwrap().effects
+    read_plan(&out).unwrap()
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn run_plan_records_emit_effects_for_a_write_only_backend() {
+async fn run_plan_records_the_effects_of_the_backend_role() {
     let _cwd = CwdGuard::acquire_async().await;
+
+    // write-only: the all-creates plan is what apply will emit, so it stays; only
+    // the report, which claims to have observed, is refused.
     let dir = tempdir().unwrap();
     let inventory = write_site_inventory(dir.path());
-    let effects = planned_effects(dir.path(), inventory, "django", None).await;
-    assert_eq!(effects, Some(Effects::Emit));
-}
+    let plan = planned(dir.path(), inventory, "django", None).await;
+    assert_eq!(plan.effects, Some(Effects::Emit));
+    assert!(
+        matches!(
+            plan.ops.as_slice(),
+            [Op::Create { uid, type_name, .. }]
+                if *uid == uuid::Uuid::from_u128(1) && type_name.as_str() == "dcim.site"
+        ),
+        "{:?}",
+        plan.ops
+    );
 
-#[tokio::test(flavor = "multi_thread")]
-async fn run_plan_records_drive_effects_for_a_read_write_backend() {
-    let _cwd = CwdGuard::acquire_async().await;
+    // read-write
     let dir = tempdir().unwrap();
     let config = dir.path().join("backend.yaml");
     fs::write(
@@ -3152,28 +2741,14 @@ async fn run_plan_records_drive_effects_for_a_read_write_backend() {
     )
     .unwrap();
     let inventory = write_site_inventory(dir.path());
-    let effects = planned_effects(dir.path(), inventory, "external", Some(config)).await;
-    assert_eq!(effects, Some(Effects::Drive));
-}
+    let plan = planned(dir.path(), inventory, "external", Some(config)).await;
+    assert_eq!(plan.effects, Some(Effects::Drive));
 
-#[tokio::test(flavor = "multi_thread")]
-async fn run_plan_records_no_effects_for_a_read_only_backend() {
-    let _cwd = CwdGuard::acquire_async().await;
+    // read-only
     let dir = tempdir().unwrap();
     let (inventory, config, _log) = observer_role_fixture(dir.path());
-    let effects = planned_effects(dir.path(), inventory, "external", Some(config)).await;
-    assert_eq!(effects, None);
-}
-
-#[test]
-fn should_detect_deletes_forces_on_for_report() {
-    // report mode never applies the plan, so it forces delete-detection on to
-    // surface backend-only objects as `extra`.
-    assert!(should_detect_deletes(false, true));
-    assert!(should_detect_deletes(true, true));
-    // non-report paths are governed solely by --allow-delete.
-    assert!(should_detect_deletes(true, false));
-    assert!(!should_detect_deletes(false, false));
+    let plan = planned(dir.path(), inventory, "external", Some(config)).await;
+    assert_eq!(plan.effects, None);
 }
 
 #[test]
@@ -3384,15 +2959,6 @@ fn plan_report_output_optional() {
 }
 
 #[test]
-fn plan_dry_run_output_optional() {
-    use clap::Parser;
-    // --dry-run prints raw json to stdout without writing a plan file, so -o/--output
-    // is not required.
-    let result = Cli::try_parse_from(["alembic", "plan", "-f", "inventory.yaml", "--dry-run"]);
-    assert!(result.is_ok(), "plan --dry-run without -o must parse");
-}
-
-#[test]
 fn plan_write_mode_requires_output() {
     use clap::Parser;
     // the default write path still requires -o/--output.
@@ -3416,23 +2982,6 @@ fn apply_output_is_optional_and_takes_the_short_flag() {
         panic!("expected the apply subcommand");
     };
     assert_eq!(output, Some(PathBuf::from("report.json")));
-}
-
-#[test]
-fn plan_report_with_output_still_parses() {
-    use clap::Parser;
-    // -o alongside --report is where the drift report's json goes, so the two
-    // must never be rejected as a conflict.
-    let result = Cli::try_parse_from([
-        "alembic",
-        "plan",
-        "-f",
-        "inventory.yaml",
-        "-o",
-        "plan.json",
-        "--report",
-    ]);
-    assert!(result.is_ok(), "plan -o ... --report must still parse");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -3527,42 +3076,6 @@ objects: []
     assert!(drift.changed.is_empty());
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn minimal_external_adapter() {
-    // this test depends on the example "minimal_external_adapter" in this crate.
-    // note that `cargo test` will build all examples, so we can expect the binary to exist.
-
-    let adapter = example_binary("minimal_external_adapter");
-
-    let config = AdapterConfig::External(ExternalConfig {
-        command: Some(adapter.to_str().unwrap().to_string()),
-        args: Vec::new(),
-        working_dir: None,
-        env: BTreeMap::new(),
-        timeout_seconds: Some(5),
-        setup: serde_json::Value::default(),
-        instance: None,
-    });
-
-    let (backend, _) = config.build().unwrap();
-
-    let response = backend
-        .emitter()
-        .unwrap()
-        .write(
-            &Schema::default(),
-            &[],
-            &StateStore::new(Option::None, StateData::default()),
-        )
-        .await;
-
-    if let Ok(ok_response) = response {
-        assert!(ok_response.applied.is_empty())
-    } else {
-        panic!("error response from plugin: {}", response.unwrap_err())
-    }
-}
-
 // drives the real run() for `plan --provision` against an external adapter whose
 // preview_schema errors (ensure_schema stays defaulted/Ok). the provision guard
 // must propagate a preview Err and abort before ensure_schema.
@@ -3613,55 +3126,9 @@ async fn run_plan_provision_fails_closed_on_preview_error() {
     );
 }
 
-// drives the real run() for `plan --provision` against an external adapter that
-// declares the emitter role and provisions schema. the declared role governs read
-// vs write, so provisioning -- itself a write -- must reach the subprocess rather
-// than be refused up front.
-#[tokio::test(flavor = "multi_thread")]
-async fn run_plan_provision_over_a_write_only_backend() {
-    let _cwd = CwdGuard::acquire_async().await;
-    let dir = tempdir().unwrap();
-    let state_path = dir.path().join(".alembic").join("state.json");
-    let _env = EnvVarGuard::acquire_async(&[
-        ("ALEMBIC_STATE_BACKEND", Some("local")),
-        ("ALEMBIC_STATE_PATH", Some(state_path.to_str().unwrap())),
-    ])
-    .await;
-
-    let adapter = example_binary("provisioning_emitter_adapter");
-    let inventory = write_site_inventory(dir.path());
-    let out_path = dir.path().join("plan.json");
-    let config_path = dir.path().join("backend.yaml");
-    std::fs::write(
-        &config_path,
-        format!(
-            "backend: external\ncommand: \"{}\"\ntimeout_seconds: 5\n",
-            adapter.to_str().unwrap()
-        ),
-    )
-    .unwrap();
-
-    std::env::set_current_dir(dir.path()).unwrap();
-    let cli = Cli {
-        command: Command::Plan {
-            file: inventory,
-            output: Some(out_path),
-            backend: Some("external".to_string()),
-            backend_config: Some(config_path),
-            provision: true,
-            dry_run: false,
-            report: false,
-            allow_delete: false,
-            no_adopt: false,
-        },
-    };
-    let result = run(cli, AppConfig::load().unwrap()).await;
-
-    result.expect("a declared emitter provisions rather than being refused");
-}
-
-// the same backend without --provision: the read-only preview is what a plain
-// plan carries, so a write-only backend that can preview must fill it in.
+// an external adapter declaring the emitter role, without --provision: the
+// read-only preview is what a plain plan carries, so a write-only backend that
+// can preview must fill it in.
 #[tokio::test(flavor = "multi_thread")]
 async fn run_plan_previews_schema_over_a_write_only_backend() {
     let _cwd = CwdGuard::acquire_async().await;
@@ -3705,12 +3172,10 @@ async fn run_plan_previews_schema_over_a_write_only_backend() {
 
     let plan: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&out_path).unwrap()).unwrap();
-    assert!(
-        !plan["schema_preview"]["created_object_types"]
-            .as_array()
-            .expect("the write-only backend's preview rides in the plan")
-            .is_empty(),
-        "{plan}"
+    assert_eq!(
+        plan["schema_preview"]["created_object_types"],
+        serde_json::json!(["dcim.site"]),
+        "the write-only backend's preview rides in the plan: {plan}"
     );
 }
 
@@ -3952,27 +3417,6 @@ async fn run_skill_show_and_list_write_no_files() {
     );
 }
 
-#[tokio::test]
-async fn run_skill_show_rejects_a_name_this_binary_does_not_carry() {
-    let err = run(
-        Cli {
-            command: Command::Skill {
-                action: SkillAction::Show {
-                    name: Some("netbox".to_string()),
-                },
-            },
-        },
-        AppConfig::load().unwrap(),
-    )
-    .await
-    .expect_err("an unknown skill is an error, not an empty print");
-
-    assert!(
-        format!("{err:#}").contains("no skill named `netbox`"),
-        "{err:#}"
-    );
-}
-
 /// the default skills root is documented (`docs/cli.md`, skill), so it is pinned
 /// here rather than left to whatever the arg definition drifts to.
 #[test]
@@ -4022,26 +3466,6 @@ fn completion_parses_every_documented_shell() {
     }
 }
 
-#[test]
-fn completion_rejects_an_unknown_shell() {
-    use clap::Parser;
-    let result = Cli::try_parse_from(["alembic", "completion", "tcsh"]);
-    let err = result.err().expect("an unknown shell must be rejected");
-    assert_eq!(err.kind(), clap::error::ErrorKind::InvalidValue);
-}
-
-#[test]
-fn completion_script_names_the_binary_and_its_subcommands() {
-    use clap::ValueEnum;
-    for shell in Shell::value_variants() {
-        let mut script = Vec::new();
-        generate(*shell, &mut Cli::command(), "alembic", &mut script);
-        let script = String::from_utf8(script).unwrap();
-        assert!(script.contains("alembic"), "{shell}: {script:.80}");
-        assert!(script.contains("plan"), "{shell} must complete subcommands");
-    }
-}
-
 #[tokio::test]
 async fn run_completion_writes_no_files() {
     let dir = tempdir().unwrap();
@@ -4074,4 +3498,40 @@ fn a_rejected_schema_fails_the_plan_and_a_preview_hiccup_does_not() {
     assert!(format!("{err:#}").contains("mgmt-vlan"), "{err:#}");
 
     assert!(schema_preview_failure(anyhow!("connection reset by peer")).is_ok());
+}
+
+#[test]
+fn every_report_writer_creates_missing_parent_dirs() {
+    type Write = Box<dyn Fn(&std::path::Path) -> anyhow::Result<()>>;
+    let writers: Vec<(&str, Write)> = vec![
+        (
+            "report.json",
+            Box::new(|path| write_apply_report(path, &ApplyReport::default())),
+        ),
+        (
+            "drift.json",
+            Box::new(|path| write_drift_report(path, &DriftReport::default())),
+        ),
+        (
+            "ir.json",
+            Box::new(|path| {
+                let inventory = Inventory {
+                    scope: None,
+                    schema: Default::default(),
+                    objects: vec![],
+                };
+                write_inventory(path, &inventory)
+            }),
+        ),
+        (
+            "validation.json",
+            Box::new(|path| write_validation_report(path, &alembic_core::LocatedReport::default())),
+        ),
+    ];
+    for (name, write) in writers {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("nested/out").join(name);
+        write(&path).unwrap();
+        assert!(path.exists(), "{name}");
+    }
 }

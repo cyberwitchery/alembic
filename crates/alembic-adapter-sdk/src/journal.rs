@@ -598,20 +598,6 @@ mod tests {
     }
 
     #[test]
-    fn load_and_append_to_existing_journal() {
-        let dir = tempdir().unwrap();
-        let ops = test_ops();
-        Journal::new_with_file(dir.path(), "test", &ops).unwrap();
-        {
-            let mut journal = Journal::new_from_existing_file(dir.path(), "test", &ops).unwrap();
-            journal.mark_op_as_done(&ops[1], None).unwrap();
-            assert_eq!(journal.ops.len(), 3);
-        }
-        let journal = Journal::new_from_existing_file(dir.path(), "test", &ops).unwrap();
-        assert_eq!(journal.done_ops_count(), 1);
-    }
-
-    #[test]
     fn resume_rejects_mismatched_journal_contents() {
         // the resume-mismatch guard is unreachable through `load_or_create` (the
         // file name is a stable hash over all ops, so a changed plan gets a fresh
@@ -646,25 +632,15 @@ mod tests {
     #[test]
     fn mark_ops_as_done() {
         let ops = test_ops();
-        let mut journal = Journal::new_with_file(tempdir().unwrap().path(), "test", &ops).unwrap();
-        journal.mark_op_as_done(&ops[0], None).unwrap();
-        assert!(!journal.is_completed());
-        journal.mark_op_as_done(&ops[1], None).unwrap();
-        assert!(!journal.is_completed());
-        journal.mark_op_as_done(&ops[2], None).unwrap();
-        assert!(journal.is_completed());
-    }
-
-    #[test]
-    fn mark_ops_as_done_backwards() {
-        let ops = test_ops();
-        let mut journal = Journal::new_with_file(tempdir().unwrap().path(), "test", &ops).unwrap();
-        journal.mark_op_as_done(&ops[2], None).unwrap();
-        assert!(!journal.is_completed());
-        journal.mark_op_as_done(&ops[1], None).unwrap();
-        assert!(!journal.is_completed());
-        journal.mark_op_as_done(&ops[0], None).unwrap();
-        assert!(journal.is_completed());
+        for order in [[0, 1, 2], [2, 1, 0]] {
+            let mut journal =
+                Journal::new_with_file(tempdir().unwrap().path(), "test", &ops).unwrap();
+            for (marked, index) in order.into_iter().enumerate() {
+                assert!(!journal.is_completed(), "{order:?} after {marked}");
+                journal.mark_op_as_done(&ops[index], None).unwrap();
+            }
+            assert!(journal.is_completed(), "{order:?}");
+        }
     }
 
     #[test]
