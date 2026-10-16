@@ -3499,3 +3499,39 @@ fn a_rejected_schema_fails_the_plan_and_a_preview_hiccup_does_not() {
 
     assert!(schema_preview_failure(anyhow!("connection reset by peer")).is_ok());
 }
+
+#[test]
+fn every_report_writer_creates_missing_parent_dirs() {
+    type Write = Box<dyn Fn(&std::path::Path) -> anyhow::Result<()>>;
+    let writers: Vec<(&str, Write)> = vec![
+        (
+            "report.json",
+            Box::new(|path| write_apply_report(path, &ApplyReport::default())),
+        ),
+        (
+            "drift.json",
+            Box::new(|path| write_drift_report(path, &DriftReport::default())),
+        ),
+        (
+            "ir.json",
+            Box::new(|path| {
+                let inventory = Inventory {
+                    scope: None,
+                    schema: Default::default(),
+                    objects: vec![],
+                };
+                write_inventory(path, &inventory)
+            }),
+        ),
+        (
+            "validation.json",
+            Box::new(|path| write_validation_report(path, &alembic_core::LocatedReport::default())),
+        ),
+    ];
+    for (name, write) in writers {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("nested/out").join(name);
+        write(&path).unwrap();
+        assert!(path.exists(), "{name}");
+    }
+}
