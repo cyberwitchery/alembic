@@ -51,9 +51,15 @@ pub(super) async fn load_state_with_context(
         bindings_loaded: store.all_mappings().values().map(|m| m.len()).sum(),
     };
     store.ensure_backend(identity)?;
-    // apply journals are local scratch; keep them alongside state under `.alembic/`
-    // even when the state backend is postgres.
-    Ok((store.with_journal_dir(root.join(".alembic")), context))
+    // apply journals are files even when the state backend is postgres.
+    Ok((store.with_journal_dir(journal_dir(root)), context))
+}
+
+/// where apply journals go: `ALEMBIC_JOURNAL_DIR`, else `.alembic/` under `root`.
+pub(super) fn journal_dir(root: &Path) -> PathBuf {
+    std::env::var("ALEMBIC_JOURNAL_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| root.join(".alembic"))
 }
 
 pub(super) fn print_state_context(context: &StateContext) {
