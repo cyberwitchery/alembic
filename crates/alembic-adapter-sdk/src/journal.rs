@@ -97,12 +97,19 @@ fn io_at(path: &Path) -> impl FnOnce(io::Error) -> JournalError + '_ {
 
 #[derive(Debug)]
 pub struct Journal {
-    file: Option<(File, PathBuf)>,
+    storage: JournalStorage,
     ops: Vec<OpWithMeta>,
     // not-yet-done op positions, keyed by (uid, typename, hash), in plan order.
     // derived from `ops` and rebuilt whenever `ops` is (re)loaded; lets
     // `mark_op_as_done` be O(1) instead of a linear scan from the start.
     pending_index: HashMap<(Uid, TypeName, u64), VecDeque<usize>>,
+}
+
+#[derive(Debug)]
+pub enum JournalStorage {
+    File(File, PathBuf),
+    Postgres,
+    None,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -141,6 +148,13 @@ struct LegacyJournal {
     ops: Vec<OpWithMeta>,
 }
 
+#[derive(Debug, Clone)]
+pub enum JournalStorageLocation {
+    None,
+    File(PathBuf),
+    Postgres,
+}
+
 fn record_line<T: Serialize>(value: &T) -> Result<String> {
     Ok(format!(
         "{DOCUMENT_PREFIX}{}\n",
@@ -168,10 +182,18 @@ impl Journal {
         directory.join(file_name)
     }
 
+    pub fn load_or_create_with_postgres() -> Result<Self> {
+        todo!()
+    }
+
     /// tries to load a Journal from `file_path`, otherwise creates a new one.
     /// in either case, the new Journal instance will be backed by the file at `file_path`.
     /// delete ops will not be saved in the journal.
-    pub fn load_or_create(directory: &Path, adapter_name: &str, ops: &[Op]) -> Result<Self> {
+    pub fn load_or_create_with_file(
+        directory: &Path,
+        adapter_name: &str,
+        ops: &[Op],
+    ) -> Result<Self> {
         // apply writes the journal before any state save, so `directory` (e.g. `.alembic/`)
         // may not exist yet on a fresh checkout.
         fs::create_dir_all(directory).map_err(io_at(directory))?;
@@ -198,7 +220,7 @@ impl Journal {
         };
 
         let mut journal = Journal {
-            file: None,
+            storage: JournalStorage::None,
             pending_index: build_pending_index(&ops),
             ops,
         };
@@ -231,7 +253,7 @@ impl Journal {
             true => write_whole_file(&file_name, &journal.ops)?,
             false => open_for_append(&file_name)?,
         };
-        journal.file = Some((file, file_name));
+        journal.storage = JournalStorage::File(file, file_name);
         Ok(journal)
     }
 
@@ -243,7 +265,7 @@ impl Journal {
         // write the plan out before applying any op, both to check the file works and
         // because a `done` record is only meaningful against the op lines it indexes
         let file = write_whole_file(&file_name, &journal.ops)?;
-        journal.file = Some((file, file_name));
+        journal.storage = JournalStorage::File(file, file_name);
 
         Ok(journal)
     }
@@ -257,7 +279,7 @@ impl Journal {
             .collect();
         let pending_index = build_pending_index(&ops);
         Self {
-            file: None,
+            storage: JournalStorage::None,
             ops,
             pending_index,
         }
@@ -295,7 +317,11 @@ impl Journal {
 
     /// path of the file this journal is backed by, if any.
     pub fn backing_file_path(&self) -> Option<&Path> {
-        self.file.as_ref().map(|(_, path)| path.as_path())
+        match &self.storage {
+            JournalStorage::File(_, path) => Some(path.as_path()),
+            JournalStorage::Postgres => None,
+            JournalStorage::None => None,
+        }
     }
 
     pub fn is_completed(&self) -> bool {
@@ -317,31 +343,41 @@ impl Journal {
         self.ops[op_index].done = true;
         self.ops[op_index].backend_id = backend_id.cloned();
 
-        let Some((file, path)) = self.file.as_mut() else {
-            return Ok(());
-        };
         let record = Record::Done(Done {
             op: op_index,
             backend_id: backend_id.cloned(),
         });
-        let line = record_line(&record)?;
-        // one fsync per applied op. measured on an apfs ssd at ~5ms against ~12ms for
-        // the whole-file rewrite this replaces, and it is what makes the record
-        // survive a power cut rather than only a killed process.
-        file.write_all(line.as_bytes())
-            .and_then(|()| file.sync_data())
-            .map_err(|source| JournalError::Append {
-                path: path.clone(),
-                source,
-            })
+
+        match &mut self.storage {
+            JournalStorage::File(file, path) => {
+                let line = record_line(&record)?;
+                // one fsync per applied op. measured on an apfs ssd at ~5ms against ~12ms for
+                // the whole-file rewrite this replaces, and it is what makes the record
+                // survive a power cut rather than only a killed process.
+                file.write_all(line.as_bytes())
+                    .and_then(|()| file.sync_data())
+                    .map_err(|source| JournalError::Append {
+                        path: path.clone(),
+                        source,
+                    })
+            }
+            JournalStorage::Postgres => {
+                todo!()
+            }
+            JournalStorage::None => Ok(()),
+        }
     }
 
     pub fn delete_backing_file(&mut self) -> Result<()> {
-        if let Some((file, file_path)) = self.file.take() {
-            drop(file);
-            fs::remove_file(&file_path).map_err(io_at(&file_path))?;
+        match std::mem::replace(&mut self.storage, JournalStorage::None) {
+            JournalStorage::File(file, file_path) => {
+                drop(file);
+                fs::remove_file(&file_path).map_err(io_at(&file_path))?;
+                Ok(())
+            }
+            JournalStorage::Postgres => todo!(),
+            JournalStorage::None => Ok(()),
         }
-        Ok(())
     }
 }
 
@@ -797,7 +833,8 @@ mod tests {
         let dir = tempdir().unwrap();
         let ops = test_ops();
         {
-            let mut journal = Journal::load_or_create(dir.path(), "killed", &ops).unwrap();
+            let mut journal =
+                Journal::load_or_create_with_file(dir.path(), "killed", &ops).unwrap();
             journal
                 .mark_op_as_done(&ops[0], Some(&BackendId::Int(7)))
                 .unwrap();
@@ -807,7 +844,7 @@ mod tests {
             killed(journal);
         }
 
-        let journal = Journal::load_or_create(dir.path(), "killed", &ops).unwrap();
+        let journal = Journal::load_or_create_with_file(dir.path(), "killed", &ops).unwrap();
         assert_eq!(
             journal
                 .done_applied_ops()
@@ -830,7 +867,7 @@ mod tests {
         let ops = test_ops();
         let path = Journal::stable_file_name(dir.path(), "torn", &ops);
         {
-            let mut journal = Journal::load_or_create(dir.path(), "torn", &ops).unwrap();
+            let mut journal = Journal::load_or_create_with_file(dir.path(), "torn", &ops).unwrap();
             journal
                 .mark_op_as_done(&ops[0], Some(&BackendId::Int(7)))
                 .unwrap();
@@ -840,7 +877,7 @@ mod tests {
         contents.push_str(r#"--- {"done":{"op":1,"backe"#);
         fs::write(&path, &contents).unwrap();
 
-        let journal = Journal::load_or_create(dir.path(), "torn", &ops).unwrap();
+        let journal = Journal::load_or_create_with_file(dir.path(), "torn", &ops).unwrap();
         assert_eq!(
             journal
                 .done_applied_ops()
@@ -864,7 +901,8 @@ mod tests {
             let ops = test_ops();
             let path = Journal::stable_file_name(dir.path(), "torn", &ops);
             {
-                let mut journal = Journal::load_or_create(dir.path(), "torn", &ops).unwrap();
+                let mut journal =
+                    Journal::load_or_create_with_file(dir.path(), "torn", &ops).unwrap();
                 journal
                     .mark_op_as_done(&ops[0], Some(&BackendId::Int(7)))
                     .unwrap();
@@ -876,7 +914,8 @@ mod tests {
 
             // the resumed run applies the op the torn record was for, and dies again
             {
-                let mut journal = Journal::load_or_create(dir.path(), "torn", &ops).unwrap();
+                let mut journal =
+                    Journal::load_or_create_with_file(dir.path(), "torn", &ops).unwrap();
                 journal
                     .mark_op_as_done(&ops[1], Some(&BackendId::Int(8)))
                     .unwrap();
@@ -885,14 +924,15 @@ mod tests {
             // and once more, since a merged line only reads as corruption once it is no
             // longer the last one
             {
-                let mut journal = Journal::load_or_create(dir.path(), "torn", &ops).unwrap();
+                let mut journal =
+                    Journal::load_or_create_with_file(dir.path(), "torn", &ops).unwrap();
                 journal
                     .mark_op_as_done(&ops[2], Some(&BackendId::Int(9)))
                     .unwrap();
                 killed(journal);
             }
 
-            let journal = Journal::load_or_create(dir.path(), "torn", &ops).unwrap();
+            let journal = Journal::load_or_create_with_file(dir.path(), "torn", &ops).unwrap();
             assert_eq!(
                 journal
                     .done_applied_ops()
@@ -918,7 +958,8 @@ mod tests {
         let ops = test_ops();
         let path = Journal::stable_file_name(dir.path(), "corrupt", &ops);
         {
-            let mut journal = Journal::load_or_create(dir.path(), "corrupt", &ops).unwrap();
+            let mut journal =
+                Journal::load_or_create_with_file(dir.path(), "corrupt", &ops).unwrap();
             journal.mark_op_as_done(&ops[0], None).unwrap();
             journal.mark_op_as_done(&ops[1], None).unwrap();
             killed(journal);
@@ -927,7 +968,7 @@ mod tests {
         let broken = contents.replacen(r#"--- {"op":"#, "--- {\"op\"", 1);
         fs::write(&path, broken).unwrap();
 
-        let err = Journal::load_or_create(dir.path(), "corrupt", &ops)
+        let err = Journal::load_or_create_with_file(dir.path(), "corrupt", &ops)
             .expect_err("a broken record above the tail must not load");
         assert!(err.to_string().contains("failed to read"), "got: {err}");
     }
@@ -951,7 +992,7 @@ mod tests {
         );
         fs::write(&path, legacy).unwrap();
 
-        let mut journal = Journal::load_or_create(dir.path(), "test", &ops).unwrap();
+        let mut journal = Journal::load_or_create_with_file(dir.path(), "test", &ops).unwrap();
         let done = journal.done_applied_ops();
         assert_eq!(done.len(), 1);
         assert_eq!(done[0].backend_id, Some(BackendId::Int(7)));
@@ -961,7 +1002,7 @@ mod tests {
         let migrated = fs::read_to_string(&path).unwrap();
         assert!(migrated.starts_with(r#"--- {"version":1}"#), "{migrated}");
         assert_eq!(
-            Journal::load_or_create(dir.path(), "test", &ops)
+            Journal::load_or_create_with_file(dir.path(), "test", &ops)
                 .unwrap()
                 .done_ops_count(),
             2
@@ -977,7 +1018,7 @@ mod tests {
         let path = Journal::stable_file_name(dir.path(), "test", &ops);
         fs::write(&path, "--- {\"version\":99}\n").unwrap();
 
-        let err = Journal::load_or_create(dir.path(), "test", &ops)
+        let err = Journal::load_or_create_with_file(dir.path(), "test", &ops)
             .expect_err("an unknown format version must not be read as this one");
         assert!(err.to_string().contains("format version 99"), "got: {err}");
     }
@@ -1012,11 +1053,11 @@ mod tests {
             },
         };
         let ops = vec![make("location.site"), make("net.zone")];
-        let mut journal = Journal::load_or_create(dir.path(), "retype", &ops).unwrap();
+        let mut journal = Journal::load_or_create_with_file(dir.path(), "retype", &ops).unwrap();
         journal.mark_op_as_done(&ops[0], None).unwrap();
         assert_eq!(journal.done_ops_count(), 1);
 
-        let reloaded = Journal::load_or_create(dir.path(), "retype", &ops).unwrap();
+        let reloaded = Journal::load_or_create_with_file(dir.path(), "retype", &ops).unwrap();
         let done = reloaded.done_ops();
         assert_eq!(done.len(), 1);
         assert_eq!(done[0].1, TypeName::new("location.site"));

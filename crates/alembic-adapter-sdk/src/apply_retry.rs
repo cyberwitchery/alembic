@@ -1,12 +1,11 @@
 use crate::errors::AdapterApplyError;
-use crate::journal::{Journal, JournalError};
+use crate::journal::{Journal, JournalError, JournalStorageLocation};
 use crate::types::{AppliedOp, Op};
 use alembic_core::Uid;
 use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error as StdError;
-use std::path::Path;
 use thiserror::Error;
 
 #[derive(Debug)]
@@ -135,16 +134,20 @@ pub async fn apply_non_delete_with_retries<'a, D: RetryApplyDriver>(
 /// `None`), returning the result, the resumed count (`None` when none) ready for
 /// `ApplyReport::previously_applied_count`, and the journal to `finish` after the deletes.
 pub async fn apply_non_delete_with_journal<D: RetryApplyDriver>(
-    dir: Option<&Path>,
+    journal_storage: &JournalStorageLocation,
     scope: &str,
     creates_updates: &[Op],
     driver: &mut D,
 ) -> Result<(RetryApplyResult, Option<usize>, JournalGuard<'static>), D::Error> {
-    let mut journal = match dir {
-        Some(dir) => Some(
-            Journal::load_or_create(dir, scope, creates_updates).map_err(RetryApplyError::from)?,
+    let mut journal = match journal_storage {
+        JournalStorageLocation::File(dir) => Some(
+            Journal::load_or_create_with_file(dir, scope, creates_updates)
+                .map_err(RetryApplyError::from)?,
         ),
-        None => None,
+        JournalStorageLocation::Postgres => {
+            Some(Journal::load_or_create_with_postgres().map_err(RetryApplyError::from)?)
+        }
+        JournalStorageLocation::None => None,
     };
     let (result, borrowed) =
         apply_non_delete_with_retries(creates_updates, journal.as_mut(), driver).await?;

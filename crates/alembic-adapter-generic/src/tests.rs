@@ -1018,7 +1018,7 @@ async fn test_resumed_apply_updates_an_object_an_earlier_run_created() {
     // a fresh directory per run; the completed apply deletes the journal in it.
     let dir = std::env::temp_dir().join(format!("alembic-generic-resume-{}", Uid::new_v4()));
     let state = new_state_store().with_journal_dir(dir.clone());
-    let mut journal = alembic_adapter_sdk::journal::Journal::load_or_create(
+    let mut journal = alembic_adapter_sdk::journal::Journal::load_or_create_with_file(
         &dir,
         &state.journal_scope("generic"),
         &ops,

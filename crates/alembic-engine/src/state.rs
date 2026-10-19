@@ -1,6 +1,7 @@
 //! uid -> backend id state store: identity memory, scoped to one backend
 //! instance.
 
+use alembic_adapter_sdk::journal::JournalStorageLocation;
 use alembic_adapter_sdk::{BackendId, StateData};
 use alembic_core::{uid_v5, TypeName, Uid};
 use anyhow::{anyhow, Context, Result};
@@ -94,7 +95,7 @@ pub struct StateStore {
     // reader that inverts state goes through, and deciding which uid a backend id
     // supersedes costs a lookup rather than a walk of the type.
     by_backend_id: BTreeMap<TypeName, BTreeMap<BackendId, Uid>>,
-    journal_dir: JournalStorage,
+    journal_dir: JournalStorageLocation,
     // advisory lock held for a local-file store's whole lifetime, so two concurrent
     // runs against the same state file cannot both load-modify-save it and clobber
     // each other's mappings (the save is atomic but last-writer-wins). shared for a
@@ -102,13 +103,6 @@ pub struct StateStore {
     // the store drops. `None` for the postgres backend (it has its own optimistic
     // lock) and for in-memory stores.
     lock: Option<Arc<File>>,
-}
-
-#[derive(Debug, Clone)]
-pub enum JournalStorage {
-    None,
-    File(PathBuf),
-    Postgres,
 }
 
 impl StateStore {
@@ -119,7 +113,7 @@ impl StateStore {
             data,
             backend_identity: None,
             by_backend_id: BTreeMap::new(),
-            journal_dir: JournalStorage::None,
+            journal_dir: JournalStorageLocation::None,
             lock: None,
         };
         store.reindex();
@@ -128,23 +122,19 @@ impl StateStore {
 
     /// set the directory used to persist apply journals for resumable applies.
     pub fn with_journal_dir(mut self, dir: PathBuf) -> Self {
-        self.journal_dir = JournalStorage::File(dir);
+        self.journal_dir = JournalStorageLocation::File(dir);
         self
     }
 
     /// use postgres to persist apply journals for resumable applies.
     pub fn with_postgres_backed_journal(mut self) -> Self {
-        self.journal_dir = JournalStorage::Postgres;
+        self.journal_dir = JournalStorageLocation::Postgres;
         self
     }
 
-    /// directory used to persist apply journals, if configured.
-    pub fn journal_dir(&self) -> Option<&Path> {
-        match &self.journal_dir {
-            JournalStorage::None => None,
-            JournalStorage::File(path) => Some(path),
-            JournalStorage::Postgres => None,
-        }
+    /// how and where to store a journal of applied ops.
+    pub fn journal_storage(&self) -> &JournalStorageLocation {
+        &self.journal_dir
     }
 
     /// load state from a file path under an exclusive lock.
