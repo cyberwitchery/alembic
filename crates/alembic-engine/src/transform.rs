@@ -1256,17 +1256,14 @@ mod tests {
 
     #[test]
     fn rejects_an_unknown_key_in_a_map_spec() {
-        // an unknown key must not silently drop the ruleset.
-        let err = spec_err("schema:\n  types: {}\nrulez: []\n");
-        assert!(err.contains("unknown field `rulez`"), "{}", err);
-    }
-
-    #[test]
-    fn a_typo_inside_an_emit_names_the_field() {
-        // the emit shape is dispatched before the variant is deserialized, so the
-        // error is the emit's own and not `did not match any variant`.
-        let err = spec_err(
-            r#"
+        // an unknown key must not silently drop the ruleset, and the emit shapes
+        // are dispatched before the variant is deserialized, so the error is the
+        // offending block's own and not `did not match any variant`.
+        let cases = [
+            ("rulez", "schema:\n  types: {}\nrulez: []\n"),
+            (
+                "atrrs",
+                r#"
 rules:
   - name: sites
     match: "dcim.site"
@@ -1275,15 +1272,10 @@ rules:
       key: { slug: "${key.slug}" }
       atrrs: { label: "${attrs.name}" }
 "#,
-        );
-        assert!(err.contains("unknown field `atrrs`"), "{}", err);
-        assert!(!err.contains("any variant"), "{}", err);
-    }
-
-    #[test]
-    fn a_typo_inside_a_list_emit_names_the_field() {
-        let err = spec_err(
-            r#"
+            ),
+            (
+                "atrrs",
+                r#"
 rules:
   - name: sites
     match: "dcim.site"
@@ -1294,15 +1286,10 @@ rules:
         key: { slug: "${key.slug}" }
         atrrs: { label: "${attrs.name}" }
 "#,
-        );
-        assert!(err.contains("unknown field `atrrs`"), "{}", err);
-        assert!(!err.contains("any variant"), "{}", err);
-    }
-
-    #[test]
-    fn a_typo_inside_an_emit_uid_names_the_field() {
-        let err = spec_err(
-            r#"
+            ),
+            (
+                "stabel",
+                r#"
 rules:
   - name: sites
     match: "dcim.site"
@@ -1312,12 +1299,10 @@ rules:
       uid:
         v5: { type: location.site, stabel: "${key.slug}" }
 "#,
-        );
-        assert!(err.contains("unknown field `stabel`"), "{}", err);
-        assert!(!err.contains("any variant"), "{}", err);
-
-        let err = spec_err(
-            r#"
+            ),
+            (
+                "v6",
+                r#"
 rules:
   - name: sites
     match: "dcim.site"
@@ -1326,17 +1311,11 @@ rules:
       key: { slug: "${key.slug}" }
       uid: { v6: { type: location.site, stable: "${key.slug}" } }
 "#,
-        );
-        assert!(err.contains("unknown field `v6`"), "{}", err);
-    }
-
-    #[test]
-    fn rejects_an_unknown_key_in_a_rule_lookup_or_transforms_block() {
-        let err = spec_err("rules:\n  - name: n\n    matsh: \"dcim.site\"\n");
-        assert!(err.contains("unknown field `matsh`"), "{}", err);
-
-        let err = spec_err(
-            r#"
+            ),
+            ("matsh", "rules:\n  - name: n\n    matsh: \"dcim.site\"\n"),
+            (
+                "gett",
+                r#"
 rules:
   - name: sites
     match: "dcim.site"
@@ -1346,11 +1325,24 @@ rules:
       type: location.site
       key: { slug: "${key.slug}" }
 "#,
-        );
-        assert!(err.contains("unknown field `gett`"), "{}", err);
-
-        let err = spec_err("transforms:\n  fil: ./transforms.star\n");
-        assert!(err.contains("unknown field `fil`"), "{}", err);
+            ),
+            ("fil", "transforms:\n  fil: ./transforms.star\n"),
+            (
+                "atrs",
+                r#"
+objects:
+  - type: extras.status
+    key: { name: Active }
+    uid: target
+    atrs: {}
+"#,
+            ),
+        ];
+        for (field, yaml) in cases {
+            let err = spec_err(yaml);
+            assert!(err.contains(&format!("unknown field `{field}`")), "{err}");
+            assert!(!err.contains("any variant"), "{field}: {err}");
+        }
     }
 
     #[test]
@@ -1538,165 +1530,90 @@ rules:
     }
 
     #[test]
-    fn rewires_refs_nested_in_a_list_field() {
+    fn rewires_refs_nested_in_a_list_list_ref_or_map_field() {
+        // `uid: target` mints a new uid for each node, so every ref nested in a
+        // `list`, `list_ref` or `map` field has to follow its referent there.
         let a_src = Uuid::from_u128(1).to_string();
         let b_src = Uuid::from_u128(2).to_string();
-        let input = input_inventory(json!([
-            { "uid": a_src, "type": "dcim.device",
-              "key": { "device": "leaf01" },
-              "attrs": { "name": "leaf01", "peers": [b_src] } },
-            { "uid": b_src, "type": "dcim.device",
-              "key": { "device": "leaf02" },
-              "attrs": { "name": "leaf02", "peers": [a_src] } }
-        ]));
-        let out = compile_map(
-            &input,
-            &spec(
-                r#"
+        let cases = [
+            (
+                "{ type: list, item: { type: ref, target: net.node } }",
+                json!([b_src]),
+                json!([a_src]),
+            ),
+            (
+                "{ type: list_ref, target: net.node }",
+                json!([b_src]),
+                json!([a_src]),
+            ),
+            (
+                "{ type: map, value: { type: ref, target: net.node } }",
+                json!({ "primary": b_src }),
+                json!({ "primary": a_src }),
+            ),
+        ];
+        for (field, a_peers, b_peers) in cases {
+            let input = input_inventory(json!([
+                { "uid": a_src, "type": "dcim.device",
+                  "key": { "device": "leaf01" },
+                  "attrs": { "name": "leaf01", "peers": a_peers } },
+                { "uid": b_src, "type": "dcim.device",
+                  "key": { "device": "leaf02" },
+                  "attrs": { "name": "leaf02", "peers": b_peers } }
+            ]));
+            let out = compile_map(
+                &input,
+                &spec(&format!(
+                    r#"
 schema:
   types:
     net.node:
       key:
-        name: { type: slug }
+        name: {{ type: slug }}
       fields:
-        name: { type: slug }
-        peers: { type: list, item: { type: ref, target: net.node } }
+        name: {{ type: slug }}
+        peers: {field}
 rules:
   - name: nodes
     match: "dcim.device"
     emit:
       type: net.node
       key:
-        name: "${key.device}"
+        name: "${{key.device}}"
       attrs:
-        name: "${attrs.name}"
-        peers: "${attrs.peers}"
-"#,
-            ),
-        )
-        .unwrap();
+        name: "${{attrs.name}}"
+        peers: "${{attrs.peers}}"
+      uid: target
+"#
+                )),
+            )
+            .unwrap();
 
-        let node = |name: &str| {
-            out.objects
-                .iter()
-                .find(|o| o.key.get("name").unwrap() == &json!(name))
-                .unwrap()
-        };
-        let a = node("leaf01");
-        let b = node("leaf02");
-        // the peer refs nested in the `list` field now point at the new uids.
-        assert_eq!(a.attrs.get("peers").unwrap(), &json!([b.uid.to_string()]));
-        assert_eq!(b.attrs.get("peers").unwrap(), &json!([a.uid.to_string()]));
-    }
-
-    #[test]
-    fn rewires_refs_in_a_list_ref_field() {
-        let a_src = Uuid::from_u128(1).to_string();
-        let b_src = Uuid::from_u128(2).to_string();
-        let input = input_inventory(json!([
-            { "uid": a_src, "type": "dcim.device",
-              "key": { "device": "leaf01" },
-              "attrs": { "name": "leaf01", "peers": [b_src] } },
-            { "uid": b_src, "type": "dcim.device",
-              "key": { "device": "leaf02" },
-              "attrs": { "name": "leaf02", "peers": [a_src] } }
-        ]));
-        let out = compile_map(
-            &input,
-            &spec(
-                r#"
-schema:
-  types:
-    net.node:
-      key:
-        name: { type: slug }
-      fields:
-        name: { type: slug }
-        peers: { type: list_ref, target: net.node }
-rules:
-  - name: nodes
-    match: "dcim.device"
-    emit:
-      type: net.node
-      key:
-        name: "${key.device}"
-      attrs:
-        name: "${attrs.name}"
-        peers: "${attrs.peers}"
-"#,
-            ),
-        )
-        .unwrap();
-
-        let node = |name: &str| {
-            out.objects
-                .iter()
-                .find(|o| o.key.get("name").unwrap() == &json!(name))
-                .unwrap()
-        };
-        let a = node("leaf01");
-        let b = node("leaf02");
-        // the peer refs in the `list_ref` field now point at the new uids.
-        assert_eq!(a.attrs.get("peers").unwrap(), &json!([b.uid.to_string()]));
-        assert_eq!(b.attrs.get("peers").unwrap(), &json!([a.uid.to_string()]));
-    }
-
-    #[test]
-    fn rewires_refs_nested_in_a_map_field() {
-        let a_src = Uuid::from_u128(1).to_string();
-        let b_src = Uuid::from_u128(2).to_string();
-        let input = input_inventory(json!([
-            { "uid": a_src, "type": "dcim.device",
-              "key": { "device": "leaf01" },
-              "attrs": { "name": "leaf01", "peers": { "primary": b_src } } },
-            { "uid": b_src, "type": "dcim.device",
-              "key": { "device": "leaf02" },
-              "attrs": { "name": "leaf02", "peers": { "primary": a_src } } }
-        ]));
-        let out = compile_map(
-            &input,
-            &spec(
-                r#"
-schema:
-  types:
-    net.node:
-      key:
-        name: { type: slug }
-      fields:
-        name: { type: slug }
-        peers: { type: map, value: { type: ref, target: net.node } }
-rules:
-  - name: nodes
-    match: "dcim.device"
-    emit:
-      type: net.node
-      key:
-        name: "${key.device}"
-      attrs:
-        name: "${attrs.name}"
-        peers: "${attrs.peers}"
-"#,
-            ),
-        )
-        .unwrap();
-
-        let node = |name: &str| {
-            out.objects
-                .iter()
-                .find(|o| o.key.get("name").unwrap() == &json!(name))
-                .unwrap()
-        };
-        let a = node("leaf01");
-        let b = node("leaf02");
-        // the peer refs nested in the `map` field now point at the new uids.
-        assert_eq!(
-            a.attrs.get("peers").unwrap(),
-            &json!({ "primary": b.uid.to_string() })
-        );
-        assert_eq!(
-            b.attrs.get("peers").unwrap(),
-            &json!({ "primary": a.uid.to_string() })
-        );
+            let node = |name: &str| {
+                out.objects
+                    .iter()
+                    .find(|o| o.key.get("name").unwrap() == &json!(name))
+                    .unwrap()
+            };
+            let a = node("leaf01");
+            let b = node("leaf02");
+            assert_ne!(a.uid.to_string(), a_src, "{field}");
+            assert_ne!(b.uid.to_string(), b_src, "{field}");
+            let swap = |peers: &JsonValue, from: &str, to: Uid| {
+                serde_json::from_str::<JsonValue>(&peers.to_string().replace(from, &to.to_string()))
+                    .unwrap()
+            };
+            assert_eq!(
+                a.attrs.get("peers").unwrap(),
+                &swap(&a_peers, &b_src, b.uid),
+                "{field}"
+            );
+            assert_eq!(
+                b.attrs.get("peers").unwrap(),
+                &swap(&b_peers, &a_src, a.uid),
+                "{field}"
+            );
+        }
     }
 
     /// the issue #225 repro: a ref-typed key field is rewired through the
@@ -2036,6 +1953,7 @@ rules:
       type: net.node
       key:
         name: "${key.name}"
+      uid: target
   - name: ports
     match: "src.port"
     emit:
@@ -2043,6 +1961,7 @@ rules:
       key:
         device: "${key.device}"
         name: "${key.name}"
+      uid: target
 "#;
         let identity = r#"
 schema:
@@ -2141,6 +2060,13 @@ rules:
         let first = compile_map(&input, &spec(yaml)).unwrap();
         let second = compile_map(&input, &spec(yaml)).unwrap();
         assert_eq!(first.objects, second.objects);
+        // sorted by type name, then canonical key json, not by input order.
+        let slugs: Vec<&JsonValue> = first
+            .objects
+            .iter()
+            .map(|o| o.key.get("slug").unwrap())
+            .collect();
+        assert_eq!(slugs, [&json!("ams1"), &json!("fra1")]);
     }
 
     #[test]
@@ -2356,138 +2282,33 @@ rules:
             ),
         )
         .unwrap_err();
-        assert!(err.to_string().contains("passthrough"), "{err}");
-    }
-
-    #[test]
-    fn predicate_filters_matched_objects() {
-        let input = input_inventory(json!([
-            { "uid": Uuid::from_u128(1).to_string(), "type": "dcim.device",
-              "key": { "device": "leaf01" }, "attrs": { "role": "leaf" } },
-            { "uid": Uuid::from_u128(2).to_string(), "type": "dcim.device",
-              "key": { "device": "spine01" }, "attrs": { "role": "spine" } },
-            { "uid": Uuid::from_u128(3).to_string(), "type": "dcim.device",
-              "key": { "device": "leaf02" }, "attrs": { "role": "leaf" } }
-        ]));
-        let out = compile_map(
-            &input,
-            &spec(
-                r#"
-schema:
-  types:
-    fabric.leaf:
-      key:
-        name: { type: slug }
-rules:
-  - name: leaves
-    match: "dcim.device[attrs.role=leaf]"
-    emit:
-      type: fabric.leaf
-      key:
-        name: "${key.device}"
-"#,
-            ),
-        )
-        .unwrap();
-        // only the two leaves survive the predicate; the spine is filtered out.
-        let names: Vec<&str> = out
-            .objects
-            .iter()
-            .map(|o| o.key.get("name").unwrap().as_str().unwrap())
-            .collect();
-        assert_eq!(names, vec!["leaf01", "leaf02"]);
-    }
-
-    #[test]
-    fn multi_predicate_selector_ands_predicates() {
-        let input = input_inventory(json!([
-            { "uid": Uuid::from_u128(1).to_string(), "type": "dcim.device",
-              "key": { "device": "leaf-cisco" }, "attrs": { "role": "leaf", "vendor": "cisco" } },
-            { "uid": Uuid::from_u128(2).to_string(), "type": "dcim.device",
-              "key": { "device": "leaf-arista" }, "attrs": { "role": "leaf", "vendor": "arista" } },
-            { "uid": Uuid::from_u128(3).to_string(), "type": "dcim.device",
-              "key": { "device": "spine-cisco" }, "attrs": { "role": "spine", "vendor": "cisco" } }
-        ]));
-        let out = compile_map(
-            &input,
-            &spec(
-                r#"
-schema:
-  types:
-    fabric.leaf:
-      key:
-        name: { type: slug }
-rules:
-  - name: cisco-leaves
-    match: "dcim.device[attrs.role=leaf][attrs.vendor=cisco]"
-    emit:
-      type: fabric.leaf
-      key:
-        name: "${key.device}"
-"#,
-            ),
-        )
-        .unwrap();
-        let names: Vec<&str> = out
-            .objects
-            .iter()
-            .map(|o| o.key.get("name").unwrap().as_str().unwrap())
-            .collect();
-        assert_eq!(names, vec!["leaf-cisco"]);
-    }
-
-    #[test]
-    fn existence_predicates_filter_on_presence() {
-        let input = input_inventory(json!([
-            { "uid": Uuid::from_u128(1).to_string(), "type": "dcim.device",
-              "key": { "device": "leaf01" }, "attrs": { "primary_ip": "10.0.0.1" } },
-            { "uid": Uuid::from_u128(2).to_string(), "type": "dcim.device",
-              "key": { "device": "leaf02" }, "attrs": {} },
-            { "uid": Uuid::from_u128(3).to_string(), "type": "dcim.device",
-              "key": { "device": "leaf03" }, "attrs": { "primary_ip": null } }
-        ]));
-        let template = r#"
-schema:
-  types:
-    fabric.leaf:
-      key:
-        name: { type: slug }
-rules:
-  - name: leaves
-    match: "SELECTOR"
-    emit:
-      type: fabric.leaf
-      key:
-        name: "${key.device}"
-"#;
-        let names = |selector: &str| -> Vec<String> {
-            compile_map(&input, &spec(&template.replace("SELECTOR", selector)))
-                .unwrap()
-                .objects
-                .iter()
-                .map(|o| o.key.get("name").unwrap().as_str().unwrap().to_string())
-                .collect()
-        };
-        // `[field]` keeps present, non-null values; `[!field]` is its complement,
-        // with both absent and null counting as missing.
-        assert_eq!(names("dcim.device[attrs.primary_ip]"), vec!["leaf01"]);
-        assert_eq!(
-            names("dcim.device[!attrs.primary_ip]"),
-            vec!["leaf02", "leaf03"]
+        assert!(
+            err.to_string()
+                .contains("rule bad: `emit: passthrough` cannot be combined with group_by"),
+            "{err}"
         );
     }
 
     #[test]
-    fn value_predicates_need_a_present_scalar() {
+    fn selector_predicates_filter_matched_objects() {
+        let device = |n: u128, name: &str, attrs: JsonValue| {
+            let mut attrs = attrs;
+            attrs["label"] = json!(name);
+            json!({ "uid": Uuid::from_u128(n).to_string(), "type": "dcim.device",
+                    "key": { "device": name }, "attrs": attrs })
+        };
         let input = input_inventory(json!([
-            { "uid": Uuid::from_u128(1).to_string(), "type": "dcim.device",
-              "key": { "device": "leaf01" }, "attrs": { "role": "leaf", "tags": ["a"] } },
-            { "uid": Uuid::from_u128(2).to_string(), "type": "dcim.device",
-              "key": { "device": "spine01" }, "attrs": { "role": "spine", "tags": ["a"] } },
-            { "uid": Uuid::from_u128(3).to_string(), "type": "dcim.device",
-              "key": { "device": "norole" }, "attrs": { "tags": ["a"] } },
-            { "uid": Uuid::from_u128(4).to_string(), "type": "dcim.device",
-              "key": { "device": "nullrole" }, "attrs": { "role": null, "tags": ["a"] } }
+            device(1, "leaf-cisco", json!({ "role": "leaf", "vendor": "cisco", "tags": ["a"], "primary_ip": "10.0.0.1" })),
+            device(2, "leaf-arista", json!({ "role": "leaf", "vendor": "arista", "tags": ["a"] })),
+            device(3, "spine-cisco", json!({ "role": "spine", "vendor": "cisco", "tags": ["a"], "primary_ip": null })),
+            device(4, "norole", json!({ "tags": ["a"] })),
+            device(5, "nullrole", json!({ "role": null })),
+            { "uid": Uuid::from_u128(11).to_string(), "type": "ipam.vlan",
+              "key": { "vid": 10 }, "attrs": { "enabled": true, "label": "v10" } },
+            { "uid": Uuid::from_u128(12).to_string(), "type": "ipam.vlan",
+              "key": { "vid": 20 }, "attrs": { "enabled": false, "label": "v20" } },
+            { "uid": Uuid::from_u128(13).to_string(), "type": "ipam.vlan",
+              "key": { "vid": 30 }, "attrs": { "enabled": true, "label": "v30" } }
         ]));
         let template = r#"
 schema:
@@ -2501,59 +2322,6 @@ rules:
     emit:
       type: fabric.node
       key:
-        name: "${key.device}"
-"#;
-        let names = |selector: &str| -> Vec<String> {
-            compile_map(&input, &spec(&template.replace("SELECTOR", selector)))
-                .unwrap()
-                .objects
-                .iter()
-                .map(|o| o.key.get("name").unwrap().as_str().unwrap().to_string())
-                .collect()
-        };
-        // `=` and `!=` both need a present, scalar field, so they do not partition
-        // the way `[field]`/`[!field]` does: `norole` and `nullrole` fall out of both.
-        assert_eq!(names("dcim.device[attrs.role=leaf]"), vec!["leaf01"]);
-        assert_eq!(names("dcim.device[attrs.role!=leaf]"), vec!["spine01"]);
-        assert_eq!(
-            names("dcim.device[!attrs.role]"),
-            vec!["norole", "nullrole"]
-        );
-        // a null under `nullable: true` validates and reaches the predicate, but
-        // renders no scalar either, so `=null` matches nothing.
-        assert!(names("dcim.device[attrs.role=null]").is_empty());
-        // a list has no scalar rendering, so it matches neither operator, while
-        // existence still sees it.
-        assert!(names("dcim.device[attrs.tags=a]").is_empty());
-        assert!(names("dcim.device[attrs.tags!=a]").is_empty());
-        assert_eq!(
-            names("dcim.device[attrs.tags]"),
-            vec!["leaf01", "norole", "nullrole", "spine01"]
-        );
-    }
-
-    #[test]
-    fn predicate_coerces_numeric_and_bool_values() {
-        let input = input_inventory(json!([
-            { "uid": Uuid::from_u128(1).to_string(), "type": "ipam.vlan",
-              "key": { "vid": 10 }, "attrs": { "enabled": true, "label": "v10" } },
-            { "uid": Uuid::from_u128(2).to_string(), "type": "ipam.vlan",
-              "key": { "vid": 20 }, "attrs": { "enabled": false, "label": "v20" } },
-            { "uid": Uuid::from_u128(3).to_string(), "type": "ipam.vlan",
-              "key": { "vid": 30 }, "attrs": { "enabled": true, "label": "v30" } }
-        ]));
-        let template = r#"
-schema:
-  types:
-    fabric.vlan:
-      key:
-        name: { type: slug }
-rules:
-  - name: vlans
-    match: "SELECTOR"
-    emit:
-      type: fabric.vlan
-      key:
         name: "${attrs.label}"
 "#;
         let names = |selector: &str| -> Vec<String> {
@@ -2564,8 +2332,45 @@ rules:
                 .map(|o| o.key.get("name").unwrap().as_str().unwrap().to_string())
                 .collect()
         };
-        assert_eq!(names("ipam.vlan[key.vid=10]"), vec!["v10"]);
-        assert_eq!(names("ipam.vlan[attrs.enabled=true]"), vec!["v10", "v30"]);
+        let cases: &[(&str, &[&str])] = &[
+            (
+                "dcim.device[attrs.role=leaf]",
+                &["leaf-arista", "leaf-cisco"],
+            ),
+            // several predicates are and-ed.
+            (
+                "dcim.device[attrs.role=leaf][attrs.vendor=cisco]",
+                &["leaf-cisco"],
+            ),
+            // `[field]` keeps present, non-null values; `[!field]` is its
+            // complement, with both absent and null counting as missing.
+            ("dcim.device[attrs.primary_ip]", &["leaf-cisco"]),
+            (
+                "dcim.device[!attrs.primary_ip]",
+                &["leaf-arista", "norole", "nullrole", "spine-cisco"],
+            ),
+            // `=` and `!=` both need a present, scalar field, so they do not
+            // partition the way `[field]`/`[!field]` does: `norole` and
+            // `nullrole` fall out of both.
+            ("dcim.device[attrs.role!=leaf]", &["spine-cisco"]),
+            ("dcim.device[!attrs.role]", &["norole", "nullrole"]),
+            // a null renders no scalar either, so `=null` matches nothing.
+            ("dcim.device[attrs.role=null]", &[]),
+            // a list has no scalar rendering, so it matches neither operator,
+            // while existence still sees it.
+            ("dcim.device[attrs.tags=a]", &[]),
+            ("dcim.device[attrs.tags!=a]", &[]),
+            (
+                "dcim.device[attrs.tags]",
+                &["leaf-arista", "leaf-cisco", "norole", "spine-cisco"],
+            ),
+            // numbers and bools compare by their rendering.
+            ("ipam.vlan[key.vid=10]", &["v10"]),
+            ("ipam.vlan[attrs.enabled=true]", &["v10", "v30"]),
+        ];
+        for (selector, expected) in cases {
+            assert_eq!(names(selector), *expected, "{selector}");
+        }
     }
 
     #[test]
@@ -2779,7 +2584,7 @@ rules:
         );
     }
 
-    /// the spec used by the three `resolve_lookup` failure tests: a single
+    /// the spec used by the `resolve_lookup` failure table: a single
     /// device rule following `attrs.status` and reading `attrs.label` off it.
     const LOOKUP_SPEC: &str = r#"
 schema:
@@ -2805,40 +2610,32 @@ rules:
 "#;
 
     #[test]
-    fn lookup_ref_must_be_a_valid_uuid() {
-        let input = input_inventory(json!([
-            { "uid": Uuid::from_u128(1).to_string(), "type": "dcim.device",
-              "key": { "name": "leaf01" }, "attrs": { "status": "not-a-uuid" } }
-        ]));
-        let err = compile_map(&input, &spec(LOOKUP_SPEC)).unwrap_err();
-        assert!(
-            err.to_string().contains("ref is not a valid uuid"),
-            "{err:#}"
-        );
-    }
-
-    #[test]
-    fn lookup_ref_must_be_present_in_the_input() {
-        let absent = Uuid::from_u128(99).to_string();
-        let input = input_inventory(json!([
-            { "uid": Uuid::from_u128(1).to_string(), "type": "dcim.device",
-              "key": { "name": "leaf01" }, "attrs": { "status": absent } }
-        ]));
-        let err = compile_map(&input, &spec(LOOKUP_SPEC)).unwrap_err();
-        assert!(err.to_string().contains("is not in the input"), "{err:#}");
-    }
-
-    #[test]
-    fn lookup_get_field_must_exist_on_the_referent() {
+    fn lookup_failures_name_the_cause() {
         let status_uid = Uuid::from_u128(9).to_string();
-        let input = input_inventory(json!([
-            { "uid": status_uid, "type": "extras.status",
-              "key": { "name": "active" }, "attrs": {} },
-            { "uid": Uuid::from_u128(1).to_string(), "type": "dcim.device",
-              "key": { "name": "leaf01" }, "attrs": { "status": status_uid } }
-        ]));
-        let err = compile_map(&input, &spec(LOOKUP_SPEC)).unwrap_err();
-        assert!(err.to_string().contains("is absent on"), "{err:#}");
+        let device = |status: &str| {
+            json!({ "uid": Uuid::from_u128(1).to_string(), "type": "dcim.device",
+                    "key": { "name": "leaf01" }, "attrs": { "status": status } })
+        };
+        let cases = [
+            (json!([device("not-a-uuid")]), "ref is not a valid uuid"),
+            (
+                json!([device(&Uuid::from_u128(99).to_string())]),
+                "is not in the input",
+            ),
+            // the referent exists but carries no `attrs.label`.
+            (
+                json!([
+                    { "uid": status_uid, "type": "extras.status",
+                      "key": { "name": "active" }, "attrs": {} },
+                    device(&status_uid)
+                ]),
+                "is absent on",
+            ),
+        ];
+        for (objects, expected) in cases {
+            let err = compile_map(&input_inventory(objects), &spec(LOOKUP_SPEC)).unwrap_err();
+            assert!(err.to_string().contains(expected), "{err:#}");
+        }
     }
 
     #[test]
@@ -3959,7 +3756,10 @@ objects:
         )
         .unwrap_err()
         .to_string();
-        assert!(err.contains("uid"), "{err}");
+        assert!(
+            err.contains("objects: entry 1 (extras.status) has no uid:"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -4010,19 +3810,5 @@ rules:
         )
         .unwrap_err();
         assert!(format!("{err:#}").contains("duplicate key"), "{err:#}");
-    }
-
-    #[test]
-    fn rejects_an_unknown_key_in_a_spec_object() {
-        let err = spec_err(
-            r#"
-objects:
-  - type: extras.status
-    key: { name: Active }
-    uid: target
-    atrs: {}
-"#,
-        );
-        assert!(err.contains("atrs"), "{err}");
     }
 }

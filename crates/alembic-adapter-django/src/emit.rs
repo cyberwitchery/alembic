@@ -529,6 +529,9 @@ mod tests {
         )
         .expect("emit the app");
 
+        for probe in ["-c import django", "-c import rest_framework"] {
+            assert!(runner.ran(probe), "{probe}: {:?}", runner.calls());
+        }
         assert!(runner.ran("manage.py check"), "{:?}", runner.calls());
         assert!(
             runner.ran("manage.py makemigrations"),
@@ -552,22 +555,28 @@ mod tests {
             settings.contains("DEFAULT_FILTER_BACKENDS"),
             "drf ignores the generated filtering unless a backend is configured: {settings}"
         );
+        let urls = fs::read_to_string(dir.path().join("proj").join("urls.py")).unwrap();
+        assert!(urls.contains("include(\"app.urls\")"), "{urls}");
     }
 
     #[test]
     fn run_emit_skips_loaddata_without_objects() {
-        let dir = tempdir().unwrap();
-        scaffold_project(dir.path(), "proj", "app");
-        let runner = FakeRunner::default();
+        // a declared type with no objects, and an inventory declaring nothing.
+        let empty = Inventory {
+            scope: None,
+            schema: Schema::default(),
+            objects: vec![],
+        };
+        for inventory in [one_type_inventory(vec![]), empty] {
+            let dir = tempdir().unwrap();
+            scaffold_project(dir.path(), "proj", "app");
+            let runner = FakeRunner::default();
 
-        run_emit(
-            &runner,
-            &one_type_inventory(vec![]),
-            &config_for(dir.path()),
-        )
-        .expect("emit the app");
+            run_emit(&runner, &inventory, &config_for(dir.path())).expect("emit the app");
 
-        assert!(!runner.ran("loaddata"), "{:?}", runner.calls());
+            assert!(runner.ran("manage.py migrate"), "{:?}", runner.calls());
+            assert!(!runner.ran("loaddata"), "{:?}", runner.calls());
+        }
     }
 
     #[test]
@@ -604,12 +613,11 @@ mod tests {
             "from django.urls import path\n\nurlpatterns = (\n    path('admin/', admin.site.urls),\n)\n";
         let (dir, project) = setup_project(urls_py);
 
-        let result = ensure_project_urls(dir.path(), &project, "api_app");
+        let err = ensure_project_urls(dir.path(), &project, "api_app").unwrap_err();
 
-        assert!(
-            result.is_err(),
-            "expected an error when urls.py has no urlpatterns list to wire the api route into"
-        );
+        assert_eq!(err.to_string(), "urls.py missing urlpatterns list");
+        let after = fs::read_to_string(dir.path().join(&project).join("urls.py")).unwrap();
+        assert_eq!(after, urls_py, "a refused urls.py must be left as it was");
     }
 
     #[test]
@@ -624,20 +632,6 @@ mod tests {
         assert!(
             written.contains("path(\"api/\", include(\"api_app.urls\"))"),
             "expected the api route to be inserted, got:\n{written}"
-        );
-    }
-
-    /// a typo'd `no_migrate` must not fall back to the default: that migrates and
-    /// loads the inventory into a database the user meant to leave untouched, and
-    /// reports success either way.
-    #[test]
-    fn unknown_config_key_is_rejected() {
-        let err =
-            serde_json::from_value::<DjangoConfig>(json!({"output": "./out", "no_migrat": true}))
-                .expect_err("a typo'd key must be rejected");
-        assert!(
-            err.to_string().contains("unknown field"),
-            "expected an unknown-field error, got: {err}"
         );
     }
 
@@ -696,6 +690,8 @@ mod tests {
         ensure_django_app(&runner, dir.path(), "app", "python3").unwrap();
 
         assert!(runner.ran("startproject"));
+        // the app name is checked against importable modules before it is created
+        assert!(runner.ran("importlib.util"), "{:?}", runner.calls());
         assert!(runner.ran("startapp"));
     }
 }

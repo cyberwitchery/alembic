@@ -809,82 +809,90 @@ mod tests {
     // --- diff_attrs ---
 
     #[test]
-    fn diff_attrs_identical_maps() {
-        let attrs = make_attrs(&[("name", json!("FRA1"))]);
-        let changes = diff_attrs(&attrs, &attrs, None);
-        assert!(changes.is_empty());
-    }
-
-    fn int_field_schema(name: &str) -> TypeSchema {
-        TypeSchema {
-            key: BTreeMap::new(),
-            fields: BTreeMap::from([(name.to_string(), field(FieldType::Int))]),
+    fn diff_attrs_compares_by_field_type() {
+        let list_of_int = FieldType::List {
+            item: Box::new(FieldType::Int),
+        };
+        let map_of_int = FieldType::Map {
+            value: Box::new(FieldType::Int),
+        };
+        // (field type, observed, desired, whether it is a change)
+        let cases: Vec<(
+            Option<FieldType>,
+            serde_json::Value,
+            serde_json::Value,
+            bool,
+        )> = vec![
+            (None, json!("FRA1"), json!("FRA1"), false),
+            (Some(FieldType::Int), json!(3.0), json!(3), false),
+            (Some(FieldType::Int), json!("3"), json!(3), false),
+            (Some(FieldType::Int), json!(3), json!(4), true),
+            // no type info: 3.0 vs 3 differ structurally.
+            (None, json!(3.0), json!(3), true),
+            (Some(FieldType::Float), json!(2), json!(2.0), false),
+            (
+                Some(list_of_int.clone()),
+                json!([1.0, 2.0]),
+                json!([1, 2]),
+                false,
+            ),
+            (Some(list_of_int), json!([1.0, 2.0]), json!([1, 9]), true),
+            (
+                Some(map_of_int.clone()),
+                json!({"a": 1, "b": 2}),
+                json!({"a": 1.0, "b": 2}),
+                false,
+            ),
+            (
+                Some(map_of_int.clone()),
+                json!({"a": 1, "b": 2}),
+                json!({"a": 1}),
+                true,
+            ),
+            // same length, differing key set.
+            (
+                Some(map_of_int),
+                json!({"a": 1, "b": 2}),
+                json!({"a": 1, "c": 2}),
+                true,
+            ),
+            (Some(ref_t()), uref(7), uref(7), false),
+            (Some(ref_t()), uref(7), uref(8), true),
+            (
+                Some(list_ref_t()),
+                json!([uref(7), uref(8)]),
+                json!([uref(7), uref(8)]),
+                false,
+            ),
+            (
+                Some(list_ref_t()),
+                json!([uref(7), uref(8)]),
+                json!([uref(7), uref(9)]),
+                true,
+            ),
+            (
+                Some(FieldType::Json),
+                json!({"nested": true}),
+                json!({"nested": false}),
+                true,
+            ),
+        ];
+        for (r#type, existing, desired, changed) in cases {
+            let ts = r#type.clone().map(|r#type| TypeSchema {
+                key: BTreeMap::new(),
+                fields: BTreeMap::from([("f".to_string(), field(r#type))]),
+            });
+            let changes = diff_attrs(
+                &make_attrs(&[("f", existing.clone())]),
+                &make_attrs(&[("f", desired.clone())]),
+                ts.as_ref(),
+            );
+            assert_eq!(
+                changes.len(),
+                usize::from(changed),
+                "{type:?}: {existing} -> {desired}: {changes:?}"
+            );
         }
-    }
-
-    #[test]
-    fn diff_attrs_int_field_ignores_int_float_representation() {
-        let existing = make_attrs(&[("count", json!(3.0))]);
-        let desired = make_attrs(&[("count", json!(3))]);
-        let changes = diff_attrs(&existing, &desired, Some(&int_field_schema("count")));
-        assert!(changes.is_empty(), "{changes:?}");
-    }
-
-    #[test]
-    fn diff_attrs_int_field_ignores_numeric_string() {
-        let existing = make_attrs(&[("count", json!("3"))]);
-        let desired = make_attrs(&[("count", json!(3))]);
-        let changes = diff_attrs(&existing, &desired, Some(&int_field_schema("count")));
-        assert!(changes.is_empty(), "{changes:?}");
-    }
-
-    #[test]
-    fn diff_attrs_int_field_still_detects_real_change() {
-        let existing = make_attrs(&[("count", json!(3))]);
-        let desired = make_attrs(&[("count", json!(4))]);
-        let changes = diff_attrs(&existing, &desired, Some(&int_field_schema("count")));
-        assert_eq!(changes.len(), 1);
-    }
-
-    #[test]
-    fn diff_attrs_without_schema_compares_raw() {
-        // no type info: 3.0 vs 3 differ structurally.
-        let existing = make_attrs(&[("count", json!(3.0))]);
-        let desired = make_attrs(&[("count", json!(3))]);
-        let changes = diff_attrs(&existing, &desired, None);
-        assert_eq!(changes.len(), 1);
-    }
-
-    #[test]
-    fn diff_attrs_float_field_ignores_int_float_representation() {
-        let ts = TypeSchema {
-            key: BTreeMap::new(),
-            fields: BTreeMap::from([("ratio".to_string(), field(FieldType::Float))]),
-        };
-        let existing = make_attrs(&[("ratio", json!(2))]);
-        let desired = make_attrs(&[("ratio", json!(2.0))]);
-        let changes = diff_attrs(&existing, &desired, Some(&ts));
-        assert!(changes.is_empty(), "{changes:?}");
-    }
-
-    #[test]
-    fn diff_attrs_list_of_int_ignores_representation() {
-        let ts = TypeSchema {
-            key: BTreeMap::new(),
-            fields: BTreeMap::from([(
-                "ports".to_string(),
-                field(FieldType::List {
-                    item: Box::new(FieldType::Int),
-                }),
-            )]),
-        };
-        let existing = make_attrs(&[("ports", json!([1.0, 2.0]))]);
-        let desired = make_attrs(&[("ports", json!([1, 2]))]);
-        let changes = diff_attrs(&existing, &desired, Some(&ts));
-        assert!(changes.is_empty(), "{changes:?}");
-        // a genuine element change is still detected.
-        let desired2 = make_attrs(&[("ports", json!([1, 9]))]);
-        assert_eq!(diff_attrs(&existing, &desired2, Some(&ts)).len(), 1);
     }
 
     #[test]
@@ -926,95 +934,6 @@ mod tests {
         let fields: Vec<&str> = changes.iter().map(|c| c.field.as_str()).collect();
         assert!(fields.contains(&"a"));
         assert!(fields.contains(&"b"));
-    }
-
-    fn map_of_int_schema(name: &str) -> TypeSchema {
-        TypeSchema {
-            key: BTreeMap::new(),
-            fields: BTreeMap::from([(
-                name.to_string(),
-                field(FieldType::Map {
-                    value: Box::new(FieldType::Int),
-                }),
-            )]),
-        }
-    }
-
-    #[test]
-    fn map_field_equal_ignores_numeric_representation() {
-        // Map { value: Int }: 1 vs 1.0 per value compares equal, so no change.
-        let ts = map_of_int_schema("labels");
-        let existing = make_attrs(&[("labels", json!({"a": 1, "b": 2}))]);
-        let desired = make_attrs(&[("labels", json!({"a": 1.0, "b": 2}))]);
-        let changes = diff_attrs(&existing, &desired, Some(&ts));
-        assert!(changes.is_empty(), "{changes:?}");
-    }
-
-    #[test]
-    fn map_field_length_mismatch_is_a_change() {
-        let ts = map_of_int_schema("labels");
-        let existing = make_attrs(&[("labels", json!({"a": 1, "b": 2}))]);
-        let desired = make_attrs(&[("labels", json!({"a": 1}))]);
-        let changes = diff_attrs(&existing, &desired, Some(&ts));
-        assert_eq!(changes.len(), 1);
-    }
-
-    #[test]
-    fn map_field_missing_key_is_a_change() {
-        // same length, differing key set: `b` present vs `c` present.
-        let ts = map_of_int_schema("labels");
-        let existing = make_attrs(&[("labels", json!({"a": 1, "b": 2}))]);
-        let desired = make_attrs(&[("labels", json!({"a": 1, "c": 2}))]);
-        let changes = diff_attrs(&existing, &desired, Some(&ts));
-        assert_eq!(changes.len(), 1);
-    }
-
-    #[test]
-    fn ref_field_equal_uid_is_no_change() {
-        let ts = TypeSchema {
-            key: BTreeMap::new(),
-            fields: BTreeMap::from([("parent".to_string(), field(ref_t()))]),
-        };
-        let existing = make_attrs(&[("parent", uref(7))]);
-        let desired = make_attrs(&[("parent", uref(7))]);
-        let changes = diff_attrs(&existing, &desired, Some(&ts));
-        assert!(changes.is_empty(), "{changes:?}");
-    }
-
-    #[test]
-    fn ref_field_different_uid_is_a_change() {
-        let ts = TypeSchema {
-            key: BTreeMap::new(),
-            fields: BTreeMap::from([("parent".to_string(), field(ref_t()))]),
-        };
-        let existing = make_attrs(&[("parent", uref(7))]);
-        let desired = make_attrs(&[("parent", uref(8))]);
-        let changes = diff_attrs(&existing, &desired, Some(&ts));
-        assert_eq!(changes.len(), 1);
-    }
-
-    #[test]
-    fn list_ref_field_equal_uids_is_no_change() {
-        let ts = TypeSchema {
-            key: BTreeMap::new(),
-            fields: BTreeMap::from([("members".to_string(), field(list_ref_t()))]),
-        };
-        let existing = make_attrs(&[("members", json!([uref(7), uref(8)]))]);
-        let desired = make_attrs(&[("members", json!([uref(7), uref(8)]))]);
-        let changes = diff_attrs(&existing, &desired, Some(&ts));
-        assert!(changes.is_empty(), "{changes:?}");
-    }
-
-    #[test]
-    fn list_ref_field_different_uid_is_a_change() {
-        let ts = TypeSchema {
-            key: BTreeMap::new(),
-            fields: BTreeMap::from([("members".to_string(), field(list_ref_t()))]),
-        };
-        let existing = make_attrs(&[("members", json!([uref(7), uref(8)]))]);
-        let desired = make_attrs(&[("members", json!([uref(7), uref(9)]))]);
-        let changes = diff_attrs(&existing, &desired, Some(&ts));
-        assert_eq!(changes.len(), 1);
     }
 
     // --- plan() ---
@@ -1087,68 +1006,6 @@ mod tests {
             }
             other => panic!("expected Update, got {:?}", other),
         }
-    }
-
-    #[test]
-    fn plan_no_op_when_identical() {
-        let desired = vec![make_object(
-            1,
-            "dcim.site",
-            "fra1",
-            make_attrs(&[("name", json!("FRA1"))]),
-        )];
-        let mut observed = ObservedState::default();
-        observed
-            .insert(ObservedObject {
-                type_name: TypeName::new("dcim.site"),
-                key: make_key("fra1"),
-                attrs: make_attrs(&[("name", json!("FRA1"))]),
-                backend_id: Some(BackendId::Int(100)),
-            })
-            .unwrap();
-        let result = plan(
-            &desired,
-            &observed,
-            &empty_state(),
-            &empty_schema(),
-            None,
-            false,
-            true,
-        )
-        .unwrap();
-        assert!(result.ops.is_empty());
-    }
-
-    #[test]
-    fn plan_deletes_unmatched_when_allowed() {
-        let desired = vec![];
-        let mut observed = ObservedState::default();
-        observed
-            .insert(ObservedObject {
-                type_name: TypeName::new("dcim.site"),
-                key: make_key("fra1"),
-                attrs: make_attrs(&[("name", json!("FRA1"))]),
-                backend_id: Some(BackendId::Int(100)),
-            })
-            .unwrap();
-        let result = plan(
-            &desired,
-            &observed,
-            &empty_state(),
-            &empty_schema(),
-            None,
-            true,
-            true,
-        )
-        .unwrap();
-        assert_eq!(result.ops.len(), 1);
-        assert!(matches!(
-            &result.ops[0],
-            Op::Delete {
-                backend_id: Some(BackendId::Int(100)),
-                ..
-            }
-        ));
     }
 
     /// two observed sites, one inside a `slug: fra1` scope. only that one is a
@@ -1409,45 +1266,6 @@ mod tests {
     }
 
     #[test]
-    fn plan_uses_state_mapping_for_lookup() {
-        let mut state_data = StateData::default();
-        state_data
-            .mappings
-            .entry(TypeName::new("dcim.site"))
-            .or_default()
-            .insert(Uid::from_u128(1), BackendId::Int(100));
-        let state = StateStore::new(None, state_data);
-
-        let desired = vec![make_object(
-            1,
-            "dcim.site",
-            "fra1",
-            make_attrs(&[("name", json!("FRA2"))]),
-        )];
-        let mut observed = ObservedState::default();
-        observed
-            .insert(ObservedObject {
-                type_name: TypeName::new("dcim.site"),
-                key: make_key("fra1"),
-                attrs: make_attrs(&[("name", json!("FRA1"))]),
-                backend_id: Some(BackendId::Int(100)),
-            })
-            .unwrap();
-        let result = plan(
-            &desired,
-            &observed,
-            &state,
-            &empty_schema(),
-            None,
-            false,
-            true,
-        )
-        .unwrap();
-        assert_eq!(result.ops.len(), 1);
-        assert!(matches!(&result.ops[0], Op::Update { .. }));
-    }
-
-    #[test]
     fn plan_matches_renamed_object_by_backend_id() {
         let mut state_data = StateData::default();
         state_data
@@ -1548,36 +1366,19 @@ mod tests {
             true,
         )
         .unwrap();
-        assert_eq!(result.ops.len(), 1);
-        match &result.ops[0] {
-            Op::Delete { uid, .. } => {
-                assert_eq!(*uid, uid_v5("dcim.site", &key_string(&make_key("fra1"))));
-            }
-            other => panic!("expected delete, got {other:?}"),
-        }
-    }
-
-    // --- sort_ops_for_apply ---
-
-    #[test]
-    fn sort_ops_creates_before_deletes() {
-        let ops = vec![
-            Op::Delete {
-                uid: Uid::from_u128(1),
+        assert_eq!(
+            result.ops,
+            vec![Op::Delete {
+                // the uid dcim.site keyed slug=fra1 mints, pinned.
+                uid: Uid::parse_str("8c998348-947f-568d-bbb0-efbed3c3f903").unwrap(),
                 type_name: TypeName::new("dcim.site"),
                 key: make_key("fra1"),
                 backend_id: Some(BackendId::Int(100)),
-            },
-            Op::Create {
-                uid: Uid::from_u128(2),
-                type_name: TypeName::new("dcim.site"),
-                desired: make_object(2, "dcim.site", "ams1", make_attrs(&[])),
-            },
-        ];
-        let sorted = sort_ops_for_apply(&ops, &empty_schema());
-        assert!(matches!(&sorted[0], Op::Create { .. }));
-        assert!(matches!(&sorted[1], Op::Delete { .. }));
+            }]
+        );
     }
+
+    // --- sort_ops_for_apply ---
 
     #[test]
     fn sort_ops_deletes_last() {

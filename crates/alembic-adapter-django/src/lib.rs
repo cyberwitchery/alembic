@@ -1630,93 +1630,73 @@ mod tests {
     }
 
     #[test]
-    fn list_of_a_primitive_carries_the_type_core_checks_for() {
-        for (item, kind) in [
-            (FieldType::String, "str"),
-            (FieldType::Text, "str"),
-            (FieldType::IpAddress, "str"),
-            (FieldType::Int, "int"),
-            (FieldType::Float, "float"),
-            (FieldType::Bool, "bool"),
-        ] {
-            let models = list_field_models(item);
-            assert!(
-                models.contains(&format!(
-                    "members = models.JSONField(validators=[_ListMembers(kind=\"{kind}\")])"
-                )),
-                "{models}"
-            );
-        }
-    }
-
-    #[test]
-    fn list_of_a_nested_collection_carries_its_outer_shape() {
-        // core recurses into the entries, so only the outer shape is checkable
-        // here -- and on that shape core is exact.
-        for (item, kind) in [
+    fn list_members_carry_the_check_core_makes() {
+        let uuid_regex = format!(
+            "regex={}",
+            py_str(alembic_core::format_regex(&FieldFormat::Uuid))
+        );
+        for (item, args, imports_re) in [
+            // a primitive carries the type core checks for.
+            (FieldType::String, "kind=\"str\"".to_string(), false),
+            (FieldType::Text, "kind=\"str\"".to_string(), false),
+            (FieldType::IpAddress, "kind=\"str\"".to_string(), false),
+            (FieldType::Int, "kind=\"int\"".to_string(), false),
+            (FieldType::Float, "kind=\"float\"".to_string(), false),
+            (FieldType::Bool, "kind=\"bool\"".to_string(), false),
+            // core recurses into a nested collection's entries, so only the outer
+            // shape is checkable here, and on that shape core is exact.
             (
                 FieldType::List {
                     item: Box::new(FieldType::Int),
                 },
-                "list",
+                "kind=\"list\"".to_string(),
+                false,
             ),
             (
                 FieldType::ListRef {
                     target: "dcim.interface".to_string(),
                 },
-                "list",
+                "kind=\"list\"".to_string(),
+                false,
             ),
             (
                 FieldType::Map {
                     value: Box::new(FieldType::Int),
                 },
-                "map",
+                "kind=\"map\"".to_string(),
+                false,
             ),
+            // core parses a ref's uid exactly as it parses a `uuid`; only
+            // resolving it needs the inventory.
+            (
+                FieldType::Ref {
+                    target: "dcim.interface".to_string(),
+                },
+                uuid_regex.clone(),
+                true,
+            ),
+            // core reads a date as rfc 3339 and checks the calendar with it, and
+            // takes any json for a `json` element, so neither carries an element
+            // check, but core still takes an array for the field and nothing
+            // else, which is what the bare validator holds it to.
+            (FieldType::Date, String::new(), false),
+            (FieldType::Datetime, String::new(), false),
+            (FieldType::Time, String::new(), false),
+            (FieldType::Json, String::new(), false),
         ] {
+            let label = format!("{item:?}");
             let models = list_field_models(item);
             assert!(
                 models.contains(&format!(
-                    "members = models.JSONField(validators=[_ListMembers(kind=\"{kind}\")])"
+                    "members = models.JSONField(validators=[_ListMembers({args})])"
                 )),
-                "{models}"
+                "{label}: {models}"
             );
-        }
-    }
-
-    #[test]
-    fn list_of_refs_carries_the_uuid_regex() {
-        // core parses a ref's uid exactly as it parses a `uuid`; only resolving
-        // it needs the inventory.
-        let models = list_field_models(FieldType::Ref {
-            target: "dcim.interface".to_string(),
-        });
-        assert!(
-            models.contains(&format!(
-                "members = models.JSONField(validators=[_ListMembers(regex={})])",
-                py_str(alembic_core::format_regex(&FieldFormat::Uuid))
-            )),
-            "{models}"
-        );
-    }
-
-    #[test]
-    fn list_of_an_uncheckable_element_still_carries_the_outer_shape() {
-        // core reads a date as rfc 3339 and checks the calendar with it, and
-        // takes any json for a `json` element, so neither carries an element
-        // check -- but core still takes an array for the field and nothing
-        // else, which is what the bare validator holds it to.
-        for item in [
-            FieldType::Date,
-            FieldType::Datetime,
-            FieldType::Time,
-            FieldType::Json,
-        ] {
-            let models = list_field_models(item);
-            assert!(
-                models.contains("members = models.JSONField(validators=[_ListMembers()])"),
-                "{models}"
+            assert_eq!(
+                models.contains("import re"),
+                imports_re,
+                "{label}: {models}"
             );
-            assert!(!models.contains("import re"), "{models}");
         }
     }
 
@@ -2061,29 +2041,6 @@ mod tests {
             models.contains("help_text=\"human readable name\""),
             "{models}"
         );
-    }
-
-    #[test]
-    fn unusable_field_names_are_rejected() {
-        for name in ["class", "key", "attrs", "uid", "pk", "trailing_", "do__ble"] {
-            let inventory = Inventory {
-                scope: None,
-                schema: schema_of(vec![(
-                    "dcim.site",
-                    type_schema(
-                        vec![("slug", field(FieldType::Slug))],
-                        vec![(name, field(FieldType::String))],
-                    ),
-                )]),
-                objects: vec![],
-            };
-            let dir = tempdir().unwrap();
-            let result = emit_django_app(dir.path(), &inventory, DjangoEmitOptions::default());
-            assert!(
-                result.is_err(),
-                "expected '{name}' to be rejected instead of emitting broken python"
-            );
-        }
     }
 
     #[test]
@@ -2452,63 +2409,33 @@ mod tests {
     }
 
     #[test]
-    fn rejects_field_named_uid() {
-        // the silent one: a schema field `uid` would override the generated
-        // `uid = models.UUIDField(primary_key=True)`, dropping the uuid primary key
-        // without any error from `manage.py check`.
-        let err = emit_error(&inventory_with_field("uid"));
-        assert!(
-            err.contains("uid"),
-            "error should name the field, got: {err}"
-        );
-        assert!(
-            err.contains("reserved"),
-            "error should say reserved, got: {err}"
-        );
-    }
-
-    #[test]
-    fn rejects_field_named_key() {
-        let err = emit_error(&inventory_with_field("key"));
-        assert!(
-            err.contains("'key'"),
-            "error should name the field, got: {err}"
-        );
-        assert!(
-            err.contains("reserved"),
-            "error should say reserved, got: {err}"
-        );
-    }
-
-    #[test]
-    fn rejects_field_named_attrs() {
-        let err = emit_error(&inventory_with_field("attrs"));
-        assert!(
-            err.contains("'attrs'"),
-            "error should name the field, got: {err}"
-        );
-        assert!(
-            err.contains("reserved"),
-            "error should say reserved, got: {err}"
-        );
-    }
-
-    #[test]
-    fn rejects_python_keyword_field_name() {
-        let err = emit_error(&inventory_with_field("from"));
-        assert!(
-            err.contains("'from'"),
-            "error should name the field, got: {err}"
-        );
-    }
-
-    #[test]
-    fn rejects_leading_digit_field_name() {
-        let err = emit_error(&inventory_with_field("10g_port"));
-        assert!(
-            err.contains("'10g_port'"),
-            "error should name the field, got: {err}"
-        );
+    fn unusable_field_names_are_rejected() {
+        // `uid` is the silent one: a schema field `uid` would override the
+        // generated `uid = models.UUIDField(primary_key=True)`, dropping the uuid
+        // primary key without any error from `manage.py check`.
+        for (name, reserved) in [
+            ("uid", true),
+            ("key", true),
+            ("attrs", true),
+            ("class", false),
+            ("pk", false),
+            ("trailing_", false),
+            ("do__ble", false),
+            ("from", false),
+            ("10g_port", false),
+        ] {
+            let err = emit_error(&inventory_with_field(name));
+            assert!(
+                err.contains(&format!("'{name}'")),
+                "error should name the field, got: {err}"
+            );
+            if reserved {
+                assert!(
+                    err.contains("reserved"),
+                    "error should say reserved, got: {err}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -2639,31 +2566,24 @@ mod tests {
     /// this pins is that the failure names the path and the stat, not an
     /// unlabelled `Not a directory` from somewhere in the emit.
     #[test]
-    fn write_if_missing_reports_a_stat_it_could_not_make() {
-        let dir = tempdir().unwrap();
-        let blocker = dir.path().join("blocker");
-        fs::write(&blocker, "regular file").unwrap();
+    fn write_helpers_report_a_stat_they_could_not_make() {
+        type Write = fn(std::path::PathBuf) -> Result<()>;
+        let helpers: [(&str, Write); 2] = [
+            ("extensions.py", |path| write_if_missing(path, "new")),
+            ("models.py", |path| write_user_file(path, "new", &[])),
+        ];
+        for (file, write) in helpers {
+            let dir = tempdir().unwrap();
+            let blocker = dir.path().join("blocker");
+            fs::write(&blocker, "regular file").unwrap();
 
-        let err = write_if_missing(blocker.join("extensions.py"), "new").unwrap_err();
+            let err = write(blocker.join(file)).unwrap_err();
 
-        assert!(
-            format!("{err:#}").contains("extensions.py"),
-            "the error must name the path: {err:#}"
-        );
-    }
-
-    #[test]
-    fn write_user_file_reports_a_stat_it_could_not_make() {
-        let dir = tempdir().unwrap();
-        let blocker = dir.path().join("blocker");
-        fs::write(&blocker, "regular file").unwrap();
-
-        let err = write_user_file(blocker.join("models.py"), "new", &[]).unwrap_err();
-
-        assert!(
-            format!("{err:#}").contains("models.py"),
-            "the error must name the path: {err:#}"
-        );
+            assert!(
+                format!("{err:#}").contains(file),
+                "the error must name the path: {err:#}"
+            );
+        }
     }
 
     /// the ordinary failure is a stat that succeeded: a dangling symlink the

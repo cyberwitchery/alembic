@@ -720,6 +720,7 @@ fn render_template_optional(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use std::collections::BTreeMap;
 
     /// a render context over `vars` with no user transforms and a fixed rule
@@ -816,198 +817,105 @@ uid:
     }
 
     #[test]
-    fn template_coerces_number_var() {
-        let mut vars = BTreeMap::new();
-        vars.insert("asn".to_string(), JsonValue::Number(65001.into()));
-        let rendered = render_template("asn=${asn}", &ctx(&vars), "key").unwrap();
-        assert_eq!(rendered, "asn=65001");
+    fn templates_coerce_scalars_and_apply_transforms() {
+        let cases = [
+            ("asn=${x}", json!(65001), "asn=65001"),
+            ("flag=${x}", json!(true), "flag=true"),
+            ("${x|upper}", json!("leaf01"), "LEAF01"),
+            ("${x|lower}", json!("LEAF01"), "leaf01"),
+            ("name=${x|trim}", json!("  leaf01  "), "name=leaf01"),
+            ("a ${x|trim} b", json!(" v "), "a v b"),
+            ("${x|trim|upper}", json!("  leaf01  "), "LEAF01"),
+            (
+                "${x|trim|slug}",
+                json!("  Frankfurt DC1  "),
+                "frankfurt-dc1",
+            ),
+        ];
+        for (template, value, expected) in cases {
+            let vars = BTreeMap::from([("x".to_string(), value)]);
+            let rendered = render_template(template, &ctx(&vars), "key").unwrap();
+            assert_eq!(rendered, expected, "{template}");
+        }
     }
 
     #[test]
-    fn template_coerces_bool_var() {
-        let mut vars = BTreeMap::new();
-        vars.insert("enabled".to_string(), JsonValue::Bool(true));
-        let rendered = render_template("flag=${enabled}", &ctx(&vars), "key").unwrap();
-        assert_eq!(rendered, "flag=true");
-    }
-
-    #[test]
-    fn template_errors_on_array_var() {
-        let mut vars = BTreeMap::new();
-        vars.insert("tags".to_string(), serde_json::json!(["a", "b"]));
-        let err = render_template("tags=${tags}", &ctx(&vars), "key").unwrap_err();
-        assert!(err.to_string().contains("must be a scalar"));
-    }
-
-    #[test]
-    fn template_applies_upper_transform() {
-        let mut vars = BTreeMap::new();
-        vars.insert("name".to_string(), JsonValue::String("leaf01".to_string()));
-        let rendered = render_template("${name|upper}", &ctx(&vars), "key").unwrap();
-        assert_eq!(rendered, "LEAF01");
-    }
-
-    #[test]
-    fn template_applies_lower_transform() {
-        let mut vars = BTreeMap::new();
-        vars.insert("name".to_string(), JsonValue::String("LEAF01".to_string()));
-        let rendered = render_template("${name|lower}", &ctx(&vars), "key").unwrap();
-        assert_eq!(rendered, "leaf01");
-    }
-
-    #[test]
-    fn template_applies_trim_transform() {
-        let mut vars = BTreeMap::new();
-        vars.insert(
-            "name".to_string(),
-            JsonValue::String("  leaf01  ".to_string()),
-        );
-        let rendered = render_template("name=${name|trim}", &ctx(&vars), "key").unwrap();
-        assert_eq!(rendered, "name=leaf01");
-    }
-
-    #[test]
-    fn template_applies_chained_transforms() {
-        let mut vars = BTreeMap::new();
-        vars.insert("x".to_string(), JsonValue::String("  leaf01  ".to_string()));
-        let rendered = render_template("${x|trim|upper}", &ctx(&vars), "key").unwrap();
-        assert_eq!(rendered, "LEAF01");
-    }
-
-    #[test]
-    fn template_errors_on_unknown_transform() {
-        let mut vars = BTreeMap::new();
-        vars.insert("name".to_string(), JsonValue::String("leaf01".to_string()));
-        let err = render_template("${name|frobnicate}", &ctx(&vars), "key").unwrap_err();
-        assert!(err.to_string().contains("unknown transform frobnicate"));
-    }
-
-    #[test]
-    fn builtin_transform_rejects_arguments() {
-        let mut vars = BTreeMap::new();
-        vars.insert("name".to_string(), JsonValue::String("leaf01".to_string()));
-        let err = render_template("${name|upper(1)}", &ctx(&vars), "key").unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("transform upper takes no arguments"));
+    fn template_errors_name_the_cause() {
+        let cases = [
+            ("tags=${x}", json!(["a", "b"]), "must be a scalar"),
+            (
+                "${x|frobnicate}",
+                json!("leaf01"),
+                "unknown transform frobnicate",
+            ),
+            (
+                "${x|upper(1)}",
+                json!("leaf01"),
+                "transform upper takes no arguments",
+            ),
+            (
+                "${x|slug}",
+                json!("---"),
+                "slug transform produced an empty slug",
+            ),
+            (
+                "${x|slug}",
+                json!(""),
+                "slug transform produced an empty slug",
+            ),
+        ];
+        for (template, value, expected) in cases {
+            let vars = BTreeMap::from([("x".to_string(), value)]);
+            let err = render_template(template, &ctx(&vars), "key").unwrap_err();
+            assert!(err.to_string().contains(expected), "{template}: {err:#}");
+        }
     }
 
     #[test]
     fn lone_placeholder_without_transform_preserves_type() {
-        let mut vars = BTreeMap::new();
-        vars.insert("asn".to_string(), JsonValue::Number(65001.into()));
-        let rendered = render_string_value(
-            "${asn}",
-            &ctx(&vars),
-            "key",
-            false,
-            TransformedOutput::Typed,
-        )
-        .unwrap()
-        .unwrap();
-        assert_eq!(rendered, JsonValue::Number(65001.into()));
+        for value in [json!(65001), JsonValue::Null, json!(["a", "b"])] {
+            let vars = BTreeMap::from([("x".to_string(), value.clone())]);
+            let attrs = BTreeMap::from([("v".to_string(), json!("${x}"))]);
+            let rendered = render_attrs(&attrs, &ctx(&vars), "attrs").unwrap();
+            assert_eq!(rendered.get("v"), Some(&value));
+        }
     }
 
     #[test]
     fn lone_placeholder_with_transform_coerces_and_applies() {
-        let mut vars = BTreeMap::new();
-        vars.insert("name".to_string(), JsonValue::String("leaf01".to_string()));
-        let rendered = render_string_value(
-            "${name|upper}",
-            &ctx(&vars),
-            "key",
-            false,
-            TransformedOutput::String,
-        )
-        .unwrap()
-        .unwrap();
-        assert_eq!(rendered, JsonValue::String("LEAF01".to_string()));
+        for (template, value, expected) in [
+            ("${x|upper}", json!("leaf01"), "LEAF01"),
+            ("${x|trim}", json!(65001), "65001"),
+        ] {
+            let vars = BTreeMap::from([("x".to_string(), value)]);
+            let rendered = render_string_value(
+                template,
+                &ctx(&vars),
+                "key",
+                false,
+                TransformedOutput::String,
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(rendered, json!(expected), "{template}");
+        }
     }
 
     #[test]
-    fn lone_placeholder_number_with_transform_coerces() {
-        let mut vars = BTreeMap::new();
-        vars.insert("asn".to_string(), JsonValue::Number(65001.into()));
-        let rendered = render_string_value(
-            "${asn|trim}",
-            &ctx(&vars),
-            "key",
-            false,
-            TransformedOutput::String,
-        )
-        .unwrap()
-        .unwrap();
-        assert_eq!(rendered, JsonValue::String("65001".to_string()));
-    }
-
-    #[test]
-    fn render_key_rejects_null_lone_placeholder() {
-        let mut vars = BTreeMap::new();
-        vars.insert("x".to_string(), JsonValue::Null);
-        let mut key = BTreeMap::new();
-        key.insert("slug".to_string(), JsonValue::String("${x}".to_string()));
-        let err = render_key(&key, &ctx(&vars)).unwrap_err();
-        assert!(err.to_string().contains("is null"), "{err:#}");
-    }
-
-    #[test]
-    fn lone_placeholder_null_preserved_in_typed_mode() {
-        let mut vars = BTreeMap::new();
-        vars.insert("x".to_string(), JsonValue::Null);
-        let rendered = render_string_value(
-            "${x}",
-            &ctx(&vars),
-            "attrs",
-            false,
-            TransformedOutput::Typed,
-        )
-        .unwrap()
-        .unwrap();
-        assert_eq!(rendered, JsonValue::Null);
-    }
-
-    #[test]
-    fn render_key_rejects_array_lone_placeholder() {
-        let mut vars = BTreeMap::new();
-        vars.insert("tags".to_string(), serde_json::json!(["a", "b"]));
-        let mut key = BTreeMap::new();
-        key.insert("k".to_string(), JsonValue::String("${tags}".to_string()));
-        let err = render_key(&key, &ctx(&vars)).unwrap_err();
-        assert!(err.to_string().contains("must be a scalar"), "{err:#}");
-    }
-
-    #[test]
-    fn render_key_rejects_literal_sequence() {
-        let vars = BTreeMap::new();
-        let mut key = BTreeMap::new();
-        key.insert(
-            "k".to_string(),
-            JsonValue::Array(vec![JsonValue::String("a".to_string())]),
-        );
-        let err = render_key(&key, &ctx(&vars)).unwrap_err();
-        assert!(err.to_string().contains("must be a scalar"), "{err:#}");
-    }
-
-    #[test]
-    fn render_key_rejects_literal_null() {
-        let vars = BTreeMap::new();
-        let mut key = BTreeMap::new();
-        key.insert("k".to_string(), JsonValue::Null);
-        let err = render_key(&key, &ctx(&vars)).unwrap_err();
-        assert!(err.to_string().contains("is null"), "{err:#}");
-    }
-
-    #[test]
-    fn render_attrs_keeps_composite() {
-        let mut vars = BTreeMap::new();
-        vars.insert("tags".to_string(), serde_json::json!(["a", "b"]));
-        let mut attrs = BTreeMap::new();
-        attrs.insert("tags".to_string(), JsonValue::String("${tags}".to_string()));
-        let rendered = render_attrs(&attrs, &ctx(&vars), "attrs").unwrap();
-        assert_eq!(
-            rendered.get("tags").unwrap(),
-            &serde_json::json!(["a", "b"])
-        );
+    fn render_key_rejects_null_and_collection_values() {
+        // a var and a literal reach the scalar check by different paths.
+        let cases = [
+            (json!("${x}"), JsonValue::Null, "is null"),
+            (json!("${x}"), json!(["a", "b"]), "must be a scalar"),
+            (json!(["a"]), JsonValue::Null, "must be a scalar"),
+            (JsonValue::Null, JsonValue::Null, "is null"),
+        ];
+        for (value, var, expected) in cases {
+            let vars = BTreeMap::from([("x".to_string(), var)]);
+            let key = BTreeMap::from([("k".to_string(), value.clone())]);
+            let err = render_key(&key, &ctx(&vars)).unwrap_err();
+            assert!(err.to_string().contains(expected), "{value}: {err:#}");
+        }
     }
 
     /// render `${name|slug}` over a single string var.
@@ -1025,27 +933,8 @@ uid:
         assert_eq!(slug_of("a__b"), "a-b"); // underscores normalize to '-'
         assert_eq!(slug_of("AS65001"), "as65001"); // lowercased
         assert_eq!(slug_of("he\u{fc}llo"), "he-llo"); // non-ascii char -> single '-'
-    }
-
-    #[test]
-    fn template_slug_errors_on_empty_result() {
-        let mut vars = BTreeMap::new();
-        vars.insert("name".to_string(), JsonValue::String("---".to_string()));
-        let err = render_template("${name|slug}", &ctx(&vars), "key").unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("slug transform produced an empty slug"));
-    }
-
-    #[test]
-    fn template_chains_trim_and_slug() {
-        let mut vars = BTreeMap::new();
-        vars.insert(
-            "x".to_string(),
-            JsonValue::String("  Frankfurt DC1  ".to_string()),
-        );
-        let rendered = render_template("${x|trim|slug}", &ctx(&vars), "key").unwrap();
-        assert_eq!(rendered, "frankfurt-dc1");
+        assert_eq!(slug_of("EVPN Fabric!"), "evpn-fabric"); // trailing punctuation dropped
+        assert_eq!(slug_of("---test---"), "test"); // leading/trailing separators dropped
     }
 
     #[test]
@@ -1114,93 +1003,67 @@ uid:
     }
 
     #[test]
-    fn parses_bare_transform_pipeline() {
-        let (name, calls) = parse("x | trim | upper").unwrap();
-        assert_eq!(name, "x");
-        assert_eq!(
-            calls,
-            vec![("trim".to_string(), vec![]), ("upper".to_string(), vec![])]
-        );
-    }
-
-    #[test]
-    fn parses_literal_arguments() {
-        let (_, calls) = parse(r#"x|f(1, "a", true, 2.5, -3, 'b')"#).unwrap();
-        assert_eq!(
-            calls,
-            vec![(
-                "f".to_string(),
-                vec![
-                    serde_json::json!(1),
-                    serde_json::json!("a"),
-                    serde_json::json!(true),
-                    serde_json::json!(2.5),
-                    serde_json::json!(-3),
-                    serde_json::json!("b"),
-                ]
-            )]
-        );
-    }
-
-    #[test]
-    fn parses_wide_integer_arguments() {
-        // i64::MAX, i64::MAX + 1, and u64::MAX must parse to exact integers,
-        // not a lossy f64 (mirrors json_to_starlark's i64 -> u64 -> f64 order).
-        let (_, calls) =
-            parse("x|f(9223372036854775807, 9223372036854775808, 18446744073709551615)").unwrap();
-        assert_eq!(
-            calls,
-            vec![(
-                "f".to_string(),
-                vec![
-                    serde_json::json!(9223372036854775807i64),
-                    serde_json::json!(9223372036854775808u64),
-                    serde_json::json!(18446744073709551615u64),
-                ]
-            )]
-        );
-        // a non-numeric token is still rejected.
-        assert!(parse("x|f(abc)").is_err());
-    }
-
-    #[test]
-    fn parses_empty_argument_list() {
-        let (_, calls) = parse("x|f()").unwrap();
-        assert_eq!(calls, vec![("f".to_string(), vec![])]);
-    }
-
-    #[test]
-    fn quoted_arguments_protect_separators() {
-        let (_, calls) = parse(r#"x|f("a|b", "c,d", "e)f")"#).unwrap();
-        assert_eq!(
-            calls,
-            vec![(
-                "f".to_string(),
-                vec![
-                    serde_json::json!("a|b"),
-                    serde_json::json!("c,d"),
-                    serde_json::json!("e)f"),
-                ]
-            )]
-        );
-    }
-
-    #[test]
-    fn quoted_arguments_support_escapes() {
-        let (_, calls) = parse(r#"x|f("a\"b", 'c\'d', "e\\f", "g\nh", "i\tj")"#).unwrap();
-        assert_eq!(
-            calls,
-            vec![(
-                "f".to_string(),
-                vec![
-                    serde_json::json!("a\"b"),
-                    serde_json::json!("c'd"),
-                    serde_json::json!("e\\f"),
-                    serde_json::json!("g\nh"),
-                    serde_json::json!("i\tj"),
-                ]
-            )]
-        );
+    fn parses_transform_pipelines_and_literal_arguments() {
+        let call = |name: &str, args: Vec<JsonValue>| (name.to_string(), args);
+        let cases = [
+            (
+                "x | trim | upper",
+                vec![call("trim", vec![]), call("upper", vec![])],
+            ),
+            (
+                r#"x|f(1, "a", true, 2.5, -3, 'b')"#,
+                vec![call(
+                    "f",
+                    vec![
+                        json!(1),
+                        json!("a"),
+                        json!(true),
+                        json!(2.5),
+                        json!(-3),
+                        json!("b"),
+                    ],
+                )],
+            ),
+            // i64::MAX, i64::MAX + 1, and u64::MAX must parse to exact integers,
+            // not a lossy f64 (mirrors json_to_starlark's i64 -> u64 -> f64 order).
+            (
+                "x|f(9223372036854775807, 9223372036854775808, 18446744073709551615)",
+                vec![call(
+                    "f",
+                    vec![
+                        json!(9223372036854775807i64),
+                        json!(9223372036854775808u64),
+                        json!(18446744073709551615u64),
+                    ],
+                )],
+            ),
+            ("x|f()", vec![call("f", vec![])]),
+            // quotes protect separators.
+            (
+                r#"x|f("a|b", "c,d", "e)f")"#,
+                vec![call("f", vec![json!("a|b"), json!("c,d"), json!("e)f")])],
+            ),
+            (
+                r#"x|f("a\"b", 'c\'d', "e\\f", "g\nh", "i\tj")"#,
+                vec![call(
+                    "f",
+                    vec![
+                        json!("a\"b"),
+                        json!("c'd"),
+                        json!("e\\f"),
+                        json!("g\nh"),
+                        json!("i\tj"),
+                    ],
+                )],
+            ),
+        ];
+        for (inner, expected) in cases {
+            assert_eq!(
+                parse(inner).unwrap(),
+                ("x".to_string(), expected),
+                "{inner}"
+            );
+        }
     }
 
     #[test]
@@ -1250,15 +1113,6 @@ uid:
         let err = render_template(r#"${x|f("}")}"#, &ctx(&vars), "key").unwrap_err();
         // reaches transform resolution (unknown f), not a parse/termination error.
         assert!(err.to_string().contains("unknown transform f"));
-    }
-
-    #[test]
-    fn embedded_template_with_argument_call_renders() {
-        let mut vars = BTreeMap::new();
-        vars.insert("x".to_string(), JsonValue::String(" v ".to_string()));
-        // built-in via the embedded path still works alongside text.
-        let rendered = render_template("a ${x|trim} b", &ctx(&vars), "key").unwrap();
-        assert_eq!(rendered, "a v b");
     }
 
     #[cfg(feature = "starlark")]
@@ -1329,22 +1183,6 @@ uid:
         }
 
         #[test]
-        fn typed_return_survives_in_attrs_mode() {
-            let transforms = registry("def wrap(v):\n    return {\"v\": [v, True]}\n");
-            let vars = string_var("a");
-            let rendered = render_string_value(
-                "${x|wrap}",
-                &user_ctx(&vars, &transforms),
-                "attrs",
-                false,
-                TransformedOutput::Typed,
-            )
-            .unwrap()
-            .unwrap();
-            assert_eq!(rendered, serde_json::json!({"v": ["a", true]}));
-        }
-
-        #[test]
         fn quoted_dollarbrace_arg_keeps_lone_placeholder_typed() {
             // a `${` inside a quoted transform arg must not demote a lone typed
             // placeholder to the string-wrapping embedded-template path.
@@ -1360,37 +1198,6 @@ uid:
             .unwrap()
             .unwrap();
             assert_eq!(rendered, serde_json::json!(42));
-        }
-
-        #[test]
-        fn scalar_user_return_coerces_in_string_mode() {
-            let transforms = registry("def answer(v):\n    return 42\n");
-            let vars = string_var("ignored");
-            let rendered = render_string_value(
-                "${x|answer}",
-                &user_ctx(&vars, &transforms),
-                "key.slug",
-                false,
-                TransformedOutput::String,
-            )
-            .unwrap()
-            .unwrap();
-            assert_eq!(rendered, JsonValue::String("42".to_string()));
-        }
-
-        #[test]
-        fn collection_user_return_errors_in_string_mode() {
-            let transforms = registry("def wrap(v):\n    return [v]\n");
-            let vars = string_var("a");
-            let err = render_string_value(
-                "${x|wrap}",
-                &user_ctx(&vars, &transforms),
-                "key.slug",
-                false,
-                TransformedOutput::String,
-            )
-            .unwrap_err();
-            assert!(err.to_string().contains("must be a scalar"), "{err:#}");
         }
 
         #[test]
@@ -1424,114 +1231,12 @@ uid:
         }
 
         #[test]
-        fn unknown_transform_still_errors_with_user_transforms_loaded() {
-            let transforms = registry("def f(v):\n    return v\n");
-            let vars = string_var("a");
-            let err =
-                render_template("${x|missing}", &user_ctx(&vars, &transforms), "key").unwrap_err();
-            assert!(err.to_string().contains("unknown transform missing"));
-        }
-
-        #[test]
         fn embedded_template_runs_user_transform() {
             let transforms = registry("def host(v):\n    return v.split(\"/\")[0]\n");
             let vars = string_var("10.0.0.1/24");
             let rendered =
                 render_template("addr=${x|host}", &user_ctx(&vars, &transforms), "key").unwrap();
             assert_eq!(rendered, "addr=10.0.0.1");
-        }
-
-        #[test]
-        fn apply_single_transform_runs_user_and_builtin() {
-            let transforms = registry("def cidr_host(v):\n    return v.split(\"/\")[0]\n");
-            let result = apply_single_transform(
-                &transforms,
-                "cidr_host",
-                &serde_json::json!("10.0.0.1/24"),
-                &[],
-            )
-            .unwrap();
-            assert_eq!(result, serde_json::json!("10.0.0.1"));
-            let result =
-                apply_single_transform(&transforms, "upper", &serde_json::json!("q"), &[]).unwrap();
-            assert_eq!(result, serde_json::json!("Q"));
-            let err = apply_single_transform(&transforms, "nope", &serde_json::json!("q"), &[])
-                .unwrap_err();
-            assert!(err.to_string().contains("unknown transform nope"));
-        }
-
-        /// the built-in four reimplemented in starlark must agree with the
-        /// native implementations across a corpus -- a standing proof the
-        /// substrate is sufficient to express them.
-        #[test]
-        fn builtin_four_reimplemented_in_starlark_agree() {
-            let transforms = registry(
-                r#"
-def upper_star(v):
-    return v.upper()
-
-def lower_star(v):
-    return v.lower()
-
-def trim_star(v):
-    return v.strip()
-
-def slug_star(v):
-    out = ""
-    for c in v.elems():
-        lower = c.lower()
-        if ("a" <= lower and lower <= "z") or ("0" <= lower and lower <= "9"):
-            out += lower
-        elif out != "" and not out.endswith("-"):
-            out += "-"
-    if out.endswith("-"):
-        out = out[:-1]
-    if out == "":
-        fail("slug produced an empty slug")
-    return out
-"#,
-            );
-            let corpus = [
-                "Frankfurt DC1",
-                "leaf-01",
-                "  Spine  ",
-                "a__b",
-                "AS65001",
-                "he\u{fc}llo",
-                "MiXeD 42",
-                "---",
-                "",
-            ];
-            let pairs = [
-                ("upper", "upper_star"),
-                ("lower", "lower_star"),
-                ("trim", "trim_star"),
-                ("slug", "slug_star"),
-            ];
-            for input in corpus {
-                for (builtin, star) in pairs {
-                    let vars = string_var(input);
-                    let native = render_template(
-                        &format!("${{x|{builtin}}}"),
-                        &user_ctx(&vars, &transforms),
-                        "key",
-                    );
-                    let starred = render_template(
-                        &format!("${{x|{star}}}"),
-                        &user_ctx(&vars, &transforms),
-                        "key",
-                    );
-                    match (native, starred) {
-                        (Ok(a), Ok(b)) => {
-                            assert_eq!(a, b, "{builtin} vs {star} on {input:?}")
-                        }
-                        (Err(_), Err(_)) => {}
-                        (native, starred) => panic!(
-                            "{builtin} vs {star} diverge on {input:?}: {native:?} vs {starred:?}"
-                        ),
-                    }
-                }
-            }
         }
     }
 }

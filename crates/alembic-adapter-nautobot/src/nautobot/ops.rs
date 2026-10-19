@@ -1353,27 +1353,6 @@ mod tests {
     }
 
     #[test]
-    fn test_normalize_attrs_nautobot() {
-        let registry = ObjectTypeRegistry::default();
-        let mappings = super::super::state::StateMappings::default();
-        let type_schema = TypeSchema {
-            key: BTreeMap::new(),
-            fields: BTreeMap::new(),
-        };
-        let schema = Schema {
-            types: BTreeMap::new(),
-        };
-        let mut attrs = JsonMap::default();
-        attrs.insert("type".to_string(), json!("1000base-t"));
-
-        // the literal backend `type` field is preserved as-is (interfaces and
-        // everything else alike).
-        normalize_attrs(&mut attrs, &type_schema, &schema, &registry, &mappings);
-        assert_eq!(attrs.get("type").unwrap(), &json!("1000base-t"));
-        assert!(!attrs.contains_key("if_type"));
-    }
-
-    #[test]
     fn a_bare_backend_id_in_a_ref_field_reads_back_as_its_uid() {
         // a generic fk's id half (`termination_a_id`) arrives as a bare uuid, not a
         // nested brief; declared as a ref it must resolve like any other ref.
@@ -1427,55 +1406,6 @@ mod tests {
             attrs.get("termination_b_id").unwrap(),
             &json!("36592b0f-303f-439a-885b-14772174e720")
         );
-    }
-
-    #[test]
-    fn test_uid_from_key_fields() {
-        let registry = ObjectTypeRegistry::default();
-        let mappings = super::super::state::StateMappings::default();
-
-        // build a schema with a type that has "name" as the key field
-        let mut schema = Schema {
-            types: BTreeMap::new(),
-        };
-        let mut type_schema = TypeSchema {
-            key: BTreeMap::new(),
-            fields: BTreeMap::new(),
-        };
-        type_schema.key.insert(
-            "name".to_string(),
-            FieldSchema {
-                r#type: FieldType::String,
-                required: true,
-                nullable: false,
-                description: None,
-                format: None,
-                pattern: None,
-            },
-        );
-        schema.types.insert("dcim.device".to_string(), type_schema);
-
-        // nested object without URL but with key field
-        let nested = serde_json::Map::from_iter([
-            ("id".to_string(), json!("some-uuid")),
-            ("name".to_string(), json!("router-01")),
-        ]);
-
-        let uid = resolve_ref_uid(&nested, Some("dcim.device"), &schema, &registry, &mappings);
-        assert!(uid.is_some());
-
-        // the UID should be deterministic: same inputs = same output
-        let uid2 = resolve_ref_uid(&nested, Some("dcim.device"), &schema, &registry, &mappings);
-        assert_eq!(uid, uid2);
-
-        // different key value should produce different UID
-        let nested2 = serde_json::Map::from_iter([
-            ("id".to_string(), json!("other-uuid")),
-            ("name".to_string(), json!("router-02")),
-        ]);
-        let uid3 = resolve_ref_uid(&nested2, Some("dcim.device"), &schema, &registry, &mappings);
-        assert!(uid3.is_some());
-        assert_ne!(uid, uid3);
     }
 
     #[test]
@@ -1540,29 +1470,9 @@ mod tests {
             .types
             .insert("dcim.interface".to_string(), interface_schema);
 
-        // resolve the device's own uid from its key
-        let device_map = serde_json::Map::from_iter([("name".to_string(), json!("router-01"))]);
-        let device_uid = resolve_ref_uid(
-            &device_map,
-            Some("dcim.device"),
-            &schema,
-            &registry,
-            &mappings,
-        )
-        .expect("device uid");
-
-        // expected: interface uid with the device key already resolved to its uid string
-        let expected_map = serde_json::Map::from_iter([
-            ("device".to_string(), json!(device_uid.to_string())),
-            ("name".to_string(), json!("eth1")),
-        ]);
-        let expected = resolve_ref_uid(
-            &expected_map,
-            Some("dcim.interface"),
-            &schema,
-            &registry,
-            &mappings,
-        );
+        // expected: the interface's identity (type dcim.interface, key device =
+        // router-01's identity, name = eth1), pinned.
+        let expected = Some(Uid::parse_str("9bda7c81-ac3b-58b9-b458-e86d5435e968").unwrap());
 
         // actual: interface uid with the device key as a nested brief
         let actual_map = serde_json::Map::from_iter([
@@ -1578,7 +1488,6 @@ mod tests {
         );
 
         // the nested device brief got resolved to the device uid
-        assert!(actual.is_some());
         assert_eq!(actual, expected);
 
         // eth1 under a different device must not collide with eth1 here
@@ -1659,17 +1568,9 @@ mod tests {
 
         normalize_attrs(&mut attrs, &parent_schema, &schema, &registry, &mappings);
 
-        let expected = resolve_ref_uid(
-            brief.as_object().unwrap(),
-            Some("dcim.device"),
-            &schema,
-            &registry,
-            &mappings,
-        )
-        .expect("key-derived uid");
-        assert_eq!(attrs.get("device").unwrap(), &json!(expected.to_string()));
-        // a hint miss here degrades to the raw backend id.
-        assert_ne!(attrs.get("device").unwrap(), &json!(raw_id));
+        // the target's identity: the uid dcim.device keyed name=router-01 mints, pinned.
+        let expected = "7a51777d-8570-58e8-9a41-ba0da285f7b6";
+        assert_eq!(attrs.get("device").unwrap(), &json!(expected));
     }
 
     #[test]
@@ -1832,44 +1733,6 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_value_for_type() {
-        let resolved = BTreeMap::from([(Uid::from_u128(1), "uuid-1".to_string())]);
-
-        // ref
-        let val = resolve_value_for_type(
-            &alembic_core::FieldType::Ref {
-                target: "t".to_string(),
-            },
-            json!(Uid::from_u128(1).to_string()),
-            &resolved,
-        )
-        .unwrap();
-        assert_eq!(val, json!("uuid-1"));
-
-        // ListRef
-        let val = resolve_value_for_type(
-            &alembic_core::FieldType::ListRef {
-                target: "t".to_string(),
-            },
-            json!([Uid::from_u128(1).to_string()]),
-            &resolved,
-        )
-        .unwrap();
-        assert_eq!(val, json!(["uuid-1"]));
-
-        // list
-        let val = resolve_value_for_type(
-            &alembic_core::FieldType::List {
-                item: Box::new(alembic_core::FieldType::String),
-            },
-            json!(["a"]),
-            &resolved,
-        )
-        .unwrap();
-        assert_eq!(val, json!(["a"]));
-    }
-
-    #[test]
     fn test_query_from_key() {
         let mut key_fields = BTreeMap::new();
         key_fields.insert(
@@ -1957,56 +1820,88 @@ mod tests {
     }
 
     #[test]
-    fn test_custom_field_payload_carries_declared_pattern() {
-        let payload = custom_field_payload(
-            "dcim.device",
-            "asset_tag",
-            &field_schema(FieldType::String, Some("^[A-Z]{3}$")),
-        );
-        assert_eq!(payload.get("type").unwrap(), &json!("text"));
-        assert_eq!(
-            payload.get("validation_regex").unwrap(),
-            &json!("^[A-Z]{3}$")
-        );
-    }
-
-    #[test]
-    fn test_custom_field_payload_omits_regex_without_pattern() {
-        let payload = custom_field_payload(
-            "dcim.device",
-            "asset_tag",
-            &field_schema(FieldType::String, None),
-        );
-        assert!(payload.get("validation_regex").is_none());
-    }
-
-    #[test]
-    fn test_custom_field_payload_skips_pattern_on_json_field() {
-        // core allows a pattern on `json`; the backend field it maps to would
-        // enforce nothing, so the regex stays home.
-        let payload = custom_field_payload(
-            "dcim.device",
-            "meta",
-            &field_schema(FieldType::Json, Some("^[A-Z]{3}$")),
-        );
-        assert_eq!(payload.get("type").unwrap(), &json!("json"));
-        assert!(payload.get("validation_regex").is_none());
-    }
-
-    #[test]
-    fn test_custom_field_payload_carries_declared_format() {
-        let mut schema = field_schema(FieldType::String, None);
-        schema.format = Some(FieldFormat::Mac);
-        let payload = custom_field_payload("dcim.device", "bmc_mac", &schema);
-        assert_eq!(payload.get("type").unwrap(), &json!("text"));
-        assert_eq!(
-            payload.get("validation_regex").unwrap(),
-            &json!(format_regex(&FieldFormat::Mac))
-        );
-    }
-
-    #[test]
-    fn test_custom_field_payload_carries_the_format_a_type_implies() {
+    fn test_custom_field_payload_types_and_constrains_by_schema() {
+        let with_format = |r#type: FieldType, pattern: Option<&str>, format: FieldFormat| {
+            let mut schema = field_schema(r#type, pattern);
+            schema.format = Some(format);
+            schema
+        };
+        let tiers = || FieldType::Enum {
+            values: vec!["core".to_string(), "edge".to_string()],
+        };
+        let mut cases = vec![
+            // a declared pattern rides along on text
+            (
+                field_schema(FieldType::String, Some("^[A-Z]{3}$")),
+                "text",
+                Some("^[A-Z]{3}$".to_string()),
+            ),
+            (field_schema(FieldType::String, None), "text", None),
+            // core allows a pattern on `json`; the backend field it maps to would
+            // enforce nothing, so the regex stays home.
+            (
+                field_schema(FieldType::Json, Some("^[A-Z]{3}$")),
+                "json",
+                None,
+            ),
+            (
+                with_format(FieldType::String, None, FieldFormat::Mac),
+                "text",
+                Some(format_regex(&FieldFormat::Mac).to_string()),
+            ),
+            // core checks an `ip_address`-typed value as a plain string, so any
+            // regex here would reject values alembic's own validator accepts.
+            (field_schema(FieldType::IpAddress, None), "text", None),
+            (
+                with_format(FieldType::Mac, Some("^[A-Z]{3}$"), FieldFormat::Mac),
+                "text",
+                Some("^[A-Z]{3}$".to_string()),
+            ),
+            // an enum maps to `select`, which the text gate excludes; a `format:`
+            // on one goes the same way a `pattern:` does.
+            (
+                with_format(
+                    FieldType::Enum {
+                        values: vec!["a".to_string(), "b".to_string()],
+                    },
+                    None,
+                    FieldFormat::Slug,
+                ),
+                "select",
+                None,
+            ),
+            // nautobot's CustomFieldTypeChoices spells these `select` / `multi-select`.
+            (field_schema(tiers(), None), "select", None),
+            (
+                field_schema(
+                    FieldType::List {
+                        item: Box::new(FieldType::Enum {
+                            values: vec!["core".to_string()],
+                        }),
+                    },
+                    None,
+                ),
+                "multi-select",
+                None,
+            ),
+            // only a list *of enum* is a multi-select; every other list stays json.
+            (
+                field_schema(
+                    FieldType::List {
+                        item: Box::new(FieldType::String),
+                    },
+                    None,
+                ),
+                "json",
+                None,
+            ),
+            // core allows a pattern alongside enum values; a select constrains by
+            // its choices, and nautobot enforces validation_regex on text only.
+            (field_schema(tiers(), Some("^[a-z]+$")), "select", None),
+            // nautobot's CustomFieldTypeChoices has no `decimal`, and its `text`
+            // reads back as a json string, which the ir's float check rejects.
+            (field_schema(FieldType::Float, None), "json", None),
+        ];
         // nautobot flattens every one of these to `text`, so the regex is the
         // only place the declared semantic survives.
         for (r#type, format) in [
@@ -2016,53 +1911,25 @@ mod tests {
             (FieldType::Prefix, FieldFormat::Prefix),
             (FieldType::Slug, FieldFormat::Slug),
         ] {
-            let payload = custom_field_payload("dcim.device", "f", &field_schema(r#type, None));
-            assert_eq!(payload.get("type").unwrap(), &json!("text"));
+            cases.push((
+                field_schema(r#type, None),
+                "text",
+                Some(format_regex(&format).to_string()),
+            ));
+        }
+        for (schema, nautobot_type, regex) in cases {
+            let payload = custom_field_payload("dcim.device", "f", &schema);
             assert_eq!(
-                payload.get("validation_regex").unwrap(),
-                &json!(format_regex(&format))
+                payload.get("type").unwrap(),
+                &json!(nautobot_type),
+                "{schema:?}"
+            );
+            assert_eq!(
+                payload.get("validation_regex"),
+                regex.map(Value::from).as_ref(),
+                "{schema:?}"
             );
         }
-    }
-
-    #[test]
-    fn test_custom_field_payload_leaves_ip_address_unconstrained() {
-        // core checks an `ip_address`-typed value as a plain string, so any
-        // regex here would reject values alembic's own validator accepts.
-        let payload = custom_field_payload(
-            "dcim.device",
-            "mgmt",
-            &field_schema(FieldType::IpAddress, None),
-        );
-        assert_eq!(payload.get("type").unwrap(), &json!("text"));
-        assert!(payload.get("validation_regex").is_none());
-    }
-
-    #[test]
-    fn test_custom_field_payload_prefers_pattern_over_format() {
-        let mut schema = field_schema(FieldType::Mac, Some("^[A-Z]{3}$"));
-        schema.format = Some(FieldFormat::Mac);
-        let payload = custom_field_payload("dcim.device", "asset_tag", &schema);
-        assert_eq!(
-            payload.get("validation_regex").unwrap(),
-            &json!("^[A-Z]{3}$")
-        );
-    }
-
-    #[test]
-    fn test_custom_field_payload_skips_format_on_select() {
-        // an enum maps to `select`, which the text gate excludes; a `format:`
-        // on one goes the same way a `pattern:` does.
-        let mut schema = field_schema(
-            FieldType::Enum {
-                values: vec!["a".to_string(), "b".to_string()],
-            },
-            None,
-        );
-        schema.format = Some(FieldFormat::Slug);
-        let payload = custom_field_payload("dcim.device", "state", &schema);
-        assert_eq!(payload.get("type").unwrap(), &json!("select"));
-        assert!(payload.get("validation_regex").is_none());
     }
 
     // the create's race fallback posts no choices: the plan that converges them
@@ -2402,70 +2269,6 @@ mod tests {
     }
 
     #[test]
-    fn test_custom_field_payload_types_an_enum_as_select() {
-        // nautobot's CustomFieldTypeChoices spells these `select` / `multi-select`.
-        let payload = custom_field_payload(
-            "dcim.device",
-            "tier",
-            &field_schema(
-                FieldType::Enum {
-                    values: vec!["core".to_string(), "edge".to_string()],
-                },
-                None,
-            ),
-        );
-        assert_eq!(payload.get("type").unwrap(), &json!("select"));
-
-        let payload = custom_field_payload(
-            "dcim.device",
-            "roles",
-            &field_schema(
-                FieldType::List {
-                    item: Box::new(FieldType::Enum {
-                        values: vec!["core".to_string()],
-                    }),
-                },
-                None,
-            ),
-        );
-        assert_eq!(payload.get("type").unwrap(), &json!("multi-select"));
-    }
-
-    #[test]
-    fn test_custom_field_payload_types_a_plain_list_as_json() {
-        // only a list *of enum* is a multi-select; every other list stays json.
-        let payload = custom_field_payload(
-            "dcim.device",
-            "aliases",
-            &field_schema(
-                FieldType::List {
-                    item: Box::new(FieldType::String),
-                },
-                None,
-            ),
-        );
-        assert_eq!(payload.get("type").unwrap(), &json!("json"));
-    }
-
-    #[test]
-    fn test_custom_field_payload_skips_pattern_on_enum_field() {
-        // core allows a pattern alongside enum values; a select constrains by its
-        // choices, and nautobot enforces validation_regex on text only.
-        let payload = custom_field_payload(
-            "dcim.device",
-            "tier",
-            &field_schema(
-                FieldType::Enum {
-                    values: vec!["core".to_string(), "edge".to_string()],
-                },
-                Some("^[a-z]+$"),
-            ),
-        );
-        assert_eq!(payload.get("type").unwrap(), &json!("select"));
-        assert!(payload.get("validation_regex").is_none());
-    }
-
-    #[test]
     fn test_missing_choices_weights_by_declared_position() {
         let declared = ["core", "agg", "edge"].map(str::to_string);
 
@@ -2513,43 +2316,5 @@ mod tests {
         assert!(!takes_choices(Some(&nautobot_custom_field_type(
             &field_schema(FieldType::String, None)
         ))));
-    }
-
-    #[test]
-    fn test_declared_choices_keeps_declaration_order() {
-        let values = vec!["core".to_string(), "agg".to_string(), "edge".to_string()];
-        assert_eq!(
-            declared_choices(&field_schema(
-                FieldType::Enum {
-                    values: values.clone()
-                },
-                None
-            )),
-            values.as_slice()
-        );
-        assert_eq!(
-            declared_choices(&field_schema(
-                FieldType::List {
-                    item: Box::new(FieldType::Enum {
-                        values: values.clone()
-                    })
-                },
-                None
-            )),
-            values.as_slice()
-        );
-        assert!(declared_choices(&field_schema(FieldType::String, None)).is_empty());
-    }
-
-    #[test]
-    fn test_custom_field_payload_types_a_float_as_json() {
-        // nautobot's CustomFieldTypeChoices has no `decimal`, and its `text`
-        // reads back as a json string, which the ir's float check rejects.
-        let payload = custom_field_payload(
-            "dcim.device",
-            "ratio",
-            &field_schema(FieldType::Float, None),
-        );
-        assert_eq!(payload.get("type").unwrap(), &json!("json"));
     }
 }

@@ -12,7 +12,8 @@ use alembic_engine::{
     StateLock, StateStore,
 };
 use anyhow::{anyhow, Context, Result};
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
+use clap_complete::{generate, Shell};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -185,6 +186,11 @@ enum Command {
         #[command(subcommand)]
         action: SkillAction,
     },
+    /// emit shell completion script to stdout
+    Completion {
+        #[arg(value_enum)]
+        shell: Shell,
+    },
 }
 
 /// skill subcommands.
@@ -303,6 +309,7 @@ fn output_path(command: &Command) -> Option<&Path> {
         // `install` writes into a directory it creates rather than to a named
         // output file, and it reports the path it wrote; the other two print
         Command::Skill { .. } => None,
+        Command::Completion { .. } => None,
     }
 }
 
@@ -618,6 +625,11 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<ExitCode> {
                 println!("skill written to {}", path.display());
             }
         },
+        Command::Completion { shell } => {
+            let mut command = Cli::command();
+            let name = command.get_name().to_string();
+            generate(shell, &mut command, name, &mut std::io::stdout());
+        }
     }
 
     Ok(ExitCode::SUCCESS)

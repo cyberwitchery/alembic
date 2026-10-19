@@ -2253,17 +2253,23 @@ mod tests {
     use super::{bound_ids, node_query};
 
     #[test]
-    fn a_filtered_node_query_declares_and_passes_ids() {
-        let query = node_query("InfraDevice", "name { value }", true);
-        assert!(query.contains("$ids: [ID]"), "{query}");
-        assert!(query.contains("InfraDevice(ids: $ids, offset:"), "{query}");
-    }
-
-    #[test]
-    fn an_unfiltered_node_query_mentions_no_ids() {
-        let query = node_query("InfraDevice", "name { value }", false);
-        assert!(!query.contains("ids"), "{query}");
-        assert!(query.contains("InfraDevice(offset:"), "{query}");
+    fn a_node_query_passes_ids_only_when_filtered() {
+        for (filtered, present, absent) in [
+            (
+                true,
+                &["$ids: [ID]", "InfraDevice(ids: $ids, offset:"][..],
+                None,
+            ),
+            (false, &["InfraDevice(offset:"][..], Some("ids")),
+        ] {
+            let query = node_query("InfraDevice", "name { value }", filtered);
+            for needle in present {
+                assert!(query.contains(needle), "{filtered}: {query}");
+            }
+            if let Some(needle) = absent {
+                assert!(!query.contains(needle), "{filtered}: {query}");
+            }
+        }
     }
 
     #[test]
@@ -2293,11 +2299,11 @@ mod tests {
     }
 
     use super::*;
-    use alembic_adapter_sdk::{AdapterApplyError, StateData, StateMappings};
+    use alembic_adapter_sdk::{AdapterApplyError, StateData};
     use alembic_core::{
         key_string, FieldSchema, FieldType, JsonMap, Key, Object, Schema, TypeName, TypeSchema,
     };
-    use alembic_engine::{backend_id_from_value, StateStore};
+    use alembic_engine::StateStore;
     use httpmock::prelude::*;
     use httpmock::Mock;
     use serde_json::json;
@@ -2545,28 +2551,6 @@ schema { query: Query }
         assert!(!attrs.contains_key("missing"));
     }
 
-    // characterization tests for `extract_field_value`: they pin the current
-    // mapping from each infrahub GraphQL node shape to an IR value. the function
-    // is otherwise only exercised indirectly through `extract_attrs`.
-
-    #[test]
-    fn extract_field_value_missing_field_returns_none() {
-        // the field is absent from the node: the early return fires before the
-        // `kind` match, so the result is `None` for any kind.
-        let node = json!({ "present": { "value": "x" } });
-        let value = extract_field_value(&node, "absent", &FieldKind::Attribute).unwrap();
-        assert_eq!(value, None);
-    }
-
-    #[test]
-    fn extract_field_value_null_field_returns_none() {
-        // the field is present but JSON null: this also short-circuits to `None`
-        // ahead of the `kind` match.
-        let node = json!({ "name": null });
-        let value = extract_field_value(&node, "name", &FieldKind::Attribute).unwrap();
-        assert_eq!(value, None);
-    }
-
     #[test]
     fn schema_missing_and_validate_schema() {
         let type_schema = type_schema(
@@ -2767,7 +2751,11 @@ schema { query: Query }
         let schema_path = dir.path().join("schema/schema.yaml");
         write_schema_document(&schema_path, &doc).unwrap();
         let raw = fs::read_to_string(&schema_path).unwrap();
-        assert!(raw.contains("version"));
+        let written: serde_json::Value = alembic_engine::yaml::from_str(&raw).unwrap();
+        assert_eq!(written["version"], "1.0");
+        assert_eq!(written["nodes"][0]["name"], "Site");
+        assert_eq!(written["nodes"][0]["namespace"], "Dcim");
+        assert_eq!(written["nodes"][0]["human_friendly_id"][0], "name__value");
 
         let repo_dir = temp_dir("repo");
         let repo_root = repo_dir.path();
@@ -2928,103 +2916,6 @@ schema { query: Query }
                 "description": {"value": null},
                 "parent": null,
             })
-        );
-    }
-
-    #[test]
-    fn normalize_refs_and_backend_id() {
-        let uid = Uid::parse_str("00000000-0000-0000-0000-000000000010").unwrap();
-        let mut mappings = StateMappings::default();
-        mappings.insert("dcim.site", BackendId::String("site-1".to_string()), uid);
-
-        let type_schema = type_schema(
-            Vec::new(),
-            vec![
-                (
-                    "parent",
-                    field_schema(
-                        FieldType::Ref {
-                            target: "dcim.site".to_string(),
-                        },
-                        false,
-                    ),
-                ),
-                (
-                    "children",
-                    field_schema(
-                        FieldType::ListRef {
-                            target: "dcim.site".to_string(),
-                        },
-                        false,
-                    ),
-                ),
-            ],
-        );
-
-        let attrs = JsonMap::from(BTreeMap::from([
-            ("parent".to_string(), json!("site-1")),
-            ("children".to_string(), json!(["site-1", "site-2"])),
-        ]));
-
-        let normalized = normalize_attrs_refs(&attrs, &type_schema, &mappings);
-        assert_eq!(normalized.get("parent"), Some(&json!(uid.to_string())));
-        assert_eq!(
-            normalized.get("children"),
-            Some(&json!([uid.to_string(), "site-2"]))
-        );
-
-        assert_eq!(
-            backend_id_from_value(&json!({"id": "abc"})),
-            Some(BackendId::String("abc".to_string()))
-        );
-        assert_eq!(backend_id_from_value(&json!(42)), Some(BackendId::Int(42)));
-        assert_eq!(backend_id_from_value(&json!(-1)), None);
-    }
-
-    #[test]
-    fn normalize_resolves_refs_nested_in_list_and_map() {
-        let uid = Uid::parse_str("00000000-0000-0000-0000-000000000030").unwrap();
-        let mut mappings = StateMappings::default();
-        mappings.insert("dcim.site", BackendId::Int(7), uid);
-
-        let type_schema = type_schema(
-            Vec::new(),
-            vec![
-                (
-                    "members",
-                    field_schema(
-                        FieldType::List {
-                            item: Box::new(FieldType::Ref {
-                                target: "dcim.site".to_string(),
-                            }),
-                        },
-                        false,
-                    ),
-                ),
-                (
-                    "links",
-                    field_schema(
-                        FieldType::Map {
-                            value: Box::new(FieldType::Ref {
-                                target: "dcim.site".to_string(),
-                            }),
-                        },
-                        false,
-                    ),
-                ),
-            ],
-        );
-
-        let attrs = JsonMap::from(BTreeMap::from([
-            ("members".to_string(), json!([7])),
-            ("links".to_string(), json!({ "primary": 7 })),
-        ]));
-
-        let normalized = normalize_attrs_refs(&attrs, &type_schema, &mappings);
-        assert_eq!(normalized.get("members"), Some(&json!([uid.to_string()])));
-        assert_eq!(
-            normalized.get("links"),
-            Some(&json!({ "primary": uid.to_string() }))
         );
     }
 
@@ -3398,7 +3289,19 @@ schema { query: Query }
 
         let state = StateStore::new(None, StateData::default());
         let report = adapter.write(&schema, &ops, &state).await.unwrap();
-        assert_eq!(report.applied.len(), 3);
+        let applied: Vec<_> = report
+            .applied
+            .iter()
+            .map(|applied| (applied.uid, applied.backend_id.clone()))
+            .collect();
+        assert_eq!(
+            applied,
+            vec![
+                (uid_create, Some(BackendId::String("site-1".to_string()))),
+                (uid_update, Some(BackendId::String("site-2".to_string()))),
+                (uid_delete, None),
+            ]
+        );
     }
 
     #[tokio::test]
@@ -3543,76 +3446,58 @@ schema { query: Query }
     }
 
     #[tokio::test]
-    async fn write_create_conflict_key_field_absent_from_attrs_names_the_object() {
-        let server = MockServer::start();
-        server.mock(|when, then| {
-            when.method(GET).path("/schema.graphql");
-            then.status(200).body(GRAPHQL_SCHEMA);
-        });
-        server.mock(|when, then| {
-            when.method(POST).path("/graphql").body_includes("Create");
-            then.status(200).json_body(json!({
-                "data": null,
-                "errors": [{ "message": "An object already exists" }]
-            }));
-        });
+    async fn a_key_field_absent_from_attrs_names_the_object() {
+        // a create that conflicts looks the object up by key, and an update whose
+        // id is neither on the op nor resolved falls back to the same lookup, so
+        // both build the key from the inventory's own attrs.
+        for (conflicting_create, op_index) in [(true, 0x210), (false, 0x211)] {
+            let server = MockServer::start();
+            server.mock(|when, then| {
+                when.method(GET).path("/schema.graphql");
+                then.status(200).body(GRAPHQL_SCHEMA);
+            });
+            if conflicting_create {
+                server.mock(|when, then| {
+                    when.method(POST).path("/graphql").body_includes("Create");
+                    then.status(200).json_body(json!({
+                        "data": null,
+                        "errors": [{ "message": "An object already exists" }]
+                    }));
+                });
+            }
 
-        let adapter = InfrahubAdapter::new(&server.base_url(), "token", None).unwrap();
-        let uid = Uid::parse_str("00000000-0000-0000-0000-000000000210").unwrap();
-        let ops = vec![Op::Create {
-            uid,
-            type_name: TypeName::new("dcim.site"),
-            desired: keyless_site_object(uid),
-        }];
+            let adapter = InfrahubAdapter::new(&server.base_url(), "token", None).unwrap();
+            let uid = Uid::from_u128(op_index);
+            let op = if conflicting_create {
+                Op::Create {
+                    uid,
+                    type_name: TypeName::new("dcim.site"),
+                    desired: keyless_site_object(uid),
+                }
+            } else {
+                Op::Update {
+                    uid,
+                    type_name: TypeName::new("dcim.site"),
+                    desired: keyless_site_object(uid),
+                    changes: vec![],
+                    backend_id: None,
+                }
+            };
 
-        let state = StateStore::new(None, StateData::default());
-        let err = adapter
-            .write(&name_keyed_site_schema(), &ops, &state)
-            .await
-            .unwrap_err();
+            let state = StateStore::new(None, StateData::default());
+            let err = adapter
+                .write(&name_keyed_site_schema(), &[op], &state)
+                .await
+                .unwrap_err();
 
-        let chain = format!("{err:#}");
-        assert!(
-            chain.contains(r#"build key for dcim.site {"name":"Site A"}"#),
-            "{chain}"
-        );
-        assert!(chain.contains("`attrs:`"), "{chain}");
-        assert!(chain.contains("missing key field name"), "{chain}");
-    }
-
-    #[tokio::test]
-    async fn write_update_without_a_backend_id_key_field_absent_names_the_object() {
-        // an update whose id is neither on the op nor resolved falls back to a
-        // lookup by key, so it builds the key from the inventory's own attrs.
-        let server = MockServer::start();
-        server.mock(|when, then| {
-            when.method(GET).path("/schema.graphql");
-            then.status(200).body(GRAPHQL_SCHEMA);
-        });
-
-        let adapter = InfrahubAdapter::new(&server.base_url(), "token", None).unwrap();
-        let uid = Uid::parse_str("00000000-0000-0000-0000-000000000211").unwrap();
-        let ops = vec![Op::Update {
-            uid,
-            type_name: TypeName::new("dcim.site"),
-            desired: keyless_site_object(uid),
-            changes: vec![],
-            backend_id: None,
-        }];
-
-        let state = StateStore::new(None, StateData::default());
-        let err = adapter
-            .write(&name_keyed_site_schema(), &ops, &state)
-            .await
-            .unwrap_err();
-
-        let chain = format!("{err:#}");
-        assert!(
-            chain.contains(r#"build key for dcim.site {"name":"Site A"}"#),
-            "{chain}"
-        );
-        assert!(chain.contains("`attrs:`"), "{chain}");
-        assert!(chain.contains("missing key field name"), "{chain}");
+            let chain = format!("{err:#}");
+            assert!(
+                chain.contains(r#"build key for dcim.site {"name":"Site A"}"#),
+                "{chain}"
+            );
+            assert!(chain.contains("`attrs:`"), "{chain}");
+            assert!(chain.contains("missing key field name"), "{chain}");
+        }
     }
 
     #[tokio::test]
@@ -3962,84 +3847,67 @@ schema { query: Query }
     // to `None`. a future refactor of these arms must preserve this distinction.
 
     #[test]
-    fn extract_field_value_relation_list_nested_paginated_empty_edges_returns_some_empty_array() {
-        // edges array present but empty -> Some([]), not None.
-        let node = json!({ "peers": { "edges": [] } });
-        let value = extract_field_value(
-            &node,
-            "peers",
-            &FieldKind::RelationList(RelationShape::NestedPaginated),
-        )
-        .unwrap();
-        assert_eq!(value, Some(json!([])));
-    }
-
-    #[test]
-    fn extract_field_value_relation_list_nested_paginated_missing_edges_returns_some_empty_array() {
-        // relation object present and non-null but with no `edges` key at all:
-        // `unwrap_or_default()` still yields an empty array -> Some([]).
-        let node = json!({ "peers": {} });
-        let value = extract_field_value(
-            &node,
-            "peers",
-            &FieldKind::RelationList(RelationShape::NestedPaginated),
-        )
-        .unwrap();
-        assert_eq!(value, Some(json!([])));
-    }
-
-    #[test]
-    fn extract_field_value_relation_list_nested_edged_empty_returns_some_empty_array() {
-        // flat (node-edged) list shape, empty array -> Some([]).
-        let node = json!({ "peers": [] });
-        let value = extract_field_value(
-            &node,
-            "peers",
-            &FieldKind::RelationList(RelationShape::NestedEdged),
-        )
-        .unwrap();
-        assert_eq!(value, Some(json!([])));
-    }
-
-    #[test]
-    fn extract_field_value_relation_list_related_node_empty_returns_some_empty_array() {
-        // flat (related-node) list shape, empty array -> Some([]).
-        let node = json!({ "children": [] });
-        let value = extract_field_value(
-            &node,
-            "children",
-            &FieldKind::RelationList(RelationShape::RelatedNode),
-        )
-        .unwrap();
-        assert_eq!(value, Some(json!([])));
-    }
-
-    #[test]
-    fn extract_field_value_relation_single_related_node_absent_id_returns_none() {
-        // contrast with the list arms above: a single relation whose object is
-        // present but carries no `id` falls back to `Value::Null` -> None.
-        let node = json!({ "parent": { "kind": "DcimSite" } });
-        let value = extract_field_value(
-            &node,
-            "parent",
-            &FieldKind::RelationSingle(RelationShape::RelatedNode),
-        )
-        .unwrap();
-        assert_eq!(value, None);
-    }
-
-    #[test]
-    fn extract_field_value_relation_single_nested_edged_absent_id_returns_none() {
-        // same contrast for the nested-edged single shape: `node` present but
-        // without an `id` -> None.
-        let node = json!({ "owner": { "node": {} } });
-        let value = extract_field_value(
-            &node,
-            "owner",
-            &FieldKind::RelationSingle(RelationShape::NestedEdged),
-        )
-        .unwrap();
-        assert_eq!(value, None);
+    fn extract_field_value_maps_each_node_shape() {
+        let cases = [
+            // the field is absent, or present but null: both return before the
+            // `kind` match, so the result is `None` for any kind.
+            (
+                json!({ "present": { "value": "x" } }),
+                "absent",
+                FieldKind::Attribute,
+                None,
+            ),
+            (json!({ "name": null }), "name", FieldKind::Attribute, None),
+            // edges array present but empty.
+            (
+                json!({ "peers": { "edges": [] } }),
+                "peers",
+                FieldKind::RelationList(RelationShape::NestedPaginated),
+                Some(json!([])),
+            ),
+            // relation object present and non-null but with no `edges` key at
+            // all: `unwrap_or_default()` still yields an empty array.
+            (
+                json!({ "peers": {} }),
+                "peers",
+                FieldKind::RelationList(RelationShape::NestedPaginated),
+                Some(json!([])),
+            ),
+            // flat (node-edged) list shape, empty array.
+            (
+                json!({ "peers": [] }),
+                "peers",
+                FieldKind::RelationList(RelationShape::NestedEdged),
+                Some(json!([])),
+            ),
+            // flat (related-node) list shape, empty array.
+            (
+                json!({ "children": [] }),
+                "children",
+                FieldKind::RelationList(RelationShape::RelatedNode),
+                Some(json!([])),
+            ),
+            // contrast with the list rows: a single relation whose object is
+            // present but carries no `id` falls back to `Value::Null` -> None.
+            (
+                json!({ "parent": { "kind": "DcimSite" } }),
+                "parent",
+                FieldKind::RelationSingle(RelationShape::RelatedNode),
+                None,
+            ),
+            // same contrast for the nested-edged single shape: `node` present but
+            // without an `id`.
+            (
+                json!({ "owner": { "node": {} } }),
+                "owner",
+                FieldKind::RelationSingle(RelationShape::NestedEdged),
+                None,
+            ),
+        ];
+        for (node, field, kind, expected) in cases {
+            let value = extract_field_value(&node, field, &kind).unwrap();
+            assert_eq!(value, expected, "{field} in {node}");
+        }
     }
 
     fn site_only_schema() -> Schema {
@@ -4053,79 +3921,39 @@ schema { query: Query }
     }
 
     #[tokio::test]
-    async fn schema_snapshot_request_carries_the_configured_branch() {
-        let server = MockServer::start();
-        server.mock(|when, then| {
-            when.method(GET).path("/schema.graphql");
-            then.status(200).body(GRAPHQL_SCHEMA);
-        });
-        let snapshot = server.mock(|when, then| {
-            when.method(GET)
-                .path("/api/schema")
-                .query_param("branch", "feat/site-rollout");
-            then.status(200).json_body(json!({ "nodes": [] }));
-        });
+    async fn both_schema_requests_carry_only_a_configured_branch() {
+        for (configured, expected) in [
+            (Some("feat/site-rollout"), Some("feat/site-rollout")),
+            (None, None),
+            (Some(""), None),
+        ] {
+            let server = MockServer::start();
+            let branch = |when: httpmock::When| match expected {
+                Some(branch) => when.query_param("branch", branch),
+                None => when.query_param_missing("branch"),
+            };
+            let graphql = server.mock(|when, then| {
+                branch(when.method(GET).path("/schema.graphql"));
+                then.status(200).body(GRAPHQL_SCHEMA);
+            });
+            let snapshot = server.mock(|when, then| {
+                branch(when.method(GET).path("/api/schema"));
+                then.status(200).json_body(json!({ "nodes": [] }));
+            });
 
-        let adapter =
-            InfrahubAdapter::new(&server.base_url(), "token", Some("feat/site-rollout")).unwrap();
-        assert!(adapter
-            .preview_schema(&site_only_schema())
-            .await
-            .unwrap()
-            .is_some());
+            let adapter = InfrahubAdapter::new(&server.base_url(), "token", configured).unwrap();
+            assert!(
+                adapter
+                    .preview_schema(&site_only_schema())
+                    .await
+                    .unwrap()
+                    .is_some(),
+                "{configured:?}"
+            );
 
-        snapshot.assert();
-    }
-
-    #[tokio::test]
-    async fn schema_snapshot_request_omits_the_branch_when_unset() {
-        let server = MockServer::start();
-        server.mock(|when, then| {
-            when.method(GET).path("/schema.graphql");
-            then.status(200).body(GRAPHQL_SCHEMA);
-        });
-        let snapshot = server.mock(|when, then| {
-            when.method(GET)
-                .path("/api/schema")
-                .query_param_missing("branch");
-            then.status(200).json_body(json!({ "nodes": [] }));
-        });
-
-        let adapter = InfrahubAdapter::new(&server.base_url(), "token", None).unwrap();
-        assert!(adapter
-            .preview_schema(&site_only_schema())
-            .await
-            .unwrap()
-            .is_some());
-
-        snapshot.assert();
-    }
-
-    #[tokio::test]
-    async fn both_schema_requests_omit_an_empty_branch() {
-        let server = MockServer::start();
-        let graphql = server.mock(|when, then| {
-            when.method(GET)
-                .path("/schema.graphql")
-                .query_param_missing("branch");
-            then.status(200).body(GRAPHQL_SCHEMA);
-        });
-        let snapshot = server.mock(|when, then| {
-            when.method(GET)
-                .path("/api/schema")
-                .query_param_missing("branch");
-            then.status(200).json_body(json!({ "nodes": [] }));
-        });
-
-        let adapter = InfrahubAdapter::new(&server.base_url(), "token", Some("")).unwrap();
-        assert!(adapter
-            .preview_schema(&site_only_schema())
-            .await
-            .unwrap()
-            .is_some());
-
-        graphql.assert();
-        snapshot.assert();
+            graphql.assert();
+            snapshot.assert();
+        }
     }
 
     #[tokio::test]

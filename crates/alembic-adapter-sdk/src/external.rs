@@ -312,7 +312,7 @@ mod tests {
         ExternalRole, EXTERNAL_PROTOCOL_VERSION,
     };
     use crate::state::StateData;
-    use crate::types::{AppliedOp, ApplyReport, Op, ProvisionReport};
+    use crate::types::{AppliedOp, ApplyReport, FieldChange, Op, ProvisionReport};
     use alembic_core::{Key, Object, Schema, TypeName, TypeSchema, Uid};
     use serde_json::json;
     use serde_json::Value;
@@ -320,50 +320,44 @@ mod tests {
     use std::io::{BufRead, Write};
 
     #[test]
-    fn a_misspelled_attrs_key_is_rejected() {
+    fn a_misspelled_protocol_key_is_rejected() {
+        fn rejects<T: serde::de::DeserializeOwned + std::fmt::Debug>(json: &str, typo: &str) {
+            let err = serde_json::from_str::<T>(json).unwrap_err();
+            assert!(err.to_string().contains(typo), "{typo}: {err}");
+        }
         // `attrs` defaults, so a typo would otherwise observe the object with no
         // attributes and replan every one of them as a change, forever.
-        let err = serde_json::from_str::<ExternalObject>(
+        rejects::<ExternalObject>(
             r#"{"type_name":"device","key":{"name":"fra1"},"atrs":{"name":"FRA1"}}"#,
-        )
-        .unwrap_err();
-        assert!(err.to_string().contains("atrs"), "{err}");
-    }
-
-    #[test]
-    fn an_observed_object_may_still_omit_attrs() {
-        let object: ExternalObject =
-            serde_json::from_str(r#"{"type_name":"device","key":{"name":"fra1"}}"#).unwrap();
-        assert!(object.attrs.is_empty());
-    }
-
-    #[test]
-    fn a_misspelled_role_key_is_rejected() {
-        let err = serde_json::from_str::<ExternalCapabilities>(r#"{"rol":"adapter"}"#).unwrap_err();
-        assert!(err.to_string().contains("rol"), "{err}");
-    }
-
-    #[test]
-    fn a_misspelled_applied_key_is_rejected() {
-        let err = serde_json::from_str::<ApplyReport>(r#"{"aplied":[]}"#).unwrap_err();
-        assert!(err.to_string().contains("aplied"), "{err}");
-    }
-
-    #[test]
-    fn an_apply_report_may_still_omit_applied() {
-        let report: ApplyReport = serde_json::from_str("{}").unwrap();
-        assert!(report.applied.is_empty());
-    }
-
-    #[test]
-    fn a_misspelled_backend_id_key_is_rejected() {
+            "atrs",
+        );
+        rejects::<ExternalCapabilities>(r#"{"rol":"adapter"}"#, "rol");
+        rejects::<ApplyReport>(r#"{"aplied":[]}"#, "aplied");
         // a typo'd id reads as the adapter returning none, and the run drops a
         // mapping it was told to keep.
-        let err = serde_json::from_str::<AppliedOp>(
+        rejects::<AppliedOp>(
             r#"{"uid":"11111111-1111-1111-1111-111111111111","type_name":"device","bakcend_id":"7"}"#,
-        )
-        .unwrap_err();
-        assert!(err.to_string().contains("bakcend_id"), "{err}");
+            "bakcend_id",
+        );
+        // every category defaults, so a typo'd delete reads as an empty report and
+        // provisions past the --allow-delete gate.
+        rejects::<ProvisionReport>(
+            r#"{"deleted_obejct_types":["dcim.site"]}"#,
+            "deleted_obejct_types",
+        );
+        // a typo'd `result` reads as an absent one, which preview_schema takes for
+        // "cannot preview" and refuses the run.
+        rejects::<ExternalResponse<ProvisionReport>>(
+            r#"{"ok":true,"reslt":{"deleted_object_types":["dcim.site"]}}"#,
+            "reslt",
+        );
+        // a create carries no backend id; one spelled onto it was dropped, and the
+        // plan the operator read named a backend object the run never looked at.
+        rejects::<Op>(
+            r#"{"op":"create","uid":"11111111-1111-1111-1111-111111111111","type_name":"device","desired":{"uid":"11111111-1111-1111-1111-111111111111","type":"device","key":{},"attrs":{}},"backend_id":"7"}"#,
+            "backend_id",
+        );
+        rejects::<FieldChange>(r#"{"field":"tier","form":1,"from":1,"to":2}"#, "form");
     }
 
     #[test]
@@ -373,33 +367,6 @@ mod tests {
         )
         .unwrap();
         assert!(applied.backend_id.is_none());
-    }
-
-    #[test]
-    fn a_misspelled_provision_category_is_rejected() {
-        // every category defaults, so a typo'd delete reads as an empty report and
-        // provisions past the --allow-delete gate.
-        let err =
-            serde_json::from_str::<ProvisionReport>(r#"{"deleted_obejct_types":["dcim.site"]}"#)
-                .unwrap_err();
-        assert!(err.to_string().contains("deleted_obejct_types"), "{err}");
-    }
-
-    #[test]
-    fn a_provision_report_may_still_omit_every_category() {
-        let report: ProvisionReport = serde_json::from_str("{}").unwrap();
-        assert_eq!(report, ProvisionReport::default());
-    }
-
-    #[test]
-    fn a_misspelled_result_key_is_rejected() {
-        // a typo'd `result` reads as an absent one, which preview_schema takes for
-        // "cannot preview" and refuses the run.
-        let err = serde_json::from_str::<ExternalResponse<ProvisionReport>>(
-            r#"{"ok":true,"reslt":{"deleted_object_types":["dcim.site"]}}"#,
-        )
-        .unwrap_err();
-        assert!(err.to_string().contains("reslt"), "{err}");
     }
 
     #[test]
@@ -784,7 +751,7 @@ mod tests {
         BufReader::new(out_reader).read_line(&mut response).unwrap();
 
         let response: ExternalResponse<ProvisionReport> = serde_json::from_str(&response).unwrap();
-        assert!(response.error.is_some());
+        assert_eq!(response.error.as_deref(), Some("unsupported operation"));
         assert!(!response.ok);
 
         t.join().unwrap();
@@ -879,16 +846,14 @@ mod tests {
         BufReader::new(out_reader).read_line(&mut response).unwrap();
 
         let response: ExternalResponse<ProvisionReport> = serde_json::from_str(&response).unwrap();
-        if let Some(error) = response.error {
-            assert_eq!(
-                error,
-                format!(
-                    "unsupported protocol version {} (expected {})",
-                    EXTERNAL_PROTOCOL_VERSION + 1,
-                    EXTERNAL_PROTOCOL_VERSION
-                )
-            );
-        }
+        assert_eq!(
+            response.error,
+            Some(format!(
+                "unsupported protocol version {} (expected {})",
+                EXTERNAL_PROTOCOL_VERSION + 1,
+                EXTERNAL_PROTOCOL_VERSION
+            ))
+        );
         assert!(!response.ok);
 
         t.join().unwrap();

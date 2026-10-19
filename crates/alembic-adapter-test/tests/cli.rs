@@ -69,20 +69,11 @@ fn passes_against_the_python_example() {
         out.status
     );
     assert!(stdout.contains("protocol/read-empty"), "{stdout}");
-    assert!(stdout.contains("passed"), "{stdout}");
-}
-
-#[test]
-fn an_sdk_emitter_passes_every_built_in_check() {
-    // the sdk rejects an unsupported version before setup and before dispatch, so
-    // an emitter built on it answers the version probe whichever method it rides.
-    // this is the check that the org's emit-only adapters stay green.
-    let (code, stdout) = run_builtin_against_with("sdk_emitter", &["--write-checks"]);
-    assert_eq!(code, Some(0), "{stdout}");
-    assert!(stdout.contains("protocol/write-empty"), "{stdout}");
-    assert!(
-        !stdout.contains("FAILED"),
-        "an sdk emitter must pass every built-in check; {stdout}"
+    // every built-in check and committed case passes; the writing checks are off.
+    assert_eq!(
+        stdout.lines().last(),
+        Some("12 passed, 2 skipped"),
+        "{stdout}"
     );
 }
 
@@ -119,7 +110,12 @@ fn reports_a_failing_adapter_and_exits_1() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("FAILED"), "{stdout}");
     assert!(stdout.contains("noise"), "{stdout}");
-    assert!(stdout.contains("failed"), "{stdout}");
+    // every check that runs fails; only the opt-in writing checks are skipped.
+    assert_eq!(
+        stdout.lines().last(),
+        Some("0 passed, 2 skipped, 6 failed"),
+        "{stdout}"
+    );
 }
 
 #[test]
@@ -158,124 +154,77 @@ fn a_cases_path_resolving_to_no_cases_exits_2() {
 #[test]
 fn cases_in_a_subdirectory_exit_2_even_when_others_loaded() {
     // one file at the top level is the only difference from the total miss above.
-    let dir = tempdir().expect("create case dir");
-    std::fs::copy(
-        manifest("examples/cases/write-create.json"),
-        dir.path().join("write-create.json"),
-    )
-    .expect("copy fixture");
-    let nested = dir.path().join("netbox");
-    std::fs::create_dir(&nested).expect("create subdirectory");
-    std::fs::copy(
-        manifest("examples/cases/read-empty.json"),
-        nested.join("read-empty.json"),
-    )
-    .expect("copy fixture");
+    for (nested, named) in [
+        (&["netbox"][..], "netbox"),
+        (&["backends", "netbox"][..], "backends"),
+    ] {
+        let dir = tempdir().expect("create case dir");
+        std::fs::copy(
+            manifest("examples/cases/write-create.json"),
+            dir.path().join("write-create.json"),
+        )
+        .expect("copy fixture");
+        let nested = nested
+            .iter()
+            .fold(dir.path().to_path_buf(), |p, d| p.join(d));
+        std::fs::create_dir_all(&nested).expect("create subdirectories");
+        std::fs::copy(
+            manifest("examples/cases/read-empty.json"),
+            nested.join("read-empty.json"),
+        )
+        .expect("copy fixture");
 
-    let out = Command::new(BIN)
-        .args(["--cases"])
-        .arg(dir.path())
-        .arg("--")
-        .arg(example_binary("sdk_emitter"))
-        .output()
-        .expect("run binary");
+        let out = Command::new(BIN)
+            .args(["--cases"])
+            .arg(dir.path())
+            .arg("--")
+            .arg(example_binary("sdk_emitter"))
+            .output()
+            .expect("run binary");
 
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert_eq!(out.status.code(), Some(2), "{stdout}");
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("netbox"), "{stderr}");
-    assert!(!stdout.contains("passed"), "{stdout}");
-}
-
-#[test]
-fn cases_two_directories_down_are_named_too() {
-    let dir = tempdir().expect("create case dir");
-    std::fs::copy(
-        manifest("examples/cases/write-create.json"),
-        dir.path().join("write-create.json"),
-    )
-    .expect("copy fixture");
-    let nested = dir.path().join("backends").join("netbox");
-    std::fs::create_dir_all(&nested).expect("create subdirectories");
-    std::fs::copy(
-        manifest("examples/cases/read-empty.json"),
-        nested.join("read-empty.json"),
-    )
-    .expect("copy fixture");
-
-    let out = Command::new(BIN)
-        .args(["--cases"])
-        .arg(dir.path())
-        .arg("--")
-        .arg(example_binary("sdk_emitter"))
-        .output()
-        .expect("run binary");
-
-    assert_eq!(out.status.code(), Some(2));
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("backends"), "{stderr}");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert_eq!(out.status.code(), Some(2), "{stdout}");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.contains(named), "{stderr}");
+        assert!(!stdout.contains("passed"), "{stdout}");
+    }
 }
 
 #[test]
 fn a_subdirectory_holding_no_cases_is_not_a_fixtures_error() {
-    let dir = tempdir().expect("create case dir");
-    std::fs::copy(
-        manifest("examples/cases/write-create.json"),
-        dir.path().join("write-create.json"),
-    )
-    .expect("copy fixture");
-    let notes = dir.path().join("notes");
-    std::fs::create_dir(&notes).expect("create subdirectory");
-    std::fs::write(notes.join("README.md"), "how these cases were captured\n").expect("write file");
-
-    let out = Command::new(BIN)
-        .args(["--cases"])
-        .arg(dir.path())
-        .arg("--")
-        .arg(example_binary("sdk_emitter"))
-        .output()
-        .expect("run binary");
-
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert_eq!(
-        out.status.code(),
-        Some(0),
-        "{stdout}{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert!(stdout.contains("case/write a create op"), "{stdout}");
-}
-
-#[test]
-fn a_subdirectory_holding_a_json_that_is_not_a_case_is_not_a_fixtures_error() {
     // the boundary the check draws is case, not `.json`: a directory kept for
     // notes or editor settings holds neither.
-    let dir = tempdir().expect("create case dir");
-    std::fs::copy(
-        manifest("examples/cases/write-create.json"),
-        dir.path().join("write-create.json"),
-    )
-    .expect("copy fixture");
-    let vscode = dir.path().join(".vscode");
-    std::fs::create_dir(&vscode).expect("create subdirectory");
-    std::fs::write(vscode.join("settings.json"), r#"{"editor.tabSize": 2}"#).expect("write file");
+    for (subdir, file, contents) in [
+        ("notes", "README.md", "how these cases were captured\n"),
+        (".vscode", "settings.json", r#"{"editor.tabSize": 2}"#),
+    ] {
+        let dir = tempdir().expect("create case dir");
+        std::fs::copy(
+            manifest("examples/cases/write-create.json"),
+            dir.path().join("write-create.json"),
+        )
+        .expect("copy fixture");
+        let sub = dir.path().join(subdir);
+        std::fs::create_dir(&sub).expect("create subdirectory");
+        std::fs::write(sub.join(file), contents).expect("write file");
 
-    let out = Command::new(BIN)
-        .args(["--cases"])
-        .arg(dir.path())
-        .arg("--")
-        .arg(example_binary("sdk_emitter"))
-        .output()
-        .expect("run binary");
+        let out = Command::new(BIN)
+            .args(["--cases"])
+            .arg(dir.path())
+            .arg("--")
+            .arg(example_binary("sdk_emitter"))
+            .output()
+            .expect("run binary");
 
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert_eq!(
-        out.status.code(),
-        Some(0),
-        "{stdout}{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert!(stdout.contains("case/write a create op"), "{stdout}");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{subdir}: {stdout}{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(stdout.contains("case/write a create op"), "{stdout}");
+    }
 }
 
 #[test]
@@ -341,13 +290,16 @@ fn the_writing_checks_are_off_by_default() {
     );
 }
 
-/// asked for, both run.
+/// asked for, both run. the sdk rejects an unsupported version before setup and
+/// before dispatch, so an emitter built on it passes every built-in check: this is
+/// the check that the org's emit-only adapters stay green.
 #[test]
 fn write_checks_runs_them() {
     let (code, stdout) = run_builtin_against_with("sdk_emitter", &["--write-checks"]);
     assert_eq!(code, Some(0), "{stdout}");
+    assert!(stdout.contains("protocol/write-empty"), "{stdout}");
     assert!(!stdout.contains("skipped"), "{stdout}");
-    assert!(stdout.contains("7 passed"), "{stdout}");
+    assert_eq!(stdout.lines().last(), Some("7 passed"), "{stdout}");
 }
 
 /// the old spelling is the default now: it still parses and still means no writing

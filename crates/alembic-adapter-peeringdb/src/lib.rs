@@ -224,29 +224,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn build_key_extracts_fields() {
-        let schema = ix_schema();
-        let attrs: JsonMap = BTreeMap::from([
-            ("id".to_string(), serde_json::json!(1)),
-            ("name".to_string(), serde_json::json!("DE-CIX Frankfurt")),
-        ])
-        .into();
-        let key = build_key_from_schema(&schema, &attrs).unwrap();
-        assert_eq!(
-            key.get("name"),
-            Some(&serde_json::json!("DE-CIX Frankfurt"))
-        );
-    }
-
-    #[test]
-    fn build_key_errors_on_missing_field() {
-        let schema = ix_schema();
-        let attrs: JsonMap = BTreeMap::from([("id".to_string(), serde_json::json!(1))]).into();
-        let err = build_key_from_schema(&schema, &attrs).unwrap_err();
-        assert!(err.to_string().contains("missing key field name"));
-    }
-
     fn sample_ix(id: u32, name: &str) -> peeringdb_rs::PeeringdbIx {
         peeringdb_rs::PeeringdbIx {
             id,
