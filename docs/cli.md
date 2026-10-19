@@ -336,7 +336,9 @@ or review process consumes to see what a given run did.
 
 apply journals the create/update operations it has completed, so an apply that stops
 partway can be continued instead of redone. the journal is a file under `.alembic/`,
-named for the backend and a hash of the plan's operations.
+or under `ALEMBIC_JOURNAL_DIR` when set, named for the backend and a hash of the plan's
+operations. pointing `ALEMBIC_JOURNAL_DIR` at a directory several workers share lets
+any of them resume an apply another one started.
 
 when a run stops with operations already applied, it says so before the error:
 
@@ -492,4 +494,5 @@ autoload -Uz compinit && compinit
 - `ALEMBIC_STATE_POSTGRES_URL` (required when `ALEMBIC_STATE_BACKEND=postgres`)
 - `ALEMBIC_STATE_KEY` (optional workspace namespace for postgres state rows, default: `default`; the row key is `<workspace>/<adapter>-<hash>`)
 - `ALEMBIC_STATE_POSTGRES_TLS` (`disable`/`require`, default: `disable`)
+- `ALEMBIC_JOURNAL_DIR` (optional apply journal directory, default: `./.alembic`)
 - `RUST_LOG` (optional; defaults to `warn`, used by cli tracing output)
