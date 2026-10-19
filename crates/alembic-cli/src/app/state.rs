@@ -31,12 +31,14 @@ pub(super) async fn load_state_with_context(
     let (mut store, storage, location, present) =
         match resolve_state_backend_config(root, identity)? {
             StateBackendConfig::Local { path } => {
-                let store = StateStore::load_with(&path, lock)?;
+                let store = StateStore::load_with(&path, lock)?.with_journal_dir(journal_dir(root));
                 let present = path.try_exists()?;
                 (store, "local", path.display().to_string(), present)
             }
             StateBackendConfig::Postgres { url, key, tls_mode } => {
-                let store = StateStore::load_postgres(url, key.clone(), tls_mode).await?;
+                let store = StateStore::load_postgres(url, key.clone(), tls_mode)
+                    .await?
+                    .with_postgres_backed_journal();
                 // a saved row is stamped, a new one is not. the location is the
                 // row key: the url may carry credentials.
                 let present = store.backend_identity().is_some();
@@ -51,8 +53,7 @@ pub(super) async fn load_state_with_context(
         bindings_loaded: store.all_mappings().values().map(|m| m.len()).sum(),
     };
     store.ensure_backend(identity)?;
-    // apply journals are files even when the state backend is postgres.
-    Ok((store.with_journal_dir(journal_dir(root)), context))
+    Ok((store, context))
 }
 
 /// where apply journals go: `ALEMBIC_JOURNAL_DIR`, else `.alembic/` under `root`.

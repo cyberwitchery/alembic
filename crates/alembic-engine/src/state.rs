@@ -132,6 +132,12 @@ impl StateStore {
         self
     }
 
+    /// use postgres to persist apply journals for resumable applies.
+    pub fn with_postgres_backed_journal(mut self) -> Self {
+        self.journal_dir = JournalStorage::Postgres;
+        self
+    }
+
     /// directory used to persist apply journals, if configured.
     pub fn journal_dir(&self) -> Option<&Path> {
         match &self.journal_dir {
