@@ -10,8 +10,10 @@
 
 use crate::types::{AppliedOp, BackendId, Op};
 use alembic_core::{TypeName, Uid};
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
+use std::fmt::Debug;
 use std::fs;
 use std::fs::{File, OpenOptions};
 use std::io;
@@ -63,7 +65,8 @@ pub enum JournalError {
         path.display()
     )]
     UnsupportedVersion { path: PathBuf, found: u32 },
-    #[error("failed to read the journal file `{}`: line {line} is not a journal record", path.display())]
+    #[error("failed to read the journal file `{}`: line {line} is not a journal record", path.display()
+    )]
     NotARecord { path: PathBuf, line: usize },
     #[error("failed to read the journal file `{}`: line {line}", path.display())]
     BadRecord {
@@ -72,16 +75,19 @@ pub enum JournalError {
         #[source]
         source: serde_json::Error,
     },
-    #[error("the journal file `{}` records op {op} as done, but only declares {declared}", path.display())]
+    #[error("the journal file `{}` records op {op} as done, but only declares {declared}", path.display()
+    )]
     DoneOutOfRange {
         path: PathBuf,
         op: usize,
         declared: usize,
     },
-    #[error("the ops in the loaded journal file `{}` don't match the expected ops", path.display())]
-    OpsMismatch { path: PathBuf },
+    #[error("the ops in the loaded journal at `{location}` don't match the expected ops")]
+    OpsMismatch { location: String },
     #[error("no matching op found in journal, can't mark any as done")]
     NotPlanned,
+    #[error("the journal has not been loaded or written yet")]
+    NotOpen,
     #[error("journal path `{}` has no parent directory", path.display())]
     NoParent { path: PathBuf },
 }
@@ -97,7 +103,7 @@ fn io_at(path: &Path) -> impl FnOnce(io::Error) -> JournalError + '_ {
 
 #[derive(Debug)]
 pub struct Journal {
-    storage: JournalStorage,
+    storage: Option<Box<dyn JournalBackend>>,
     ops: Vec<OpWithMeta>,
     // not-yet-done op positions, keyed by (uid, typename, hash), in plan order.
     // derived from `ops` and rebuilt whenever `ops` is (re)loaded; lets
@@ -105,11 +111,17 @@ pub struct Journal {
     pending_index: HashMap<(Uid, TypeName, u64), VecDeque<usize>>,
 }
 
-#[derive(Debug)]
-pub enum JournalStorage {
-    File(File, PathBuf),
-    Postgres,
-    None,
+#[async_trait]
+pub trait JournalBackend: Send + Sync + Debug {
+    /// records of an earlier run under `key`, if there is one.
+    async fn load(&mut self, key: &str) -> Result<Option<Vec<OpWithMeta>>>;
+    /// lay down a fresh (or rewritten) journal under `key`.
+    async fn write_all(&mut self, key: &str, ops: &[OpWithMeta]) -> Result<()>;
+    /// durably record op `index` as done before returning.
+    async fn append_done(&mut self, index: usize, backend_id: Option<&BackendId>) -> Result<()>;
+    async fn delete(self: Box<Self>) -> Result<()>;
+    /// shown in the resume / unfinished-delete warnings.
+    fn description(&self) -> String;
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -175,98 +187,62 @@ fn build_pending_index(ops: &[OpWithMeta]) -> HashMap<(Uid, TypeName, u64), VecD
     index
 }
 
+fn op_keys(ops: &[OpWithMeta]) -> Vec<(Uid, &TypeName, u64)> {
+    ops.iter()
+        .map(|owm| (owm.op_uid, &owm.op_typename, owm.op_hash))
+        .collect()
+}
+
 impl Journal {
     pub fn stable_file_name(directory: &Path, adapter_name: &str, ops: &[Op]) -> PathBuf {
+        JournalFileBackend::file_path(directory, &Self::stable_key(adapter_name, ops))
+    }
+
+    /// names one plan's journal: the same scope and ops always yield the same key.
+    fn stable_key(adapter_name: &str, ops: &[Op]) -> String {
         let hash = crate::types::stable_json_hash(&ops);
-        let file_name: PathBuf = format!("{}_journal_{}.yaml", adapter_name, hash).into();
-        directory.join(file_name)
+        format!("{}_journal_{}", adapter_name, hash)
     }
 
     pub fn load_or_create_with_postgres() -> Result<Self> {
         todo!()
     }
 
-    /// tries to load a Journal from `file_path`, otherwise creates a new one.
-    /// in either case, the new Journal instance will be backed by the file at `file_path`.
+    /// tries to load a Journal from its file in `directory`, otherwise creates a new one.
+    /// in either case, the new Journal instance will be backed by that file.
     /// delete ops will not be saved in the journal.
-    pub fn load_or_create_with_file(
+    pub async fn load_or_create_with_file(
         directory: &Path,
         adapter_name: &str,
         ops: &[Op],
     ) -> Result<Self> {
-        // apply writes the journal before any state save, so `directory` (e.g. `.alembic/`)
-        // may not exist yet on a fresh checkout.
-        fs::create_dir_all(directory).map_err(io_at(directory))?;
-        let file_name = Self::stable_file_name(directory, adapter_name, ops);
-        if fs::metadata(&file_name).is_ok() {
-            Self::new_from_existing_file(directory, adapter_name, ops)
-        } else {
-            Self::new_with_file(directory, adapter_name, ops)
-        }
+        let backend = JournalFileBackend::new(directory.to_owned());
+        Self::load_or_create(Box::new(backend), &Self::stable_key(adapter_name, ops), ops).await
     }
 
-    /// loads a journal from the file with `file_path` and sets its backing file to that file
-    fn new_from_existing_file(
-        directory: &Path,
-        adapter_name: &str,
-        expected_ops: &[Op],
+    /// resumes the journal `backend` holds under `key` if there is one, otherwise
+    /// writes a fresh one for `ops`. delete ops will not be saved in the journal.
+    pub async fn load_or_create(
+        mut backend: Box<dyn JournalBackend>,
+        key: &str,
+        ops: &[Op],
     ) -> Result<Self> {
-        let file_name = Self::stable_file_name(directory, adapter_name, expected_ops);
-        let contents = fs::read_to_string(&file_name).map_err(io_at(&file_name))?;
-
-        let (ops, rewrite) = match contents.starts_with(DOCUMENT_PREFIX) {
-            true => parse_records(&contents, &file_name)?,
-            false => (parse_legacy(&contents, &file_name)?, true),
-        };
-
-        let mut journal = Journal {
-            storage: JournalStorage::None,
-            pending_index: build_pending_index(&ops),
-            ops,
-        };
-
-        let journal_keys = journal
-            .ops
-            .iter()
-            .map(|op_with_meta| {
-                (
-                    op_with_meta.op_uid,
-                    &op_with_meta.op_typename,
-                    op_with_meta.op_hash,
-                )
-            })
-            .collect::<Vec<(Uid, &TypeName, u64)>>();
-
-        let expected_keys = expected_ops
-            .iter()
-            .filter(|op| !matches!(op, Op::Delete { .. }))
-            .map(|op| (op.uid(), op.type_name(), op.hashed()))
-            .collect::<Vec<(Uid, &TypeName, u64)>>();
-        if journal_keys != expected_keys {
-            return Err(JournalError::OpsMismatch { path: file_name });
-        }
-
-        // neither a legacy whole-document journal nor one whose torn tail the parse
-        // dropped can be appended to as it stands. rewriting once, here, is what makes
-        // every write from now on an append.
-        let file = match rewrite {
-            true => write_whole_file(&file_name, &journal.ops)?,
-            false => open_for_append(&file_name)?,
-        };
-        journal.storage = JournalStorage::File(file, file_name);
-        Ok(journal)
-    }
-
-    /// creates a journal with a new backing file
-    fn new_with_file(directory: &Path, adapter_name: &str, ops: &[Op]) -> Result<Self> {
-        let file_name = Self::stable_file_name(directory, adapter_name, ops);
         let mut journal = Self::new_ephemeral(ops);
-
-        // write the plan out before applying any op, both to check the file works and
-        // because a `done` record is only meaningful against the op lines it indexes
-        let file = write_whole_file(&file_name, &journal.ops)?;
-        journal.storage = JournalStorage::File(file, file_name);
-
+        match backend.load(key).await? {
+            Some(loaded) => {
+                if op_keys(&loaded) != op_keys(&journal.ops) {
+                    return Err(JournalError::OpsMismatch {
+                        location: backend.description(),
+                    });
+                }
+                journal.pending_index = build_pending_index(&loaded);
+                journal.ops = loaded;
+            }
+            // write the plan out before applying any op, both to check the storage works
+            // and because a `done` record is only meaningful against the ops it indexes
+            None => backend.write_all(key, &journal.ops).await?,
+        }
+        journal.storage = Some(backend);
         Ok(journal)
     }
 
@@ -279,7 +255,7 @@ impl Journal {
             .collect();
         let pending_index = build_pending_index(&ops);
         Self {
-            storage: JournalStorage::None,
+            storage: None,
             ops,
             pending_index,
         }
@@ -317,11 +293,7 @@ impl Journal {
 
     /// returns a string describing where the journal storage is located (if any)
     pub fn journal_storage_description(&self) -> Option<String> {
-        match &self.storage {
-            JournalStorage::File(_, path) => Some(path.display().to_string()),
-            JournalStorage::Postgres => Some("Postgres".to_string()),
-            JournalStorage::None => None,
-        }
+        self.storage.as_ref().map(|storage| storage.description())
     }
 
     pub fn is_completed(&self) -> bool {
@@ -332,7 +304,7 @@ impl Journal {
     /// records the id the backend returned for it. the record reaches disk before
     /// this returns, so the next op is never applied against an unrecorded one.
     /// O(1) via `pending_index`; errors if there's no such op.
-    pub fn mark_op_as_done(&mut self, op: &Op, backend_id: Option<&BackendId>) -> Result<()> {
+    pub async fn mark_op_as_done(&mut self, op: &Op, backend_id: Option<&BackendId>) -> Result<()> {
         let key = (op.uid(), op.type_name().clone(), op.hashed());
         let op_index = self
             .pending_index
@@ -343,40 +315,108 @@ impl Journal {
         self.ops[op_index].done = true;
         self.ops[op_index].backend_id = backend_id.cloned();
 
+        match &mut self.storage {
+            Some(storage) => storage.append_done(op_index, backend_id).await,
+            None => Ok(()),
+        }
+    }
+
+    pub async fn delete_backing_storage(&mut self) -> Result<()> {
+        if let Some(storage) = self.storage.take() {
+            storage.delete().await
+        } else {
+            Ok(())
+        }
+    }
+}
+
+/// keeps each journal as an append-only file in `directory`, named by its key.
+#[derive(Debug)]
+pub struct JournalFileBackend {
+    directory: PathBuf,
+    // the file `load` or `write_all` opened for appending, and its path
+    open: Option<(File, PathBuf)>,
+}
+
+impl JournalFileBackend {
+    pub fn new(directory: PathBuf) -> Self {
+        Self {
+            directory,
+            open: None,
+        }
+    }
+
+    fn file_path(directory: &Path, key: &str) -> PathBuf {
+        directory.join(format!("{key}.yaml"))
+    }
+}
+
+#[async_trait]
+impl JournalBackend for JournalFileBackend {
+    async fn load(&mut self, key: &str) -> Result<Option<Vec<OpWithMeta>>> {
+        let path = Self::file_path(&self.directory, key);
+        if fs::metadata(&path).is_err() {
+            return Ok(None);
+        }
+        let contents = fs::read_to_string(&path).map_err(io_at(&path))?;
+
+        let (ops, rewrite) = match contents.starts_with(DOCUMENT_PREFIX) {
+            true => parse_records(&contents, &path)?,
+            false => (parse_legacy(&contents, &path)?, true),
+        };
+
+        // neither a legacy whole-document journal nor one whose torn tail the parse
+        // dropped can be appended to as it stands. rewriting once, here, is what makes
+        // every write from now on an append.
+        let file = match rewrite {
+            true => write_whole_file(&path, &ops)?,
+            false => open_for_append(&path)?,
+        };
+        self.open = Some((file, path));
+        Ok(Some(ops))
+    }
+
+    async fn write_all(&mut self, key: &str, ops: &[OpWithMeta]) -> Result<()> {
+        // apply writes the journal before any state save, so `directory` (e.g. `.alembic/`)
+        // may not exist yet on a fresh checkout.
+        fs::create_dir_all(&self.directory).map_err(io_at(&self.directory))?;
+        let path = Self::file_path(&self.directory, key);
+        let file = write_whole_file(&path, ops)?;
+        self.open = Some((file, path));
+        Ok(())
+    }
+
+    async fn append_done(&mut self, op_index: usize, backend_id: Option<&BackendId>) -> Result<()> {
+        let (file, path) = self.open.as_mut().ok_or(JournalError::NotOpen)?;
         let record = Record::Done(Done {
             op: op_index,
             backend_id: backend_id.cloned(),
         });
-
-        match &mut self.storage {
-            JournalStorage::File(file, path) => {
-                let line = record_line(&record)?;
-                // one fsync per applied op. measured on an apfs ssd at ~5ms against ~12ms for
-                // the whole-file rewrite this replaces, and it is what makes the record
-                // survive a power cut rather than only a killed process.
-                file.write_all(line.as_bytes())
-                    .and_then(|()| file.sync_data())
-                    .map_err(|source| JournalError::Append {
-                        path: path.clone(),
-                        source,
-                    })
-            }
-            JournalStorage::Postgres => {
-                todo!()
-            }
-            JournalStorage::None => Ok(()),
-        }
+        let line = record_line(&record)?;
+        // one fsync per applied op. measured on an apfs ssd at ~5ms against ~12ms for
+        // the whole-file rewrite this replaces, and it is what makes the record
+        // survive a power cut rather than only a killed process.
+        file.write_all(line.as_bytes())
+            .and_then(|()| file.sync_data())
+            .map_err(|source| JournalError::Append {
+                path: path.clone(),
+                source,
+            })
     }
 
-    pub fn delete_backing_storage(&mut self) -> Result<()> {
-        match std::mem::replace(&mut self.storage, JournalStorage::None) {
-            JournalStorage::File(file, file_path) => {
-                drop(file);
-                fs::remove_file(&file_path).map_err(io_at(&file_path))?;
-                Ok(())
-            }
-            JournalStorage::Postgres => todo!(),
-            JournalStorage::None => Ok(()),
+    async fn delete(self: Box<Self>) -> Result<()> {
+        let Some((file, path)) = self.open else {
+            return Ok(());
+        };
+        // closed before the remove, which windows needs
+        drop(file);
+        fs::remove_file(&path).map_err(io_at(&path))
+    }
+
+    fn description(&self) -> String {
+        match &self.open {
+            Some((_, path)) => path.display().to_string(),
+            None => self.directory.display().to_string(),
         }
     }
 }
@@ -528,15 +568,15 @@ fn parse_legacy(contents: &str, path: &Path) -> Result<Vec<OpWithMeta>> {
 // the op itself is not stored, only its identity (uid, typename, hash). on disk it
 // is split in two: an `op` line at plan time, a `done` line when it completes.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
-struct OpWithMeta {
-    op_uid: Uid,
-    op_typename: TypeName,
-    op_hash: u64,
-    done: bool,
+pub struct OpWithMeta {
+    pub op_uid: Uid,
+    pub op_typename: TypeName,
+    pub op_hash: u64,
+    pub done: bool,
     // id the backend returned for this op, so a resumed run can resolve references
     // into what an earlier run created or updated. the journaling adapters return one
     // for both; `null` in a journal written before ids were recorded.
-    backend_id: Option<BackendId>,
+    pub backend_id: Option<BackendId>,
 }
 
 impl OpWithMeta {
@@ -610,16 +650,20 @@ mod tests {
         );
     }
 
-    #[test]
-    fn save_and_load_journal() {
+    #[tokio::test]
+    async fn save_and_load_journal() {
         let dir = tempdir().unwrap();
         let ops = test_ops();
         {
-            let journal = Journal::new_with_file(dir.path(), "test", &ops).unwrap();
+            let journal = Journal::load_or_create_with_file(dir.path(), "test", &ops)
+                .await
+                .unwrap();
             drop(journal);
         }
         {
-            let journal = Journal::new_from_existing_file(dir.path(), "test", &ops).unwrap();
+            let journal = Journal::load_or_create_with_file(dir.path(), "test", &ops)
+                .await
+                .unwrap();
             assert_eq!(
                 journal
                     .ops
@@ -633,8 +677,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn resume_rejects_mismatched_journal_contents() {
+    #[tokio::test]
+    async fn resume_rejects_mismatched_journal_contents() {
         // the resume-mismatch guard is unreachable through `load_or_create` (the
         // file name is a stable hash over all ops, so a changed plan gets a fresh
         // file). craft the collision directly: write a journal whose CONTENTS are
@@ -657,7 +701,8 @@ mod tests {
         let journal = Journal::new_ephemeral(&other);
         write_whole_file(&target, &journal.ops).unwrap();
 
-        let err = Journal::new_from_existing_file(dir.path(), "test", &expected)
+        let err = Journal::load_or_create_with_file(dir.path(), "test", &expected)
+            .await
             .expect_err("mismatched journal must be rejected");
         assert!(
             err.to_string().contains("don't match the expected ops"),
@@ -665,37 +710,45 @@ mod tests {
         );
     }
 
-    #[test]
-    fn mark_ops_as_done() {
+    #[tokio::test]
+    async fn mark_ops_as_done() {
         let ops = test_ops();
         for order in [[0, 1, 2], [2, 1, 0]] {
             let mut journal =
-                Journal::new_with_file(tempdir().unwrap().path(), "test", &ops).unwrap();
+                Journal::load_or_create_with_file(tempdir().unwrap().path(), "test", &ops)
+                    .await
+                    .unwrap();
             for (marked, index) in order.into_iter().enumerate() {
                 assert!(!journal.is_completed(), "{order:?} after {marked}");
-                journal.mark_op_as_done(&ops[index], None).unwrap();
+                journal.mark_op_as_done(&ops[index], None).await.unwrap();
             }
             assert!(journal.is_completed(), "{order:?}");
         }
     }
 
-    #[test]
-    fn records_the_backend_id_each_op_returned() {
+    #[tokio::test]
+    async fn records_the_backend_id_each_op_returned() {
         // the whole point of the journal for a resumed run: the ids survive the
         // crash, in plan order, so the next run can resolve refs into them.
         let dir = tempdir().unwrap();
         let ops = test_ops();
         {
-            let mut journal = Journal::new_with_file(dir.path(), "test", &ops).unwrap();
+            let mut journal = Journal::load_or_create_with_file(dir.path(), "test", &ops)
+                .await
+                .unwrap();
             journal
                 .mark_op_as_done(&ops[0], Some(&BackendId::Int(7)))
+                .await
                 .unwrap();
             journal
                 .mark_op_as_done(&ops[2], Some(&BackendId::String("abc".into())))
+                .await
                 .unwrap();
         }
 
-        let journal = Journal::new_from_existing_file(dir.path(), "test", &ops).unwrap();
+        let journal = Journal::load_or_create_with_file(dir.path(), "test", &ops)
+            .await
+            .unwrap();
         let done = journal.done_applied_ops();
         assert_eq!(
             done.iter()
@@ -708,31 +761,38 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_journal_without_recorded_ids_loads_with_none() {
+    #[tokio::test]
+    async fn a_journal_without_recorded_ids_loads_with_none() {
         // marking done without an id is the emitter case; it must load, and report
         // no id rather than fail.
         let dir = tempdir().unwrap();
         let ops = test_ops();
         let path = Journal::stable_file_name(dir.path(), "test", &ops);
         {
-            let mut journal = Journal::new_with_file(dir.path(), "test", &ops).unwrap();
-            journal.mark_op_as_done(&ops[0], None).unwrap();
+            let mut journal = Journal::load_or_create_with_file(dir.path(), "test", &ops)
+                .await
+                .unwrap();
+            journal.mark_op_as_done(&ops[0], None).await.unwrap();
         }
         assert!(fs::read_to_string(&path)
             .unwrap()
             .contains(r#""backend_id":null"#));
 
-        let journal = Journal::new_from_existing_file(dir.path(), "test", &ops).unwrap();
+        let journal = Journal::load_or_create_with_file(dir.path(), "test", &ops)
+            .await
+            .unwrap();
         let done = journal.done_applied_ops();
         assert_eq!(done.len(), 1);
         assert_eq!(done[0].backend_id, None);
     }
 
-    #[test]
-    fn mark_invalid_op_as_done() {
+    #[tokio::test]
+    async fn mark_invalid_op_as_done() {
         let ops = test_ops();
-        let mut journal = Journal::new_with_file(tempdir().unwrap().path(), "test", &ops).unwrap();
+        let mut journal =
+            Journal::load_or_create_with_file(tempdir().unwrap().path(), "test", &ops)
+                .await
+                .unwrap();
         journal
             .mark_op_as_done(
                 &Op::Create {
@@ -748,39 +808,49 @@ mod tests {
                 },
                 None,
             )
+            .await
             .expect_err("should fail");
         assert!(!journal.is_completed());
     }
 
-    #[test]
-    fn mark_same_op_as_done_twice() {
+    #[tokio::test]
+    async fn mark_same_op_as_done_twice() {
         let ops = test_ops();
-        let mut journal = Journal::new_with_file(tempdir().unwrap().path(), "test", &ops).unwrap();
-        journal.mark_op_as_done(&ops[1], None).unwrap();
+        let mut journal =
+            Journal::load_or_create_with_file(tempdir().unwrap().path(), "test", &ops)
+                .await
+                .unwrap();
+        journal.mark_op_as_done(&ops[1], None).await.unwrap();
         journal
             .mark_op_as_done(&ops[1], None)
+            .await
             .expect_err("should fail");
     }
 
-    #[test]
-    fn mark_op_after_loading_partial_journal() {
+    #[tokio::test]
+    async fn mark_op_after_loading_partial_journal() {
         // mark one op, then reload: the rebuilt pending index must respect the
         // on-disk `done` records, so the already-done op can't be re-marked and the
         // remaining ops still mark and complete.
         let dir = tempdir().unwrap();
         let ops = test_ops();
         {
-            let mut journal = Journal::new_with_file(dir.path(), "test", &ops).unwrap();
-            journal.mark_op_as_done(&ops[0], None).unwrap();
+            let mut journal = Journal::load_or_create_with_file(dir.path(), "test", &ops)
+                .await
+                .unwrap();
+            journal.mark_op_as_done(&ops[0], None).await.unwrap();
         }
 
-        let mut journal = Journal::new_from_existing_file(dir.path(), "test", &ops).unwrap();
+        let mut journal = Journal::load_or_create_with_file(dir.path(), "test", &ops)
+            .await
+            .unwrap();
         // (a) a still-pending op marks after reload
-        journal.mark_op_as_done(&ops[1], None).unwrap();
+        journal.mark_op_as_done(&ops[1], None).await.unwrap();
         assert!(!journal.is_completed());
         // (b) the op done before the reload is respected: re-marking errors
         let err = journal
             .mark_op_as_done(&ops[0], None)
+            .await
             .expect_err("already-done op must not be markable again");
         assert!(
             err.to_string().contains("no matching op found"),
@@ -788,12 +858,12 @@ mod tests {
         );
         // (c) completed only once the last remaining op is marked
         assert!(!journal.is_completed());
-        journal.mark_op_as_done(&ops[2], None).unwrap();
+        journal.mark_op_as_done(&ops[2], None).await.unwrap();
         assert!(journal.is_completed());
     }
 
-    #[test]
-    fn mark_scales_to_a_large_plan() {
+    #[tokio::test]
+    async fn mark_scales_to_a_large_plan() {
         // marking every op in a large plan in order completes without a quadratic
         // blowup (no wall-clock assert, just correctness at scale). ephemeral on
         // purpose: a backing file would make this 5000 fsyncs, measured at 25s here,
@@ -815,7 +885,7 @@ mod tests {
 
         let mut journal = Journal::new_ephemeral(&ops);
         for op in &ops {
-            journal.mark_op_as_done(op, None).unwrap();
+            journal.mark_op_as_done(op, None).await.unwrap();
         }
         assert!(journal.is_completed());
     }
@@ -826,25 +896,30 @@ mod tests {
         std::mem::forget(journal);
     }
 
-    #[test]
-    fn a_process_killed_mid_apply_keeps_the_ops_it_applied() {
+    #[tokio::test]
+    async fn a_process_killed_mid_apply_keeps_the_ops_it_applied() {
         // the headline of #46. the journal used to be written at the apply's exit
         // points, so a run that never reached one left a journal recording nothing.
         let dir = tempdir().unwrap();
         let ops = test_ops();
         {
-            let mut journal =
-                Journal::load_or_create_with_file(dir.path(), "killed", &ops).unwrap();
+            let mut journal = Journal::load_or_create_with_file(dir.path(), "killed", &ops)
+                .await
+                .unwrap();
             journal
                 .mark_op_as_done(&ops[0], Some(&BackendId::Int(7)))
+                .await
                 .unwrap();
             journal
                 .mark_op_as_done(&ops[1], Some(&BackendId::Int(8)))
+                .await
                 .unwrap();
             killed(journal);
         }
 
-        let journal = Journal::load_or_create_with_file(dir.path(), "killed", &ops).unwrap();
+        let journal = Journal::load_or_create_with_file(dir.path(), "killed", &ops)
+            .await
+            .unwrap();
         assert_eq!(
             journal
                 .done_applied_ops()
@@ -859,17 +934,20 @@ mod tests {
         assert!(!journal.is_completed());
     }
 
-    #[test]
-    fn a_torn_final_record_loads_as_everything_before_it() {
+    #[tokio::test]
+    async fn a_torn_final_record_loads_as_everything_before_it() {
         // a power cut can leave the last append half-written. everything ahead of it
         // is intact by construction, and refusing to load would cost the whole resume.
         let dir = tempdir().unwrap();
         let ops = test_ops();
         let path = Journal::stable_file_name(dir.path(), "torn", &ops);
         {
-            let mut journal = Journal::load_or_create_with_file(dir.path(), "torn", &ops).unwrap();
+            let mut journal = Journal::load_or_create_with_file(dir.path(), "torn", &ops)
+                .await
+                .unwrap();
             journal
                 .mark_op_as_done(&ops[0], Some(&BackendId::Int(7)))
+                .await
                 .unwrap();
             killed(journal);
         }
@@ -877,7 +955,9 @@ mod tests {
         contents.push_str(r#"--- {"done":{"op":1,"backe"#);
         fs::write(&path, &contents).unwrap();
 
-        let journal = Journal::load_or_create_with_file(dir.path(), "torn", &ops).unwrap();
+        let journal = Journal::load_or_create_with_file(dir.path(), "torn", &ops)
+            .await
+            .unwrap();
         assert_eq!(
             journal
                 .done_applied_ops()
@@ -888,8 +968,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_resume_from_a_torn_journal_repairs_it_before_appending() {
+    #[tokio::test]
+    async fn a_resume_from_a_torn_journal_repairs_it_before_appending() {
         // tolerating the torn tail on read is only half of it. appending after the torn
         // bytes leaves a record the next load either drops, re-applying an op that
         // already ran, or cannot read at all, losing every id the killed run recorded.
@@ -901,10 +981,12 @@ mod tests {
             let ops = test_ops();
             let path = Journal::stable_file_name(dir.path(), "torn", &ops);
             {
-                let mut journal =
-                    Journal::load_or_create_with_file(dir.path(), "torn", &ops).unwrap();
+                let mut journal = Journal::load_or_create_with_file(dir.path(), "torn", &ops)
+                    .await
+                    .unwrap();
                 journal
                     .mark_op_as_done(&ops[0], Some(&BackendId::Int(7)))
+                    .await
                     .unwrap();
                 killed(journal);
             }
@@ -914,25 +996,31 @@ mod tests {
 
             // the resumed run applies the op the torn record was for, and dies again
             {
-                let mut journal =
-                    Journal::load_or_create_with_file(dir.path(), "torn", &ops).unwrap();
+                let mut journal = Journal::load_or_create_with_file(dir.path(), "torn", &ops)
+                    .await
+                    .unwrap();
                 journal
                     .mark_op_as_done(&ops[1], Some(&BackendId::Int(8)))
+                    .await
                     .unwrap();
                 killed(journal);
             }
             // and once more, since a merged line only reads as corruption once it is no
             // longer the last one
             {
-                let mut journal =
-                    Journal::load_or_create_with_file(dir.path(), "torn", &ops).unwrap();
+                let mut journal = Journal::load_or_create_with_file(dir.path(), "torn", &ops)
+                    .await
+                    .unwrap();
                 journal
                     .mark_op_as_done(&ops[2], Some(&BackendId::Int(9)))
+                    .await
                     .unwrap();
                 killed(journal);
             }
 
-            let journal = Journal::load_or_create_with_file(dir.path(), "torn", &ops).unwrap();
+            let journal = Journal::load_or_create_with_file(dir.path(), "torn", &ops)
+                .await
+                .unwrap();
             assert_eq!(
                 journal
                     .done_applied_ops()
@@ -950,18 +1038,19 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_record_broken_before_the_last_one_is_corruption() {
+    #[tokio::test]
+    async fn a_record_broken_before_the_last_one_is_corruption() {
         // only the tail can be torn, so a broken line anywhere else is a damaged file
         // and reading past it would report ops as pending that already applied.
         let dir = tempdir().unwrap();
         let ops = test_ops();
         let path = Journal::stable_file_name(dir.path(), "corrupt", &ops);
         {
-            let mut journal =
-                Journal::load_or_create_with_file(dir.path(), "corrupt", &ops).unwrap();
-            journal.mark_op_as_done(&ops[0], None).unwrap();
-            journal.mark_op_as_done(&ops[1], None).unwrap();
+            let mut journal = Journal::load_or_create_with_file(dir.path(), "corrupt", &ops)
+                .await
+                .unwrap();
+            journal.mark_op_as_done(&ops[0], None).await.unwrap();
+            journal.mark_op_as_done(&ops[1], None).await.unwrap();
             killed(journal);
         }
         let contents = fs::read_to_string(&path).unwrap();
@@ -969,12 +1058,13 @@ mod tests {
         fs::write(&path, broken).unwrap();
 
         let err = Journal::load_or_create_with_file(dir.path(), "corrupt", &ops)
+            .await
             .expect_err("a broken record above the tail must not load");
         assert!(err.to_string().contains("failed to read"), "got: {err}");
     }
 
-    #[test]
-    fn a_journal_from_before_the_append_only_format_still_loads() {
+    #[tokio::test]
+    async fn a_journal_from_before_the_append_only_format_still_loads() {
         // the previous format was one mutable yaml document. it must resume rather
         // than be read as an empty append-only file, and it is rewritten on load so
         // every write after that is an append.
@@ -992,25 +1082,28 @@ mod tests {
         );
         fs::write(&path, legacy).unwrap();
 
-        let mut journal = Journal::load_or_create_with_file(dir.path(), "test", &ops).unwrap();
+        let mut journal = Journal::load_or_create_with_file(dir.path(), "test", &ops)
+            .await
+            .unwrap();
         let done = journal.done_applied_ops();
         assert_eq!(done.len(), 1);
         assert_eq!(done[0].backend_id, Some(BackendId::Int(7)));
 
-        journal.mark_op_as_done(&ops[1], None).unwrap();
+        journal.mark_op_as_done(&ops[1], None).await.unwrap();
         drop(journal);
         let migrated = fs::read_to_string(&path).unwrap();
         assert!(migrated.starts_with(r#"--- {"version":1}"#), "{migrated}");
         assert_eq!(
             Journal::load_or_create_with_file(dir.path(), "test", &ops)
+                .await
                 .unwrap()
                 .done_ops_count(),
             2
         );
     }
 
-    #[test]
-    fn a_journal_from_a_newer_alembic_is_refused_by_name() {
+    #[tokio::test]
+    async fn a_journal_from_a_newer_alembic_is_refused_by_name() {
         // the alternative is reading records this version does not understand as if
         // it did, and skipping ops that never applied.
         let dir = tempdir().unwrap();
@@ -1019,18 +1112,21 @@ mod tests {
         fs::write(&path, "--- {\"version\":99}\n").unwrap();
 
         let err = Journal::load_or_create_with_file(dir.path(), "test", &ops)
+            .await
             .expect_err("an unknown format version must not be read as this one");
         assert!(err.to_string().contains("format version 99"), "got: {err}");
     }
 
-    #[test]
-    fn delete_backing_file() {
+    #[tokio::test]
+    async fn delete_backing_file() {
         let dir = tempdir().unwrap();
         let ops = test_ops();
-        let mut journal = Journal::new_with_file(dir.path(), "test", &ops).unwrap();
+        let mut journal = Journal::load_or_create_with_file(dir.path(), "test", &ops)
+            .await
+            .unwrap();
         let file_path = Journal::stable_file_name(dir.path(), "test", &ops);
         assert!(file_path.exists());
-        journal.delete_backing_storage().unwrap();
+        journal.delete_backing_storage().await.unwrap();
         assert!(!file_path.exists());
     }
 
@@ -1038,8 +1134,8 @@ mod tests {
     /// delete under one uid; the journal keys ops by (uid, type, hash), so the
     /// new materialization's create is its own entry and marking it done never
     /// touches another op sharing the uid.
-    #[test]
-    fn ops_sharing_a_uid_across_types_journal_independently() {
+    #[tokio::test]
+    async fn ops_sharing_a_uid_across_types_journal_independently() {
         let dir = tempdir().unwrap();
         let make = |type_name: &str| Op::Create {
             uid: Uid::from_u128(9),
@@ -1053,11 +1149,15 @@ mod tests {
             },
         };
         let ops = vec![make("location.site"), make("net.zone")];
-        let mut journal = Journal::load_or_create_with_file(dir.path(), "retype", &ops).unwrap();
-        journal.mark_op_as_done(&ops[0], None).unwrap();
+        let mut journal = Journal::load_or_create_with_file(dir.path(), "retype", &ops)
+            .await
+            .unwrap();
+        journal.mark_op_as_done(&ops[0], None).await.unwrap();
         assert_eq!(journal.done_ops_count(), 1);
 
-        let reloaded = Journal::load_or_create_with_file(dir.path(), "retype", &ops).unwrap();
+        let reloaded = Journal::load_or_create_with_file(dir.path(), "retype", &ops)
+            .await
+            .unwrap();
         let done = reloaded.done_ops();
         assert_eq!(done.len(), 1);
         assert_eq!(done[0].1, TypeName::new("location.site"));

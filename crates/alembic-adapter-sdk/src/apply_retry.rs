@@ -91,6 +91,7 @@ pub async fn apply_non_delete_with_retries<'a, D: RetryApplyDriver>(
                     if let Some(journal) = journal.as_mut() {
                         journal
                             .mark_op_as_done(&op, applied_op.backend_id.as_ref())
+                            .await
                             .map_err(RetryApplyError::from)?;
                     }
                     applied.push(applied_op);
@@ -142,6 +143,7 @@ pub async fn apply_non_delete_with_journal<D: RetryApplyDriver>(
     let mut journal = match journal_storage {
         JournalStorageLocation::File(dir) => Some(
             Journal::load_or_create_with_file(dir, scope, creates_updates)
+                .await
                 .map_err(RetryApplyError::from)?,
         ),
         JournalStorageLocation::Postgres => {
@@ -225,9 +227,9 @@ impl<'a> JournalGuard<'a> {
     }
 
     /// the apply is through, deletes included: there is nothing left to resume.
-    pub fn finish(mut self) -> Result<(), JournalError> {
+    pub async fn finish(mut self) -> Result<(), JournalError> {
         match self.0.take() {
-            Some(mut journal) => journal.get_mut().delete_backing_storage(),
+            Some(mut journal) => journal.get_mut().delete_backing_storage().await,
             None => Ok(()),
         }
     }

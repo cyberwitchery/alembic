@@ -609,7 +609,7 @@ impl Emitter for GenericAdapter {
                 });
             }
         }
-        journal.finish()?;
+        journal.finish().await?;
 
         Ok(ApplyReport {
             applied,

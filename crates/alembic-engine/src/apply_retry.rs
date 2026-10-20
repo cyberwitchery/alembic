@@ -209,15 +209,15 @@ mod tests {
         assert!(matches!(err, OwnDriverError::Refused(refused) if refused == uid));
     }
 
-    #[test]
-    fn a_loop_failure_converts_into_the_drivers_own_error() {
+    #[tokio::test]
+    async fn a_loop_failure_converts_into_the_drivers_own_error() {
         let _guard = journal_guard();
         let done = create_op(Uid::from_u128(1));
         let dir = tempdir().unwrap();
         let mut journal =
             Journal::load_or_create_with_file(dir.path(), "test", std::slice::from_ref(&done))
                 .unwrap();
-        journal.mark_op_as_done(&done, None).unwrap();
+        journal.mark_op_as_done(&done, None).await.unwrap();
 
         // the journal records an op this run was not given
         let err = block_on(apply_non_delete_with_retries(
@@ -470,7 +470,7 @@ mod tests {
             ));
         }
         deletes?;
-        journal.finish()?;
+        journal.finish().await?;
         Ok(ApplyReport {
             applied: result.applied,
             resumed: result.resumed,
@@ -838,8 +838,8 @@ mod tests {
         assert!(!logged.contains("apply stopped"), "got: {logged}");
     }
 
-    #[test]
-    fn a_successful_apply_says_nothing_about_the_journal() {
+    #[tokio::test]
+    async fn a_successful_apply_says_nothing_about_the_journal() {
         let _guard = journal_guard();
         let ops = vec![create_op(Uid::from_u128(1))];
         let dir = tempdir().unwrap();
@@ -858,6 +858,7 @@ mod tests {
             .unwrap()
             .1
             .finish()
+            .await
             .unwrap();
         })
         .1;
@@ -977,8 +978,8 @@ mod tests {
         assert!(!logged.contains("delete phase"), "got: {logged}");
     }
 
-    #[test]
-    fn an_external_caller_driving_the_retry_loop_leaves_nothing_to_resume() {
+    #[tokio::test]
+    async fn an_external_caller_driving_the_retry_loop_leaves_nothing_to_resume() {
         let _guard = journal_guard();
         // the sdk surface an out-of-tree adapter builds against: its own journal, no
         // `apply_non_delete_journaled`. the file is this caller's to clean up too.
@@ -1001,6 +1002,7 @@ mod tests {
             .unwrap()
             .1
             .finish()
+            .await
             .unwrap();
         }
         assert!(
