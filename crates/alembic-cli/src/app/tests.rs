@@ -46,6 +46,7 @@ fn journal_dir_defaults_under_dot_alembic_and_follows_the_variable() {
     let root = Path::new("/tmp/example");
     let cases = [
         (None, PathBuf::from("/tmp/example/.alembic")),
+        (Some(""), PathBuf::from("/tmp/example/.alembic")),
         (Some("/shared/journals"), PathBuf::from("/shared/journals")),
     ];
     for (value, expected) in cases {
