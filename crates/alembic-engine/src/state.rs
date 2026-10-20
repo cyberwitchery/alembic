@@ -96,7 +96,7 @@ pub struct StateStore {
     // reader that inverts state goes through, and deciding which uid a backend id
     // supersedes costs a lookup rather than a walk of the type.
     by_backend_id: BTreeMap<TypeName, BTreeMap<BackendId, Uid>>,
-    journal_dir: JournalStorageLocation,
+    journal_storage: JournalStorageLocation,
     // advisory lock held for a local-file store's whole lifetime, so two concurrent
     // runs against the same state file cannot both load-modify-save it and clobber
     // each other's mappings (the save is atomic but last-writer-wins). shared for a
@@ -114,7 +114,7 @@ impl StateStore {
             data,
             backend_identity: None,
             by_backend_id: BTreeMap::new(),
-            journal_dir: JournalStorageLocation::None,
+            journal_storage: JournalStorageLocation::None,
             lock: None,
         };
         store.reindex();
@@ -123,7 +123,7 @@ impl StateStore {
 
     /// set the directory used to persist apply journals for resumable applies.
     pub fn with_journal_dir(mut self, dir: PathBuf) -> Self {
-        self.journal_dir = JournalStorageLocation::File(dir);
+        self.journal_storage = JournalStorageLocation::File(dir);
         self
     }
 
@@ -134,15 +134,15 @@ impl StateStore {
         state_key: impl Into<String>,
         tls_mode: PostgresTlsMode,
     ) -> Self {
-        self.journal_dir = JournalStorageLocation::Backend(Arc::new(PostgresJournalFactory::new(
-            url, state_key, tls_mode,
-        )));
+        self.journal_storage = JournalStorageLocation::Backend(Arc::new(
+            PostgresJournalFactory::new(url, state_key, tls_mode),
+        ));
         self
     }
 
     /// how and where to store a journal of applied ops.
     pub fn journal_storage(&self) -> &JournalStorageLocation {
-        &self.journal_dir
+        &self.journal_storage
     }
 
     /// load state from a file path under an exclusive lock.
