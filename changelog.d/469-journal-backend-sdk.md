@@ -1,0 +1,1 @@
+- `alembic-adapter-sdk`: journals are stored through the async `JournalBackend` trait, and the `Journal` api is async (#469)
