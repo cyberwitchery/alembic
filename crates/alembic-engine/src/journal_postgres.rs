@@ -202,41 +202,49 @@ impl JournalBackend for PostgresJournalBackend {
             )
             .await
             .map_err(to_error)?;
-        let insert = transaction
-            .prepare(
+        let mut idxs = Vec::with_capacity(ops.len());
+        let mut op_uids = Vec::with_capacity(ops.len());
+        let mut op_typenames = Vec::with_capacity(ops.len());
+        let mut op_hashes = Vec::with_capacity(ops.len());
+        let mut dones = Vec::with_capacity(ops.len());
+        let mut backend_ids = Vec::with_capacity(ops.len());
+        for (index, op) in ops.iter().enumerate() {
+            idxs.push(i32::try_from(index).map_err(|err| JournalError::Backend {
+                location: description.clone(),
+                source: err.into(),
+            })?);
+            op_uids.push(op.op_uid.to_string());
+            op_typenames.push(op.op_typename.as_str());
+            op_hashes.push(hash_to_db(op.op_hash));
+            dones.push(op.done);
+            backend_ids.push(
+                op.backend_id
+                    .as_ref()
+                    .map(serde_json::to_string)
+                    .transpose()
+                    .map_err(JournalError::Encode)?,
+            );
+        }
+        // one statement for the whole plan, rather than a round trip per op
+        transaction
+            .execute(
                 "INSERT INTO alembic_journal \
                  (journal_key, idx, op_uid, op_typename, op_hash, done, backend_id) \
-                 VALUES ($1, $2, $3, $4, $5, $6, CAST($7 AS TEXT)::jsonb)",
+                 SELECT $1, idx, op_uid, op_typename, op_hash, done, backend_id::jsonb \
+                 FROM unnest($2::int4[], $3::text[], $4::text[], $5::int8[], $6::bool[], $7::text[]) \
+                 AS t(idx, op_uid, op_typename, op_hash, done, backend_id)",
+                &[
+                    &*journal_key,
+                    &idxs,
+                    &op_uids,
+                    &op_typenames,
+                    &op_hashes,
+                    &dones,
+                    &backend_ids,
+                ],
             )
             .await
             .map_err(to_error)?;
-        for (index, op) in ops.iter().enumerate() {
-            let idx = i32::try_from(index).map_err(|err| JournalError::Backend {
-                location: description.clone(),
-                source: err.into(),
-            })?;
-            let backend_id = op
-                .backend_id
-                .as_ref()
-                .map(serde_json::to_string)
-                .transpose()
-                .map_err(JournalError::Encode)?;
-            transaction
-                .execute(
-                    &insert,
-                    &[
-                        &*journal_key,
-                        &idx,
-                        &op.op_uid.to_string(),
-                        &op.op_typename.as_str(),
-                        &hash_to_db(op.op_hash),
-                        &op.done,
-                        &backend_id,
-                    ],
-                )
-                .await
-                .map_err(to_error)?;
-        }
         transaction.commit().await.map_err(to_error)
     }
 
