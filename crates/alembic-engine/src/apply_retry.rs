@@ -644,6 +644,41 @@ mod tests {
         assert_eq!(report.previously_applied_count, Some(1));
     }
 
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // the guard only serializes tests; each has its own runtime
+    async fn a_postgres_journal_resumes_a_failed_run_when_configured() {
+        let Ok(url) = std::env::var("ALEMBIC_TEST_POSTGRES_URL") else {
+            return;
+        };
+        let _guard = journal_guard();
+        let site = Uid::from_u128(1);
+        let device = Uid::from_u128(2);
+        let ops = vec![create_op(site), create_op_referencing(device, site)];
+        let state = crate::StateStore::new(None, StateData::default())
+            .with_postgres_backed_journal(
+                url,
+                format!("alembic-test-{}", uuid::Uuid::new_v4()),
+                crate::PostgresTlsMode::Disable,
+            );
+
+        let mut first = RefDriver::new(Some(device));
+        run_journaled_apply(&state, &ops, &mut first)
+            .await
+            .expect_err("should fail on the device");
+
+        let mut second = RefDriver::new(None);
+        let report = run_journaled_apply(&state, &ops, &mut second)
+            .await
+            .unwrap();
+        assert_eq!(second.seen_refs, vec![(device, BackendId::Int(100))]);
+        assert_eq!(report.previously_applied_count, Some(1));
+
+        // finish removed the rows, so a third run starts over
+        let mut third = RefDriver::new(None);
+        let report = run_journaled_apply(&state, &ops, &mut third).await.unwrap();
+        assert_eq!(report.previously_applied_count, None);
+    }
+
     #[test]
     fn a_run_killed_mid_apply_resumes_from_what_it_had_applied() {
         let _guard = journal_guard();

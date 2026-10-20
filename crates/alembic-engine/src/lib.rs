@@ -6,6 +6,7 @@ mod drift;
 mod endpoint;
 mod extract;
 mod inflect;
+mod journal_postgres;
 mod loader;
 pub mod mapping;
 mod pipeline;

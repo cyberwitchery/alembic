@@ -146,9 +146,11 @@ pub async fn apply_non_delete_with_journal<D: RetryApplyDriver>(
                 .await
                 .map_err(RetryApplyError::from)?,
         ),
-        JournalStorageLocation::Postgres => {
-            Some(Journal::load_or_create_with_postgres().map_err(RetryApplyError::from)?)
-        }
+        JournalStorageLocation::Backend(factory) => Some(
+            Journal::load_or_create_with_backend(factory.open(), scope, creates_updates)
+                .await
+                .map_err(RetryApplyError::from)?,
+        ),
         JournalStorageLocation::None => None,
     };
     let (result, borrowed) =

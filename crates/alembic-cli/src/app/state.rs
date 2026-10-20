@@ -36,9 +36,9 @@ pub(super) async fn load_state_with_context(
                 (store, "local", path.display().to_string(), present)
             }
             StateBackendConfig::Postgres { url, key, tls_mode } => {
-                let store = StateStore::load_postgres(url, key.clone(), tls_mode)
+                let store = StateStore::load_postgres(url.clone(), key.clone(), tls_mode)
                     .await?
-                    .with_postgres_backed_journal();
+                    .with_postgres_backed_journal(url, key.clone(), tls_mode);
                 // a saved row is stamped, a new one is not. the location is the
                 // row key: the url may carry credentials.
                 let present = store.backend_identity().is_some();

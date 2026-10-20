@@ -19,6 +19,7 @@ use std::fs::{File, OpenOptions};
 use std::io;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use tempfile::NamedTempFile;
 use thiserror::Error;
 
@@ -90,6 +91,12 @@ pub enum JournalError {
     NotOpen,
     #[error("journal path `{}` has no parent directory", path.display())]
     NoParent { path: PathBuf },
+    #[error("failed to access the journal at {location}")]
+    Backend {
+        location: String,
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
 }
 
 type Result<T, E = JournalError> = std::result::Result<T, E>;
@@ -103,7 +110,7 @@ fn io_at(path: &Path) -> impl FnOnce(io::Error) -> JournalError + '_ {
 
 #[derive(Debug)]
 pub struct Journal {
-    storage: Option<Box<dyn JournalBackend>>,
+    backend: Option<Box<dyn JournalBackend>>,
     ops: Vec<OpWithMeta>,
     // not-yet-done op positions, keyed by (uid, typename, hash), in plan order.
     // derived from `ops` and rebuilt whenever `ops` is (re)loaded; lets
@@ -122,6 +129,11 @@ pub trait JournalBackend: Send + Sync + Debug {
     async fn delete(self: Box<Self>) -> Result<()>;
     /// shown in the resume / unfinished-delete warnings.
     fn description(&self) -> String;
+}
+
+/// opens a fresh, not yet loaded backend for each journal.
+pub trait JournalBackendFactory: Send + Sync + Debug {
+    fn open(&self) -> Box<dyn JournalBackend>;
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -164,7 +176,7 @@ struct LegacyJournal {
 pub enum JournalStorageLocation {
     None,
     File(PathBuf),
-    Postgres,
+    Backend(Arc<dyn JournalBackendFactory>),
 }
 
 fn record_line<T: Serialize>(value: &T) -> Result<String> {
@@ -204,8 +216,13 @@ impl Journal {
         format!("{}_journal_{}", adapter_name, hash)
     }
 
-    pub fn load_or_create_with_postgres() -> Result<Self> {
-        todo!()
+    /// like `load_or_create_with_file`, with the journal kept by `backend`.
+    pub async fn load_or_create_with_backend(
+        backend: Box<dyn JournalBackend>,
+        adapter_name: &str,
+        ops: &[Op],
+    ) -> Result<Self> {
+        Self::load_or_create(backend, &Self::stable_key(adapter_name, ops), ops).await
     }
 
     /// tries to load a Journal from its file in `directory`, otherwise creates a new one.
@@ -242,7 +259,7 @@ impl Journal {
             // and because a `done` record is only meaningful against the ops it indexes
             None => backend.write_all(key, &journal.ops).await?,
         }
-        journal.storage = Some(backend);
+        journal.backend = Some(backend);
         Ok(journal)
     }
 
@@ -255,7 +272,7 @@ impl Journal {
             .collect();
         let pending_index = build_pending_index(&ops);
         Self {
-            storage: None,
+            backend: None,
             ops,
             pending_index,
         }
@@ -293,7 +310,7 @@ impl Journal {
 
     /// returns a string describing where the journal storage is located (if any)
     pub fn journal_storage_description(&self) -> Option<String> {
-        self.storage.as_ref().map(|storage| storage.description())
+        self.backend.as_ref().map(|storage| storage.description())
     }
 
     pub fn is_completed(&self) -> bool {
@@ -315,14 +332,14 @@ impl Journal {
         self.ops[op_index].done = true;
         self.ops[op_index].backend_id = backend_id.cloned();
 
-        match &mut self.storage {
+        match &mut self.backend {
             Some(storage) => storage.append_done(op_index, backend_id).await,
             None => Ok(()),
         }
     }
 
     pub async fn delete_backing_storage(&mut self) -> Result<()> {
-        if let Some(storage) = self.storage.take() {
+        if let Some(storage) = self.backend.take() {
             storage.delete().await
         } else {
             Ok(())
@@ -1162,5 +1179,90 @@ mod tests {
         assert_eq!(done.len(), 1);
         assert_eq!(done[0].1, TypeName::new("location.site"));
         assert!(!reloaded.is_completed());
+    }
+
+    /// journals in a shared map, standing in for a database.
+    #[derive(Debug, Default)]
+    struct MemoryFactory(Arc<std::sync::Mutex<HashMap<String, Vec<OpWithMeta>>>>);
+
+    #[derive(Debug)]
+    struct MemoryBackend {
+        store: Arc<std::sync::Mutex<HashMap<String, Vec<OpWithMeta>>>>,
+        key: Option<String>,
+    }
+
+    impl JournalBackendFactory for MemoryFactory {
+        fn open(&self) -> Box<dyn JournalBackend> {
+            Box::new(MemoryBackend {
+                store: Arc::clone(&self.0),
+                key: None,
+            })
+        }
+    }
+
+    #[async_trait]
+    impl JournalBackend for MemoryBackend {
+        async fn load(&mut self, key: &str) -> Result<Option<Vec<OpWithMeta>>> {
+            self.key = Some(key.to_owned());
+            Ok(self.store.lock().unwrap().get(key).cloned())
+        }
+
+        async fn write_all(&mut self, key: &str, ops: &[OpWithMeta]) -> Result<()> {
+            self.key = Some(key.to_owned());
+            self.store
+                .lock()
+                .unwrap()
+                .insert(key.to_owned(), ops.to_vec());
+            Ok(())
+        }
+
+        async fn append_done(
+            &mut self,
+            index: usize,
+            backend_id: Option<&BackendId>,
+        ) -> Result<()> {
+            let key = self.key.as_ref().ok_or(JournalError::NotOpen)?;
+            let mut store = self.store.lock().unwrap();
+            let op = &mut store.get_mut(key).ok_or(JournalError::NotOpen)?[index];
+            op.done = true;
+            op.backend_id = backend_id.cloned();
+            Ok(())
+        }
+
+        async fn delete(self: Box<Self>) -> Result<()> {
+            if let Some(key) = &self.key {
+                self.store.lock().unwrap().remove(key);
+            }
+            Ok(())
+        }
+
+        fn description(&self) -> String {
+            "memory".to_owned()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_backend_journal_resumes_from_what_its_factory_kept() {
+        let factory = MemoryFactory::default();
+        let ops = test_ops();
+        let mut journal = Journal::load_or_create_with_backend(factory.open(), "test", &ops)
+            .await
+            .unwrap();
+        journal
+            .mark_op_as_done(&ops[1], Some(&BackendId::Int(9)))
+            .await
+            .unwrap();
+
+        let mut reloaded = Journal::load_or_create_with_backend(factory.open(), "test", &ops)
+            .await
+            .unwrap();
+        assert_eq!(reloaded.done_ops_count(), 1);
+        assert_eq!(
+            reloaded.done_applied_ops()[0].backend_id,
+            Some(BackendId::Int(9))
+        );
+
+        reloaded.delete_backing_storage().await.unwrap();
+        assert!(factory.0.lock().unwrap().is_empty());
     }
 }

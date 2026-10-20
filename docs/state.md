@@ -120,3 +120,21 @@ CREATE TABLE IF NOT EXISTS alembic_state (
   loaded_version INTEGER NOT NULL DEFAULT 1
 );
 ```
+
+apply journals follow the state backend: with postgres they are kept in
+`alembic_journal`, one row per planned create or update, keyed by the state row key
+and a hash of the plan. it is created on first use the same way, or pre-provisioned:
+
+```sql
+CREATE TABLE IF NOT EXISTS alembic_journal (
+  journal_key TEXT NOT NULL,
+  idx INTEGER NOT NULL,
+  op_uid TEXT NOT NULL,
+  op_typename TEXT NOT NULL,
+  op_hash BIGINT NOT NULL,
+  done BOOLEAN NOT NULL DEFAULT FALSE,
+  backend_id JSONB,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (journal_key, idx)
+);
+```

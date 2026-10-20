@@ -1,0 +1,1 @@
+- apply: with the postgres state backend, apply journals are kept in the same database (`alembic_journal`), so any worker using it can resume an interrupted apply

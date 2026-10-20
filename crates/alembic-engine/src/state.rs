@@ -1,6 +1,7 @@
 //! uid -> backend id state store: identity memory, scoped to one backend
 //! instance.
 
+use crate::journal_postgres::PostgresJournalFactory;
 use alembic_adapter_sdk::journal::JournalStorageLocation;
 use alembic_adapter_sdk::{BackendId, StateData};
 use alembic_core::{uid_v5, TypeName, Uid};
@@ -126,9 +127,16 @@ impl StateStore {
         self
     }
 
-    /// use postgres to persist apply journals for resumable applies.
-    pub fn with_postgres_backed_journal(mut self) -> Self {
-        self.journal_dir = JournalStorageLocation::Postgres;
+    /// keep apply journals in postgres at `url`, under the state row key `state_key`.
+    pub fn with_postgres_backed_journal(
+        mut self,
+        url: impl Into<String>,
+        state_key: impl Into<String>,
+        tls_mode: PostgresTlsMode,
+    ) -> Self {
+        self.journal_dir = JournalStorageLocation::Backend(Arc::new(PostgresJournalFactory::new(
+            url, state_key, tls_mode,
+        )));
         self
     }
 
@@ -548,30 +556,35 @@ impl PostgresBackend {
     }
 
     async fn connect(&mut self) -> Result<tokio_postgres::Client> {
-        let client = match self.tls_mode {
-            PostgresTlsMode::Disable => {
-                let (client, connection) =
-                    tokio_postgres::connect(&self.url, tokio_postgres::NoTls)
-                        .await
-                        .with_context(|| "connect postgres state backend")?;
-                spawn_connection_driver(connection);
-                client
-            }
-            PostgresTlsMode::Require => {
-                let connector = native_tls::TlsConnector::builder()
-                    .build()
-                    .with_context(|| "build postgres TLS connector")?;
-                let connector = postgres_native_tls::MakeTlsConnector::new(connector);
-                let (client, connection) = tokio_postgres::connect(&self.url, connector)
-                    .await
-                    .with_context(|| "connect postgres state backend")?;
-                spawn_connection_driver(connection);
-                client
-            }
-        };
+        let client = connect_postgres(&self.url, self.tls_mode).await?;
         self.ensure_table(&client).await?;
         Ok(client)
     }
+}
+
+/// open a client to `url`, with its connection driven in the background.
+pub(crate) async fn connect_postgres(url: &str, tls_mode: PostgresTlsMode) -> Result<Client> {
+    let client = match tls_mode {
+        PostgresTlsMode::Disable => {
+            let (client, connection) = tokio_postgres::connect(url, tokio_postgres::NoTls)
+                .await
+                .with_context(|| "connect postgres state backend")?;
+            spawn_connection_driver(connection);
+            client
+        }
+        PostgresTlsMode::Require => {
+            let connector = native_tls::TlsConnector::builder()
+                .build()
+                .with_context(|| "build postgres TLS connector")?;
+            let connector = postgres_native_tls::MakeTlsConnector::new(connector);
+            let (client, connection) = tokio_postgres::connect(url, connector)
+                .await
+                .with_context(|| "connect postgres state backend")?;
+            spawn_connection_driver(connection);
+            client
+        }
+    };
+    Ok(client)
 }
 
 #[cfg(test)]
