@@ -51,12 +51,6 @@ pub enum JournalError {
         #[source]
         source: serde_json::Error,
     },
-    #[error("failed to read the journal file `{}`", path.display())]
-    Yaml {
-        path: PathBuf,
-        #[source]
-        source: Box<dyn std::error::Error + Send + Sync>,
-    },
     #[error("failed to encode a journal record")]
     Encode(#[source] serde_json::Error),
     #[error("the journal file `{}` has no version line", path.display())]
@@ -165,13 +159,6 @@ struct Done {
     // position in the op lines above, which is what makes a record one short line
     op: usize,
     backend_id: Option<BackendId>,
-}
-
-/// the whole-document shape written before the journal was append-only.
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct LegacyJournal {
-    ops: Vec<OpWithMeta>,
 }
 
 #[derive(Debug, Clone)]
@@ -379,15 +366,11 @@ impl JournalBackend for JournalFileBackend {
         }
         let contents = fs::read_to_string(&path).map_err(io_at(&path))?;
 
-        let (ops, rewrite) = match contents.starts_with(DOCUMENT_PREFIX) {
-            true => parse_records(&contents, &path)?,
-            false => (parse_legacy(&contents, &path)?, true),
-        };
+        let (ops, truncated) = parse_records(&contents, &path)?;
 
-        // neither a legacy whole-document journal nor one whose torn tail the parse
-        // dropped can be appended to as it stands. rewriting once, here, is what makes
-        // every write from now on an append.
-        let file = match rewrite {
+        // a journal whose torn tail the parse dropped cannot be appended to as it
+        // stands. rewriting once, here, is what makes every write from now on an append.
+        let file = match truncated {
             true => write_whole_file(&path, &ops)?,
             false => open_for_append(&path)?,
         };
@@ -441,7 +424,7 @@ impl JournalBackend for JournalFileBackend {
 }
 
 /// writes the whole file and hands back an append handle. used to lay down a fresh
-/// journal and to migrate a legacy one; the rename keeps a crash mid-write from
+/// journal and to repair a torn one; the rename keeps a crash mid-write from
 /// replacing a readable journal with half of one.
 fn write_whole_file(path: &Path, ops: &[OpWithMeta]) -> Result<File> {
     let mut body = record_line(&Version {
@@ -570,18 +553,6 @@ fn parse_records(contents: &str, path: &Path) -> Result<(Vec<OpWithMeta>, bool)>
     }
 
     Ok((ops, truncated))
-}
-
-fn parse_legacy(contents: &str, path: &Path) -> Result<Vec<OpWithMeta>> {
-    let options = serde_saphyr::options! { with_snippet: false };
-    let journal: LegacyJournal =
-        serde_saphyr::from_str_with_options(contents, options).map_err(|source| {
-            JournalError::Yaml {
-                path: path.to_owned(),
-                source: Box::new(source),
-            }
-        })?;
-    Ok(journal.ops)
 }
 
 // the op itself is not stored, only its identity (uid, typename, hash). on disk it
@@ -1083,42 +1054,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_journal_from_before_the_append_only_format_still_loads() {
-        // the previous format was one mutable yaml document. it must resume rather
-        // than be read as an empty append-only file, and it is rewritten on load so
-        // every write after that is an append.
+    async fn a_journal_without_a_version_line_is_refused_and_left_alone() {
+        // the whole-document format from before the journal was append-only is no
+        // longer read: it is refused by name rather than resumed as an empty journal
         let dir = tempdir().unwrap();
         let ops = test_ops();
         let path = Journal::stable_file_name(dir.path(), "test", &ops);
-        let legacy = format!(
-            "ops:\n\
-             - op_uid: {}\n  op_typename: dcim.device\n  op_hash: {}\n  done: true\n  backend_id: 7\n\
-             - op_uid: {}\n  op_typename: dcim.device\n  op_hash: {}\n  done: false\n  backend_id: null\n\
-             - op_uid: {}\n  op_typename: dcim.site\n  op_hash: {}\n  done: false\n  backend_id: null\n",
-            ops[0].uid(), ops[0].hashed(),
-            ops[1].uid(), ops[1].hashed(),
-            ops[2].uid(), ops[2].hashed(),
-        );
+        let legacy = "ops: []\n";
         fs::write(&path, legacy).unwrap();
 
-        let mut journal = Journal::load_or_create_with_file(dir.path(), "test", &ops)
+        let err = Journal::load_or_create_with_file(dir.path(), "test", &ops)
             .await
-            .unwrap();
-        let done = journal.done_applied_ops();
-        assert_eq!(done.len(), 1);
-        assert_eq!(done[0].backend_id, Some(BackendId::Int(7)));
-
-        journal.mark_op_as_done(&ops[1], None).await.unwrap();
-        drop(journal);
-        let migrated = fs::read_to_string(&path).unwrap();
-        assert!(migrated.starts_with(r#"--- {"version":1}"#), "{migrated}");
-        assert_eq!(
-            Journal::load_or_create_with_file(dir.path(), "test", &ops)
-                .await
-                .unwrap()
-                .done_ops_count(),
-            2
+            .expect_err("a journal without a version line must be refused");
+        assert!(
+            matches!(err, JournalError::MissingVersion { .. }),
+            "got: {err}"
         );
+        assert_eq!(fs::read_to_string(&path).unwrap(), legacy);
     }
 
     #[tokio::test]

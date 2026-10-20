@@ -386,8 +386,6 @@ means an apply is unfinished.
   resumes from everything it had applied, not just from an apply that exited through
   an error. the cost is one append and one fsync per operation, against the backend
   round trip each one already pays for
-- a journal an older alembic left behind is read and rewritten in the append-only
-  format when it is loaded, so an apply interrupted before the upgrade still resumes
 
 ## map
 
