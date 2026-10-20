@@ -315,11 +315,11 @@ impl Journal {
         self.ops.len()
     }
 
-    /// path of the file this journal is backed by, if any.
-    pub fn backing_file_path(&self) -> Option<&Path> {
+    /// returns a string describing where the journal storage is located (if any)
+    pub fn journal_storage_description(&self) -> Option<String> {
         match &self.storage {
-            JournalStorage::File(_, path) => Some(path.as_path()),
-            JournalStorage::Postgres => None,
+            JournalStorage::File(_, path) => Some(path.display().to_string()),
+            JournalStorage::Postgres => Some("Postgres".to_string()),
             JournalStorage::None => None,
         }
     }
@@ -368,7 +368,7 @@ impl Journal {
         }
     }
 
-    pub fn delete_backing_file(&mut self) -> Result<()> {
+    pub fn delete_backing_storage(&mut self) -> Result<()> {
         match std::mem::replace(&mut self.storage, JournalStorage::None) {
             JournalStorage::File(file, file_path) => {
                 drop(file);
@@ -1030,7 +1030,7 @@ mod tests {
         let mut journal = Journal::new_with_file(dir.path(), "test", &ops).unwrap();
         let file_path = Journal::stable_file_name(dir.path(), "test", &ops);
         assert!(file_path.exists());
-        journal.delete_backing_file().unwrap();
+        journal.delete_backing_storage().unwrap();
         assert!(!file_path.exists());
     }
 

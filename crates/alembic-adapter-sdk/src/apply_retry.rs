@@ -169,14 +169,14 @@ pub async fn apply_non_delete_with_journal<D: RetryApplyDriver>(
 /// from: a backend unreachable on the first op leaves the error as the whole story.
 fn report_resumable(journal: &Journal) {
     let done = journal.done_ops_count();
-    let Some(path) = journal.backing_file_path().filter(|_| done > 0) else {
+    let Some(journal_location) = journal.journal_storage_description().filter(|_| done > 0) else {
         return;
     };
     tracing::warn!(
         "apply stopped after {} of {} create/update operations; the journal at {} records what was applied, and re-running the same plan resumes from there",
         done,
         journal.op_count(),
-        path.display()
+        journal_location,
     );
 }
 
@@ -227,7 +227,7 @@ impl<'a> JournalGuard<'a> {
     /// the apply is through, deletes included: there is nothing left to resume.
     pub fn finish(mut self) -> Result<(), JournalError> {
         match self.0.take() {
-            Some(mut journal) => journal.get_mut().delete_backing_file(),
+            Some(mut journal) => journal.get_mut().delete_backing_storage(),
             None => Ok(()),
         }
     }
@@ -258,15 +258,15 @@ impl Drop for JournalGuard<'_> {
 /// like `report_resumable`, and for the same reason: the file left behind is the
 /// difference between a re-run that skips them and one that re-applies them all.
 fn report_unfinished_deletes(journal: &Journal) {
-    let Some(path) = journal
-        .backing_file_path()
+    let Some(journal_location) = journal
+        .journal_storage_description()
         .filter(|_| journal.op_count() > 0)
     else {
         return;
     };
     tracing::warn!(
         "apply stopped during the delete phase; the journal at {} records all {} create/update operations as applied, and re-running the same plan skips them and re-issues the deletes",
-        path.display(),
+        journal_location,
         journal.op_count()
     );
 }
