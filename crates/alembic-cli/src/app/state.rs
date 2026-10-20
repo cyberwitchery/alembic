@@ -56,11 +56,13 @@ pub(super) async fn load_state_with_context(
     Ok((store, context))
 }
 
-/// where apply journals go: `ALEMBIC_JOURNAL_DIR`, else `.alembic/` under `root`.
+/// where apply journals go: `ALEMBIC_JOURNAL_DIR` unless empty, else `.alembic/` under `root`.
 pub(super) fn journal_dir(root: &Path) -> PathBuf {
     std::env::var("ALEMBIC_JOURNAL_DIR")
+        .ok()
+        .filter(|dir| !dir.is_empty())
         .map(PathBuf::from)
-        .unwrap_or_else(|_| root.join(".alembic"))
+        .unwrap_or_else(|| root.join(".alembic"))
 }
 
 pub(super) fn print_state_context(context: &StateContext) {
