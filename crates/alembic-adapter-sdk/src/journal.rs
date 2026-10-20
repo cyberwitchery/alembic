@@ -361,10 +361,13 @@ impl JournalFileBackend {
 impl JournalBackend for JournalFileBackend {
     async fn load(&mut self, key: &str) -> Result<Option<Vec<OpWithMeta>>> {
         let path = Self::file_path(&self.directory, key);
-        if fs::metadata(&path).is_err() {
-            return Ok(None);
-        }
-        let contents = fs::read_to_string(&path).map_err(io_at(&path))?;
+        // only a missing file is a fresh start: the caller writes a new journal over
+        // whatever `None` stands for
+        let contents = match fs::read_to_string(&path) {
+            Ok(contents) => contents,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(err) => return Err(io_at(&path)(err)),
+        };
 
         let (ops, truncated) = parse_records(&contents, &path)?;
 
@@ -1054,9 +1057,29 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
+    async fn a_journal_that_cannot_be_read_is_an_error_not_a_fresh_start() {
+        // `None` makes the caller write a fresh journal over the file, so only a
+        // journal that is not there at all may load as `None`
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempdir().unwrap();
+        let journals = dir.path().join("journals");
+        fs::create_dir(&journals).unwrap();
+        fs::write(journals.join("k.yaml"), "").unwrap();
+        fs::set_permissions(&journals, fs::Permissions::from_mode(0o000)).unwrap();
+
+        let loaded = JournalFileBackend::new(journals.clone()).load("k").await;
+        fs::set_permissions(&journals, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(
+            matches!(loaded, Err(JournalError::Io { .. })),
+            "got: {loaded:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn a_journal_without_a_version_line_is_refused_and_left_alone() {
-        // the whole-document format from before the journal was append-only is no
-        // longer read: it is refused by name rather than resumed as an empty journal
+        // a journal without the version line is refused by name rather than resumed
+        // as an empty journal, and the file is not touched
         let dir = tempdir().unwrap();
         let ops = test_ops();
         let path = Journal::stable_file_name(dir.path(), "test", &ops);
