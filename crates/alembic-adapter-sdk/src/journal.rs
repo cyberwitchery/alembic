@@ -91,6 +91,8 @@ pub enum JournalError {
     NotOpen,
     #[error("journal path `{}` has no parent directory", path.display())]
     NoParent { path: PathBuf },
+    #[error("the journal at {location} is held by another apply of this plan; re-run once it is through")]
+    Locked { location: String },
     #[error("failed to access the journal at {location}")]
     Backend {
         location: String,
