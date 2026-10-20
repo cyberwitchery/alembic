@@ -76,6 +76,7 @@ pub async fn apply_non_delete_with_retries<'a, D: RetryApplyDriver>(
         }
 
         resumed = journal.done_applied_ops();
+        report_resuming(journal, resumed.len());
         driver.resume(&resumed);
     }
 
@@ -165,9 +166,23 @@ pub async fn apply_non_delete_with_journal<D: RetryApplyDriver>(
     ))
 }
 
-/// tell the user what the interrupted apply left behind. resuming is automatic and
-/// silent, so this is the only place the journal is ever named; warn-level so the
-/// cli's default filter shows it.
+/// a run picking up an earlier one's journal says so before applying anything, naming
+/// it like `report_resumable` does; a fresh journal (nothing done) says nothing.
+fn report_resuming(journal: &Journal, done: usize) {
+    let Some(journal_location) = journal.journal_storage_description().filter(|_| done > 0) else {
+        return;
+    };
+    tracing::warn!(
+        "resuming from the journal at {}: {} of {} create/update operations were already applied and are skipped",
+        journal_location,
+        done,
+        journal.op_count(),
+    );
+}
+
+/// tell the user what the interrupted apply left behind. resuming is automatic, so
+/// this and `report_resuming` are the only places the journal is ever named;
+/// warn-level so the cli's default filter shows it.
 ///
 /// the count is cumulative across runs, and nothing applied means nothing to resume
 /// from: a backend unreachable on the first op leaves the error as the whole story.
