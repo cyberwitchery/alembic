@@ -174,15 +174,17 @@ impl StateStore {
         Ok(store)
     }
 
-    /// load state from a postgres backend.
+    /// load state from a postgres backend, with apply journals kept in the same database.
     pub async fn load_postgres(
         url: impl Into<String>,
         key: impl Into<String>,
         tls_mode: PostgresTlsMode,
     ) -> Result<Self> {
+        let (url, key) = (url.into(), key.into());
+        let journal = PostgresJournalFactory::new(url.clone(), key.clone(), tls_mode);
         let mut postgres_backend = PostgresBackend {
-            url: url.into(),
-            key: key.into(),
+            url,
+            key,
             tls_mode,
             loaded_version: None,
             table_ensured: false,
@@ -196,6 +198,7 @@ impl StateStore {
             },
         );
         store.backend_identity = file.backend;
+        store.journal_storage = JournalStorageLocation::Backend(Arc::new(journal));
         Ok(store)
     }
 
@@ -529,18 +532,17 @@ impl PostgresBackend {
             return Ok(());
         }
 
-        client
-            .execute(
-                "CREATE TABLE IF NOT EXISTS alembic_state (\
-                state_key TEXT PRIMARY KEY, \
-                payload JSONB NOT NULL, \
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), \
-                loaded_version INTEGER NOT NULL DEFAULT 1\
-                )",
-                &[],
-            )
-            .await
-            .with_context(|| "ensure postgres alembic_state table exists")?;
+        create_table_if_missing(
+            client,
+            "CREATE TABLE IF NOT EXISTS alembic_state (\
+            state_key TEXT PRIMARY KEY, \
+            payload JSONB NOT NULL, \
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), \
+            loaded_version INTEGER NOT NULL DEFAULT 1\
+            )",
+        )
+        .await
+        .with_context(|| "ensure postgres alembic_state table exists")?;
 
         // if the table already existed, CREATE TABLE IF NOT EXISTS won't add new columns.
         client
@@ -559,6 +561,20 @@ impl PostgresBackend {
         let client = connect_postgres(&self.url, self.tls_mode).await?;
         self.ensure_table(&client).await?;
         Ok(client)
+    }
+}
+
+/// run a `CREATE TABLE IF NOT EXISTS`, tolerating another connection creating the
+/// table at the same time: the loser trips the catalog's unique index.
+pub(crate) async fn create_table_if_missing(
+    client: &Client,
+    ddl: &str,
+) -> Result<(), tokio_postgres::Error> {
+    match client.execute(ddl, &[]).await {
+        Err(err) if err.code() == Some(&tokio_postgres::error::SqlState::UNIQUE_VIOLATION) => {
+            Ok(())
+        }
+        other => other.map(drop),
     }
 }
 

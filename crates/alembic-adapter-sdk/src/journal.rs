@@ -60,8 +60,7 @@ pub enum JournalError {
         path.display()
     )]
     UnsupportedVersion { path: PathBuf, found: u32 },
-    #[error("failed to read the journal file `{}`: line {line} is not a journal record", path.display()
-    )]
+    #[error("failed to read the journal file `{}`: line {line} is not a journal record", path.display())]
     NotARecord { path: PathBuf, line: usize },
     #[error("failed to read the journal file `{}`: line {line}", path.display())]
     BadRecord {
@@ -70,8 +69,7 @@ pub enum JournalError {
         #[source]
         source: serde_json::Error,
     },
-    #[error("the journal file `{}` records op {op} as done, but only declares {declared}", path.display()
-    )]
+    #[error("the journal file `{}` records op {op} as done, but only declares {declared}", path.display())]
     DoneOutOfRange {
         path: PathBuf,
         op: usize,

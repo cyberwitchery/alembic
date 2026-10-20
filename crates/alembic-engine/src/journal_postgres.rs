@@ -1,7 +1,7 @@
 //! apply journals kept in postgres, next to the state they belong to: one row per
 //! planned op, marked done in place as each one lands.
 
-use crate::state::{connect_postgres, PostgresTlsMode};
+use crate::state::{connect_postgres, create_table_if_missing, PostgresTlsMode};
 use alembic_adapter_sdk::journal::{
     JournalBackend, JournalBackendFactory, JournalError, OpWithMeta,
 };
@@ -10,11 +10,13 @@ use alembic_core::{TypeName, Uid};
 use async_trait::async_trait;
 use std::fmt;
 use tokio_postgres::error::SqlState;
-use tokio_postgres::Client;
+use tokio_postgres::{Client, Statement};
 
 type Result<T, E = JournalError> = std::result::Result<T, E>;
 
-const TABLE: &str = "alembic_journal";
+const MARK_DONE: &str = "UPDATE alembic_journal \
+     SET done = TRUE, backend_id = CAST($3 AS TEXT)::jsonb, updated_at = NOW() \
+     WHERE journal_key = $1 AND idx = $2";
 
 /// opens a `PostgresJournalBackend` per journal; its keys are namespaced by `state_key`.
 pub(crate) struct PostgresJournalFactory {
@@ -62,8 +64,22 @@ pub(crate) struct PostgresJournalBackend {
     url: String,
     state_key: String,
     tls_mode: PostgresTlsMode,
-    // the client `load` or `write_all` connected, and the journal key it opened
-    open: Option<(Client, String)>,
+    // the connection `load` or `write_all` opened
+    open: Option<Opened>,
+}
+
+struct Opened {
+    client: Client,
+    journal_key: String,
+    // prepared once, so marking an op done is a single round trip
+    mark_done: Statement,
+}
+
+fn describe(journal_key: Option<&str>) -> String {
+    match journal_key {
+        Some(journal_key) => format!("postgres table alembic_journal, key `{journal_key}`"),
+        None => "postgres table alembic_journal".to_owned(),
+    }
 }
 
 impl fmt::Debug for PostgresJournalBackend {
@@ -87,43 +103,25 @@ impl PostgresJournalBackend {
 
     /// connect (once), lock `key` for as long as the connection lives, and remember it
     /// as the journal this backend holds.
-    async fn open(&mut self, key: &str) -> Result<&Client> {
+    async fn open(&mut self, key: &str) -> Result<()> {
         let journal_key = format!("{}/{key}", self.state_key);
-        let client = match self.open.take() {
-            Some((client, _)) => client,
-            None => {
-                let mut client = connect_postgres(&self.url, self.tls_mode)
-                    .await
-                    .map_err(|err| self.backend_error(err))?;
-                ensure_table(&client)
-                    .await
-                    .map_err(|err| self.backend_error(err))?;
-                if !try_lock(&mut client, &journal_key)
-                    .await
-                    .map_err(|err| self.backend_error(err))?
-                {
-                    return Err(JournalError::Locked {
-                        location: format!("postgres table {TABLE}, key `{journal_key}`"),
-                    });
-                }
-                client
-            }
+        let opened = match self.open.take() {
+            Some(opened) => Opened {
+                journal_key,
+                ..opened
+            },
+            None => self.connect(journal_key).await?,
         };
-        let (client, _) = self.open.insert((client, journal_key));
-        Ok(client)
+        self.open = Some(opened);
+        Ok(())
     }
 
-    fn opened(&self) -> Result<(&Client, &str)> {
-        self.open
-            .as_ref()
-            .map(|(client, key)| (client, key.as_str()))
-            .ok_or(JournalError::NotOpen)
-    }
-}
-
-async fn ensure_table(client: &Client) -> Result<(), tokio_postgres::Error> {
-    let created = client
-        .execute(
+    async fn connect(&self, journal_key: String) -> Result<Opened> {
+        let mut client = connect_postgres(&self.url, self.tls_mode)
+            .await
+            .map_err(|err| self.backend_error(err))?;
+        create_table_if_missing(
+            &client,
             "CREATE TABLE IF NOT EXISTS alembic_journal (\
             journal_key TEXT NOT NULL, \
             idx INTEGER NOT NULL, \
@@ -135,13 +133,30 @@ async fn ensure_table(client: &Client) -> Result<(), tokio_postgres::Error> {
             updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), \
             PRIMARY KEY (journal_key, idx)\
             )",
-            &[],
         )
-        .await;
-    match created {
-        // two connections creating it at once: the loser trips the catalog's unique index
-        Err(err) if err.code() == Some(&SqlState::UNIQUE_VIOLATION) => Ok(()),
-        other => other.map(drop),
+        .await
+        .map_err(|err| self.backend_error(err))?;
+        if !try_lock(&mut client, &journal_key)
+            .await
+            .map_err(|err| self.backend_error(err))?
+        {
+            return Err(JournalError::Locked {
+                location: describe(Some(&journal_key)),
+            });
+        }
+        let mark_done = client
+            .prepare(MARK_DONE)
+            .await
+            .map_err(|err| self.backend_error(err))?;
+        Ok(Opened {
+            client,
+            journal_key,
+            mark_done,
+        })
+    }
+
+    fn opened(&self) -> Result<&Opened> {
+        self.open.as_ref().ok_or(JournalError::NotOpen)
     }
 }
 
@@ -193,12 +208,13 @@ fn hash_from_db(hash: i64) -> u64 {
 impl JournalBackend for PostgresJournalBackend {
     async fn load(&mut self, key: &str) -> Result<Option<Vec<OpWithMeta>>> {
         self.open(key).await?;
-        let (client, journal_key) = self.opened()?;
-        let rows = client
+        let opened = self.opened()?;
+        let rows = opened
+            .client
             .query(
                 "SELECT op_uid, op_typename, op_hash, done, backend_id::text \
                  FROM alembic_journal WHERE journal_key = $1 ORDER BY idx",
-                &[&journal_key],
+                &[&opened.journal_key],
             )
             .await
             .map_err(|err| self.backend_error(err))?;
@@ -230,22 +246,6 @@ impl JournalBackend for PostgresJournalBackend {
 
     async fn write_all(&mut self, key: &str, ops: &[OpWithMeta]) -> Result<()> {
         self.open(key).await?;
-        let description = self.description();
-        let to_error = |err: tokio_postgres::Error| JournalError::Backend {
-            location: description.clone(),
-            source: err.into(),
-        };
-        let Some((client, journal_key)) = self.open.as_mut() else {
-            return Err(JournalError::NotOpen);
-        };
-        let transaction = client.transaction().await.map_err(to_error)?;
-        transaction
-            .execute(
-                "DELETE FROM alembic_journal WHERE journal_key = $1",
-                &[&*journal_key],
-            )
-            .await
-            .map_err(to_error)?;
         let mut idxs = Vec::with_capacity(ops.len());
         let mut op_uids = Vec::with_capacity(ops.len());
         let mut op_typenames = Vec::with_capacity(ops.len());
@@ -253,10 +253,7 @@ impl JournalBackend for PostgresJournalBackend {
         let mut dones = Vec::with_capacity(ops.len());
         let mut backend_ids = Vec::with_capacity(ops.len());
         for (index, op) in ops.iter().enumerate() {
-            idxs.push(i32::try_from(index).map_err(|err| JournalError::Backend {
-                location: description.clone(),
-                source: err.into(),
-            })?);
+            idxs.push(i32::try_from(index).map_err(|err| self.backend_error(err))?);
             op_uids.push(op.op_uid.to_string());
             op_typenames.push(op.op_typename.as_str());
             op_hashes.push(hash_to_db(op.op_hash));
@@ -269,6 +266,28 @@ impl JournalBackend for PostgresJournalBackend {
                     .map_err(JournalError::Encode)?,
             );
         }
+
+        let description = self.description();
+        let to_error = |err: tokio_postgres::Error| JournalError::Backend {
+            location: description.clone(),
+            source: err.into(),
+        };
+        let Some(Opened {
+            client,
+            journal_key,
+            ..
+        }) = self.open.as_mut()
+        else {
+            return Err(JournalError::NotOpen);
+        };
+        let transaction = client.transaction().await.map_err(to_error)?;
+        transaction
+            .execute(
+                "DELETE FROM alembic_journal WHERE journal_key = $1",
+                &[&*journal_key],
+            )
+            .await
+            .map_err(to_error)?;
         // one statement for the whole plan, rather than a round trip per op
         transaction
             .execute(
@@ -293,19 +312,15 @@ impl JournalBackend for PostgresJournalBackend {
     }
 
     async fn append_done(&mut self, index: usize, backend_id: Option<&BackendId>) -> Result<()> {
-        let (client, journal_key) = self.opened()?;
+        let opened = self.opened()?;
         let idx = i32::try_from(index).map_err(|err| self.backend_error(err))?;
         let backend_id = backend_id
             .map(serde_json::to_string)
             .transpose()
             .map_err(JournalError::Encode)?;
-        let updated = client
-            .execute(
-                "UPDATE alembic_journal \
-                 SET done = TRUE, backend_id = CAST($3 AS TEXT)::jsonb, updated_at = NOW() \
-                 WHERE journal_key = $1 AND idx = $2",
-                &[&journal_key, &idx, &backend_id],
-            )
+        let updated = opened
+            .client
+            .execute(&opened.mark_done, &[&opened.journal_key, &idx, &backend_id])
             .await
             .map_err(|err| self.backend_error(err))?;
         if updated == 0 {
@@ -315,28 +330,26 @@ impl JournalBackend for PostgresJournalBackend {
     }
 
     async fn delete(self: Box<Self>) -> Result<()> {
-        let Some((client, journal_key)) = &self.open else {
+        let Some(opened) = &self.open else {
             return Ok(());
         };
-        client
+        opened
+            .client
             .execute(
                 "DELETE FROM alembic_journal WHERE journal_key = $1",
-                &[journal_key],
+                &[&opened.journal_key],
             )
             .await
             .map_err(|err| self.backend_error(err))?;
         // released here rather than when the connection closes, so a run straight
         // after this one does not wait on it
-        unlock(client, journal_key)
+        unlock(&opened.client, &opened.journal_key)
             .await
             .map_err(|err| self.backend_error(err))
     }
 
     fn description(&self) -> String {
-        match &self.open {
-            Some((_, journal_key)) => format!("postgres table {TABLE}, key `{journal_key}`"),
-            None => format!("postgres table {TABLE}"),
-        }
+        describe(self.open.as_ref().map(|opened| opened.journal_key.as_str()))
     }
 }
 
