@@ -1592,6 +1592,7 @@ mod tests {
         );
         let journal =
             alembic_engine::Journal::load_or_create_with_file(dir.path(), "netbox", &creates)
+                .await
                 .unwrap();
         assert!(
             journal.is_completed(),

@@ -350,7 +350,7 @@ impl Emitter for NautobotAdapter {
                 });
             }
         }
-        journal.finish()?;
+        journal.finish().await?;
 
         Ok(ApplyReport {
             applied,

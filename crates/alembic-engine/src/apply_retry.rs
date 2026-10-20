@@ -210,12 +210,14 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // the guard only serializes tests; each has its own runtime
     async fn a_loop_failure_converts_into_the_drivers_own_error() {
         let _guard = journal_guard();
         let done = create_op(Uid::from_u128(1));
         let dir = tempdir().unwrap();
         let mut journal =
             Journal::load_or_create_with_file(dir.path(), "test", std::slice::from_ref(&done))
+                .await
                 .unwrap();
         journal.mark_op_as_done(&done, None).await.unwrap();
 
@@ -353,8 +355,12 @@ mod tests {
                 countdown_to_crash: 2,
                 applied_ops: vec![],
             };
-            let mut journal =
-                Journal::load_or_create_with_file(dir.path(), "resume_test", &ops).unwrap();
+            let mut journal = block_on(Journal::load_or_create_with_file(
+                dir.path(),
+                "resume_test",
+                &ops,
+            ))
+            .unwrap();
             block_on(apply_non_delete_with_retries(
                 &ops,
                 Some(&mut journal),
@@ -370,8 +376,12 @@ mod tests {
                 countdown_to_crash: 99999,
                 applied_ops: vec![],
             };
-            let mut journal =
-                Journal::load_or_create_with_file(dir.path(), "resume_test", &ops).unwrap();
+            let mut journal = block_on(Journal::load_or_create_with_file(
+                dir.path(),
+                "resume_test",
+                &ops,
+            ))
+            .unwrap();
             let (result, _) = block_on(apply_non_delete_with_retries(
                 &ops,
                 Some(&mut journal),
@@ -404,8 +414,12 @@ mod tests {
             applied_ops: vec![],
         };
         let dir = tempdir().unwrap();
-        let mut journal =
-            Journal::load_or_create_with_file(dir.path(), "erratic_driver", &ops).unwrap();
+        let mut journal = block_on(Journal::load_or_create_with_file(
+            dir.path(),
+            "erratic_driver",
+            &ops,
+        ))
+        .unwrap();
 
         block_on(apply_non_delete_with_retries(
             &ops,
@@ -760,8 +774,12 @@ mod tests {
                 countdown_to_crash: 2,
                 applied_ops: vec![],
             };
-            let mut journal =
-                Journal::load_or_create_with_file(dir.path(), "notice", &ops).unwrap();
+            let mut journal = block_on(Journal::load_or_create_with_file(
+                dir.path(),
+                "notice",
+                &ops,
+            ))
+            .unwrap();
             block_on(apply_non_delete_with_retries(
                 &ops,
                 Some(&mut journal),
@@ -796,7 +814,8 @@ mod tests {
                 attempts: 0,
                 mode: Mode::AlwaysRetryUid(stuck),
             };
-            let mut journal = Journal::load_or_create_with_file(dir.path(), "stuck", &ops).unwrap();
+            let mut journal =
+                block_on(Journal::load_or_create_with_file(dir.path(), "stuck", &ops)).unwrap();
             let (result, _) = block_on(apply_non_delete_with_retries(
                 &ops,
                 Some(&mut journal),
@@ -825,7 +844,8 @@ mod tests {
                 attempts: 0,
                 mode: Mode::Fatal,
             };
-            let mut journal = Journal::load_or_create_with_file(dir.path(), "cold", &ops).unwrap();
+            let mut journal =
+                block_on(Journal::load_or_create_with_file(dir.path(), "cold", &ops)).unwrap();
             block_on(apply_non_delete_with_retries(
                 &ops,
                 Some(&mut journal),
@@ -849,17 +869,15 @@ mod tests {
                 countdown_to_crash: 99999,
                 applied_ops: vec![],
             };
-            let mut journal = Journal::load_or_create_with_file(dir.path(), "clean", &ops).unwrap();
-            block_on(apply_non_delete_with_retries(
+            let mut journal =
+                block_on(Journal::load_or_create_with_file(dir.path(), "clean", &ops)).unwrap();
+            let (_, journal) = block_on(apply_non_delete_with_retries(
                 &ops,
                 Some(&mut journal),
                 &mut driver,
             ))
-            .unwrap()
-            .1
-            .finish()
-            .await
             .unwrap();
+            block_on(journal.finish()).unwrap();
         })
         .1;
 
@@ -913,7 +931,7 @@ mod tests {
 
         assert_eq!(result.applied.len(), 1);
         assert!(journal_path.exists(), "the retry loop must not unlink it");
-        journal.finish().unwrap();
+        block_on(journal.finish()).unwrap();
         assert!(!journal_path.exists(), "finish is what unlinks it");
     }
 
@@ -979,6 +997,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // the guard only serializes tests; each has its own runtime
     async fn an_external_caller_driving_the_retry_loop_leaves_nothing_to_resume() {
         let _guard = journal_guard();
         // the sdk surface an out-of-tree adapter builds against: its own journal, no
@@ -992,8 +1011,9 @@ mod tests {
                 countdown_to_crash: 99999,
                 applied_ops: vec![],
             };
-            let mut journal =
-                Journal::load_or_create_with_file(dir.path(), "external", &ops).unwrap();
+            let mut journal = Journal::load_or_create_with_file(dir.path(), "external", &ops)
+                .await
+                .unwrap();
             block_on(apply_non_delete_with_retries(
                 &ops,
                 Some(&mut journal),
@@ -1015,7 +1035,9 @@ mod tests {
             countdown_to_crash: 99999,
             applied_ops: vec![],
         };
-        let mut journal = Journal::load_or_create_with_file(dir.path(), "external", &ops).unwrap();
+        let mut journal = Journal::load_or_create_with_file(dir.path(), "external", &ops)
+            .await
+            .unwrap();
         let (result, _) = block_on(apply_non_delete_with_retries(
             &ops,
             Some(&mut journal),
@@ -1045,8 +1067,12 @@ mod tests {
                 countdown_to_crash: 99999,
                 applied_ops: vec![],
             };
-            let mut journal =
-                Journal::load_or_create_with_file(dir.path(), "external", &ops).unwrap();
+            let mut journal = block_on(Journal::load_or_create_with_file(
+                dir.path(),
+                "external",
+                &ops,
+            ))
+            .unwrap();
             drop(
                 block_on(apply_non_delete_with_retries(
                     &ops,

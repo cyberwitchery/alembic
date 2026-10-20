@@ -1023,9 +1023,11 @@ async fn test_resumed_apply_updates_an_object_an_earlier_run_created() {
         &state.journal_scope("generic"),
         &ops,
     )
+    .await
     .unwrap();
     journal
         .mark_op_as_done(&ops[0], Some(&BackendId::Int(22)))
+        .await
         .unwrap();
     drop(journal);
 
