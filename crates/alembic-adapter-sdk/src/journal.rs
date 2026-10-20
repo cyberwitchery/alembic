@@ -212,9 +212,7 @@ impl Journal {
         Self::load_or_create(backend, &Self::stable_key(adapter_name, ops), ops).await
     }
 
-    /// tries to load a Journal from its file in `directory`, otherwise creates a new one.
-    /// in either case, the new Journal instance will be backed by that file.
-    /// delete ops will not be saved in the journal.
+    /// like `load_or_create`, with the journal kept as a file in `directory`.
     pub async fn load_or_create_with_file(
         directory: &Path,
         adapter_name: &str,
@@ -359,8 +357,6 @@ impl JournalFileBackend {
 impl JournalBackend for JournalFileBackend {
     async fn load(&mut self, key: &str) -> Result<Option<Vec<OpWithMeta>>> {
         let path = Self::file_path(&self.directory, key);
-        // only a missing file is a fresh start: the caller writes a new journal over
-        // whatever `None` stands for
         let contents = match fs::read_to_string(&path) {
             Ok(contents) => contents,
             Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -1057,8 +1053,6 @@ mod tests {
     #[tokio::test]
     #[cfg(unix)]
     async fn a_journal_that_cannot_be_read_is_an_error_not_a_fresh_start() {
-        // `None` makes the caller write a fresh journal over the file, so only a
-        // journal that is not there at all may load as `None`
         use std::os::unix::fs::PermissionsExt;
         let dir = tempdir().unwrap();
         let journals = dir.path().join("journals");

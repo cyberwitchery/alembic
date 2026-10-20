@@ -180,10 +180,7 @@ fn report_resuming(journal: &Journal, done: usize) {
     );
 }
 
-/// tell the user what the interrupted apply left behind. resuming is automatic, so
-/// this and `report_resuming` are the only places the journal is ever named;
-/// warn-level so the cli's default filter shows it.
-///
+/// tell the user what the interrupted apply left behind.
 /// the count is cumulative across runs, and nothing applied means nothing to resume
 /// from: a backend unreachable on the first op leaves the error as the whole story.
 fn report_resumable(journal: &Journal) {
