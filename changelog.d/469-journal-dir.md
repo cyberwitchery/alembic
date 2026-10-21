@@ -1,0 +1,1 @@
+- apply: `ALEMBIC_JOURNAL_DIR` sets where apply journals are kept, so a worker other than the one that started an apply can resume it (#469)

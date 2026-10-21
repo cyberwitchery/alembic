@@ -42,6 +42,19 @@ fn state_path_is_scoped_per_backend_under_dot_alembic() {
 }
 
 #[test]
+fn journal_dir_defaults_under_dot_alembic_and_follows_the_variable() {
+    let root = Path::new("/tmp/example");
+    let cases = [
+        (None, PathBuf::from("/tmp/example/.alembic")),
+        (Some("/shared/journals"), PathBuf::from("/shared/journals")),
+    ];
+    for (value, expected) in cases {
+        let _env = EnvVarGuard::acquire(&[("ALEMBIC_JOURNAL_DIR", value)]);
+        assert_eq!(journal_dir(root), expected, "{value:?}");
+    }
+}
+
+#[test]
 fn resolve_state_backend_reads_the_documented_variables() {
     const URL: &str = "postgres://user:pass@localhost:5432/alembic";
     let root = Path::new("/tmp/example");

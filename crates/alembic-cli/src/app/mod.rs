@@ -27,7 +27,7 @@ use crate::app::config::AppConfig;
 use alembic_core::TypeName;
 
 #[cfg(test)]
-use self::state::{resolve_state_backend_config, state_path, StateBackendConfig};
+use self::state::{journal_dir, resolve_state_backend_config, state_path, StateBackendConfig};
 #[cfg(test)]
 use alembic_adapter_django::emit::Runner;
 use alembic_adapter_sdk::{AdapterApplyError, ApplyReport, Op, StateData, Tense};
