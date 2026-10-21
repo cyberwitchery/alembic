@@ -138,3 +138,7 @@ CREATE TABLE IF NOT EXISTS alembic_journal (
   PRIMARY KEY (journal_key, idx)
 );
 ```
+
+**limitation:** the postgres journal does not stop a second worker from applying a plan
+while another worker is still applying the same plan under the same state key. start each
+plan on one worker at a time; resuming a run that has stopped is safe.

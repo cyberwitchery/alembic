@@ -346,6 +346,9 @@ key (see [state](state.md)), and `ALEMBIC_JOURNAL_DIR` is not
 used. external adapters currently make their own independent choice of if/how to
 store a journal, it is not affected by `ALEMBIC_STATE_BACKEND`.
 
+**limitation:** with the postgres state backend, don't start a plan on a second worker
+while another may still be applying it; see [state](state.md#concurrency).
+
 when a run stops with operations already applied, it says so before the error:
 
 ```
