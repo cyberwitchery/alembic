@@ -222,7 +222,7 @@ jobs:
       - uses: cyberwitchery/unsafe-budget@92b73becc9c76134433ac0347d828fa87fdb3fa3 # v0.5.2
         with:
           mode: check
-          version: v0.5.1
+          version: v0.5.2
 
   sbom:
     name: sbom
