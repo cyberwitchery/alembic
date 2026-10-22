@@ -14,8 +14,8 @@ targets = []
 
 [totals]
 workspace_unsafe = 0
-deps_unsafe = 9973
-overall_unsafe = 9973
+deps_unsafe = 9986
+overall_unsafe = 9986
 
 [[units]]
 name = "aho-corasick"
@@ -655,7 +655,7 @@ unsafe_count = 51
 [[units]]
 name = "socket2"
 kind = "dep"
-unsafe_count = 175
+unsafe_count = 179
 
 [[units]]
 name = "spin"
@@ -720,7 +720,7 @@ unsafe_count = 18
 [[units]]
 name = "tokio"
 kind = "dep"
-unsafe_count = 760
+unsafe_count = 769
 
 [[units]]
 name = "tokio-native-tls"

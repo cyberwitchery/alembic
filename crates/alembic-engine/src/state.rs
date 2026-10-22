@@ -1,6 +1,8 @@
 //! uid -> backend id state store: identity memory, scoped to one backend
 //! instance.
 
+use crate::journal_postgres::PostgresJournalFactory;
+use alembic_adapter_sdk::journal::JournalStorageLocation;
 use alembic_adapter_sdk::{BackendId, StateData};
 use alembic_core::{uid_v5, TypeName, Uid};
 use anyhow::{anyhow, Context, Result};
@@ -94,7 +96,7 @@ pub struct StateStore {
     // reader that inverts state goes through, and deciding which uid a backend id
     // supersedes costs a lookup rather than a walk of the type.
     by_backend_id: BTreeMap<TypeName, BTreeMap<BackendId, Uid>>,
-    journal_dir: Option<PathBuf>,
+    journal_storage: JournalStorageLocation,
     // advisory lock held for a local-file store's whole lifetime, so two concurrent
     // runs against the same state file cannot both load-modify-save it and clobber
     // each other's mappings (the save is atomic but last-writer-wins). shared for a
@@ -112,7 +114,7 @@ impl StateStore {
             data,
             backend_identity: None,
             by_backend_id: BTreeMap::new(),
-            journal_dir: None,
+            journal_storage: JournalStorageLocation::None,
             lock: None,
         };
         store.reindex();
@@ -121,13 +123,26 @@ impl StateStore {
 
     /// set the directory used to persist apply journals for resumable applies.
     pub fn with_journal_dir(mut self, dir: PathBuf) -> Self {
-        self.journal_dir = Some(dir);
+        self.journal_storage = JournalStorageLocation::File(dir);
         self
     }
 
-    /// directory used to persist apply journals, if configured.
-    pub fn journal_dir(&self) -> Option<&Path> {
-        self.journal_dir.as_deref()
+    /// keep apply journals in postgres at `url`, under the state row key `state_key`.
+    pub fn with_postgres_backed_journal(
+        mut self,
+        url: impl Into<String>,
+        state_key: impl Into<String>,
+        tls_mode: PostgresTlsMode,
+    ) -> Self {
+        self.journal_storage = JournalStorageLocation::Backend(Arc::new(
+            PostgresJournalFactory::new(url, state_key, tls_mode),
+        ));
+        self
+    }
+
+    /// how and where to store a journal of applied ops.
+    pub fn journal_storage(&self) -> &JournalStorageLocation {
+        &self.journal_storage
     }
 
     /// load state from a file path under an exclusive lock.
@@ -159,15 +174,17 @@ impl StateStore {
         Ok(store)
     }
 
-    /// load state from a postgres backend.
+    /// load state from a postgres backend, with apply journals kept in the same database.
     pub async fn load_postgres(
         url: impl Into<String>,
         key: impl Into<String>,
         tls_mode: PostgresTlsMode,
     ) -> Result<Self> {
+        let (url, key) = (url.into(), key.into());
+        let journal = PostgresJournalFactory::new(url.clone(), key.clone(), tls_mode);
         let mut postgres_backend = PostgresBackend {
-            url: url.into(),
-            key: key.into(),
+            url,
+            key,
             tls_mode,
             loaded_version: None,
             table_ensured: false,
@@ -181,6 +198,7 @@ impl StateStore {
             },
         );
         store.backend_identity = file.backend;
+        store.journal_storage = JournalStorageLocation::Backend(Arc::new(journal));
         Ok(store)
     }
 
@@ -514,18 +532,17 @@ impl PostgresBackend {
             return Ok(());
         }
 
-        client
-            .execute(
-                "CREATE TABLE IF NOT EXISTS alembic_state (\
-                state_key TEXT PRIMARY KEY, \
-                payload JSONB NOT NULL, \
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), \
-                loaded_version INTEGER NOT NULL DEFAULT 1\
-                )",
-                &[],
-            )
-            .await
-            .with_context(|| "ensure postgres alembic_state table exists")?;
+        create_table_if_missing(
+            client,
+            "CREATE TABLE IF NOT EXISTS alembic_state (\
+            state_key TEXT PRIMARY KEY, \
+            payload JSONB NOT NULL, \
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), \
+            loaded_version INTEGER NOT NULL DEFAULT 1\
+            )",
+        )
+        .await
+        .with_context(|| "ensure postgres alembic_state table exists")?;
 
         // if the table already existed, CREATE TABLE IF NOT EXISTS won't add new columns.
         client
@@ -541,30 +558,49 @@ impl PostgresBackend {
     }
 
     async fn connect(&mut self) -> Result<tokio_postgres::Client> {
-        let client = match self.tls_mode {
-            PostgresTlsMode::Disable => {
-                let (client, connection) =
-                    tokio_postgres::connect(&self.url, tokio_postgres::NoTls)
-                        .await
-                        .with_context(|| "connect postgres state backend")?;
-                spawn_connection_driver(connection);
-                client
-            }
-            PostgresTlsMode::Require => {
-                let connector = native_tls::TlsConnector::builder()
-                    .build()
-                    .with_context(|| "build postgres TLS connector")?;
-                let connector = postgres_native_tls::MakeTlsConnector::new(connector);
-                let (client, connection) = tokio_postgres::connect(&self.url, connector)
-                    .await
-                    .with_context(|| "connect postgres state backend")?;
-                spawn_connection_driver(connection);
-                client
-            }
-        };
+        let client = connect_postgres(&self.url, self.tls_mode).await?;
         self.ensure_table(&client).await?;
         Ok(client)
     }
+}
+
+/// run a `CREATE TABLE IF NOT EXISTS`, tolerating another connection creating the
+/// table at the same time: the loser trips the catalog's unique index.
+pub(crate) async fn create_table_if_missing(
+    client: &Client,
+    ddl: &str,
+) -> Result<(), tokio_postgres::Error> {
+    match client.execute(ddl, &[]).await {
+        Err(err) if err.code() == Some(&tokio_postgres::error::SqlState::UNIQUE_VIOLATION) => {
+            Ok(())
+        }
+        other => other.map(drop),
+    }
+}
+
+/// open a client to `url`, with its connection driven in the background.
+pub(crate) async fn connect_postgres(url: &str, tls_mode: PostgresTlsMode) -> Result<Client> {
+    let client = match tls_mode {
+        PostgresTlsMode::Disable => {
+            let (client, connection) = tokio_postgres::connect(url, tokio_postgres::NoTls)
+                .await
+                .with_context(|| "connect postgres state backend")?;
+            spawn_connection_driver(connection);
+            client
+        }
+        PostgresTlsMode::Require => {
+            let connector = native_tls::TlsConnector::builder()
+                .build()
+                .with_context(|| "build postgres TLS connector")?;
+            let connector = postgres_native_tls::MakeTlsConnector::new(connector);
+            let (client, connection) = tokio_postgres::connect(url, connector)
+                .await
+                .with_context(|| "connect postgres state backend")?;
+            spawn_connection_driver(connection);
+            client
+        }
+    };
+    Ok(client)
 }
 
 #[cfg(test)]

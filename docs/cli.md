@@ -340,6 +340,11 @@ or under `ALEMBIC_JOURNAL_DIR` when set, named for the backend and a hash of the
 operations. pointing `ALEMBIC_JOURNAL_DIR` at a directory several workers share lets
 any of them resume an apply another one started.
 
+with the postgres state backend, the built-in adapters keep the journal in the same
+database instead, in `alembic_journal` under the state row key (see [state](state.md)),
+and `ALEMBIC_JOURNAL_DIR` is not used. external adapters keep their own journal, if
+any, whatever the state backend.
+
 when a run stops with operations already applied, it says so before the error:
 
 ```
@@ -380,8 +385,6 @@ means an apply is unfinished.
   resumes from everything it had applied, not just from an apply that exited through
   an error. the cost is one append and one fsync per operation, against the backend
   round trip each one already pays for
-- a journal an older alembic left behind is read and rewritten in the append-only
-  format when it is loaded, so an apply interrupted before the upgrade still resumes
 
 ## map
 

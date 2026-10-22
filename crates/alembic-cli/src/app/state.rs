@@ -31,7 +31,7 @@ pub(super) async fn load_state_with_context(
     let (mut store, storage, location, present) =
         match resolve_state_backend_config(root, identity)? {
             StateBackendConfig::Local { path } => {
-                let store = StateStore::load_with(&path, lock)?;
+                let store = StateStore::load_with(&path, lock)?.with_journal_dir(journal_dir(root));
                 let present = path.try_exists()?;
                 (store, "local", path.display().to_string(), present)
             }
@@ -51,15 +51,16 @@ pub(super) async fn load_state_with_context(
         bindings_loaded: store.all_mappings().values().map(|m| m.len()).sum(),
     };
     store.ensure_backend(identity)?;
-    // apply journals are files even when the state backend is postgres.
-    Ok((store.with_journal_dir(journal_dir(root)), context))
+    Ok((store, context))
 }
 
-/// where apply journals go: `ALEMBIC_JOURNAL_DIR`, else `.alembic/` under `root`.
+/// where apply journals go: `ALEMBIC_JOURNAL_DIR` unless empty, else `.alembic/` under `root`.
 pub(super) fn journal_dir(root: &Path) -> PathBuf {
     std::env::var("ALEMBIC_JOURNAL_DIR")
+        .ok()
+        .filter(|dir| !dir.is_empty())
         .map(PathBuf::from)
-        .unwrap_or_else(|_| root.join(".alembic"))
+        .unwrap_or_else(|| root.join(".alembic"))
 }
 
 pub(super) fn print_state_context(context: &StateContext) {

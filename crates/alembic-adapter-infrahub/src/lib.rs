@@ -776,7 +776,7 @@ impl Emitter for InfrahubAdapter {
         for op in deletes {
             applied.push(self.apply_delete(&op, schema, &resolved).await?);
         }
-        journal.finish()?;
+        journal.finish().await?;
 
         Ok(ApplyReport {
             applied,

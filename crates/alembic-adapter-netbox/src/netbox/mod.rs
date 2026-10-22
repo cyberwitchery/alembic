@@ -1591,7 +1591,9 @@ mod tests {
             "the journal has to outlive the delete phase"
         );
         let journal =
-            alembic_engine::Journal::load_or_create(dir.path(), "netbox", &creates).unwrap();
+            alembic_engine::Journal::load_or_create_with_file(dir.path(), "netbox", &creates)
+                .await
+                .unwrap();
         assert!(
             journal.is_completed(),
             "every create is recorded done before the deletes run"

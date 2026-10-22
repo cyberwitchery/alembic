@@ -429,7 +429,7 @@ impl Emitter for NetBoxAdapter {
                 });
             }
         }
-        journal.finish()?;
+        journal.finish().await?;
 
         Ok(ApplyReport {
             applied,

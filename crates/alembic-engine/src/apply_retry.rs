@@ -17,7 +17,7 @@ pub async fn apply_non_delete_journaled<D: RetryApplyDriver>(
     // so two instances of one backend applied from one directory cannot resume
     // into each other's runs.
     let scope = state.journal_scope(adapter_name);
-    apply_non_delete_with_journal(state.journal_dir(), &scope, creates_updates, driver).await
+    apply_non_delete_with_journal(state.journal_storage(), &scope, creates_updates, driver).await
 }
 
 #[cfg(test)]
@@ -209,14 +209,17 @@ mod tests {
         assert!(matches!(err, OwnDriverError::Refused(refused) if refused == uid));
     }
 
-    #[test]
-    fn a_loop_failure_converts_into_the_drivers_own_error() {
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // the guard only serializes tests; each has its own runtime
+    async fn a_loop_failure_converts_into_the_drivers_own_error() {
         let _guard = journal_guard();
         let done = create_op(Uid::from_u128(1));
         let dir = tempdir().unwrap();
         let mut journal =
-            Journal::load_or_create(dir.path(), "test", std::slice::from_ref(&done)).unwrap();
-        journal.mark_op_as_done(&done, None).unwrap();
+            Journal::load_or_create_with_file(dir.path(), "test", std::slice::from_ref(&done))
+                .await
+                .unwrap();
+        journal.mark_op_as_done(&done, None).await.unwrap();
 
         // the journal records an op this run was not given
         let err = block_on(apply_non_delete_with_retries(
@@ -352,7 +355,12 @@ mod tests {
                 countdown_to_crash: 2,
                 applied_ops: vec![],
             };
-            let mut journal = Journal::load_or_create(dir.path(), "resume_test", &ops).unwrap();
+            let mut journal = block_on(Journal::load_or_create_with_file(
+                dir.path(),
+                "resume_test",
+                &ops,
+            ))
+            .unwrap();
             block_on(apply_non_delete_with_retries(
                 &ops,
                 Some(&mut journal),
@@ -368,7 +376,12 @@ mod tests {
                 countdown_to_crash: 99999,
                 applied_ops: vec![],
             };
-            let mut journal = Journal::load_or_create(dir.path(), "resume_test", &ops).unwrap();
+            let mut journal = block_on(Journal::load_or_create_with_file(
+                dir.path(),
+                "resume_test",
+                &ops,
+            ))
+            .unwrap();
             let (result, _) = block_on(apply_non_delete_with_retries(
                 &ops,
                 Some(&mut journal),
@@ -401,7 +414,12 @@ mod tests {
             applied_ops: vec![],
         };
         let dir = tempdir().unwrap();
-        let mut journal = Journal::load_or_create(dir.path(), "erratic_driver", &ops).unwrap();
+        let mut journal = block_on(Journal::load_or_create_with_file(
+            dir.path(),
+            "erratic_driver",
+            &ops,
+        ))
+        .unwrap();
 
         block_on(apply_non_delete_with_retries(
             &ops,
@@ -466,7 +484,7 @@ mod tests {
             ));
         }
         deletes?;
-        journal.finish()?;
+        journal.finish().await?;
         Ok(ApplyReport {
             applied: result.applied,
             resumed: result.resumed,
@@ -626,6 +644,41 @@ mod tests {
         assert_eq!(report.previously_applied_count, Some(1));
     }
 
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // the guard only serializes tests; each has its own runtime
+    async fn a_postgres_journal_resumes_a_failed_run_when_configured() {
+        let Ok(url) = std::env::var("ALEMBIC_TEST_POSTGRES_URL") else {
+            return;
+        };
+        let _guard = journal_guard();
+        let site = Uid::from_u128(1);
+        let device = Uid::from_u128(2);
+        let ops = vec![create_op(site), create_op_referencing(device, site)];
+        let state = crate::StateStore::new(None, StateData::default())
+            .with_postgres_backed_journal(
+                url,
+                format!("alembic-test-{}", uuid::Uuid::new_v4()),
+                crate::PostgresTlsMode::Disable,
+            );
+
+        let mut first = RefDriver::new(Some(device));
+        run_journaled_apply(&state, &ops, &mut first)
+            .await
+            .expect_err("should fail on the device");
+
+        let mut second = RefDriver::new(None);
+        let report = run_journaled_apply(&state, &ops, &mut second)
+            .await
+            .unwrap();
+        assert_eq!(second.seen_refs, vec![(device, BackendId::Int(100))]);
+        assert_eq!(report.previously_applied_count, Some(1));
+
+        // finish removed the rows, so a third run starts over
+        let mut third = RefDriver::new(None);
+        let report = run_journaled_apply(&state, &ops, &mut third).await.unwrap();
+        assert_eq!(report.previously_applied_count, None);
+    }
+
     #[test]
     fn a_run_killed_mid_apply_resumes_from_what_it_had_applied() {
         let _guard = journal_guard();
@@ -756,7 +809,12 @@ mod tests {
                 countdown_to_crash: 2,
                 applied_ops: vec![],
             };
-            let mut journal = Journal::load_or_create(dir.path(), "notice", &ops).unwrap();
+            let mut journal = block_on(Journal::load_or_create_with_file(
+                dir.path(),
+                "notice",
+                &ops,
+            ))
+            .unwrap();
             block_on(apply_non_delete_with_retries(
                 &ops,
                 Some(&mut journal),
@@ -791,7 +849,8 @@ mod tests {
                 attempts: 0,
                 mode: Mode::AlwaysRetryUid(stuck),
             };
-            let mut journal = Journal::load_or_create(dir.path(), "stuck", &ops).unwrap();
+            let mut journal =
+                block_on(Journal::load_or_create_with_file(dir.path(), "stuck", &ops)).unwrap();
             let (result, _) = block_on(apply_non_delete_with_retries(
                 &ops,
                 Some(&mut journal),
@@ -820,7 +879,8 @@ mod tests {
                 attempts: 0,
                 mode: Mode::Fatal,
             };
-            let mut journal = Journal::load_or_create(dir.path(), "cold", &ops).unwrap();
+            let mut journal =
+                block_on(Journal::load_or_create_with_file(dir.path(), "cold", &ops)).unwrap();
             block_on(apply_non_delete_with_retries(
                 &ops,
                 Some(&mut journal),
@@ -833,8 +893,8 @@ mod tests {
         assert!(!logged.contains("apply stopped"), "got: {logged}");
     }
 
-    #[test]
-    fn a_successful_apply_says_nothing_about_the_journal() {
+    #[tokio::test]
+    async fn a_successful_apply_says_nothing_about_the_journal() {
         let _guard = journal_guard();
         let ops = vec![create_op(Uid::from_u128(1))];
         let dir = tempdir().unwrap();
@@ -844,16 +904,15 @@ mod tests {
                 countdown_to_crash: 99999,
                 applied_ops: vec![],
             };
-            let mut journal = Journal::load_or_create(dir.path(), "clean", &ops).unwrap();
-            block_on(apply_non_delete_with_retries(
+            let mut journal =
+                block_on(Journal::load_or_create_with_file(dir.path(), "clean", &ops)).unwrap();
+            let (_, journal) = block_on(apply_non_delete_with_retries(
                 &ops,
                 Some(&mut journal),
                 &mut driver,
             ))
-            .unwrap()
-            .1
-            .finish()
             .unwrap();
+            block_on(journal.finish()).unwrap();
         })
         .1;
 
@@ -907,7 +966,7 @@ mod tests {
 
         assert_eq!(result.applied.len(), 1);
         assert!(journal_path.exists(), "the retry loop must not unlink it");
-        journal.finish().unwrap();
+        block_on(journal.finish()).unwrap();
         assert!(!journal_path.exists(), "finish is what unlinks it");
     }
 
@@ -972,8 +1031,9 @@ mod tests {
         assert!(!logged.contains("delete phase"), "got: {logged}");
     }
 
-    #[test]
-    fn an_external_caller_driving_the_retry_loop_leaves_nothing_to_resume() {
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // the guard only serializes tests; each has its own runtime
+    async fn an_external_caller_driving_the_retry_loop_leaves_nothing_to_resume() {
         let _guard = journal_guard();
         // the sdk surface an out-of-tree adapter builds against: its own journal, no
         // `apply_non_delete_journaled`. the file is this caller's to clean up too.
@@ -986,7 +1046,9 @@ mod tests {
                 countdown_to_crash: 99999,
                 applied_ops: vec![],
             };
-            let mut journal = Journal::load_or_create(dir.path(), "external", &ops).unwrap();
+            let mut journal = Journal::load_or_create_with_file(dir.path(), "external", &ops)
+                .await
+                .unwrap();
             block_on(apply_non_delete_with_retries(
                 &ops,
                 Some(&mut journal),
@@ -995,6 +1057,7 @@ mod tests {
             .unwrap()
             .1
             .finish()
+            .await
             .unwrap();
         }
         assert!(
@@ -1007,7 +1070,9 @@ mod tests {
             countdown_to_crash: 99999,
             applied_ops: vec![],
         };
-        let mut journal = Journal::load_or_create(dir.path(), "external", &ops).unwrap();
+        let mut journal = Journal::load_or_create_with_file(dir.path(), "external", &ops)
+            .await
+            .unwrap();
         let (result, _) = block_on(apply_non_delete_with_retries(
             &ops,
             Some(&mut journal),
@@ -1037,7 +1102,12 @@ mod tests {
                 countdown_to_crash: 99999,
                 applied_ops: vec![],
             };
-            let mut journal = Journal::load_or_create(dir.path(), "external", &ops).unwrap();
+            let mut journal = block_on(Journal::load_or_create_with_file(
+                dir.path(),
+                "external",
+                &ops,
+            ))
+            .unwrap();
             drop(
                 block_on(apply_non_delete_with_retries(
                     &ops,

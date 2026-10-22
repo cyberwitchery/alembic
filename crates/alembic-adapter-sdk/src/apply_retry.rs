@@ -1,12 +1,11 @@
 use crate::errors::AdapterApplyError;
-use crate::journal::{Journal, JournalError};
+use crate::journal::{Journal, JournalError, JournalStorageLocation};
 use crate::types::{AppliedOp, Op};
 use alembic_core::Uid;
 use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error as StdError;
-use std::path::Path;
 use thiserror::Error;
 
 #[derive(Debug)]
@@ -77,6 +76,7 @@ pub async fn apply_non_delete_with_retries<'a, D: RetryApplyDriver>(
         }
 
         resumed = journal.done_applied_ops();
+        report_resuming(journal, resumed.len());
         driver.resume(&resumed);
     }
 
@@ -92,6 +92,7 @@ pub async fn apply_non_delete_with_retries<'a, D: RetryApplyDriver>(
                     if let Some(journal) = journal.as_mut() {
                         journal
                             .mark_op_as_done(&op, applied_op.backend_id.as_ref())
+                            .await
                             .map_err(RetryApplyError::from)?;
                     }
                     applied.push(applied_op);
@@ -131,20 +132,28 @@ pub async fn apply_non_delete_with_retries<'a, D: RetryApplyDriver>(
     ))
 }
 
-/// run the retry loop over a journal loaded from `dir` under `scope` (none when `dir` is
-/// `None`), returning the result, the resumed count (`None` when none) ready for
-/// `ApplyReport::previously_applied_count`, and the journal to `finish` after the deletes.
+/// run the retry loop over a journal loaded from `journal_storage` under `scope` (none
+/// for `JournalStorageLocation::None`), returning the result, the resumed count (`None`
+/// when none) ready for `ApplyReport::previously_applied_count`, and the journal to
+/// `finish` after the deletes.
 pub async fn apply_non_delete_with_journal<D: RetryApplyDriver>(
-    dir: Option<&Path>,
+    journal_storage: &JournalStorageLocation,
     scope: &str,
     creates_updates: &[Op],
     driver: &mut D,
 ) -> Result<(RetryApplyResult, Option<usize>, JournalGuard<'static>), D::Error> {
-    let mut journal = match dir {
-        Some(dir) => Some(
-            Journal::load_or_create(dir, scope, creates_updates).map_err(RetryApplyError::from)?,
+    let mut journal = match journal_storage {
+        JournalStorageLocation::File(dir) => Some(
+            Journal::load_or_create_with_file(dir, scope, creates_updates)
+                .await
+                .map_err(RetryApplyError::from)?,
         ),
-        None => None,
+        JournalStorageLocation::Backend(factory) => Some(
+            Journal::load_or_create_with_backend(factory.open(), scope, creates_updates)
+                .await
+                .map_err(RetryApplyError::from)?,
+        ),
+        JournalStorageLocation::None => None,
     };
     let (result, borrowed) =
         apply_non_delete_with_retries(creates_updates, journal.as_mut(), driver).await?;
@@ -158,22 +167,33 @@ pub async fn apply_non_delete_with_journal<D: RetryApplyDriver>(
     ))
 }
 
-/// tell the user what the interrupted apply left behind. resuming is automatic and
-/// silent, so this is the only place the journal is ever named; warn-level so the
-/// cli's default filter shows it.
-///
+/// a run picking up an earlier one's journal says so before applying anything, naming
+/// it like `report_resumable` does; a fresh journal (nothing done) says nothing.
+fn report_resuming(journal: &Journal, done: usize) {
+    let Some(journal_location) = journal.journal_storage_description().filter(|_| done > 0) else {
+        return;
+    };
+    tracing::warn!(
+        "resuming from the journal at {}: {} of {} create/update operations were already applied and are skipped",
+        journal_location,
+        done,
+        journal.op_count(),
+    );
+}
+
+/// tell the user what the interrupted apply left behind.
 /// the count is cumulative across runs, and nothing applied means nothing to resume
 /// from: a backend unreachable on the first op leaves the error as the whole story.
 fn report_resumable(journal: &Journal) {
     let done = journal.done_ops_count();
-    let Some(path) = journal.backing_file_path().filter(|_| done > 0) else {
+    let Some(journal_location) = journal.journal_storage_description().filter(|_| done > 0) else {
         return;
     };
     tracing::warn!(
         "apply stopped after {} of {} create/update operations; the journal at {} records what was applied, and re-running the same plan resumes from there",
         done,
         journal.op_count(),
-        path.display()
+        journal_location,
     );
 }
 
@@ -222,9 +242,9 @@ impl<'a> JournalGuard<'a> {
     }
 
     /// the apply is through, deletes included: there is nothing left to resume.
-    pub fn finish(mut self) -> Result<(), JournalError> {
+    pub async fn finish(mut self) -> Result<(), JournalError> {
         match self.0.take() {
-            Some(mut journal) => journal.get_mut().delete_backing_file(),
+            Some(mut journal) => journal.get_mut().delete_backing_storage().await,
             None => Ok(()),
         }
     }
@@ -255,15 +275,15 @@ impl Drop for JournalGuard<'_> {
 /// like `report_resumable`, and for the same reason: the file left behind is the
 /// difference between a re-run that skips them and one that re-applies them all.
 fn report_unfinished_deletes(journal: &Journal) {
-    let Some(path) = journal
-        .backing_file_path()
+    let Some(journal_location) = journal
+        .journal_storage_description()
         .filter(|_| journal.op_count() > 0)
     else {
         return;
     };
     tracing::warn!(
         "apply stopped during the delete phase; the journal at {} records all {} create/update operations as applied, and re-running the same plan skips them and re-issues the deletes",
-        path.display(),
+        journal_location,
         journal.op_count()
     );
 }
