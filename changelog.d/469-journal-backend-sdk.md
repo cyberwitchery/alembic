@@ -1,1 +1,1 @@
-- `alembic-adapter-sdk`: journals are stored through the async `JournalBackend` trait, and the `Journal` api is async (#469)
+- `alembic-adapter-sdk`: journals are stored through the async `JournalBackend` trait, the `Journal` api is async, and `Journal::load_or_create` is `load_or_create_with_file`; `alembic-engine`'s `StateStore::journal_dir` is `journal_storage` (#469)

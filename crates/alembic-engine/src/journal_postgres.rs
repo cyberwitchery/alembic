@@ -9,7 +9,6 @@ use alembic_adapter_sdk::BackendId;
 use alembic_core::{TypeName, Uid};
 use async_trait::async_trait;
 use std::fmt;
-use tokio_postgres::error::SqlState;
 use tokio_postgres::{Client, Statement};
 
 type Result<T, E = JournalError> = std::result::Result<T, E>;
@@ -101,8 +100,7 @@ impl PostgresJournalBackend {
         }
     }
 
-    /// connect (once), lock `key` for as long as the connection lives, and remember it
-    /// as the journal this backend holds.
+    /// connect (once) and remember `key` as the journal this backend holds.
     async fn open(&mut self, key: &str) -> Result<()> {
         let journal_key = format!("{}/{key}", self.state_key);
         let opened = match self.open.take() {
@@ -117,7 +115,7 @@ impl PostgresJournalBackend {
     }
 
     async fn connect(&self, journal_key: String) -> Result<Opened> {
-        let mut client = connect_postgres(&self.url, self.tls_mode)
+        let client = connect_postgres(&self.url, self.tls_mode)
             .await
             .map_err(|err| self.backend_error(err))?;
         create_table_if_missing(
@@ -136,14 +134,6 @@ impl PostgresJournalBackend {
         )
         .await
         .map_err(|err| self.backend_error(err))?;
-        if !try_lock(&mut client, &journal_key)
-            .await
-            .map_err(|err| self.backend_error(err))?
-        {
-            return Err(JournalError::Locked {
-                location: describe(Some(&journal_key)),
-            });
-        }
         let mark_done = client
             .prepare(MARK_DONE)
             .await
@@ -158,41 +148,6 @@ impl PostgresJournalBackend {
     fn opened(&self) -> Result<&Opened> {
         self.open.as_ref().ok_or(JournalError::NotOpen)
     }
-}
-
-/// a session advisory lock on `journal_key`: two workers never apply the same plan at
-/// once, and a worker that dies releases it with its connection. the wait covers a
-/// previous run whose connection is still closing; false when it runs out.
-async fn try_lock(client: &mut Client, journal_key: &str) -> Result<bool, tokio_postgres::Error> {
-    let transaction = client.transaction().await?;
-    transaction
-        .batch_execute(&format!("SET LOCAL lock_timeout = '{LOCK_WAIT}'"))
-        .await?;
-    let locked = transaction
-        .execute(
-            "SELECT pg_advisory_lock(hashtextextended($1, 0))",
-            &[&journal_key],
-        )
-        .await;
-    match locked {
-        // a session lock outlives the transaction that took it
-        Ok(_) => transaction.commit().await.map(|()| true),
-        Err(err) if err.code() == Some(&SqlState::LOCK_NOT_AVAILABLE) => Ok(false),
-        Err(err) => Err(err),
-    }
-}
-
-/// how long to wait for another connection's lock on the same journal key.
-const LOCK_WAIT: &str = "5s";
-
-async fn unlock(client: &Client, journal_key: &str) -> Result<(), tokio_postgres::Error> {
-    client
-        .execute(
-            "SELECT pg_advisory_unlock(hashtextextended($1, 0))",
-            &[&journal_key],
-        )
-        .await
-        .map(drop)
 }
 
 // postgres has no unsigned 64-bit integer; the bits round-trip through BIGINT
@@ -340,11 +295,7 @@ impl JournalBackend for PostgresJournalBackend {
                 &[&opened.journal_key],
             )
             .await
-            .map_err(|err| self.backend_error(err))?;
-        // released here rather than when the connection closes, so a run straight
-        // after this one does not wait on it
-        unlock(&opened.client, &opened.journal_key)
-            .await
+            .map(drop)
             .map_err(|err| self.backend_error(err))
     }
 
@@ -398,17 +349,16 @@ mod tests {
             return;
         };
         let ops = vec![create_op(1), create_op(2)];
-        let mut journal = Journal::load_or_create(factory.open(), "k", &ops)
+        let mut journal = Journal::load_or_create_with_key(factory.open(), "k", &ops)
             .await
             .unwrap();
         journal
             .mark_op_as_done(&ops[0], Some(&BackendId::Int(7)))
             .await
             .unwrap();
-        // the interrupted run's connection closes, releasing its lock
         drop(journal);
 
-        let reloaded = Journal::load_or_create(factory.open(), "k", &ops)
+        let reloaded = Journal::load_or_create_with_key(factory.open(), "k", &ops)
             .await
             .unwrap();
         assert_eq!(reloaded.op_count(), 2);
@@ -427,11 +377,11 @@ mod tests {
         let Some((_, factory)) = test_factory() else {
             return;
         };
-        Journal::load_or_create(factory.open(), "k", &[create_op(1)])
+        Journal::load_or_create_with_key(factory.open(), "k", &[create_op(1)])
             .await
             .unwrap();
 
-        let err = Journal::load_or_create(factory.open(), "k", &[create_op(2)])
+        let err = Journal::load_or_create_with_key(factory.open(), "k", &[create_op(2)])
             .await
             .unwrap_err();
         let JournalError::OpsMismatch { location } = err else {
@@ -441,31 +391,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn postgres_journal_refuses_a_second_apply_of_the_same_plan_when_configured() {
-        let Some((_, factory)) = test_factory() else {
-            return;
-        };
-        let ops = vec![create_op(1)];
-        let _held = Journal::load_or_create(factory.open(), "k", &ops)
-            .await
-            .unwrap();
-
-        let err = Journal::load_or_create(factory.open(), "k", &ops)
-            .await
-            .unwrap_err();
-        let JournalError::Locked { location } = err else {
-            panic!("expected Locked, got {err:?}");
-        };
-        assert!(location.contains("/k`"), "got: {location}");
-    }
-
-    #[tokio::test]
     async fn postgres_journal_delete_removes_its_rows_when_configured() {
         let Some((_, factory)) = test_factory() else {
             return;
         };
         let ops = vec![create_op(1)];
-        let mut journal = Journal::load_or_create(factory.open(), "k", &ops)
+        let mut journal = Journal::load_or_create_with_key(factory.open(), "k", &ops)
             .await
             .unwrap();
         journal.delete_backing_storage().await.unwrap();
@@ -479,12 +410,12 @@ mod tests {
             return;
         };
         let ops = vec![create_op(1)];
-        let mut journal = Journal::load_or_create(first.open(), "k", &ops)
+        let mut journal = Journal::load_or_create_with_key(first.open(), "k", &ops)
             .await
             .unwrap();
         journal.mark_op_as_done(&ops[0], None).await.unwrap();
 
-        let other = Journal::load_or_create(second.open(), "k", &ops)
+        let other = Journal::load_or_create_with_key(second.open(), "k", &ops)
             .await
             .unwrap();
         assert_eq!(other.done_ops_count(), 0);
@@ -495,7 +426,7 @@ mod tests {
         let Some((url, factory)) = test_factory() else {
             return;
         };
-        let journal = Journal::load_or_create(factory.open(), "k", &[create_op(1)])
+        let journal = Journal::load_or_create_with_key(factory.open(), "k", &[create_op(1)])
             .await
             .unwrap();
         let description = journal.journal_storage_description().unwrap();

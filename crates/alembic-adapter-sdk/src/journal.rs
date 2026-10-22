@@ -83,8 +83,6 @@ pub enum JournalError {
     NotOpen,
     #[error("journal path `{}` has no parent directory", path.display())]
     NoParent { path: PathBuf },
-    #[error("the journal at {location} is held by another apply of this plan; re-run once it is through")]
-    Locked { location: String },
     #[error("failed to access the journal at {location}")]
     Backend {
         location: String,
@@ -203,28 +201,29 @@ impl Journal {
         format!("{}_journal_{}", adapter_name, hash)
     }
 
-    /// like `load_or_create_with_file`, with the journal kept by `backend`.
+    /// like `load_or_create_with_key`, under a key named for `adapter_name` and the plan,
+    /// so a changed plan gets a fresh journal.
     pub async fn load_or_create_with_backend(
         backend: Box<dyn JournalBackend>,
         adapter_name: &str,
         ops: &[Op],
     ) -> Result<Self> {
-        Self::load_or_create(backend, &Self::stable_key(adapter_name, ops), ops).await
+        Self::load_or_create_with_key(backend, &Self::stable_key(adapter_name, ops), ops).await
     }
 
-    /// like `load_or_create`, with the journal kept as a file in `directory`.
+    /// like `load_or_create_with_backend`, with the journal kept as a file in `directory`.
     pub async fn load_or_create_with_file(
         directory: &Path,
         adapter_name: &str,
         ops: &[Op],
     ) -> Result<Self> {
         let backend = JournalFileBackend::new(directory.to_owned());
-        Self::load_or_create(Box::new(backend), &Self::stable_key(adapter_name, ops), ops).await
+        Self::load_or_create_with_backend(Box::new(backend), adapter_name, ops).await
     }
 
     /// resumes the journal `backend` holds under `key` if there is one, otherwise
     /// writes a fresh one for `ops`. delete ops will not be saved in the journal.
-    pub async fn load_or_create(
+    pub async fn load_or_create_with_key(
         mut backend: Box<dyn JournalBackend>,
         key: &str,
         ops: &[Op],
@@ -293,7 +292,7 @@ impl Journal {
         self.ops.len()
     }
 
-    /// returns a string describing where the journal storage is located (if any)
+    /// where the journal is kept, for messages; `None` when it is not kept anywhere.
     pub fn journal_storage_description(&self) -> Option<String> {
         self.backend.as_ref().map(|storage| storage.description())
     }
@@ -666,8 +665,8 @@ mod tests {
 
     #[tokio::test]
     async fn resume_rejects_mismatched_journal_contents() {
-        // the resume-mismatch guard is unreachable through `load_or_create` (the
-        // file name is a stable hash over all ops, so a changed plan gets a fresh
+        // the resume-mismatch guard is unreachable through `load_or_create_with_file`
+        // (the file name is a stable hash over all ops, so a changed plan gets a fresh
         // file). craft the collision directly: write a journal whose CONTENTS are
         // `other` at the file name `expected` resolves to, then load it as
         // `expected` and confirm the guard rejects it.

@@ -132,9 +132,10 @@ pub async fn apply_non_delete_with_retries<'a, D: RetryApplyDriver>(
     ))
 }
 
-/// run the retry loop over a journal loaded from `dir` under `scope` (none when `dir` is
-/// `None`), returning the result, the resumed count (`None` when none) ready for
-/// `ApplyReport::previously_applied_count`, and the journal to `finish` after the deletes.
+/// run the retry loop over a journal loaded from `journal_storage` under `scope` (none
+/// for `JournalStorageLocation::None`), returning the result, the resumed count (`None`
+/// when none) ready for `ApplyReport::previously_applied_count`, and the journal to
+/// `finish` after the deletes.
 pub async fn apply_non_delete_with_journal<D: RetryApplyDriver>(
     journal_storage: &JournalStorageLocation,
     scope: &str,

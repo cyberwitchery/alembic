@@ -340,14 +340,10 @@ or under `ALEMBIC_JOURNAL_DIR` when set, named for the backend and a hash of the
 operations. pointing `ALEMBIC_JOURNAL_DIR` at a directory several workers share lets
 any of them resume an apply another one started.
 
-**built-in adapters only** with the postgres state backend the
-journal is kept in the same database instead, in `alembic_journal` under the state row
-key (see [state](state.md)), and `ALEMBIC_JOURNAL_DIR` is not
-used. external adapters currently make their own independent choice of if/how to
-store a journal, it is not affected by `ALEMBIC_STATE_BACKEND`.
-
-**limitation:** with the postgres state backend, don't start a plan on a second worker
-while another may still be applying it; see [state](state.md#concurrency).
+with the postgres state backend, the built-in adapters keep the journal in the same
+database instead, in `alembic_journal` under the state row key (see [state](state.md)),
+and `ALEMBIC_JOURNAL_DIR` is not used. external adapters keep their own journal, if
+any, whatever the state backend.
 
 when a run stops with operations already applied, it says so before the error:
 
