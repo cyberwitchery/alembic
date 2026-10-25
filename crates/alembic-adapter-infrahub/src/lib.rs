@@ -1,7 +1,9 @@
 //! infrahub graphql adapter for alembic.
 
 use alembic_adapter_sdk::apply_retry::{is_missing_ref_error, RetryApplyDriver};
-use alembic_adapter_sdk::{AppliedOp, ApplyReport, BackendId, Op, ProvisionReport};
+use alembic_adapter_sdk::{
+    http_unavailable, AppliedOp, ApplyReport, BackendId, Op, ProvisionReport,
+};
 use alembic_core::{key_string, FieldType, JsonMap, Key, Schema, TypeName, Uid};
 use alembic_engine::{
     apply_non_delete_journaled, build_key_from_schema, normalize_attrs_refs,
@@ -71,6 +73,18 @@ impl SchemaPushConfig {
 }
 
 /// infrahub adapter.
+/// whether `err` says infrahub could not be reached or refused the credentials.
+pub fn is_unavailable(err: &(dyn std::error::Error + 'static)) -> bool {
+    match err.downcast_ref::<infrahub::Error>() {
+        Some(infrahub::Error::Http(err)) => http_unavailable(
+            err.is_connect() || err.is_timeout(),
+            err.status().map(|status| status.as_u16()),
+        ),
+        Some(infrahub::Error::GraphQl { status, .. }) => http_unavailable(false, *status),
+        _ => false,
+    }
+}
+
 pub struct InfrahubAdapter {
     client: Client,
     base_url: String,

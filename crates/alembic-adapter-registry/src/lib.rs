@@ -5,7 +5,8 @@ use alembic_adapter_sdk::external::{
 };
 use alembic_adapter_sdk::{ExternalCapabilities, ExternalObject, ExternalRole};
 use alembic_engine::{
-    Adapter, Backend, BackendIdentity, Emitter, ObservedObject, ObservedState, Observer, StateStore,
+    Adapter, Backend, BackendIdentity, Emitter, InputError, ObservedObject, ObservedState,
+    Observer, StateStore,
 };
 use anyhow::{anyhow, Context, Result};
 use serde::{de::DeserializeOwned, Deserialize};
@@ -42,6 +43,24 @@ const SUPPORTED_BACKENDS: &[&str] = &[
 /// the `--backend` names this build accepts, `external` included.
 pub fn supported_backends() -> &'static [&'static str] {
     SUPPORTED_BACKENDS
+}
+
+/// whether `err` says a backend could not be reached or refused the credentials,
+/// as one of the built-in adapters reports it. an external adapter's failure
+/// arrives as text, so it never counts.
+pub fn backend_unavailable(err: &anyhow::Error) -> bool {
+    let checks: &[fn(&(dyn std::error::Error + 'static)) -> bool] = &[
+        #[cfg(feature = "netbox")]
+        alembic_adapter_netbox::is_unavailable,
+        #[cfg(feature = "nautobot")]
+        alembic_adapter_nautobot::is_unavailable,
+        #[cfg(feature = "infrahub")]
+        alembic_adapter_infrahub::is_unavailable,
+        #[cfg(feature = "generic")]
+        alembic_adapter_generic::is_unavailable,
+    ];
+    err.chain()
+        .any(|cause| checks.iter().any(|check| check(cause)))
 }
 
 #[derive(Debug, Deserialize)]
@@ -686,8 +705,9 @@ pub fn create_backend(
         }
         config
     } else {
-        let backend =
-            backend.ok_or_else(|| anyhow!("--backend or --backend-config is required"))?;
+        let backend = backend.ok_or_else(|| {
+            InputError::Usage("--backend or --backend-config is required".to_string())
+        })?;
 
         if let Some(plugin) = plugins.iter().find(|p| p.name == backend.to_lowercase()) {
             load_config(&plugin.path)?
@@ -701,9 +721,10 @@ pub fn create_backend(
 
 fn load_config(path: &PathBuf) -> Result<AdapterConfig> {
     let content = fs::read_to_string(path)
-        .with_context(|| format!("read adapter config: {}", path.display()))?;
-    let config: AdapterConfig = alembic_engine::yaml::from_str(&content)
-        .with_context(|| format!("parse adapter config: {}", path.display()))?;
+        .with_context(|| InputError::Usage(format!("read adapter config: {}", path.display())))?;
+    let config: AdapterConfig = alembic_engine::yaml::from_str(&content).with_context(|| {
+        InputError::Invalid(format!("parse adapter config: {}", path.display()))
+    })?;
     Ok(config)
 }
 

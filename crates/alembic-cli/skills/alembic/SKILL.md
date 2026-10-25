@@ -221,9 +221,9 @@ or saving state, when the review does not need an artifact.
 ### resume an interrupted apply
 
 ```bash
-# the interrupted run said:
-#   WARN apply stopped after 3 of 12 create/update operations; the journal at
-#   ./.alembic/netbox_journal_<hash>.yaml records what was applied, and
+# the interrupted run exited 75 and said:
+#   Error: apply stopped after 3 of 12 create/update operations; the journal at
+#   ./.alembic/<backend>-<instance>_journal_<hash>.yaml records what was applied, and
 #   re-running the same plan resumes from there
 alembic apply -p plan.json --backend netbox
 ```

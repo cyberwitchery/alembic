@@ -7,6 +7,7 @@ mod drift;
 mod endpoint;
 mod extract;
 mod inflect;
+mod input_error;
 mod journal_postgres;
 mod loader;
 pub mod mapping;
@@ -27,7 +28,7 @@ mod types;
 pub use alembic_adapter_sdk::yaml;
 use alembic_adapter_sdk::ApplyReport;
 use alembic_core::{key_string, validate_inventory, Inventory, Object, ValidationReport};
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 
 #[cfg(test)]
 mod tests;
@@ -45,6 +46,7 @@ pub use drift::{ChangedEntry, DriftEntry, DriftReport};
 pub use endpoint::normalize_endpoint;
 pub use extract::{import_inventory, ImportReport};
 pub use inflect::pluralize;
+pub use input_error::InputError;
 pub use loader::{load_inventory, load_inventory_unvalidated};
 pub use pipeline::{guard_drift_report, guard_schema_deletes, guard_schema_provisioning};
 pub use plan_view::render_plan;
@@ -78,7 +80,7 @@ pub fn report_to_result_with_sources(report: ValidationReport, objects: &[Object
     for error in located_errors {
         message.push_str(&format!("- {error}\n"));
     }
-    Err(anyhow!(message))
+    Err(InputError::Invalid(message).into())
 }
 
 /// observe backend state and produce a deterministic plan, plus the report of

@@ -804,7 +804,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let journal_path = Journal::stable_file_name(dir.path(), "notice", &ops);
 
-        let logged = crate::test_log::capture(|| {
+        let (err, logged) = crate::test_log::capture(|| {
             let mut driver = ErraticDriver {
                 countdown_to_crash: 2,
                 applied_ops: vec![],
@@ -820,19 +820,34 @@ mod tests {
                 Some(&mut journal),
                 &mut driver,
             ))
-            .expect_err("should fail on the second op");
-        })
-        .1;
+            .expect_err("should fail on the second op")
+        });
 
+        // the error says it, typed so a caller can tell a resumable apply apart, and
+        // the op's own failure stays underneath
+        assert!(matches!(
+            err.downcast_ref::<RetryApplyError>(),
+            Some(RetryApplyError::Interrupted {
+                applied: 1,
+                total: 3,
+                ..
+            })
+        ));
+        let message = format!("{err:#}");
         assert!(
-            logged.contains("apply stopped after 1 of 3 create/update operations"),
-            "got: {logged}"
+            message.contains("apply stopped after 1 of 3 create/update operations"),
+            "got: {message}"
         );
         assert!(
-            logged.contains(&journal_path.display().to_string()),
-            "the message names the journal file, got: {logged}"
+            message.contains(&journal_path.display().to_string()),
+            "the message names the journal file, got: {message}"
         );
-        assert!(logged.contains("resumes from there"), "got: {logged}");
+        assert!(message.contains("resumes from there"), "got: {message}");
+        assert!(
+            message.contains("planned error"),
+            "the cause stays: {message}"
+        );
+        assert!(!logged.contains("apply stopped"), "said once: {logged}");
     }
 
     #[test]
