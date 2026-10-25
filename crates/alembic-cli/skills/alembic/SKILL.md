@@ -73,9 +73,10 @@ these hold whatever the task is.
    and "null" are different instructions; never swap one for the other.
 4. **an update writes the full declared projection.** apply sends every declared
    field of an updated object, not only the fields the plan listed under
-   `changes`. `changes` is the plan-time diff, recorded for review; a backend edit
-   made after the plan was written is converged back. approving an update means
-   approving that whole write.
+   `changes`. `changes` is the plan-time diff, recorded for review. apply refuses
+   a plan the backend has moved away from since; under `--no-stale-check` a
+   backend edit made after the plan was written is converged back. approving an
+   update means approving that whole write.
 5. **`plan --report` is read-only only without `--provision`.** `--provision`
    runs the adapter's `ensure_schema` against the backend before the report is
    computed, which issues schema writes. `--report --provision` is a writing run

@@ -18,6 +18,7 @@ mod predicate;
 mod pretty_printing;
 mod refs;
 mod render;
+mod stale;
 #[cfg(feature = "starlark")]
 mod starlark_transforms;
 mod state;
@@ -52,6 +53,7 @@ pub use pipeline::{guard_drift_report, guard_schema_deletes, guard_schema_provis
 pub use plan_view::render_plan;
 pub use planner::{plan, select_ops, sort_ops_for_apply};
 pub use pretty_printing::bullet_list;
+pub use stale::{guard_stale_plan, StalePlan};
 pub use state::{BackendIdentity, PostgresTlsMode, StateFile, StateLock, StateStore};
 pub use transform::{compile_map, eval_map_transform, load_map_spec, MapSpec, TransformsSpec};
 pub use types::{

@@ -3390,3 +3390,97 @@ async fn first_contact_adoption_rebinds_a_bare_string_backend_id_ref() {
     assert_eq!(bootstrap.adoptions.len(), 2);
     assert!(plan.ops.is_empty(), "nothing to change: {:?}", plan.ops);
 }
+
+// --- guard_stale_plan (issue #467) ---
+
+fn observed_site(name: &str) -> ObservedState {
+    let mut observed = ObservedState::default();
+    observed
+        .insert(ObservedObject {
+            type_name: t("dcim.site"),
+            key: key_str("slug=fra1"),
+            attrs: attrs_map(json!({"name": name})),
+            backend_id: Some(BackendId::Int(1)),
+        })
+        .unwrap();
+    observed
+}
+
+fn site_backend(observed: ObservedState) -> Backend {
+    Backend::Adapter(Box::new(TestAdapter {
+        observed,
+        report: ApplyReport::default(),
+    }))
+}
+
+/// a plan made against `then`, and the state it bound; the guard then runs
+/// against `now`.
+fn stale_check(then: ObservedState, now: ObservedState) -> anyhow::Result<()> {
+    let site = obj(uid(1), "dcim.site", "slug=fra1", json!({"name": "B"}));
+    let inventory = inv(vec![site]);
+    let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
+    let backend = site_backend(then);
+    let plan = futures::executor::block_on(build_plan(
+        backend.observer().unwrap(),
+        &inventory,
+        &mut state,
+        false,
+    ))
+    .unwrap();
+    futures::executor::block_on(guard_stale_plan(&site_backend(now), &plan, &state))
+}
+
+#[test]
+fn guard_stale_plan_passes_a_backend_that_did_not_move() {
+    stale_check(observed_site("A"), observed_site("A")).unwrap();
+    // nothing to create: an empty observation stays empty
+    stale_check(ObservedState::default(), ObservedState::default()).unwrap();
+}
+
+#[test]
+fn guard_stale_plan_names_a_field_that_moved() {
+    let err = stale_check(observed_site("A"), observed_site("C")).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(err.downcast_ref::<StalePlan>().is_some(), "{msg}");
+    assert!(
+        msg.contains(r#"dcim.site {"slug":"fra1"}: `name` is "C", planned against "A""#),
+        "{msg}"
+    );
+}
+
+#[test]
+fn guard_stale_plan_names_a_create_that_now_collides() {
+    let err = stale_check(ObservedState::default(), observed_site("C")).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("did not exist when planned and now does"),
+        "{msg}"
+    );
+}
+
+#[test]
+fn guard_stale_plan_names_an_update_whose_object_is_gone() {
+    let err = stale_check(observed_site("A"), ObservedState::default()).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(msg.contains("no longer exists on the backend"), "{msg}");
+}
+
+#[test]
+fn guard_stale_plan_passes_what_was_applied_already() {
+    // the update landed (an interrupted run, or the same edit by hand)
+    stale_check(observed_site("A"), observed_site("B")).unwrap();
+    // the create landed with the declared values
+    stale_check(ObservedState::default(), observed_site("B")).unwrap();
+}
+
+#[test]
+fn guard_stale_plan_skips_a_backend_that_cannot_observe() {
+    let site = obj(uid(1), "dcim.site", "slug=fra1", json!({"name": "B"}));
+    let state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
+    let plan = plan_write_only(&inv(vec![site]), &state).unwrap();
+    let backend = Backend::Emitter(Box::new(TestAdapter {
+        observed: observed_site("C"),
+        report: ApplyReport::default(),
+    }));
+    futures::executor::block_on(guard_stale_plan(&backend, &plan, &state)).unwrap();
+}

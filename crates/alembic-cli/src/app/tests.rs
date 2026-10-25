@@ -503,6 +503,7 @@ fn output_path_is_the_one_place_every_write_site_is_named() {
             interactive: false,
             only: vec![],
             only_file: None,
+            no_stale_check: false,
         }),
         Some(out.as_path())
     );
@@ -949,6 +950,7 @@ objects:
             interactive: false,
             only: vec![],
             only_file: None,
+            no_stale_check: false,
         },
     ] {
         let err = run(Cli { command }, AppConfig::load().unwrap())
@@ -998,6 +1000,7 @@ async fn run_apply_interactive_delete_requires_allow_delete() {
             interactive: true,
             only: vec![],
             only_file: None,
+            no_stale_check: false,
         },
     };
     let err = run(cli, AppConfig::load().unwrap()).await.unwrap_err();
@@ -1033,6 +1036,7 @@ async fn run_apply_read_only_backend_fails_before_prompting() {
                 interactive,
                 only: vec![],
                 only_file: None,
+                no_stale_check: false,
             },
         };
         let err = run(cli, AppConfig::load().unwrap()).await.unwrap_err();
@@ -1096,11 +1100,115 @@ types:
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn run_apply_refuses_a_plan_the_backend_moved_away_from() {
+    use httpmock::Method::{GET, POST};
+
+    let _cwd = CwdGuard::acquire_async().await;
+    let dir = tempdir().unwrap();
+    let state_path = dir.path().join(".alembic").join("state.json");
+    let _env = EnvVarGuard::acquire_async(&[
+        ("ALEMBIC_STATE_BACKEND", Some("local")),
+        ("ALEMBIC_STATE_PATH", Some(state_path.to_str().unwrap())),
+    ])
+    .await;
+    // planned as a create of an absent site; someone made one by hand since
+    let server = httpmock::MockServer::start();
+    server.mock(|when, then| {
+        when.method(GET).path("/sites/");
+        then.status(200)
+            .json_body(serde_json::json!([{"id": 5, "name": "fra1", "description": "by hand"}]));
+    });
+    let creates = server.mock(|when, then| {
+        when.method(POST).path("/sites/");
+        then.status(201).json_body(serde_json::json!({"id": 7}));
+    });
+    let schema: alembic_core::Schema = alembic_engine::yaml::from_str(
+        "types:\n  dcim.site:\n    key:\n      name: {type: string}\n    fields:\n      description: {type: string}\n",
+    )
+    .unwrap();
+    let mut attrs = BTreeMap::new();
+    attrs.insert("description".to_string(), serde_json::json!("planned"));
+    let site = alembic_core::Object {
+        uid: uuid::Uuid::from_u128(1),
+        type_name: alembic_core::TypeName::new("dcim.site"),
+        key: key_str("name=fra1"),
+        attrs: attrs.into(),
+        source: None,
+    };
+    let plan_path = dir.path().join("plan.json");
+    write_plan(
+        &plan_path,
+        &Plan {
+            schema,
+            ops: vec![Op::Create {
+                uid: site.uid,
+                type_name: site.type_name.clone(),
+                desired: site,
+            }],
+            summary: None,
+            schema_preview: None,
+            effects: None,
+        },
+    )
+    .unwrap();
+    let config_path = dir.path().join("backend.yaml");
+    std::fs::write(
+        &config_path,
+        format!(
+            "backend: generic\nconfig:\n  base_url: {}\n  types:\n    dcim.site:\n      path: /sites/\n",
+            server.base_url()
+        ),
+    )
+    .unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
+    let apply = |no_stale_check: bool| Cli {
+        command: Command::Apply {
+            plan: plan_path.clone(),
+            output: None,
+            backend: None,
+            backend_config: Some(config_path.clone()),
+            allow_delete: false,
+            interactive: false,
+            no_stale_check,
+            only: vec![],
+            only_file: None,
+        },
+    };
+
+    let err = run(apply(false), AppConfig::load().unwrap())
+        .await
+        .unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("the backend changed since the plan was made"),
+        "{msg}"
+    );
+    assert!(
+        msg.contains("did not exist when planned and now does"),
+        "{msg}"
+    );
+    assert_eq!(exit::code_for(&err), exit::INVALID_INPUT);
+    assert_eq!(creates.calls(), 0, "nothing is written");
+
+    run(apply(true), AppConfig::load().unwrap()).await.unwrap();
+    assert_eq!(creates.calls(), 1);
+}
+
+/// an empty backend, for the read apply's stale-plan check makes.
+fn serve_empty_listings(server: &httpmock::MockServer) {
+    server.mock(|when, then| {
+        when.method(httpmock::Method::GET);
+        then.status(200).json_body(serde_json::json!([]));
+    });
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn run_apply_writes_the_report_to_output() {
     use httpmock::Method::POST;
 
     let _cwd = CwdGuard::acquire_async().await;
     let server = httpmock::MockServer::start();
+    serve_empty_listings(&server);
     server.mock(|when, then| {
         when.method(POST).path("/sites/");
         then.status(201).json_body(serde_json::json!({"id": 7}));
@@ -1127,6 +1235,7 @@ async fn run_apply_writes_the_report_to_output() {
             interactive: false,
             only: vec![],
             only_file: None,
+            no_stale_check: false,
         },
     };
     let result = run(cli, AppConfig::load().unwrap()).await;
@@ -1177,6 +1286,7 @@ async fn run_apply_against_an_unreachable_backend_exits_unavailable() {
             interactive: false,
             only: vec![],
             only_file: None,
+            no_stale_check: false,
         },
     };
     let err = run(cli, AppConfig::load().unwrap()).await.unwrap_err();
@@ -1276,6 +1386,7 @@ async fn run_apply_only_applies_the_named_uids_and_reports_the_rest() {
     ])
     .await;
     let server = httpmock::MockServer::start();
+    serve_empty_listings(&server);
     let sites = server.mock(|when, then| {
         when.method(POST).path("/sites/");
         then.status(201).json_body(serde_json::json!({"id": 7}));
@@ -1297,6 +1408,7 @@ async fn run_apply_only_applies_the_named_uids_and_reports_the_rest() {
             interactive: false,
             only,
             only_file: None,
+            no_stale_check: false,
         },
     };
 
@@ -1377,6 +1489,7 @@ async fn run_apply_resumes_with_the_ids_the_interrupted_run_created() {
     // run 1 creates the site and dies on the device. no state is saved: apply only
     // saves on the success path.
     let first = httpmock::MockServer::start();
+    serve_empty_listings(&first);
     first.mock(|when, then| {
         when.method(POST).path("/sites/");
         then.status(201).json_body(serde_json::json!({"id": 7}));
@@ -1398,6 +1511,7 @@ async fn run_apply_resumes_with_the_ids_the_interrupted_run_created() {
                 interactive: false,
                 only: vec![],
                 only_file: None,
+                no_stale_check: false,
             },
         },
         AppConfig::load().unwrap(),
@@ -1410,6 +1524,7 @@ async fn run_apply_resumes_with_the_ids_the_interrupted_run_created() {
     // run 2 is a cold start against a fresh backend: the site must not be created
     // again, and the device must go out with the id the first run got for it.
     let second = httpmock::MockServer::start();
+    serve_empty_listings(&second);
     let sites = second.mock(|when, then| {
         when.method(POST).path("/sites/");
         then.status(201).json_body(serde_json::json!({"id": 99}));
@@ -1433,6 +1548,7 @@ async fn run_apply_resumes_with_the_ids_the_interrupted_run_created() {
                 interactive: false,
                 only: vec![],
                 only_file: None,
+                no_stale_check: false,
             },
         },
         AppConfig::load().unwrap(),
@@ -1506,6 +1622,7 @@ async fn run_apply_rejects_a_bad_output_path_before_touching_the_backend() {
             interactive: false,
             only: vec![],
             only_file: None,
+            no_stale_check: false,
         },
     };
     let result = run(cli, AppConfig::load().unwrap()).await;
@@ -1551,6 +1668,7 @@ async fn run_apply_writes_no_report_when_the_apply_fails() {
             interactive: false,
             only: vec![],
             only_file: None,
+            no_stale_check: false,
         },
     };
     let result = run(cli, AppConfig::load().unwrap()).await;
@@ -2564,6 +2682,7 @@ async fn run_refuses_to_write_an_external_adapter_declaring_observer() {
                 interactive: false,
                 only: vec![],
                 only_file: None,
+                no_stale_check: false,
             },
         },
         AppConfig::load().unwrap(),
@@ -3442,6 +3561,7 @@ async fn run_applies_a_converged_hand_written_adapter_that_omits_applied() {
                         interactive: false,
                         only: vec![],
                         only_file: None,
+                        no_stale_check: false,
                     },
                 },
                 AppConfig::load().unwrap(),

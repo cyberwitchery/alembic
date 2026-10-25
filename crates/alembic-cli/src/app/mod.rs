@@ -9,9 +9,9 @@ mod version;
 
 use alembic_adapter_registry::{create_backend, Plugin};
 use alembic_engine::{
-    apply_plan, build_plan, guard_drift_report, guard_schema_provisioning, load_inventory,
-    load_inventory_unvalidated, plan_write_only, render_plan, select_ops, Backend, DriftReport,
-    InputError, Plan, StateLock, StateStore,
+    apply_plan, build_plan, guard_drift_report, guard_schema_provisioning, guard_stale_plan,
+    load_inventory, load_inventory_unvalidated, plan_write_only, render_plan, select_ops, Backend,
+    DriftReport, InputError, Plan, StateLock, StateStore,
 };
 use anyhow::{anyhow, Context, Result};
 use clap::{CommandFactory, Parser, Subcommand};
@@ -153,6 +153,10 @@ enum Command {
         /// file of uids to apply, whitespace-separated, as for --only.
         #[arg(long, conflicts_with = "interactive")]
         only_file: Option<PathBuf>,
+        /// apply without first checking that the backend still holds what the
+        /// plan was diffed against.
+        #[arg(long, default_value_t = false)]
+        no_stale_check: bool,
     },
     /// transform an ir inventory into another ir inventory (ir -> ir).
     // `transform` carries its own --spec and prints to stdout, so the inventory
@@ -485,6 +489,7 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<ExitCode> {
             interactive,
             only,
             only_file,
+            no_stale_check,
         } => {
             if interactive && plan == Path::new("-") {
                 return Err(InputError::Usage(
@@ -560,6 +565,10 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<ExitCode> {
                 None => (plan, Vec::new()),
             };
 
+            // after any selection, so only what will be written is checked
+            if !no_stale_check {
+                guard_stale_plan(&backend, &plan, &state).await?;
+            }
             let report = apply_plan(&backend, &plan, &mut state, allow_delete).await?;
             state.save_async().await?;
             print_apply_report(&report);
