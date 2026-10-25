@@ -265,7 +265,8 @@ alembic plan -f examples/inventory.yaml --dry-run \
 
 - applies a plan file; `-p -` reads a json plan from stdin, matching the json emitted by `plan --dry-run`
 - says on stderr which state it loaded, in `plan`'s `state:` line
-- an applied update re-asserts every declared field of its object, not only the changes the plan listed: a backend edit to a declared field between plan and apply is converged back, and approving an update under `--interactive` approves that full write. undeclared fields stay untouched (`docs/engine.md`, diff rules)
+- before writing, checks that the backend still holds what the plan was diffed against: the plan's objects are diffed again against the backend as it is now, and every operation that diff needs has to be one the plan holds, with the same `from` values. otherwise apply refuses, naming each object and what moved (`dcim.site {"slug":"fra1"}: \`name\` is "C", planned against "A"`, or a create whose object now exists), and writes nothing, exiting `65`; re-plan and review again. an operation the diff no longer needs was applied already (an interrupted run, or the same edit by hand) and is not a conflict, so resuming works unchanged. deletes are not checked, since an object already gone is the delete applied, and a write-only backend observes nothing to check. the check reads what `plan` reads for the plan's types, so it costs about one observation; `--no-stale-check` skips it
+- an applied update re-asserts every declared field of its object, not only the changes the plan listed: a backend edit to a declared field between plan and apply is converged back under `--no-stale-check`, and approving an update under `--interactive` approves that full write. undeclared fields stay untouched (`docs/engine.md`, diff rules)
 - refuses a plan whose `effects` (`docs/plan.md`) does not match the backend: an `emit` plan was made without observing, so applying it to a read+write backend would create what already exists
 - deletes are blocked unless `--allow-delete` is provided; this covers both object deletes and destructive schema provisioning (deleting custom object types/fields the inventory no longer declares, which cascades to their objects)
 - `--only <uid>` (repeated or comma-separated) and `--only-file <path>` (uids
@@ -510,7 +511,7 @@ of parsing the version string:
   "backends": ["netbox", "nautobot", "infrahub", "generic", "peeringdb", "django", "external"],
   "external_protocol": 1,
   "state_backends": ["file", "postgres"],
-  "features": ["apply-only", "apply-stdin", "exit-codes", "map-objects", "map-starlark", "plan-effects"]
+  "features": ["apply-only", "apply-stdin", "exit-codes", "map-objects", "map-starlark", "plan-effects", "stale-check"]
 }
 ```
 
@@ -530,6 +531,7 @@ of parsing the version string:
   - `map-starlark`: a map spec's `transforms:` block and `map transform`
   - `plan-effects`: plans record `effects`, and apply refuses a plan made for
     the other kind of backend
+  - `stale-check`: apply refuses a plan the backend changed since it was made
 
 ## exit codes
 
@@ -543,7 +545,7 @@ follow sysexits(3).
 | `1` | any failure not listed below | read the message |
 | `2` | `plan --report` found drift | review the drift |
 | `64` | usage: a bad flag, a missing argument, or an input file (`-f`, `-p`, `--spec`, `--backend-config`) that cannot be read | fix the invocation |
-| `65` | invalid input: a file that does not parse as its kind of document, or an inventory that does not validate | fix the input; re-running will not help |
+| `65` | invalid input: a file that does not parse as its kind of document, an inventory that does not validate, or a plan the backend changed since it was made | fix the input or re-plan; re-running will not help |
 | `69` | a backend that could not be reached, refused the credentials (`401`, `403`), throttled (`429`) or answered as unavailable (`502`, `503`, `504`) | retry, or check the configuration |
 | `75` | `apply` stopped partway, with its journal kept | re-run the same apply to resume, not a re-plan |
 

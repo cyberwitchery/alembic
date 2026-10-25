@@ -15,6 +15,7 @@ const FEATURES: &[&str] = &[
     "map-objects",
     "map-starlark",
     "plan-effects",
+    "stale-check",
 ];
 
 /// where state, and with it the apply journal, can be kept (`ALEMBIC_STATE_BACKEND`).

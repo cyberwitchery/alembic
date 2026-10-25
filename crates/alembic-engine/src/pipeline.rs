@@ -24,7 +24,18 @@ pub(crate) async fn observe(
     adopt_by_key: bool,
 ) -> Result<(ObservedState, crate::types::BootstrapReport)> {
     crate::report_to_result(crate::validate(inventory))?;
+    observe_validated(adapter, inventory, state, detect_deletes, adopt_by_key).await
+}
 
+/// [`observe`] for objects validated earlier, such as a plan's, whose refs may
+/// point at objects the plan does not carry.
+pub(crate) async fn observe_validated(
+    adapter: &(dyn Observer + '_),
+    inventory: &Inventory,
+    state: &mut StateStore,
+    detect_deletes: bool,
+    adopt_by_key: bool,
+) -> Result<(ObservedState, crate::types::BootstrapReport)> {
     let mut types: BTreeSet<TypeName> = inventory
         .objects
         .iter()

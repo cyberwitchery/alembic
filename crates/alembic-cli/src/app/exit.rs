@@ -2,15 +2,15 @@
 //! text. the numbers follow sysexits(3); `docs/cli.md` lists them.
 
 use alembic_adapter_sdk::apply_retry::RetryApplyError;
-use alembic_engine::InputError;
+use alembic_engine::{InputError, StalePlan};
 use std::process::ExitCode;
 
 /// `plan --report` found drift.
 pub(crate) const DRIFT: u8 = 2;
 /// arguments the run cannot start with, or a file it cannot read.
 pub(crate) const USAGE: u8 = 64;
-/// a file that is not a valid document of its kind, or an inventory that does
-/// not validate.
+/// a file that is not a valid document of its kind, an inventory that does not
+/// validate, or a plan the backend changed since it was made.
 pub(crate) const INVALID_INPUT: u8 = 65;
 /// a backend that could not be reached or refused the credentials.
 pub(crate) const UNAVAILABLE: u8 = 69;
@@ -27,6 +27,9 @@ pub(crate) fn code_for(err: &anyhow::Error) -> u8 {
     }
     if alembic_adapter_registry::backend_unavailable(err) {
         return UNAVAILABLE;
+    }
+    if err.downcast_ref::<StalePlan>().is_some() {
+        return INVALID_INPUT;
     }
     match err.downcast_ref::<InputError>() {
         Some(InputError::Usage(_)) => USAGE,
