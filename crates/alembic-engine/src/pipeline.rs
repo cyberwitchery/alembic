@@ -1,6 +1,6 @@
 use crate::pretty_printing::bullet_list;
 use crate::sort_ops_for_apply;
-use crate::types::{Backend, ObservedState, Observer, Plan, CANNOT_OBSERVE};
+use crate::types::{Backend, Effects, ObservedState, Observer, Plan, CANNOT_OBSERVE};
 use crate::StateStore;
 use alembic_adapter_sdk::{ApplyReport, Op, ProvisionReport};
 use alembic_core::{Inventory, TypeName};
@@ -141,6 +141,28 @@ pub fn guard_schema_deletes(preview: &ProvisionReport, allow_delete: bool) -> Re
     Ok(())
 }
 
+/// refuse a plan made for the other kind of backend: an `emit` plan creates
+/// every declared object without having observed any, and a `drive` plan diffs
+/// against an observation a write-only backend cannot make. a plan without
+/// `effects` predates the field and is applied as before.
+fn guard_effects(backend: &Backend, plan: &Plan) -> Result<()> {
+    let (Some(planned), Some(actual)) = (plan.effects, backend.effects()) else {
+        return Ok(());
+    };
+    if planned == actual {
+        return Ok(());
+    }
+    let describe = |effects| match effects {
+        Effects::Emit => "a write-only backend (`effects: emit`)",
+        Effects::Drive => "a read+write backend (`effects: drive`)",
+    };
+    Err(anyhow!(
+        "plan was made against {}, but this is {}; re-run `alembic plan` against this backend",
+        describe(planned),
+        describe(actual)
+    ))
+}
+
 /// refuse a drift report over a backend that cannot observe. the report asserts
 /// what the backend holds, and a write-only backend is planned against an empty
 /// observation, so every declared object would be reported absent from a backend
@@ -161,6 +183,7 @@ pub(crate) async fn apply(
     state: &mut StateStore,
     allow_delete: bool,
 ) -> Result<ApplyReport> {
+    guard_effects(backend, plan)?;
     if !allow_delete {
         let has_delete = plan.ops.iter().any(|op| matches!(op, Op::Delete { .. }));
         if has_delete {

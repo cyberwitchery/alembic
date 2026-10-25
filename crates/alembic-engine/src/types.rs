@@ -320,6 +320,16 @@ impl Backend {
         }
     }
 
+    /// what a plan made against this backend records as its `effects`; `None`
+    /// for a read-only backend, which nothing is applied to.
+    pub fn effects(&self) -> Option<Effects> {
+        match self {
+            Backend::Emitter(_) => Some(Effects::Emit),
+            Backend::Adapter(_) => Some(Effects::Drive),
+            Backend::Observer(_) => None,
+        }
+    }
+
     pub fn emitter(&self) -> anyhow::Result<&dyn Emitter> {
         match self {
             Backend::Emitter(emitter) => Ok(emitter.as_ref()),

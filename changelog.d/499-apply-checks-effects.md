@@ -1,0 +1,1 @@
+- apply: a plan whose `effects` does not match the backend (an `emit` plan applied to a read+write backend, or a `drive` plan to a write-only one) is refused before anything is written; a plan without `effects` applies as before (#499)
