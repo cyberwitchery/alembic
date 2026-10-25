@@ -1,6 +1,7 @@
 //! cli entrypoint for alembic.
 
 pub mod config;
+pub(crate) mod exit;
 mod io;
 mod skill;
 mod state;
@@ -9,8 +10,8 @@ mod version;
 use alembic_adapter_registry::{create_backend, Plugin};
 use alembic_engine::{
     apply_plan, build_plan, guard_drift_report, guard_schema_provisioning, load_inventory,
-    load_inventory_unvalidated, plan_write_only, render_plan, Backend, DriftReport, Plan,
-    StateLock, StateStore,
+    load_inventory_unvalidated, plan_write_only, render_plan, Backend, DriftReport, InputError,
+    Plan, StateLock, StateStore,
 };
 use anyhow::{anyhow, Context, Result};
 use clap::{CommandFactory, Parser, Subcommand};
@@ -449,7 +450,7 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<ExitCode> {
                     announce_written(output, "drift report")?;
                 }
                 if !drift.is_empty() {
-                    return Ok(ExitCode::from(2));
+                    return Ok(ExitCode::from(exit::DRIFT));
                 }
             } else if dry_run {
                 let raw = serde_json::to_string_pretty(&plan)?;
@@ -476,9 +477,11 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<ExitCode> {
             interactive,
         } => {
             if interactive && plan == Path::new("-") {
-                return Err(anyhow!(
+                return Err(InputError::Usage(
                     "--interactive cannot be used with --plan -: stdin is already used for the plan"
-                ));
+                        .to_string(),
+                )
+                .into());
             }
             let plugins = search_for_plugins(&config)?;
             let (backend, backend_identity) =
@@ -576,9 +579,11 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<ExitCode> {
             }
             None => {
                 let (Some(file), Some(spec), Some(output)) = (file, spec, output) else {
-                    return Err(anyhow!(
+                    return Err(InputError::Usage(
                         "alembic map requires -f, --spec, and -o (or the transform subcommand)"
-                    ));
+                            .to_string(),
+                    )
+                    .into());
                 };
                 let input = load_inventory(&file)?;
                 let spec = alembic_engine::load_map_spec(&spec)?;

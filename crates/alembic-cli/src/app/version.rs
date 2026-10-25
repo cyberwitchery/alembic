@@ -8,7 +8,13 @@ use serde::Serialize;
 /// capabilities a caller may test for. a name is added when a release adds
 /// something worth checking, and never removed while the capability stays;
 /// `docs/cli.md` lists what each one means.
-const FEATURES: &[&str] = &["apply-stdin", "map-objects", "map-starlark", "plan-effects"];
+const FEATURES: &[&str] = &[
+    "apply-stdin",
+    "exit-codes",
+    "map-objects",
+    "map-starlark",
+    "plan-effects",
+];
 
 /// where state, and with it the apply journal, can be kept (`ALEMBIC_STATE_BACKEND`).
 const STATE_BACKENDS: &[&str] = &["file", "postgres"];

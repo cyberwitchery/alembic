@@ -16,10 +16,20 @@ pub struct RetryApplyResult {
     pub resumed: Vec<AppliedOp>,
 }
 
-/// a failure of the retry loop itself, rather than of an op the driver applied.
+/// a failure the retry loop reports: its own, or an op's after earlier ops were applied.
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum RetryApplyError {
+    /// an op failed after others were applied and journaled, so re-running the same
+    /// plan resumes; the op's own error is the source.
+    #[error("{}", stopped_after(*applied, *total, journal))]
+    Interrupted {
+        applied: usize,
+        total: usize,
+        journal: String,
+        #[source]
+        source: Box<dyn StdError + Send + Sync>,
+    },
     #[error(transparent)]
     Journal(#[from] JournalError),
     #[error(
@@ -32,8 +42,9 @@ pub enum RetryApplyError {
 
 #[async_trait]
 pub trait RetryApplyDriver {
-    /// error `apply_non_delete` fails with; the retry loop's own failures convert into it.
-    type Error: From<RetryApplyError>;
+    /// error `apply_non_delete` fails with; the retry loop's own failures convert into
+    /// it, and an op's failure after progress is boxed as the source of one.
+    type Error: From<RetryApplyError> + Into<Box<dyn StdError + Send + Sync>>;
 
     async fn apply_non_delete(&mut self, op: &Op) -> Result<AppliedOp, Self::Error>;
     fn is_retryable(&self, err: &Self::Error) -> bool;
@@ -99,10 +110,16 @@ pub async fn apply_non_delete_with_retries<'a, D: RetryApplyDriver>(
                 }
                 Err(err) if driver.is_retryable(&err) => pending.push(op),
                 Err(err) => {
-                    if let Some(journal) = journal.as_mut() {
-                        report_resumable(journal);
-                    }
-                    return Err(err);
+                    return Err(match journal.as_deref().and_then(resumable) {
+                        Some((applied, total, journal)) => RetryApplyError::Interrupted {
+                            applied,
+                            total,
+                            journal,
+                            source: err.into(),
+                        }
+                        .into(),
+                        None => err,
+                    });
                 }
             }
         }
@@ -181,20 +198,27 @@ fn report_resuming(journal: &Journal, done: usize) {
     );
 }
 
-/// tell the user what the interrupted apply left behind.
+/// what an interrupted apply left behind: ops applied, ops planned, where the journal is.
 /// the count is cumulative across runs, and nothing applied means nothing to resume
 /// from: a backend unreachable on the first op leaves the error as the whole story.
-fn report_resumable(journal: &Journal) {
+fn resumable(journal: &Journal) -> Option<(usize, usize, String)> {
     let done = journal.done_ops_count();
-    let Some(journal_location) = journal.journal_storage_description().filter(|_| done > 0) else {
+    let location = journal.journal_storage_description().filter(|_| done > 0)?;
+    Some((done, journal.op_count(), location))
+}
+
+/// tell the user what a stuck apply left behind; a failed one says it in its error.
+fn report_resumable(journal: &Journal) {
+    let Some((applied, total, journal)) = resumable(journal) else {
         return;
     };
-    tracing::warn!(
-        "apply stopped after {} of {} create/update operations; the journal at {} records what was applied, and re-running the same plan resumes from there",
-        done,
-        journal.op_count(),
-        journal_location,
-    );
+    tracing::warn!("{}", stopped_after(applied, total, &journal));
+}
+
+fn stopped_after(applied: usize, total: usize, journal: &str) -> String {
+    format!(
+        "apply stopped after {applied} of {total} create/update operations; the journal at {journal} records what was applied, and re-running the same plan resumes from there"
+    )
 }
 
 /// the journal, handed back to the caller so it outlives the whole apply. deletes are

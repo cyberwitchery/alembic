@@ -1143,6 +1143,34 @@ async fn run_apply_writes_the_report_to_output() {
     );
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn run_apply_against_an_unreachable_backend_exits_unavailable() {
+    let _cwd = CwdGuard::acquire_async().await;
+    let dir = tempdir().unwrap();
+    let state_path = dir.path().join(".alembic").join("state.json");
+    let _env = EnvVarGuard::acquire_async(&[
+        ("ALEMBIC_STATE_BACKEND", Some("local")),
+        ("ALEMBIC_STATE_PATH", Some(state_path.to_str().unwrap())),
+    ])
+    .await;
+    // port 1 refuses the connection; nothing was applied, so nothing resumes
+    let (plan_path, config_path) = generic_apply_fixture(dir.path(), "http://127.0.0.1:1");
+
+    std::env::set_current_dir(dir.path()).unwrap();
+    let cli = Cli {
+        command: Command::Apply {
+            plan: plan_path,
+            output: None,
+            backend: None,
+            backend_config: Some(config_path),
+            allow_delete: false,
+            interactive: false,
+        },
+    };
+    let err = run(cli, AppConfig::load().unwrap()).await.unwrap_err();
+    assert_eq!(exit::code_for(&err), exit::UNAVAILABLE, "{err:#}");
+}
+
 // a site plus a device referencing it, against a generic rest backend. the plan
 // shape resume exists for: the run dies between the two, and the device can only
 // be written once the site's backend id is known.
@@ -1264,7 +1292,8 @@ async fn run_apply_resumes_with_the_ids_the_interrupted_run_created() {
         AppConfig::load().unwrap(),
     )
     .await;
-    result.expect_err("the device create fails");
+    let err = result.expect_err("the device create fails");
+    assert_eq!(exit::code_for(&err), exit::RESUMABLE, "{err:#}");
     assert!(!state_path.exists(), "a failed apply saves no state");
 
     // run 2 is a cold start against a fresh backend: the site must not be created

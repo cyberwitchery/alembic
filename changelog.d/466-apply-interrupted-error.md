@@ -1,0 +1,1 @@
+- apply: an apply that stops with operations already applied says so in its error, with the operation's failure underneath, instead of in a warning before it; `alembic-adapter-sdk`: `RetryApplyError::Interrupted` carries it, and `RetryApplyDriver::Error` must convert into `Box<dyn Error + Send + Sync>` (#466)

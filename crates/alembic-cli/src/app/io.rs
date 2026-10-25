@@ -1,5 +1,5 @@
 use alembic_adapter_sdk::ApplyReport;
-use alembic_engine::{explain_parse_error, DocumentKind, DriftReport, Plan};
+use alembic_engine::{explain_parse_error, DocumentKind, DriftReport, InputError, Plan};
 use anyhow::{anyhow, Context, Result};
 use serde::Serialize;
 use std::fs;
@@ -194,11 +194,11 @@ pub(super) fn read_plan(path: &Path) -> Result<Plan> {
         std::io::stdin()
             .lock()
             .read_to_string(&mut raw)
-            .context("read plan: stdin")?;
+            .context(InputError::Usage("read plan: stdin".to_string()))?;
         (raw, OutputKind::Json, "stdin".to_string())
     } else {
-        let raw =
-            fs::read_to_string(path).with_context(|| format!("read plan: {}", path.display()))?;
+        let raw = fs::read_to_string(path)
+            .with_context(|| InputError::Usage(format!("read plan: {}", path.display())))?;
         (raw, output_kind(path), path.display().to_string())
     };
     let parsed: Result<Plan> = match kind {
@@ -207,7 +207,7 @@ pub(super) fn read_plan(path: &Path) -> Result<Plan> {
     };
     parsed
         .map_err(|err| explain_parse_error(DocumentKind::Plan, &raw, err))
-        .with_context(|| format!("parse plan: {source}"))
+        .with_context(|| InputError::Invalid(format!("parse plan: {source}")))
 }
 
 #[cfg(test)]

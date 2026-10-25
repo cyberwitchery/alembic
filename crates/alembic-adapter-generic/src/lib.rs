@@ -3,7 +3,7 @@
 use alembic_adapter_sdk::apply_retry::{
     describe_missing_refs, is_missing_ref_error, RetryApplyDriver,
 };
-use alembic_adapter_sdk::{AppliedOp, ApplyReport, BackendId, Op, StateMappings};
+use alembic_adapter_sdk::{http_unavailable, AppliedOp, ApplyReport, BackendId, Op, StateMappings};
 use alembic_core::{key_string, JsonMap, Key, Schema, TypeName, TypeSchema, Uid};
 use alembic_engine::{
     apply_non_delete_journaled, build_key_from_schema, bullet_list, normalize_attrs_refs,
@@ -70,6 +70,16 @@ pub enum DeleteStrategy {
     None,
     /// delete via DELETE method to path + id.
     Standard,
+}
+
+/// whether `err` says the service could not be reached or refused the credentials.
+pub fn is_unavailable(err: &(dyn std::error::Error + 'static)) -> bool {
+    err.downcast_ref::<reqwest::Error>().is_some_and(|err| {
+        http_unavailable(
+            err.is_connect() || err.is_timeout(),
+            err.status().map(|status| status.as_u16()),
+        )
+    })
 }
 
 pub struct GenericAdapter {

@@ -12,7 +12,7 @@ alembic validate -f examples/inventory.yaml -o validation.json
 ```
 
 - loads and validates an inventory file (plus includes)
-- exits non-zero on validation errors
+- exits `65` on validation errors (see [exit codes](#exit-codes))
 - `-o`/`--output` writes the same errors as json, the machine-readable half of
   what the run prints. it is optional: the human report goes to stderr either
   way, unchanged, and the exit code is unchanged
@@ -151,7 +151,7 @@ NETBOX_URL=https://netbox.example.com NETBOX_TOKEN=$NETBOX_TOKEN \
 - without `--provision`, plan asks the backend for a read-only schema preview (what `apply`'s `ensure_schema` would create/delete, writing nothing) and prints it to stderr as `schema preview: ...`; the machine-readable copy rides in the plan's `schema_preview`, and under `--report` (which writes no plan) in the drift report's. backends that cannot preview report `schema preview: unavailable for this backend`, and a preview that fails is reported as `schema preview failed: ...` while the plan goes on. a preview that finds a schema the backend will reject (a netbox custom object field name outside `[A-Za-z0-9_]`) fails the plan instead, since apply would refuse it
 - `--provision` runs adapter provisioning (`ensure_schema`) before observing backend state; provisioning that would delete custom object types/fields the inventory no longer declares is blocked unless `--allow-delete` is also given (such deletes cascade to their objects on the backend)
 - `--dry-run` prints the raw plan json instead of writing it; it writes no file, so `-o`/`--output` is rejected with it at parse time rather than accepted and ignored
-- `--report` prints a read-only drift report and exits without writing a plan file or saving state; `-o`/`--output` writes that report as json (optional: without it the report is the printed summary only). it exits `2` when the report finds drift and `0` when it finds none; an error exits `1`
+- `--report` prints a read-only drift report and exits without writing a plan file or saving state; `-o`/`--output` writes that report as json (optional: without it the report is the printed summary only). it exits `2` when the report finds drift and `0` when it finds none; an error exits with one of the other [exit codes](#exit-codes)
 - saving nothing, `--report` and `--dry-run` take the state lock shared (see [state](state.md)), so two of them can run at once in the same directory; adding `--provision` makes the run exclusive again, since it writes backend schema
 - `--report` and `--dry-run` are mutually exclusive (both exit without applying); passing both is rejected at parse time
 - `--provision` cannot be combined with `--dry-run` (rejected at parse time): a `--dry-run` preview promises not to write, but `--provision` still writes backend schema (`ensure_schema`). combining `--provision` with `--report` stays allowed as the documented "provision schema, then preview drift" workflow (see below)
@@ -346,10 +346,14 @@ database instead, in `alembic_journal` under the state row key (see [state](stat
 and `ALEMBIC_JOURNAL_DIR` is not used. external adapters keep their own journal, if
 any, whatever the state backend.
 
-when a run stops with operations already applied, it says so before the error:
+when a run stops with operations already applied, its error says so, with the
+operation's own failure underneath, and it exits `75` (see [exit codes](#exit-codes)):
 
 ```
-WARN apply stopped after 3 of 12 create/update operations; the journal at ./.alembic/netbox_journal_16459615207231411390.yaml records what was applied, and re-running the same plan resumes from there
+Error: apply stopped after 1 of 2 create/update operations; the journal at ./.alembic/generic-fbe32dd1_journal_8078318270027749083.yaml records what was applied, and re-running the same plan resumes from there
+
+Caused by:
+    HTTP status server error (500 Internal Server Error) for url (http://127.0.0.1:18765/devices/)
 ```
 
 resuming needs no flag and no file argument: run the same `alembic apply` again and it
@@ -494,7 +498,7 @@ of parsing the version string:
   "backends": ["netbox", "nautobot", "infrahub", "generic", "peeringdb", "django", "external"],
   "external_protocol": 1,
   "state_backends": ["file", "postgres"],
-  "features": ["apply-stdin", "map-objects", "map-starlark", "plan-effects"]
+  "features": ["apply-stdin", "exit-codes", "map-objects", "map-starlark", "plan-effects"]
 }
 ```
 
@@ -508,10 +512,32 @@ of parsing the version string:
 - `features`: a name is added when a release adds something worth checking for,
   and stays while the capability does:
   - `apply-stdin`: `apply -p -` reads a json plan from stdin
+  - `exit-codes`: failures exit with the codes under [exit codes](#exit-codes)
   - `map-objects`: a map spec's `objects:` block, including `{ v5: ... }` refs
   - `map-starlark`: a map spec's `transforms:` block and `map transform`
   - `plan-effects`: plans record `effects`, and apply refuses a plan made for
     the other kind of backend
+
+## exit codes
+
+every command exits with one of these, so a caller can tell failures apart
+without matching message text, which changes between releases. the numbers
+follow sysexits(3).
+
+| code | meaning | what a caller does |
+| --- | --- | --- |
+| `0` | success | |
+| `1` | any failure not listed below | read the message |
+| `2` | `plan --report` found drift | review the drift |
+| `64` | usage: a bad flag, a missing argument, or an input file (`-f`, `-p`, `--spec`, `--backend-config`) that cannot be read | fix the invocation |
+| `65` | invalid input: a file that does not parse as its kind of document, or an inventory that does not validate | fix the input; re-running will not help |
+| `69` | a backend that could not be reached, refused the credentials (`401`, `403`), throttled (`429`) or answered as unavailable (`502`, `503`, `504`) | retry, or check the configuration |
+| `75` | `apply` stopped partway, with its journal kept | re-run the same apply to resume, not a re-plan |
+
+`69` comes from the built-in adapters that talk http (netbox, nautobot,
+infrahub, generic). peeringdb and external adapters report their failures as
+text, which exits `1`. `75` wins over the failure that stopped the apply: a
+backend that went away mid-apply still exits `75`, since resuming is the answer.
 
 ## environment variables
 

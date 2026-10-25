@@ -1,6 +1,8 @@
 //! inventory file loading with include/import support.
 
-use crate::{explain_parse_error, report_to_result_with_sources, validate, DocumentKind};
+use crate::{
+    explain_parse_error, report_to_result_with_sources, validate, DocumentKind, InputError,
+};
 use alembic_core::{Inventory, Schema, Scope, SourceLocation, Uid};
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
@@ -40,7 +42,8 @@ pub fn load_inventory_unvalidated(path: impl AsRef<Path>) -> Result<Inventory> {
     let mut scope: Option<Scope> = None;
     let path = path.as_ref();
     load_recursive(path, &mut visited, &mut objects, &mut schema, &mut scope)?;
-    let schema = schema.ok_or_else(|| anyhow!("inventory is missing a schema block"))?;
+    let schema = schema
+        .ok_or_else(|| InputError::Invalid("inventory is missing a schema block".to_string()))?;
     Ok(Inventory {
         schema,
         scope,
@@ -56,14 +59,14 @@ fn load_recursive(
     schema: &mut Option<Schema>,
     scope: &mut Option<Scope>,
 ) -> Result<()> {
-    let canonical =
-        fs::canonicalize(path).with_context(|| format!("load inventory: {}", path.display()))?;
+    let canonical = fs::canonicalize(path)
+        .with_context(|| InputError::Usage(format!("load inventory: {}", path.display())))?;
     if !visited.insert(canonical.clone()) {
         return Ok(());
     }
 
     let content = fs::read_to_string(&canonical)
-        .with_context(|| format!("read inventory: {}", canonical.display()))?;
+        .with_context(|| InputError::Usage(format!("read inventory: {}", canonical.display())))?;
     let json = canonical.extension().and_then(|s| s.to_str()) == Some("json");
     let parsed: Result<InventoryFile> = if json {
         serde_json::from_str(&content).map_err(Into::into)
@@ -74,7 +77,7 @@ fn load_recursive(
         .map_err(|err| explain_parse_error(DocumentKind::Inventory, &content, err))
         .with_context(|| {
             let format = if json { "json" } else { "yaml" };
-            format!("parse {format}: {}", canonical.display())
+            InputError::Invalid(format!("parse {format}: {}", canonical.display()))
         })?;
 
     let base = canonical
@@ -147,7 +150,7 @@ fn merge_scope(current: &mut Option<Scope>, incoming: Option<Scope>) -> Result<(
         Some(existing) => {
             for (name, entry) in incoming.0 {
                 if existing.0.contains_key(&name) {
-                    return Err(anyhow!("duplicate scope type {name}"));
+                    return Err(InputError::Invalid(format!("duplicate scope type {name}")).into());
                 }
                 existing.0.insert(name, entry);
             }
@@ -167,7 +170,7 @@ fn merge_schema(current: &mut Option<Schema>, incoming: Option<Schema>) -> Resul
         Some(existing) => {
             for (name, schema) in incoming.types {
                 if existing.types.contains_key(&name) {
-                    return Err(anyhow!("duplicate schema type {name}"));
+                    return Err(InputError::Invalid(format!("duplicate schema type {name}")).into());
                 }
                 existing.types.insert(name, schema);
             }

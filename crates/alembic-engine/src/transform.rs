@@ -307,10 +307,12 @@ fn json_scalar(value: &JsonValue) -> Option<String> {
 pub fn load_map_spec(path: impl AsRef<Path>) -> Result<MapSpec> {
     let path = path.as_ref();
     let raw = std::fs::read_to_string(path)
-        .with_context(|| format!("read map spec: {}", path.display()))?;
+        .with_context(|| crate::InputError::Usage(format!("read map spec: {}", path.display())))?;
     let mut spec: MapSpec = crate::yaml::from_str(&raw)
         .map_err(|err| crate::explain_parse_error(crate::DocumentKind::MapSpec, &raw, err.into()))
-        .with_context(|| format!("parse map spec: {}", path.display()))?;
+        .with_context(|| {
+            crate::InputError::Invalid(format!("parse map spec: {}", path.display()))
+        })?;
     spec.base_dir = path.parent().map(Path::to_path_buf);
     Ok(spec)
 }

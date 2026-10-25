@@ -9,7 +9,7 @@ pub mod state_mappings;
 pub mod types;
 pub mod yaml;
 
-pub use errors::AdapterApplyError;
+pub use errors::{http_unavailable, AdapterApplyError};
 pub use external::{ExternalAdapter, ExternalCapabilities, ExternalObject, ExternalRole};
 pub use state::StateData;
 pub use state_mappings::StateMappings;
