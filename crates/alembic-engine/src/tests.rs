@@ -2058,6 +2058,57 @@ fn apply_plan_updates_state() {
 }
 
 #[test]
+fn apply_plan_refuses_a_plan_made_for_the_other_kind_of_backend() {
+    // an emit plan is every declared object as a create, made without observing;
+    // a drive plan diffs against an observation an emitter cannot make.
+    let adapter = || TestAdapter {
+        observed: ObservedState::default(),
+        report: ApplyReport::default(),
+    };
+    for (effects, backend, accepted) in [
+        (None, Backend::Adapter(Box::new(adapter())), true),
+        (None, Backend::Emitter(Box::new(adapter())), true),
+        (
+            Some(Effects::Drive),
+            Backend::Adapter(Box::new(adapter())),
+            true,
+        ),
+        (
+            Some(Effects::Emit),
+            Backend::Emitter(Box::new(adapter())),
+            true,
+        ),
+        (
+            Some(Effects::Emit),
+            Backend::Adapter(Box::new(adapter())),
+            false,
+        ),
+        (
+            Some(Effects::Drive),
+            Backend::Emitter(Box::new(adapter())),
+            false,
+        ),
+    ] {
+        let plan = Plan {
+            effects,
+            ..empty_plan()
+        };
+        let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
+        let result = futures::executor::block_on(apply_plan(&backend, &plan, &mut state, true));
+        match (accepted, result) {
+            (true, result) => {
+                result.unwrap();
+            }
+            (false, Ok(_)) => panic!("{effects:?} plan applied to the other kind of backend"),
+            (false, Err(err)) => {
+                let msg = format!("{err:#}");
+                assert!(msg.contains("re-run `alembic plan`"), "{msg}");
+            }
+        }
+    }
+}
+
+#[test]
 fn apply_plan_clears_state_for_deleted_op() {
     // a delete surfaces as an AppliedOp with no backend id; apply must drop the
     // object's state mapping so the next plan no longer tracks it.

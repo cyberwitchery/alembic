@@ -3,7 +3,7 @@ use super::*;
 use alembic_adapter_django::emit::{run_emit, DjangoConfig};
 use alembic_adapter_sdk::BackendId;
 use alembic_core::{Inventory, Schema};
-use alembic_engine::{StateLock, StateStore};
+use alembic_engine::{Effects, StateLock, StateStore};
 use std::collections::BTreeMap;
 use tempfile::tempdir;
 

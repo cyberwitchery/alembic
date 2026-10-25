@@ -266,6 +266,7 @@ alembic plan -f examples/inventory.yaml --dry-run \
 - applies a plan file; `-p -` reads a json plan from stdin, matching the json emitted by `plan --dry-run`
 - says on stderr which state it loaded, in `plan`'s `state:` line
 - an applied update re-asserts every declared field of its object, not only the changes the plan listed: a backend edit to a declared field between plan and apply is converged back, and approving an update under `--interactive` approves that full write. undeclared fields stay untouched (`docs/engine.md`, diff rules)
+- refuses a plan whose `effects` (`docs/plan.md`) does not match the backend: an `emit` plan was made without observing, so applying it to a read+write backend would create what already exists
 - deletes are blocked unless `--allow-delete` is provided; this covers both object deletes and destructive schema provisioning (deleting custom object types/fields the inventory no longer declares, which cascades to their objects)
 - `--interactive` prompts per operation and applies only approved ops
   through the same engine path used by non-interactive apply. one answer is read
