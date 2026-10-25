@@ -2,6 +2,7 @@
 
 mod adapter_ops;
 mod apply_retry;
+mod document;
 mod drift;
 mod endpoint;
 mod extract;
@@ -39,6 +40,7 @@ pub use adapter_ops::{
 };
 pub use alembic_adapter_sdk::journal::Journal;
 pub use apply_retry::apply_non_delete_journaled;
+pub use document::{explain_parse_error, DocumentKind};
 pub use drift::{ChangedEntry, DriftEntry, DriftReport};
 pub use endpoint::normalize_endpoint;
 pub use extract::{import_inventory, ImportReport};

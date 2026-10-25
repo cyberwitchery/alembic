@@ -1,8 +1,6 @@
 use alembic_adapter_sdk::ApplyReport;
-use alembic_core::Inventory;
-use alembic_engine::{DriftReport, Plan};
+use alembic_engine::{explain_parse_error, DocumentKind, DriftReport, Plan};
 use anyhow::{anyhow, Context, Result};
-use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::fs;
 use std::io::Read;
@@ -203,28 +201,13 @@ pub(super) fn read_plan(path: &Path) -> Result<Plan> {
             fs::read_to_string(path).with_context(|| format!("read plan: {}", path.display()))?;
         (raw, output_kind(path), path.display().to_string())
     };
-    parse_as::<Plan>(&kind, &raw)
-        .map_err(|err| maybe_suggest_inventory(&kind, &raw, err))
+    let parsed: Result<Plan> = match kind {
+        OutputKind::Yaml => alembic_engine::yaml::from_str(&raw).map_err(Into::into),
+        OutputKind::Json => serde_json::from_str(&raw).map_err(Into::into),
+    };
+    parsed
+        .map_err(|err| explain_parse_error(DocumentKind::Plan, &raw, err))
         .with_context(|| format!("parse plan: {source}"))
-}
-
-fn parse_as<T: DeserializeOwned>(kind: &OutputKind, raw: &str) -> Result<T> {
-    Ok(match kind {
-        OutputKind::Yaml => alembic_engine::yaml::from_str(raw)?,
-        OutputKind::Json => serde_json::from_str(raw)?,
-    })
-}
-
-/// rewrap a plan parse error when the document is an inventory/IR instead.
-fn maybe_suggest_inventory(kind: &OutputKind, raw: &str, err: anyhow::Error) -> anyhow::Error {
-    match parse_as::<Inventory>(kind, raw) {
-        Ok(_) => anyhow!(
-            "expected a plan but the document looks like an inventory/IR (a top-level `objects` \
-             array); apply reads a plan, use `plan` to produce one from an inventory"
-        )
-        .context(format!("{}", err)),
-        Err(_) => err,
-    }
 }
 
 #[cfg(test)]

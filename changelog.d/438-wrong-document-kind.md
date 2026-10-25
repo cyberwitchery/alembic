@@ -1,0 +1,1 @@
+- `validate`, `plan`, `import`, `map` and `apply` name the kind of document they got when it is not the one they read (a plan passed as an inventory, a drift report as a map spec), and where that kind belongs, above the parse error (#438)

@@ -1,6 +1,6 @@
 //! inventory file loading with include/import support.
 
-use crate::{report_to_result_with_sources, validate};
+use crate::{explain_parse_error, report_to_result_with_sources, validate, DocumentKind};
 use alembic_core::{Inventory, Schema, Scope, SourceLocation, Uid};
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
@@ -64,14 +64,18 @@ fn load_recursive(
 
     let content = fs::read_to_string(&canonical)
         .with_context(|| format!("read inventory: {}", canonical.display()))?;
-    let inventory: InventoryFile = if canonical.extension().and_then(|s| s.to_str()) == Some("json")
-    {
-        serde_json::from_str(&content)
-            .with_context(|| format!("parse json: {}", canonical.display()))?
+    let json = canonical.extension().and_then(|s| s.to_str()) == Some("json");
+    let parsed: Result<InventoryFile> = if json {
+        serde_json::from_str(&content).map_err(Into::into)
     } else {
-        crate::yaml::from_str(&content)
-            .with_context(|| format!("parse yaml: {}", canonical.display()))?
+        crate::yaml::from_str(&content).map_err(Into::into)
     };
+    let inventory = parsed
+        .map_err(|err| explain_parse_error(DocumentKind::Inventory, &content, err))
+        .with_context(|| {
+            let format = if json { "json" } else { "yaml" };
+            format!("parse {format}: {}", canonical.display())
+        })?;
 
     let base = canonical
         .parent()
