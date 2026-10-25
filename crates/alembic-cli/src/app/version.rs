@@ -9,6 +9,7 @@ use serde::Serialize;
 /// something worth checking, and never removed while the capability stays;
 /// `docs/cli.md` lists what each one means.
 const FEATURES: &[&str] = &[
+    "apply-only",
     "apply-stdin",
     "exit-codes",
     "map-objects",

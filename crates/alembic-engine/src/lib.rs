@@ -50,7 +50,7 @@ pub use input_error::InputError;
 pub use loader::{load_inventory, load_inventory_unvalidated};
 pub use pipeline::{guard_drift_report, guard_schema_deletes, guard_schema_provisioning};
 pub use plan_view::render_plan;
-pub use planner::{plan, sort_ops_for_apply};
+pub use planner::{plan, select_ops, sort_ops_for_apply};
 pub use pretty_printing::bullet_list;
 pub use state::{BackendIdentity, PostgresTlsMode, StateFile, StateLock, StateStore};
 pub use transform::{compile_map, eval_map_transform, load_map_spec, MapSpec, TransformsSpec};

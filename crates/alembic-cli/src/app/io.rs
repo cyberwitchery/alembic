@@ -1,4 +1,5 @@
-use alembic_adapter_sdk::ApplyReport;
+use alembic_adapter_sdk::{ApplyReport, Op};
+use alembic_core::{TypeName, Uid};
 use alembic_engine::{explain_parse_error, DocumentKind, DriftReport, InputError, Plan};
 use anyhow::{anyhow, Context, Result};
 use serde::Serialize;
@@ -169,8 +170,43 @@ pub(super) fn write_plan(path: &Path, plan: &Plan) -> Result<()> {
     write_output(path, "plan", plan)
 }
 
-pub(super) fn write_apply_report(path: &Path, report: &ApplyReport) -> Result<()> {
-    write_output(path, "apply report", report)
+/// an op `apply --only` left out, as the apply report lists it.
+#[derive(Debug, Serialize)]
+pub(super) struct SkippedOp {
+    uid: Uid,
+    type_name: TypeName,
+    op: &'static str,
+}
+
+impl From<&Op> for SkippedOp {
+    fn from(op: &Op) -> Self {
+        SkippedOp {
+            uid: op.uid(),
+            type_name: op.type_name().clone(),
+            op: match op {
+                Op::Create { .. } => "create",
+                Op::Update { .. } => "update",
+                Op::Delete { .. } => "delete",
+            },
+        }
+    }
+}
+
+/// the written apply report: the adapter's, plus what `--only` left out.
+#[derive(Serialize)]
+struct ApplyReportFile<'a> {
+    #[serde(flatten)]
+    report: &'a ApplyReport,
+    #[serde(skip_serializing_if = "<[SkippedOp]>::is_empty")]
+    skipped: &'a [SkippedOp],
+}
+
+pub(super) fn write_apply_report(
+    path: &Path,
+    report: &ApplyReport,
+    skipped: &[SkippedOp],
+) -> Result<()> {
+    write_output(path, "apply report", &ApplyReportFile { report, skipped })
 }
 
 pub(super) fn write_drift_report(path: &Path, report: &DriftReport) -> Result<()> {

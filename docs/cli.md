@@ -268,6 +268,16 @@ alembic plan -f examples/inventory.yaml --dry-run \
 - an applied update re-asserts every declared field of its object, not only the changes the plan listed: a backend edit to a declared field between plan and apply is converged back, and approving an update under `--interactive` approves that full write. undeclared fields stay untouched (`docs/engine.md`, diff rules)
 - refuses a plan whose `effects` (`docs/plan.md`) does not match the backend: an `emit` plan was made without observing, so applying it to a read+write backend would create what already exists
 - deletes are blocked unless `--allow-delete` is provided; this covers both object deletes and destructive schema provisioning (deleting custom object types/fields the inventory no longer declares, which cascades to their objects)
+- `--only <uid>` (repeated or comma-separated) and `--only-file <path>` (uids
+  separated by whitespace) apply the operations of the named uids and nothing
+  else, for a caller that collected per-op decisions elsewhere. every operation
+  of a named uid comes along, so a retype or a deferred-ref create and its update
+  stay together. a uid the plan has no operation for is refused, and so is a
+  selection that leaves out an operation a selected one depends on (a create or
+  update referencing an object the plan creates, or the delete of a referrer that
+  has to go before the object it references); the error names both uids,
+  nothing is written, and the run exits `64`. the run prints `skipped N operations not named by --only`,
+  and a follow-up plan shows them again. `--only` conflicts with `--interactive`
 - `--interactive` prompts per operation and applies only approved ops
   through the same engine path used by non-interactive apply. one answer is read
   from stdin per operation, so scripted answers work (`printf 'y\nn\ny\n' |
@@ -327,7 +337,9 @@ resume, the ops the interrupted run applied appear under `resumed` instead, in
 the same shape, each with the backend id its write returned. that list is
 present only on a resumed run, and is empty for a journal written before ids
 were recorded. `--interactive` reports the ops you approved, not the ops in the
-plan.
+plan. under `--only`, a `skipped` list names each operation left out, as
+`{ "uid", "type_name", "op" }` with `op` one of `create`, `update`, `delete`; it is
+absent otherwise.
 
 state (`docs/state.md`) is cumulative and keyed by uid, and the journal is
 deleted once apply succeeds, so this is the only per-run artifact: the file a ci
@@ -498,7 +510,7 @@ of parsing the version string:
   "backends": ["netbox", "nautobot", "infrahub", "generic", "peeringdb", "django", "external"],
   "external_protocol": 1,
   "state_backends": ["file", "postgres"],
-  "features": ["apply-stdin", "exit-codes", "map-objects", "map-starlark", "plan-effects"]
+  "features": ["apply-only", "apply-stdin", "exit-codes", "map-objects", "map-starlark", "plan-effects"]
 }
 ```
 
@@ -511,6 +523,7 @@ of parsing the version string:
   `local` alias for `file`
 - `features`: a name is added when a release adds something worth checking for,
   and stays while the capability does:
+  - `apply-only`: `apply --only` and `--only-file` apply a subset of a plan
   - `apply-stdin`: `apply -p -` reads a json plan from stdin
   - `exit-codes`: failures exit with the codes under [exit codes](#exit-codes)
   - `map-objects`: a map spec's `objects:` block, including `{ v5: ... }` refs
