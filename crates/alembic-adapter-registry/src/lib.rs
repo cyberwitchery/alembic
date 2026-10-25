@@ -39,6 +39,11 @@ const SUPPORTED_BACKENDS: &[&str] = &[
     "external",
 ];
 
+/// the `--backend` names this build accepts, `external` included.
+pub fn supported_backends() -> &'static [&'static str] {
+    SUPPORTED_BACKENDS
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(tag = "backend", rename_all = "kebab-case")]
 pub enum AdapterConfig {

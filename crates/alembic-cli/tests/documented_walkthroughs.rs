@@ -295,6 +295,34 @@ fn map_transform_prints_the_typed_result_as_json() {
     assert_eq!(stdout, "\"10.0.0.1\"\n");
 }
 
+/// docs/cli.md, version: `--json` is the documented object, the plain form
+/// what `--version` prints.
+#[test]
+fn version_prints_the_documented_json() {
+    let mut cmd = Command::new(bin_path());
+    cmd.args(["version", "--json"]);
+    let stdout = run_command_capture(cmd, "version --json");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("version json");
+    for key in [
+        "version",
+        "backends",
+        "external_protocol",
+        "state_backends",
+        "features",
+    ] {
+        assert!(value.get(key).is_some(), "missing {key}: {stdout}");
+    }
+
+    let mut plain = Command::new(bin_path());
+    plain.arg("version");
+    let mut flag = Command::new(bin_path());
+    flag.arg("--version");
+    assert_eq!(
+        run_command_capture(plain, "version"),
+        run_command_capture(flag, "--version")
+    );
+}
+
 /// docs/cli.md, completion: a script for each documented shell, on stdout.
 #[test]
 fn completion_prints_a_script_naming_the_binary_and_its_subcommands() {

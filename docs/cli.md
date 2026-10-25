@@ -481,6 +481,37 @@ fpath+=~/.zfunc
 autoload -Uz compinit && compinit
 ```
 
+## version
+
+`alembic version` prints what `alembic --version` prints. with `--json` it
+prints what the binary can do, so a caller can check for a capability instead
+of parsing the version string:
+
+```json
+{
+  "version": "0.12.0",
+  "backends": ["netbox", "nautobot", "infrahub", "generic", "peeringdb", "django", "external"],
+  "external_protocol": 1,
+  "state_backends": ["file", "postgres"],
+  "features": ["apply-stdin", "map-objects", "map-starlark", "plan-effects"]
+}
+```
+
+- `backends`: the `--backend` names this build accepts. plugins from the
+  plugins directory are configuration, not part of the binary, so they are not
+  listed
+- `external_protocol`: the version of the external adapter protocol it speaks
+  (`docs/external-adapters.md`)
+- `state_backends`: the values `ALEMBIC_STATE_BACKEND` takes, besides the
+  `local` alias for `file`
+- `features`: a name is added when a release adds something worth checking for,
+  and stays while the capability does:
+  - `apply-stdin`: `apply -p -` reads a json plan from stdin
+  - `map-objects`: a map spec's `objects:` block, including `{ v5: ... }` refs
+  - `map-starlark`: a map spec's `transforms:` block and `map transform`
+  - `plan-effects`: plans record `effects`, and apply refuses a plan made for
+    the other kind of backend
+
 ## environment variables
 
 - `NETBOX_URL`
