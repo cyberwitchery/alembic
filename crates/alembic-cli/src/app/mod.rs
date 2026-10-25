@@ -4,6 +4,7 @@ pub mod config;
 mod io;
 mod skill;
 mod state;
+mod version;
 
 use alembic_adapter_registry::{create_backend, Plugin};
 use alembic_engine::{
@@ -191,6 +192,12 @@ enum Command {
         #[arg(value_enum)]
         shell: Shell,
     },
+    /// print the version, or with --json what this binary can do.
+    Version {
+        /// print the version, backends, protocol and features as json.
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
 }
 
 /// skill subcommands.
@@ -309,7 +316,7 @@ fn output_path(command: &Command) -> Option<&Path> {
         // `install` writes into a directory it creates rather than to a named
         // output file, and it reports the path it wrote; the other two print
         Command::Skill { .. } => None,
-        Command::Completion { .. } => None,
+        Command::Completion { .. } | Command::Version { .. } => None,
     }
 }
 
@@ -626,6 +633,7 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<ExitCode> {
             let name = command.get_name().to_string();
             generate(shell, &mut command, name, &mut std::io::stdout());
         }
+        Command::Version { json } => version::print(json)?,
     }
 
     Ok(ExitCode::SUCCESS)

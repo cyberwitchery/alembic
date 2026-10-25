@@ -1,0 +1,1 @@
+- cli: `version` prints the version, and with `--json` the built-in backends, the external protocol version, the state backends and a list of features, so a caller can check for a capability instead of a version range (#470)
