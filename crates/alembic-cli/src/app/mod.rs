@@ -10,8 +10,8 @@ mod version;
 use alembic_adapter_registry::{create_backend, Plugin};
 use alembic_engine::{
     apply_plan, build_plan, guard_drift_report, guard_schema_provisioning, load_inventory,
-    load_inventory_unvalidated, plan_write_only, render_plan, Backend, DriftReport, InputError,
-    Plan, StateLock, StateStore,
+    load_inventory_unvalidated, plan_write_only, render_plan, select_ops, Backend, DriftReport,
+    InputError, Plan, StateLock, StateStore,
 };
 use anyhow::{anyhow, Context, Result};
 use clap::{CommandFactory, Parser, Subcommand};
@@ -22,11 +22,12 @@ use std::process::ExitCode;
 
 use self::io::{
     announce_written, read_plan, write_apply_report, write_drift_report, write_inventory,
-    write_plan, write_validation_report,
+    write_plan, write_validation_report, SkippedOp,
 };
 use self::state::{load_state, load_state_with_context, print_state_context};
 use crate::app::config::AppConfig;
-use alembic_core::TypeName;
+use alembic_core::{TypeName, Uid};
+use std::collections::BTreeSet;
 
 #[cfg(test)]
 use self::state::{journal_dir, resolve_state_backend_config, state_path, StateBackendConfig};
@@ -145,6 +146,13 @@ enum Command {
         /// cannot be combined with `--plan -`, since stdin carries the plan.
         #[arg(short = 'i', long, default_value_t = false)]
         interactive: bool,
+        /// apply only the operations of these uids (repeat or comma-separate);
+        /// refused when a selected op depends on one left out.
+        #[arg(long, value_delimiter = ',', conflicts_with = "interactive")]
+        only: Vec<Uid>,
+        /// file of uids to apply, whitespace-separated, as for --only.
+        #[arg(long, conflicts_with = "interactive")]
+        only_file: Option<PathBuf>,
     },
     /// transform an ir inventory into another ir inventory (ir -> ir).
     // `transform` carries its own --spec and prints to stdout, so the inventory
@@ -475,6 +483,8 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<ExitCode> {
             backend_config,
             allow_delete,
             interactive,
+            only,
+            only_file,
         } => {
             if interactive && plan == Path::new("-") {
                 return Err(InputError::Usage(
@@ -483,6 +493,7 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<ExitCode> {
                 )
                 .into());
             }
+            let only = read_only_uids(only, only_file.as_deref())?;
             let plugins = search_for_plugins(&config)?;
             let (backend, backend_identity) =
                 create_backend(&plugins, backend.as_deref(), backend_config)?;
@@ -535,14 +546,30 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<ExitCode> {
             } else {
                 plan
             };
+            let (plan, skipped) = match &only {
+                Some(only) => {
+                    let (selected, skipped) = select_ops(&plan.ops, &plan.schema, only)?;
+                    let plan = Plan {
+                        ops: selected,
+                        summary: None,
+                        schema_preview: None,
+                        ..plan
+                    };
+                    (plan, skipped.iter().map(SkippedOp::from).collect())
+                }
+                None => (plan, Vec::new()),
+            };
 
             let report = apply_plan(&backend, &plan, &mut state, allow_delete).await?;
             state.save_async().await?;
             print_apply_report(&report);
+            if !skipped.is_empty() {
+                println!("skipped {} operations not named by --only", skipped.len());
+            }
             // machine-readable record of what this run wrote, on the success
             // path only: state.json is cumulative and the journal is gone by now.
             if let Some(output) = output {
-                write_apply_report(&output, &report)?;
+                write_apply_report(&output, &report, &skipped)?;
                 announce_written(&output, "apply report")?;
             }
         }
@@ -693,6 +720,28 @@ fn print_apply_report(report: &ApplyReport) {
     } else {
         println!("applied {} operations", report.applied.len());
     }
+}
+
+/// the uids `--only` and `--only-file` name together, or `None` when neither was
+/// given. an empty selection is refused rather than read as "apply nothing".
+fn read_only_uids(only: Vec<Uid>, only_file: Option<&Path>) -> Result<Option<BTreeSet<Uid>>> {
+    let mut uids: BTreeSet<Uid> = only.into_iter().collect();
+    if let Some(path) = only_file {
+        let raw = fs::read_to_string(path)
+            .with_context(|| InputError::Usage(format!("read --only-file: {}", path.display())))?;
+        for word in raw.split_whitespace() {
+            let uid = Uid::parse_str(word).with_context(|| {
+                InputError::Usage(format!("--only-file {}: not a uid: {word}", path.display()))
+            })?;
+            uids.insert(uid);
+        }
+        if uids.is_empty() {
+            return Err(
+                InputError::Usage(format!("--only-file {} names no uids", path.display())).into(),
+            );
+        }
+    }
+    Ok((!uids.is_empty()).then_some(uids))
 }
 
 fn search_for_plugins(config: &AppConfig) -> Result<Vec<Plugin>> {

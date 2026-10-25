@@ -1,5 +1,6 @@
 //! diff and plan generation.
 
+use crate::pretty_printing::bullet_list;
 use crate::state::StateStore;
 use crate::types::{Adoption, BootstrapReport, MatchSummary, ObservedState, Plan, PlanSummary};
 use alembic_adapter_sdk::{FieldChange, Op};
@@ -758,6 +759,83 @@ pub fn sort_ops_for_apply(ops: &[Op], schema: &Schema) -> Vec<Op> {
     let mut result = ordered_by_refs(&non_deletes, schema, false);
     result.extend(ordered_by_refs(&deletes, schema, true));
     result
+}
+
+/// split `ops` into those whose uid is in `only` and those left out, for applying
+/// part of a plan. every op of a selected uid comes along, so a retype or a
+/// deferred-ref create and its update stay together. refuses, naming both uids,
+/// a uid the ops do not hold and a selection that would leave a selected op
+/// without one it depends on: a create or update referencing a planned create
+/// left out, or a delete of an object whose referrer's delete is left out.
+pub fn select_ops(ops: &[Op], schema: &Schema, only: &BTreeSet<Uid>) -> Result<(Vec<Op>, Vec<Op>)> {
+    let planned: BTreeSet<Uid> = ops.iter().map(Op::uid).collect();
+    let unknown: Vec<&Uid> = only.difference(&planned).collect();
+    if !unknown.is_empty() {
+        return Err(crate::InputError::Usage(format!(
+            "--only names uids the plan has no operation for:\n{}",
+            bullet_list(&unknown)
+        ))
+        .into());
+    }
+
+    let describe = |uid: &Uid| {
+        let type_name = ops
+            .iter()
+            .find(|op| op.uid() == *uid)
+            .map(|op| op.type_name().as_str())
+            .unwrap_or_default();
+        format!("{type_name} {uid}")
+    };
+    let mut created = BTreeSet::new();
+    let mut deleted = BTreeSet::new();
+    for op in ops {
+        match op {
+            Op::Create { uid, .. } => created.insert(*uid),
+            Op::Delete { uid, .. } => deleted.insert(*uid),
+            Op::Update { .. } => false,
+        };
+    }
+    let mut missing = BTreeSet::new();
+    for op in ops {
+        let selected = only.contains(&op.uid());
+        for referenced in op_referenced_uids(op, schema) {
+            let needs = match op {
+                // the referenced object has to exist before this one is written
+                Op::Create { .. } | Op::Update { .. } => {
+                    selected && created.contains(&referenced) && !only.contains(&referenced)
+                }
+                // this referrer has to be gone before the referenced one is deleted
+                Op::Delete { .. } => {
+                    !selected && deleted.contains(&referenced) && only.contains(&referenced)
+                }
+            };
+            if needs {
+                let line = match op {
+                    Op::Delete { .. } => format!(
+                        "deleting {} needs {} deleted first",
+                        describe(&referenced),
+                        describe(&op.uid())
+                    ),
+                    _ => format!(
+                        "{} references {}, which the plan creates",
+                        describe(&op.uid()),
+                        describe(&referenced)
+                    ),
+                };
+                missing.insert(line);
+            }
+        }
+    }
+    if !missing.is_empty() {
+        let missing: Vec<String> = missing.into_iter().collect();
+        return Err(crate::InputError::Usage(format!(
+            "--only leaves out operations the selected ones depend on; add them or leave out their dependents:\n{}",
+            bullet_list(&missing)
+        ))
+        .into());
+    }
+
+    Ok(ops.iter().cloned().partition(|op| only.contains(&op.uid())))
 }
 
 #[cfg(test)]
@@ -1679,6 +1757,123 @@ mod tests {
         assert_eq!(delete_pos, non_delete_count);
         // and the create chain is still toposorted within its block.
         assert!(order_index(&sorted, 2) < order_index(&sorted, 1));
+    }
+
+    // --- select_ops (issue #468) ---
+
+    /// an interface keyed by its device.
+    fn device_interface_schema() -> Schema {
+        let device = TypeSchema {
+            key: BTreeMap::from([("name".to_string(), field(FieldType::String))]),
+            fields: BTreeMap::from([("name".to_string(), field(FieldType::String))]),
+        };
+        let interface = TypeSchema {
+            key: BTreeMap::from([
+                ("device".to_string(), field(ref_to("dcim.device"))),
+                ("name".to_string(), field(FieldType::String)),
+            ]),
+            fields: BTreeMap::from([("name".to_string(), field(FieldType::String))]),
+        };
+        Schema {
+            types: BTreeMap::from([
+                ("dcim.device".to_string(), device),
+                ("dcim.interface".to_string(), interface),
+            ]),
+        }
+    }
+
+    fn device_op(uid: u128, delete: bool) -> Op {
+        let key = Key::from(BTreeMap::from([("name".to_string(), json!("leaf1"))]));
+        selection_op(uid, "dcim.device", key, delete)
+    }
+
+    fn interface_op(uid: u128, device: u128, delete: bool) -> Op {
+        let key = Key::from(BTreeMap::from([
+            (
+                "device".to_string(),
+                json!(Uid::from_u128(device).to_string()),
+            ),
+            ("name".to_string(), json!("eth0")),
+        ]));
+        selection_op(uid, "dcim.interface", key, delete)
+    }
+
+    fn selection_op(uid: u128, type_name: &str, key: Key, delete: bool) -> Op {
+        let uid = Uid::from_u128(uid);
+        let type_name = TypeName::new(type_name);
+        if delete {
+            return Op::Delete {
+                uid,
+                type_name,
+                key,
+                backend_id: None,
+            };
+        }
+        Op::Create {
+            uid,
+            type_name: type_name.clone(),
+            desired: Object::new(uid, type_name, key, JsonMap::default()).unwrap(),
+        }
+    }
+
+    fn only(uids: &[u128]) -> BTreeSet<Uid> {
+        uids.iter().copied().map(Uid::from_u128).collect()
+    }
+
+    #[test]
+    fn select_ops_splits_by_uid() {
+        let ops = vec![
+            device_op(1, false),
+            interface_op(2, 1, false),
+            device_op(3, false),
+        ];
+        let (selected, skipped) =
+            select_ops(&ops, &device_interface_schema(), &only(&[1, 2])).unwrap();
+        let uids = |ops: &[Op]| ops.iter().map(|op| op.uid().as_u128()).collect::<Vec<_>>();
+        assert_eq!(uids(&selected), vec![1, 2]);
+        assert_eq!(uids(&skipped), vec![3]);
+    }
+
+    #[test]
+    fn select_ops_refuses_a_create_whose_planned_ref_is_left_out() {
+        let ops = vec![device_op(1, false), interface_op(2, 1, false)];
+        let err = select_ops(&ops, &device_interface_schema(), &only(&[2])).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains(&format!(
+                "dcim.interface {} references dcim.device {}",
+                Uid::from_u128(2),
+                Uid::from_u128(1)
+            )),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn select_ops_refuses_a_delete_whose_referrers_delete_is_left_out() {
+        let ops = vec![device_op(1, true), interface_op(2, 1, true)];
+        let err = select_ops(&ops, &device_interface_schema(), &only(&[1])).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains(&format!(
+                "deleting dcim.device {} needs dcim.interface {} deleted first",
+                Uid::from_u128(1),
+                Uid::from_u128(2)
+            )),
+            "{msg}"
+        );
+        // the referrer alone is fine: it goes first anyway
+        select_ops(&ops, &device_interface_schema(), &only(&[2])).unwrap();
+    }
+
+    #[test]
+    fn select_ops_refuses_a_uid_the_plan_does_not_hold() {
+        let ops = vec![device_op(1, false)];
+        let err = select_ops(&ops, &device_interface_schema(), &only(&[1, 9])).unwrap_err();
+        assert!(
+            err.to_string().contains(&Uid::from_u128(9).to_string()),
+            "{err}"
+        );
     }
 
     // --- reference cycles among creates (issue #477) ---

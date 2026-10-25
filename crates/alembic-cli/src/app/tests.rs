@@ -501,6 +501,8 @@ fn output_path_is_the_one_place_every_write_site_is_named() {
             backend_config: None,
             allow_delete: false,
             interactive: false,
+            only: vec![],
+            only_file: None,
         }),
         Some(out.as_path())
     );
@@ -945,6 +947,8 @@ objects:
             backend_config: None,
             allow_delete: false,
             interactive: false,
+            only: vec![],
+            only_file: None,
         },
     ] {
         let err = run(Cli { command }, AppConfig::load().unwrap())
@@ -992,6 +996,8 @@ async fn run_apply_interactive_delete_requires_allow_delete() {
             backend_config: None,
             allow_delete: false,
             interactive: true,
+            only: vec![],
+            only_file: None,
         },
     };
     let err = run(cli, AppConfig::load().unwrap()).await.unwrap_err();
@@ -1025,6 +1031,8 @@ async fn run_apply_read_only_backend_fails_before_prompting() {
                 backend_config: None,
                 allow_delete: false,
                 interactive,
+                only: vec![],
+                only_file: None,
             },
         };
         let err = run(cli, AppConfig::load().unwrap()).await.unwrap_err();
@@ -1117,6 +1125,8 @@ async fn run_apply_writes_the_report_to_output() {
             backend_config: Some(config_path),
             allow_delete: false,
             interactive: false,
+            only: vec![],
+            only_file: None,
         },
     };
     let result = run(cli, AppConfig::load().unwrap()).await;
@@ -1165,6 +1175,8 @@ async fn run_apply_against_an_unreachable_backend_exits_unavailable() {
             backend_config: Some(config_path),
             allow_delete: false,
             interactive: false,
+            only: vec![],
+            only_file: None,
         },
     };
     let err = run(cli, AppConfig::load().unwrap()).await.unwrap_err();
@@ -1252,6 +1264,103 @@ types:
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn run_apply_only_applies_the_named_uids_and_reports_the_rest() {
+    use httpmock::Method::POST;
+
+    let _cwd = CwdGuard::acquire_async().await;
+    let dir = tempdir().unwrap();
+    let state_path = dir.path().join(".alembic").join("state.json");
+    let _env = EnvVarGuard::acquire_async(&[
+        ("ALEMBIC_STATE_BACKEND", Some("local")),
+        ("ALEMBIC_STATE_PATH", Some(state_path.to_str().unwrap())),
+    ])
+    .await;
+    let server = httpmock::MockServer::start();
+    let sites = server.mock(|when, then| {
+        when.method(POST).path("/sites/");
+        then.status(201).json_body(serde_json::json!({"id": 7}));
+    });
+    let devices = server.mock(|when, then| {
+        when.method(POST).path("/devices/");
+        then.status(201).json_body(serde_json::json!({"id": 9}));
+    });
+    let (plan_path, config_path) = generic_resume_fixture(dir.path(), &server.base_url());
+    let report_path = dir.path().join("report.json");
+    std::env::set_current_dir(dir.path()).unwrap();
+    let apply = |only: Vec<uuid::Uuid>| Cli {
+        command: Command::Apply {
+            plan: plan_path.clone(),
+            output: Some(report_path.clone()),
+            backend: None,
+            backend_config: Some(config_path.clone()),
+            allow_delete: false,
+            interactive: false,
+            only,
+            only_file: None,
+        },
+    };
+
+    // the device references the site the plan creates: refused before any write
+    let err = run(
+        apply(vec![uuid::Uuid::from_u128(2)]),
+        AppConfig::load().unwrap(),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        format!("{err:#}").contains("references dcim.site"),
+        "{err:#}"
+    );
+    assert_eq!(exit::code_for(&err), exit::USAGE);
+    assert_eq!(sites.calls() + devices.calls(), 0);
+
+    run(
+        apply(vec![uuid::Uuid::from_u128(1)]),
+        AppConfig::load().unwrap(),
+    )
+    .await
+    .unwrap();
+    assert_eq!((sites.calls(), devices.calls()), (1, 0));
+    let report: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&report_path).unwrap()).unwrap();
+    assert_eq!(
+        report["applied"][0]["uid"],
+        uuid::Uuid::from_u128(1).to_string()
+    );
+    assert_eq!(
+        report["skipped"],
+        serde_json::json!([{
+            "uid": uuid::Uuid::from_u128(2).to_string(),
+            "type_name": "dcim.device",
+            "op": "create",
+        }])
+    );
+}
+
+#[test]
+fn apply_only_conflicts_with_interactive() {
+    assert!(Cli::try_parse_from([
+        "alembic",
+        "apply",
+        "-p",
+        "plan.json",
+        "-i",
+        "--only",
+        "00000000-0000-0000-0000-000000000001",
+    ])
+    .is_err());
+    assert!(Cli::try_parse_from([
+        "alembic",
+        "apply",
+        "-p",
+        "plan.json",
+        "--only",
+        "00000000-0000-0000-0000-000000000001,00000000-0000-0000-0000-000000000002",
+    ])
+    .is_ok());
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn run_apply_resumes_with_the_ids_the_interrupted_run_created() {
     use httpmock::Method::POST;
 
@@ -1287,6 +1396,8 @@ async fn run_apply_resumes_with_the_ids_the_interrupted_run_created() {
                 backend_config: Some(config_path),
                 allow_delete: false,
                 interactive: false,
+                only: vec![],
+                only_file: None,
             },
         },
         AppConfig::load().unwrap(),
@@ -1320,6 +1431,8 @@ async fn run_apply_resumes_with_the_ids_the_interrupted_run_created() {
                 backend_config: Some(config_path),
                 allow_delete: false,
                 interactive: false,
+                only: vec![],
+                only_file: None,
             },
         },
         AppConfig::load().unwrap(),
@@ -1391,6 +1504,8 @@ async fn run_apply_rejects_a_bad_output_path_before_touching_the_backend() {
             backend_config: Some(config_path),
             allow_delete: false,
             interactive: false,
+            only: vec![],
+            only_file: None,
         },
     };
     let result = run(cli, AppConfig::load().unwrap()).await;
@@ -1434,6 +1549,8 @@ async fn run_apply_writes_no_report_when_the_apply_fails() {
             backend_config: Some(config_path),
             allow_delete: false,
             interactive: false,
+            only: vec![],
+            only_file: None,
         },
     };
     let result = run(cli, AppConfig::load().unwrap()).await;
@@ -2445,6 +2562,8 @@ async fn run_refuses_to_write_an_external_adapter_declaring_observer() {
                 backend_config: Some(config),
                 allow_delete: false,
                 interactive: false,
+                only: vec![],
+                only_file: None,
             },
         },
         AppConfig::load().unwrap(),
@@ -3321,6 +3440,8 @@ async fn run_applies_a_converged_hand_written_adapter_that_omits_applied() {
                         backend_config: Some(config.clone()),
                         allow_delete: false,
                         interactive: false,
+                        only: vec![],
+                        only_file: None,
                     },
                 },
                 AppConfig::load().unwrap(),
@@ -3549,7 +3670,7 @@ fn every_report_writer_creates_missing_parent_dirs() {
     let writers: Vec<(&str, Write)> = vec![
         (
             "report.json",
-            Box::new(|path| write_apply_report(path, &ApplyReport::default())),
+            Box::new(|path| write_apply_report(path, &ApplyReport::default(), &[])),
         ),
         (
             "drift.json",
