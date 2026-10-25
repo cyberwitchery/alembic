@@ -1,0 +1,1 @@
+- security: release binaries are built against ctutils 0.4.5, which fixes RUSTSEC-2026-0385
