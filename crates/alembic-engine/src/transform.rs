@@ -309,6 +309,7 @@ pub fn load_map_spec(path: impl AsRef<Path>) -> Result<MapSpec> {
     let raw = std::fs::read_to_string(path)
         .with_context(|| format!("read map spec: {}", path.display()))?;
     let mut spec: MapSpec = crate::yaml::from_str(&raw)
+        .map_err(|err| crate::explain_parse_error(crate::DocumentKind::MapSpec, &raw, err.into()))
         .with_context(|| format!("parse map spec: {}", path.display()))?;
     spec.base_dir = path.parent().map(Path::to_path_buf);
     Ok(spec)

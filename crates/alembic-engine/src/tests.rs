@@ -379,6 +379,45 @@ fn load_errors_on_invalid_yaml() {
 }
 
 #[test]
+fn load_names_the_document_given_in_place_of_an_inventory() {
+    let dir = tempdir().unwrap();
+    for (file, contents, found) in [
+        (
+            "plan.json",
+            r#"{"schema": {"types": {}}, "ops": []}"#,
+            "a plan",
+        ),
+        (
+            "spec.yaml",
+            "schema: {types: {}}\nrules: []\n",
+            "a map spec",
+        ),
+    ] {
+        let path = dir.path().join(file);
+        std::fs::write(&path, contents).unwrap();
+        let msg = format!("{:#}", load_inventory(&path).unwrap_err());
+        assert!(
+            msg.contains(&format!(
+                "expected an inventory, but this looks like {found}"
+            )),
+            "{file}: {msg}"
+        );
+    }
+}
+
+#[test]
+fn load_map_spec_names_the_document_given_in_its_place() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("plan.yaml");
+    std::fs::write(&path, "schema: {types: {}}\nops: []\n").unwrap();
+    let msg = format!("{:#}", load_map_spec(&path).unwrap_err());
+    assert!(
+        msg.contains("expected a map spec, but this looks like a plan"),
+        "{msg}"
+    );
+}
+
+#[test]
 fn plans_in_stable_order() {
     let site_uid = uid(10);
     let device_uid = uid(11);
