@@ -1,1 +1,0 @@
-- apply: `--only <uid>` and `--only-file <path>` apply the operations of the named uids and nothing else, refusing before any write a selection that leaves out an operation a selected one depends on; the apply report lists what was left out under `skipped` (#468)

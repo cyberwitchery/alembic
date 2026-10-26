@@ -1,1 +1,0 @@
-- **breaking** apply: with the postgres state backend, apply journals are kept in the same database (`alembic_journal`) instead of `.alembic/`, so any worker using it can resume an interrupted apply; a journal an earlier alembic left in `.alembic/` is not read, so finish an interrupted apply before upgrading (#469)

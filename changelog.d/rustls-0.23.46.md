@@ -1,1 +1,0 @@
-- security: release binaries are built against rustls 0.23.46, which fixes RUSTSEC-2026-0346, 0347, 0348 and 0349

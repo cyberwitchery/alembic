@@ -1,1 +1,0 @@
-- **breaking** apply: before writing, checks that the backend still holds what the plan was diffed against, and refuses, naming each object and what moved, when a planned update's `from` values no longer hold, a planned create's object now exists, or an updated object is gone, exiting `65`; `--no-stale-check` skips it (#467)

@@ -1,1 +1,0 @@
-- apply: a journal file that exists but cannot be read is an error, rather than overwritten by a fresh journal

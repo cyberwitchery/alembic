@@ -4,6 +4,25 @@
 
 unreleased changes live in `changelog.d/` until a release collects them.
 
+## [0.12.0] - 2026-10-26
+
+- **breaking** apply: before writing, checks that the backend still holds what the plan was diffed against, and refuses, naming each object and what moved, when a planned update's `from` values no longer hold, a planned create's object now exists, or an updated object is gone, exiting `65`; `--no-stale-check` skips it (#467)
+- apply: `--only <uid>` and `--only-file <path>` apply the operations of the named uids and nothing else, refusing before any write a selection that leaves out an operation a selected one depends on; the apply report lists what was left out under `skipped` (#468)
+- apply: an apply that stops with operations already applied says so in its error, with the operation's failure underneath, instead of in a warning before it; `alembic-adapter-sdk`: `RetryApplyError::Interrupted` carries it, and `RetryApplyDriver::Error` must convert into `Box<dyn Error + Send + Sync>` (#466)
+- **breaking** cli: exit codes say which kind of failure a run hit: `64` for a bad flag or an input file that cannot be read (clap's usage errors move from `2`, which now only means `plan --report` found drift), `65` for an input that does not parse or validate, `69` for a backend that could not be reached or refused the credentials, `75` for an apply that stopped partway with its journal kept; `docs/cli.md` lists them (#466)
+- cli: `version` prints the version, and with `--json` the built-in backends, the external protocol version, the state backends and a list of features, so a caller can check for a capability instead of a version range (#470)
+- `validate`, `plan`, `import`, `map` and `apply` name the kind of document they got when it is not the one they read (a plan passed as an inventory, a drift report as a map spec), and where that kind belongs, above the parse error (#438)
+- apply: a plan whose `effects` does not match the backend (an `emit` plan applied to a read+write backend, or a `drive` plan to a write-only one) is refused before anything is written; a plan without `effects` applies as before (#499)
+- security: release binaries are built against ctutils 0.4.5, which fixes RUSTSEC-2026-0385
+- security: release binaries are built against rustls 0.23.46, which fixes RUSTSEC-2026-0346, 0347, 0348 and 0349
+- `alembic-adapter-sdk`: journals are stored through the async `JournalBackend` trait, the `Journal` api is async, and `Journal::load_or_create` is `load_or_create_with_file`; `alembic-engine`'s `StateStore::journal_dir` is `journal_storage` (#469)
+- **breaking** apply: with the postgres state backend, apply journals are kept in the same database (`alembic_journal`) instead of `.alembic/`, so any worker using it can resume an interrupted apply; a journal an earlier alembic left in `.alembic/` is not read, so finish an interrupted apply before upgrading (#469)
+- `alembic-adapter-sdk`: a journal from before the append-only format (0.9.0) is refused instead of migrated, and `JournalError::Yaml` is gone
+- apply: a journal file that exists but cannot be read is an error, rather than overwritten by a fresh journal
+- apply: `ALEMBIC_JOURNAL_DIR` sets where apply journals are kept, so a worker other than the one that started an apply can resume it (#469)
+- cli: `completion` command prints a shell completion script for bash, elvish, zsh, fish and powershell (#507)
+- `alembic-file-generator` emits interfaces spread over the devices (`-i`, one per device by default) and pairs neighbouring interfaces with cables
+
 ## [0.11.0] - 2026-10-13
 
 - `alembic-adapter-sdk`: the yaml helpers live in `alembic_adapter_sdk::yaml` (still reachable as `alembic_engine::yaml`), so an adapter reads and writes yaml by the same rules without linking the engine; they return `yaml::Error`, which names no yaml library

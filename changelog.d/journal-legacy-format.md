@@ -1,1 +1,0 @@
-- `alembic-adapter-sdk`: a journal from before the append-only format (0.9.0) is refused instead of migrated, and `JournalError::Yaml` is gone
