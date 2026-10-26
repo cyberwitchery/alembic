@@ -308,7 +308,10 @@ the adapter contract the adapter implements. the result carries a `role`:
   `import` and `plan --report` reject the backend up front instead of
   observing nothing. the role governs read vs write only: provisioning is a
   write, so `ensure_schema` and `preview_schema` are still called.
-- `adapter`: read+write; the host may call every method.
+- `adapter`: read+write; the host may call every method. `apply` calls `read`
+  before `write` too, for the plan's types, to check the backend still holds what
+  the plan was diffed against (`docs/cli.md`, apply), unless run with
+  `--no-stale-check`.
 
 an adapter that does not answer capabilities (the unknown-method error, or any
 other probe failure) defaults to `adapter`, so existing adapters keep working
