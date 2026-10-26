@@ -214,6 +214,7 @@ fn build(
         summary: None,
         schema_preview: None,
         effects: None,
+        adopt_by_key: None,
     };
     plan.summary = Some(PlanSummary {
         matching: Some(matching),

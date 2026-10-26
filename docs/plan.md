@@ -46,7 +46,8 @@ plans are json files that can be re-applied. the plan is deterministic for a giv
   ],
   "summary": { "create": 1, "update": 1, "delete": 1 },
   "schema_preview": { "...": "..." },
-  "effects": "drive"
+  "effects": "drive",
+  "adopt_by_key": true
 }
 ```
 
@@ -61,4 +62,5 @@ plans are json files that can be re-applied. the plan is deterministic for a giv
 - `summary` is optional, counts of each op kind.
 - `schema_preview` is optional, the read-only schema preview plan records (shape in `docs/external-adapters.md`, when it is populated in `docs/cli.md`).
 - `effects` is optional: `emit` when planned against a write-only backend (every op a create), `drive` against a read+write one. an external adapter that does not answer `capabilities` counts as read+write (see `docs/external-adapters.md`), so `drive` can also mean its role is unknown. apply refuses a plan whose `effects` does not match the backend it is given, and applies a plan without the field as before.
+- `adopt_by_key` is optional: whether planning adopted unbound backend objects by key, `false` under `plan --no-adopt`. apply's stale check (`docs/cli.md`, apply) re-diffs the same way, so a `--no-adopt` plan's create of a same-key twin is not read as a collision. a write-only plan, which observes nothing, leaves it out, and a plan without it is re-diffed adopting by key.
 - keys are exact: an unknown one is an error, so a misspelled `summary` or `schema_preview` cannot read as absent.

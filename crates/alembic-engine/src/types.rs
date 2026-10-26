@@ -27,6 +27,10 @@ pub struct Plan {
     /// whether the backend was planned write-only (`emit`) or read+write (`drive`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effects: Option<Effects>,
+    /// whether planning adopted unbound backend objects by key (`plan` without
+    /// `--no-adopt`), so apply's stale check re-diffs the same way.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adopt_by_key: Option<bool>,
 }
 
 /// the kind of effects applying a plan has on its backend.
