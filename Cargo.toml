@@ -45,7 +45,7 @@ starlark = { version = "0.14.2", default-features = false }
 thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 uuid = { version = "1", features = ["serde", "v4", "v5"] }
-netbox = "0.10.1"
+netbox = "0.11.0"
 nautobot = "0.9.1"
 infrahub = "0.5.0"
 reqwest = { version = "0.13", features = ["json"] }
@@ -56,7 +56,7 @@ native-tls = "0.2"
 postgres-native-tls = "0.5"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-httpmock = "0.8"
+httpmock = "0.9"
 tempfile = "3"
 futures = "0.3"
 figment = { version = "0.10", features = ["env"] }
