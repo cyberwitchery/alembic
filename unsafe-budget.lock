@@ -14,8 +14,8 @@ targets = []
 
 [totals]
 workspace_unsafe = 0
-deps_unsafe = 9987
-overall_unsafe = 9987
+deps_unsafe = 9988
+overall_unsafe = 9988
 
 [[units]]
 name = "aho-corasick"
@@ -805,7 +805,7 @@ unsafe_count = 1
 [[units]]
 name = "uuid"
 kind = "dep"
-unsafe_count = 14
+unsafe_count = 15
 
 [[units]]
 name = "whoami"
