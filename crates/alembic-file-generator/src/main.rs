@@ -103,6 +103,7 @@ fn build_plan(num_devices: usize, num_interfaces: usize) -> Result<Plan> {
         summary: None,
         schema_preview: None,
         effects: None,
+        adopt_by_key: None,
     })
 }
 

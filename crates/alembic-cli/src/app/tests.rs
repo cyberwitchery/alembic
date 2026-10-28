@@ -150,6 +150,7 @@ fn plan_roundtrip_io() {
         summary: None,
         schema_preview: None,
         effects: None,
+        adopt_by_key: None,
     };
     for (file, is_json) in [("plan.json", true), ("plan.yaml", false)] {
         let dir = tempdir().unwrap();
@@ -178,6 +179,7 @@ fn plan_roundtrip_keeps_effects() {
         summary: None,
         schema_preview: None,
         effects: Some(Effects::Drive),
+        adopt_by_key: None,
     };
 
     write_plan(&path, &plan).unwrap();
@@ -457,6 +459,7 @@ fn preflight_output_path_accepts_an_existing_file_and_keeps_it() {
         summary: None,
         schema_preview: None,
         effects: None,
+        adopt_by_key: None,
     };
     write_plan(&target, &plan).unwrap();
     assert_eq!(read_plan(&target).unwrap().ops.len(), 0);
@@ -984,6 +987,7 @@ async fn run_apply_interactive_delete_requires_allow_delete() {
         summary: None,
         schema_preview: None,
         effects: None,
+        adopt_by_key: None,
     };
     write_plan(&plan_path, &plan).unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
@@ -1084,6 +1088,7 @@ types:
         summary: None,
         schema_preview: None,
         effects: None,
+        adopt_by_key: None,
     };
     let plan_path = dir.join("plan.json");
     write_plan(&plan_path, &plan).unwrap();
@@ -1148,6 +1153,7 @@ async fn run_apply_refuses_a_plan_the_backend_moved_away_from() {
             summary: None,
             schema_preview: None,
             effects: None,
+            adopt_by_key: None,
         },
     )
     .unwrap();
@@ -1356,6 +1362,7 @@ types:
         summary: None,
         schema_preview: None,
         effects: None,
+        adopt_by_key: None,
     };
     let plan_path = dir.join("plan.json");
     write_plan(&plan_path, &plan).unwrap();
