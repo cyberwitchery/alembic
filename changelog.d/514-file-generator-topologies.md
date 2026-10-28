@@ -1,0 +1,1 @@
+- `alembic-file-generator`: `--topology` cables the devices as a `chain`, `ring`, `star`, full `mesh` or `leaf-spine` (with `--spines`), each link with its own interface on both ends; `pairs` stays the default (#514)
