@@ -39,14 +39,15 @@ read -r branch sha cross < <(gh pr view "$pr" \
   --jq '"\(.headRefName) \(.headRefOid) \(.isCrossRepository)"')
 [ "$cross" = false ] || die "#$pr comes from a fork, its branch cannot be pushed"
 
-run="$(gh run list --workflow ci.yml --commit "$sha" --status completed --limit 1 \
+run="$(gh run list --workflow ci.yml --commit "$sha" --limit 1 \
   --json databaseId --jq '.[0].databaseId // empty')"
-[ -n "$run" ] || die "no finished ci run for #$pr at ${sha:0:7}"
+[ -n "$run" ] || die "no ci run for #$pr at ${sha:0:7}"
 
 work="$(mktemp -d)"
 trap 'git -C "$root" worktree remove --force "$work/tree" 2>/dev/null || true; rm -rf "$work"' EXIT
 
-gh run download "$run" --name unsafe-budget-lock --dir "$work/lock" 2>/dev/null ||
+# off the terminal: gh queries it, and the reply would land in the prompt below.
+gh run download "$run" --name unsafe-budget-lock --dir "$work/lock" </dev/null >/dev/null 2>&1 ||
   die "ci run $run for #$pr has no unsafe-budget-lock artifact (did the check fail?)"
 
 git fetch --quiet origin "$branch"

@@ -228,7 +228,7 @@ jobs:
       # on a violation, keep the linux lock for scripts/accept-unsafe.sh.
       - name: Regenerate lock
         if: failure()
-        uses: cyberwitchery/unsafe-budget@92b73becc9c76134433ac0347d828fa87fdb3fa3 # v0.5.2
+        uses: cyberwitchery/unsafe-budget@c826db273f31fd98868eb35c79fd86f6d660718e # v0.5.3
         with:
           mode: update
           version: v0.5.2
