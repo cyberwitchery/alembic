@@ -224,6 +224,22 @@ jobs:
           mode: check
           version: v0.5.2
 
+      # counts depend on the platform, so a lock regenerated on macos is wrong.
+      # on a violation, keep the linux lock for scripts/accept-unsafe.sh.
+      - name: Regenerate lock
+        if: failure()
+        uses: cyberwitchery/unsafe-budget@92b73becc9c76134433ac0347d828fa87fdb3fa3 # v0.5.2
+        with:
+          mode: update
+          version: v0.5.2
+
+      - name: Upload lock
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: unsafe-budget-lock
+          path: unsafe-budget.lock
+
   sbom:
     name: sbom
     uses: cyberwitchery/.github/.github/workflows/sbom.yml@64ffd6a08c3e9626a681c8be1c8ad056765f3b85 # main
