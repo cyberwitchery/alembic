@@ -29,8 +29,7 @@ impl ObjectTypeRegistry {
             else {
                 continue;
             };
-            let endpoint_type = type_name_from_endpoint(&endpoint)
-                .unwrap_or_else(|| format!("{}.{}", object_type.app_label, object_type.model));
+            let endpoint_type = type_name(&object_type.app_label, &object_type.model, &endpoint);
             let model_type = format!("{}.{}", object_type.app_label, object_type.model);
             // netbox names features with underscores (`custom_fields`); the
             // adapters check the hyphenated spelling nautobot's registry uses.
@@ -113,39 +112,34 @@ impl ObjectTypeRegistry {
     }
 }
 
-fn type_name_from_endpoint(endpoint: &str) -> Option<String> {
-    let trimmed = endpoint.trim().trim_matches('/');
-    let mut parts = trimmed.split('/');
-    let app = parts.next()?;
-    let resource = parts.next()?;
-    let singular = singularize(resource);
-    let normalized = singular.replace('-', "_");
-    Some(format!("{app}.{normalized}"))
+/// the user-facing name of a netbox object type: its model, with `_` where the
+/// route spells a word boundary in the stretch the two share
+/// (`ipaddress` + `ip-addresses/` is `ip_address`). both come from netbox, so no
+/// inflection decides an identity.
+fn type_name(app_label: &str, model: &str, endpoint: &str) -> String {
+    let route = endpoint
+        .trim_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or_default();
+    let mut route = route.chars().peekable();
+    let mut name = String::with_capacity(model.len() + 2);
+    for (at, c) in model.char_indices() {
+        while route.next_if_eq(&'-').is_some() {
+            name.push('_');
+        }
+        if route.next_if_eq(&c).is_none() {
+            name.push_str(&model[at..]);
+            break;
+        }
+        name.push(c);
+    }
+    format!("{app_label}.{name}")
 }
 
 fn split_type_name(value: &str) -> Option<(String, String)> {
     let (app, model) = value.split_once('.')?;
     Some((app.to_string(), model.to_string()))
-}
-
-fn singularize(value: &str) -> String {
-    if let Some(stripped) = value.strip_suffix("resses") {
-        return format!("{stripped}ress");
-    }
-    if let Some(stripped) = value.strip_suffix("ies") {
-        return format!("{stripped}y");
-    }
-    // inverse of pluralize's s/x/z/ch/sh -> +es rule (e.g. prefix -> prefixes, status -> statuses)
-    if ["ses", "xes", "zes", "ches", "shes"]
-        .iter()
-        .any(|s| value.ends_with(s))
-    {
-        return value[..value.len() - 2].to_string();
-    }
-    if let Some(stripped) = value.strip_suffix('s') {
-        return stripped.to_string();
-    }
-    value.to_string()
 }
 
 fn endpoint_from_type_name(type_name: &str) -> Option<String> {
@@ -159,30 +153,82 @@ mod tests {
     use super::*;
 
     #[test]
-    fn type_name_from_endpoint_handles_pluralization() {
+    fn the_type_name_is_the_model_split_where_the_route_splits() {
+        for (app_label, model, endpoint, expected) in [
+            ("dcim", "device", "dcim/devices/", "dcim.device"),
+            ("dcim", "devicebay", "dcim/device-bays/", "dcim.device_bay"),
+            ("ipam", "ipaddress", "ipam/ip-addresses/", "ipam.ip_address"),
+            ("ipam", "prefix", "ipam/prefixes/", "ipam.prefix"),
+            (
+                "extras",
+                "journalentry",
+                "extras/journal-entries/",
+                "extras.journal_entry",
+            ),
+            (
+                "dcim",
+                "virtualchassis",
+                "dcim/virtual-chassis/",
+                "dcim.virtual_chassis",
+            ),
+        ] {
+            assert_eq!(type_name(app_label, model, endpoint), expected);
+        }
+    }
+
+    /// a route named for something other than the model contributes nothing.
+    #[test]
+    fn a_route_named_apart_from_its_model_leaves_the_model() {
         assert_eq!(
-            type_name_from_endpoint("ipam/ip-addresses/"),
-            Some("ipam.ip_address".to_string())
+            type_name(
+                "virtualization",
+                "vminterface",
+                "virtualization/interfaces/"
+            ),
+            "virtualization.vminterface"
         );
         assert_eq!(
-            type_name_from_endpoint("circuits/circuit-terminations/"),
-            Some("circuits.circuit_termination".to_string())
+            type_name("users", "objectpermission", "users/permissions/"),
+            "users.objectpermission"
         );
         assert_eq!(
-            type_name_from_endpoint("dcim/devices/"),
-            Some("dcim.device".to_string())
+            type_name("extras", "taggeditem", "extras/tagged-objects/"),
+            "extras.tagged_item"
+        );
+    }
+
+    /// a plugin's routes sit under `plugins/<plugin>/`, so the app is the
+    /// app label, never the route's first segment.
+    #[test]
+    fn a_plugin_type_is_named_by_its_app_label() {
+        let registry = ObjectTypeRegistry::from_object_types(vec![
+            ObjectType {
+                app_label: "netbox_custom_objects".to_string(),
+                model: "customobjecttype".to_string(),
+                rest_api_endpoint: Some(
+                    "/api/plugins/custom-objects/custom-object-types/".to_string(),
+                ),
+                ..Default::default()
+            },
+            ObjectType {
+                app_label: "netbox_custom_objects".to_string(),
+                model: "customobjecttypefield".to_string(),
+                rest_api_endpoint: Some(
+                    "/api/plugins/custom-objects/custom-object-type-fields/".to_string(),
+                ),
+                ..Default::default()
+            },
+        ])
+        .unwrap();
+
+        assert_eq!(
+            registry.type_name_for_endpoint("/api/plugins/custom-objects/custom-object-types/1/"),
+            Some("netbox_custom_objects.custom_object_type")
         );
         assert_eq!(
-            type_name_from_endpoint("ipam/prefixes/"),
-            Some("ipam.prefix".to_string())
-        );
-        assert_eq!(
-            type_name_from_endpoint("dcim/device-bays/"),
-            Some("dcim.device_bay".to_string())
-        );
-        assert_eq!(
-            type_name_from_endpoint("extras/statuses/"),
-            Some("extras.status".to_string())
+            registry
+                .type_name_for_endpoint("/api/plugins/custom-objects/custom-object-type-fields/"),
+            Some("netbox_custom_objects.custom_object_type_field")
         );
     }
 
@@ -208,22 +254,5 @@ mod tests {
             endpoint_from_type_name("dcim.device_bay"),
             Some("dcim/device-bays/".to_string())
         );
-    }
-
-    #[test]
-    fn singularize_inverts_pluralize() {
-        for stem in [
-            "device",
-            "prefix",
-            "device_bay",
-            "ip_address",
-            "circuit_termination",
-            "interface",
-            "status",
-            "class",
-            "bus",
-        ] {
-            assert_eq!(singularize(&pluralize(stem)), stem);
-        }
     }
 }
