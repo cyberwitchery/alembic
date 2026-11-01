@@ -422,54 +422,18 @@ impl Emitter for NetBoxAdapter {
             applied.push(applied_op);
         }
 
-        for op in deletes {
-            if let Op::Delete {
-                uid,
-                type_name,
-                key,
-                backend_id,
-            } = op
-            {
-                let id = if let Some(BackendId::Int(id)) = backend_id {
-                    id
-                } else if let Some(id) = resolved.get(&uid).copied() {
-                    id
-                } else {
-                    let info = registry
-                        .info_for(&type_name)
-                        .ok_or_else(|| anyhow!("unsupported type {}", type_name))?;
-                    let type_schema = schema
-                        .types
-                        .get(type_name.as_str())
-                        .ok_or_else(|| anyhow!("missing schema for {}", type_name))?;
-                    self.lookup_backend_id(&type_name, &info, type_schema, &key, &resolved)
-                        .await
-                        .and_then(|found| {
-                            found.ok_or_else(|| {
-                                anyhow!("{} not found for key {}", type_name, key_string(&key))
-                            })
-                        })
-                        .with_context(|| {
-                            format!("resolve backend id for delete: {}", key_string(&key))
-                        })?
-                };
-                let info = registry
-                    .info_for(&type_name)
-                    .ok_or_else(|| anyhow!("unsupported type {}", type_name))?;
-                let resource: Resource<Value> = self.client.resource(info.endpoint.clone());
-                let batch = [BulkDelete::new(id)];
-                match resource.bulk_delete(&batch).await {
-                    Ok(_) => {}
-                    Err(err) if is_404_error(&err) => {
-                        tracing::warn!(type_name = %type_name, "object already deleted");
-                    }
-                    Err(err) => return Err(err.into()),
+        // deletes of one type in a row go in one request, which netbox applies all
+        // or nothing; a batch it refuses goes again one object at a time.
+        for run in deletes.chunk_by(|a, b| a.type_name() == b.type_name()) {
+            for batch in run.chunks(BULK_WRITE_SIZE) {
+                if batch.len() > 1 && self.delete_batch(batch, &registry, &resolved).await.is_ok() {
+                    applied.extend(batch.iter().map(deleted));
+                    continue;
                 }
-                applied.push(AppliedOp {
-                    uid,
-                    type_name: type_name.clone(),
-                    backend_id: None,
-                });
+                for op in batch {
+                    self.apply_delete(op, &registry, schema, &resolved).await?;
+                    applied.push(deleted(op));
+                }
             }
         }
         journal.finish().await?;
@@ -935,6 +899,86 @@ impl NetBoxAdapter {
         let resource: Resource<Value> = self.client.resource(info.endpoint.clone());
         let _response = resource.patch(id, &body).await?;
         Ok(id)
+    }
+
+    /// delete `ops`, all of one type and each with a known backend id, in one request.
+    async fn delete_batch(
+        &self,
+        ops: &[Op],
+        registry: &ObjectTypeRegistry,
+        resolved: &BTreeMap<Uid, u64>,
+    ) -> Result<()> {
+        let ids = ops
+            .iter()
+            .map(|op| match op {
+                Op::Delete {
+                    backend_id: Some(BackendId::Int(id)),
+                    ..
+                } => Some(BulkDelete::new(*id)),
+                Op::Delete { uid, .. } => resolved.get(uid).copied().map(BulkDelete::new),
+                _ => None,
+            })
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| anyhow!("a delete in the batch has no known backend id"))?;
+        let type_name = ops[0].type_name();
+        let info = registry
+            .info_for(type_name)
+            .ok_or_else(|| anyhow!("unsupported type {}", type_name))?;
+        let resource: Resource<Value> = self.client.resource(info.endpoint.clone());
+        resource.bulk_delete(&ids).await?;
+        Ok(())
+    }
+
+    async fn apply_delete(
+        &self,
+        op: &Op,
+        registry: &ObjectTypeRegistry,
+        schema: &Schema,
+        resolved: &BTreeMap<Uid, u64>,
+    ) -> Result<()> {
+        let Op::Delete {
+            uid,
+            type_name,
+            key,
+            backend_id,
+            ..
+        } = op
+        else {
+            return Err(anyhow!("expected delete operation"));
+        };
+        let id = if let Some(BackendId::Int(id)) = backend_id {
+            *id
+        } else if let Some(id) = resolved.get(uid).copied() {
+            id
+        } else {
+            let info = registry
+                .info_for(type_name)
+                .ok_or_else(|| anyhow!("unsupported type {}", type_name))?;
+            let type_schema = schema
+                .types
+                .get(type_name.as_str())
+                .ok_or_else(|| anyhow!("missing schema for {}", type_name))?;
+            self.lookup_backend_id(type_name, &info, type_schema, key, resolved)
+                .await
+                .and_then(|found| {
+                    found.ok_or_else(|| {
+                        anyhow!("{} not found for key {}", type_name, key_string(key))
+                    })
+                })
+                .with_context(|| format!("resolve backend id for delete: {}", key_string(key)))?
+        };
+        let info = registry
+            .info_for(type_name)
+            .ok_or_else(|| anyhow!("unsupported type {}", type_name))?;
+        let resource: Resource<Value> = self.client.resource(info.endpoint.clone());
+        match resource.bulk_delete(&[BulkDelete::new(id)]).await {
+            Ok(_) => {}
+            Err(err) if is_404_error(&err) => {
+                tracing::warn!(type_name = %type_name, "object already deleted");
+            }
+            Err(err) => return Err(err.into()),
+        }
+        Ok(())
     }
 
     /// create `ops`, all of one type, in one request. netbox creates them in one
@@ -1743,6 +1787,15 @@ fn resolve_ref_uid(
         },
         |url| registry.type_name_for_endpoint(url).map(str::to_string),
     )
+}
+
+/// the report entry for a delete.
+fn deleted(op: &Op) -> AppliedOp {
+    AppliedOp {
+        uid: op.uid(),
+        type_name: op.type_name().clone(),
+        backend_id: None,
+    }
 }
 
 /// the type's registry entry and schema, and the request body for a create or update.

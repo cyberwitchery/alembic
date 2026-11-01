@@ -294,6 +294,7 @@ mod tests {
             type_name: TypeName::new("test.item"),
             key: Key::default(),
             backend_id: None,
+            refs: Default::default(),
         }];
         let mut driver = TestDriver {
             attempts: 0,

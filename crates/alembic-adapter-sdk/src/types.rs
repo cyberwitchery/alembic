@@ -1,5 +1,6 @@
 use alembic_core::{Key, Object, TypeName, Uid};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use std::fmt;
 
 /// generic backend identifier (integer or string/uuid).
@@ -57,6 +58,10 @@ pub enum Op {
         key: Key,
         #[serde(skip_serializing_if = "Option::is_none")]
         backend_id: Option<BackendId>,
+        /// the uids the object references outside its key, which must outlive it.
+        /// a plan written without them orders the delete by its key alone.
+        #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+        refs: BTreeSet<Uid>,
     },
 }
 

@@ -1702,6 +1702,7 @@ fn apply_plan_blocks_deletes_without_flag() {
             type_name: t("dcim.site"),
             key: key_str("site=fra1"),
             backend_id: Some(BackendId::Int(1)),
+            refs: Default::default(),
         }],
         summary: None,
         schema_preview: None,

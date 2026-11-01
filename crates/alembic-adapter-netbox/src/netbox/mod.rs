@@ -1580,6 +1580,88 @@ mod tests {
         assert_eq!(report.applied.len(), 2);
     }
 
+    fn site_delete(n: u128) -> Op {
+        Op::Delete {
+            uid: uid(n),
+            type_name: TypeName::new("dcim.site"),
+            key: key("name", json!(format!("s{n}"))),
+            backend_id: Some(BackendId::Int(n as u64)),
+            refs: Default::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn deletes_of_one_type_go_in_one_bulk_request() {
+        use httpmock::Method::DELETE;
+
+        let server = MockServer::start();
+        let dir = tempdir().unwrap();
+        let state = StateStore::load(dir.path().join("state.json")).unwrap();
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
+        mock_site_type(&server);
+        let bulk = server.mock(|when, then| {
+            when.method(DELETE)
+                .path("/api/dcim/sites/")
+                .json_body(json!([{ "id": 1 }, { "id": 2 }]));
+            then.status(204);
+        });
+
+        let report = adapter
+            .write(
+                &site_name_schema(),
+                &[site_delete(1), site_delete(2)],
+                &state,
+            )
+            .await
+            .unwrap();
+
+        bulk.assert_calls(1);
+        assert_eq!(report.applied.len(), 2);
+    }
+
+    /// netbox rolls a refused delete batch back whole; each delete then goes on its own.
+    #[tokio::test]
+    async fn a_refused_bulk_delete_falls_back_to_single_deletes() {
+        use httpmock::Method::DELETE;
+
+        let server = MockServer::start();
+        let dir = tempdir().unwrap();
+        let state = StateStore::load(dir.path().join("state.json")).unwrap();
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
+        mock_site_type(&server);
+        let bulk = server.mock(|when, then| {
+            when.method(DELETE)
+                .path("/api/dcim/sites/")
+                .json_body(json!([{ "id": 1 }, { "id": 2 }]));
+            then.status(409).json_body(json!({
+                "detail": "1 of 2 objects could not be deleted."
+            }));
+        });
+        let singles = [1, 2].map(|id| {
+            server.mock(move |when, then| {
+                when.method(DELETE)
+                    .path("/api/dcim/sites/")
+                    .json_body(json!([{ "id": id }]));
+                then.status(204);
+            })
+        });
+
+        let report = adapter
+            .write(
+                &site_name_schema(),
+                &[site_delete(1), site_delete(2)],
+                &state,
+            )
+            .await
+            .unwrap();
+
+        bulk.assert_calls(1);
+        for single in singles {
+            single.assert_calls(1);
+        }
+        assert_eq!(report.applied.len(), 2);
+    }
+
     #[tokio::test]
     async fn apply_tolerates_already_deleted_404() {
         // re-issued deletes must tolerate an already-gone object (404) as a no-op.
@@ -1615,6 +1697,7 @@ mod tests {
             type_name: TypeName::new("dcim.site"),
             key: key("slug", json!("fra1")),
             backend_id: Some(BackendId::Int(1)),
+            refs: Default::default(),
         }];
 
         let schema = alembic_core::Schema {
@@ -1699,6 +1782,7 @@ mod tests {
                 type_name: TypeName::new("dcim.site"),
                 key: key("slug", json!("ber1")),
                 backend_id: Some(BackendId::Int(2)),
+                refs: Default::default(),
             },
         ];
         let creates: Vec<Op> = ops

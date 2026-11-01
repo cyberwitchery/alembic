@@ -41,7 +41,8 @@ plans are json files that can be re-applied. the plan is deterministic for a giv
       "uid": "...",
       "type_name": "ipam.ip_address",
       "key": { "address": "10.0.0.10/24" },
-      "backend_id": 456
+      "backend_id": 456,
+      "refs": ["..."]
     }
   ],
   "summary": { "create": 1, "update": 1, "delete": 1 },
@@ -57,6 +58,8 @@ plans are json files that can be re-applied. the plan is deterministic for a giv
 - creates carry no `backend_id`; on updates and deletes it is optional and may be absent when not known.
 - a plan can both create and update one uid. the planner does that to break a reference cycle: the create leaves out a ref, and the update sets it once the target exists (`docs/engine.md`, apply ordering). the update has no `backend_id`, since the object does not exist at plan time, and it runs after the create. a drift report counts that object as missing only.
 - deletes are only applied when `--allow-delete` is set.
+- a delete's `refs` are the uids the deleted object references outside its key. apply
+  deletes it before them; a plan without `refs` orders deletes by their keys alone.
 - the plan embeds the schema used during planning to drive apply-time reference resolution; see `docs/ir.md` for the field schema.
 - `summary` is optional, counts of each op kind.
 - `schema_preview` is optional, the read-only schema preview plan records (shape in `docs/external-adapters.md`, when it is populated in `docs/cli.md`).
