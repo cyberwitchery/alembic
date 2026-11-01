@@ -32,6 +32,8 @@ use std::collections::{BTreeMap, BTreeSet};
 const CUSTOM_OBJECT_FEATURE: &str = "custom-object";
 const CUSTOM_OBJECT_APP_LABEL: &str = "netbox_custom_objects";
 const ALEMBIC_CUSTOM_OBJECT_PREFIX: &str = "alembic custom object for ";
+/// creates or updates of one type sent in one bulk request.
+const BULK_WRITE_SIZE: usize = 100;
 
 #[async_trait]
 impl Observer for NetBoxAdapter {
@@ -345,6 +347,47 @@ impl Emitter for NetBoxAdapter {
 
             fn is_retryable(&self, err: &anyhow::Error) -> bool {
                 is_missing_ref_error(err.as_ref())
+            }
+
+            fn batch_size(&self) -> usize {
+                BULK_WRITE_SIZE
+            }
+
+            async fn apply_non_delete_batch(&mut self, ops: &[Op]) -> Result<Vec<AppliedOp>> {
+                let ids = match ops.first() {
+                    Some(Op::Create { .. }) => {
+                        self.adapter
+                            .apply_create_batch(
+                                ops,
+                                self.resolved,
+                                self.registry,
+                                self.schema,
+                                self.custom_fields_by_type,
+                            )
+                            .await?
+                    }
+                    Some(Op::Update { .. }) => {
+                        self.adapter
+                            .apply_update_batch(
+                                ops,
+                                self.resolved,
+                                self.registry,
+                                self.schema,
+                                self.custom_fields_by_type,
+                            )
+                            .await?
+                    }
+                    _ => return Err(anyhow!("a batch holds creates or updates")),
+                };
+                Ok(ops
+                    .iter()
+                    .zip(ids)
+                    .map(|(op, id)| AppliedOp {
+                        uid: op.uid(),
+                        type_name: op.type_name().clone(),
+                        backend_id: Some(BackendId::Int(id)),
+                    })
+                    .collect())
             }
 
             fn resume(&mut self, resumed: &[AppliedOp]) {
@@ -814,32 +857,14 @@ impl NetBoxAdapter {
             } => (*uid, type_name, desired),
             _ => return Err(anyhow!("expected create operation")),
         };
-        let info = registry
-            .info_for(type_name)
-            .ok_or_else(|| anyhow!("unsupported type {}", type_name))?;
-        let type_schema = schema
-            .types
-            .get(type_name.as_str())
-            .ok_or_else(|| anyhow!("missing schema for {}", type_name))?;
+        let (info, type_schema, body) =
+            write_body(op, resolved, registry, schema, custom_fields_by_type)?;
         let resource: Resource<Value> = self.client.resource(info.endpoint.clone());
-        let custom_fields = custom_fields_by_type
-            .get(&content_type_of(registry, type_name.as_str()))
-            .cloned()
-            .unwrap_or_default();
-        let body = build_request_body(
-            type_name,
-            type_schema,
-            &desired.attrs,
-            resolved,
-            &custom_fields,
-            &info.features,
-            registry,
-        )?;
         let response: Value = match resource.create(&body).await {
             Ok(response) => response,
             Err(err) if is_conflict_error(&err) => {
                 if let Some(existing) = self
-                    .lookup_backend_id(type_name, &info, type_schema, &desired.key, resolved)
+                    .lookup_backend_id(type_name, &info, &type_schema, &desired.key, resolved)
                     .await?
                 {
                     tracing::warn!(
@@ -887,19 +912,14 @@ impl NetBoxAdapter {
             }
             _ => return Err(anyhow!("expected update operation")),
         };
-        let info = registry
-            .info_for(type_name)
-            .ok_or_else(|| anyhow!("unsupported type {}", type_name))?;
-        let type_schema = schema
-            .types
-            .get(type_name.as_str())
-            .ok_or_else(|| anyhow!("missing schema for {}", type_name))?;
+        let (info, type_schema, body) =
+            write_body(op, resolved, registry, schema, custom_fields_by_type)?;
         let id = if let Some(id) = backend_id {
             id
         } else if let Some(id) = resolved.get(&uid).copied() {
             id
         } else {
-            self.lookup_backend_id(type_name, &info, type_schema, &desired.key, resolved)
+            self.lookup_backend_id(type_name, &info, &type_schema, &desired.key, resolved)
                 .await
                 .and_then(|found| {
                     found.ok_or_else(|| {
@@ -913,21 +933,91 @@ impl NetBoxAdapter {
                 .with_context(|| format!("resolve backend id for {}", type_name))?
         };
         let resource: Resource<Value> = self.client.resource(info.endpoint.clone());
-        let custom_fields = custom_fields_by_type
-            .get(&content_type_of(registry, type_name.as_str()))
-            .cloned()
-            .unwrap_or_default();
-        let body = build_request_body(
-            type_name,
-            type_schema,
-            &desired.attrs,
-            resolved,
-            &custom_fields,
-            &info.features,
-            registry,
-        )?;
         let _response = resource.patch(id, &body).await?;
         Ok(id)
+    }
+
+    /// create `ops`, all of one type, in one request. netbox creates them in one
+    /// transaction and answers in request order.
+    async fn apply_create_batch(
+        &self,
+        ops: &[Op],
+        resolved: &mut BTreeMap<Uid, u64>,
+        registry: &ObjectTypeRegistry,
+        schema: &Schema,
+        custom_fields_by_type: &BTreeMap<String, BTreeSet<String>>,
+    ) -> Result<Vec<u64>> {
+        let mut endpoint = None;
+        let mut bodies = Vec::with_capacity(ops.len());
+        for op in ops {
+            let (info, _, body) =
+                write_body(op, resolved, registry, schema, custom_fields_by_type)?;
+            endpoint.get_or_insert(info.endpoint);
+            bodies.push(body);
+        }
+        let endpoint = endpoint.ok_or_else(|| anyhow!("empty create batch"))?;
+        let resource: Resource<Value> = self.client.resource(endpoint.clone());
+        let created = resource.bulk_create(&bodies).await?;
+        if created.len() != ops.len() {
+            return Err(anyhow!(
+                "{endpoint}: created {} objects for {} creates",
+                created.len(),
+                ops.len()
+            ));
+        }
+        let ids = created
+            .iter()
+            .map(|object| {
+                object
+                    .get("id")
+                    .and_then(Value::as_u64)
+                    .ok_or_else(|| anyhow!("{endpoint}: create returned no id"))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        for (op, id) in ops.iter().zip(&ids) {
+            resolved.insert(op.uid(), *id);
+        }
+        Ok(ids)
+    }
+
+    /// update `ops`, all of one type and each with a known backend id, in one request,
+    /// which netbox applies in one transaction.
+    async fn apply_update_batch(
+        &self,
+        ops: &[Op],
+        resolved: &BTreeMap<Uid, u64>,
+        registry: &ObjectTypeRegistry,
+        schema: &Schema,
+        custom_fields_by_type: &BTreeMap<String, BTreeSet<String>>,
+    ) -> Result<Vec<u64>> {
+        let mut endpoint = None;
+        let mut ids = Vec::with_capacity(ops.len());
+        let mut bodies = Vec::with_capacity(ops.len());
+        for op in ops {
+            let id = match op {
+                Op::Update {
+                    backend_id: Some(BackendId::Int(id)),
+                    ..
+                } => *id,
+                Op::Update { uid, .. } => resolved
+                    .get(uid)
+                    .copied()
+                    .ok_or_else(|| anyhow!("{} has no known backend id", op.type_name()))?,
+                _ => return Err(anyhow!("expected update operation")),
+            };
+            let (info, _, mut body) =
+                write_body(op, resolved, registry, schema, custom_fields_by_type)?;
+            endpoint.get_or_insert(info.endpoint);
+            if let Value::Object(fields) = &mut body {
+                fields.insert("id".to_string(), Value::from(id));
+            }
+            ids.push(id);
+            bodies.push(body);
+        }
+        let endpoint = endpoint.ok_or_else(|| anyhow!("empty update batch"))?;
+        let resource: Resource<Value> = self.client.resource(endpoint);
+        resource.bulk_patch(&bodies).await?;
+        Ok(ids)
     }
 
     /// list the endpoint and return the backend id of the object whose key matches,
@@ -1653,6 +1743,46 @@ fn resolve_ref_uid(
         },
         |url| registry.type_name_for_endpoint(url).map(str::to_string),
     )
+}
+
+/// the type's registry entry and schema, and the request body for a create or update.
+fn write_body(
+    op: &Op,
+    resolved: &BTreeMap<Uid, u64>,
+    registry: &ObjectTypeRegistry,
+    schema: &Schema,
+    custom_fields_by_type: &BTreeMap<String, BTreeSet<String>>,
+) -> Result<(super::registry::ObjectTypeInfo, TypeSchema, Value)> {
+    let (type_name, desired) = match op {
+        Op::Create {
+            type_name, desired, ..
+        }
+        | Op::Update {
+            type_name, desired, ..
+        } => (type_name, desired),
+        Op::Delete { .. } => return Err(anyhow!("a delete has no body")),
+    };
+    let info = registry
+        .info_for(type_name)
+        .ok_or_else(|| anyhow!("unsupported type {}", type_name))?;
+    let type_schema = schema
+        .types
+        .get(type_name.as_str())
+        .ok_or_else(|| anyhow!("missing schema for {}", type_name))?;
+    let custom_fields = custom_fields_by_type
+        .get(&content_type_of(registry, type_name.as_str()))
+        .cloned()
+        .unwrap_or_default();
+    let body = build_request_body(
+        type_name,
+        type_schema,
+        &desired.attrs,
+        resolved,
+        &custom_fields,
+        &info.features,
+        registry,
+    )?;
+    Ok((info, type_schema.clone(), body))
 }
 
 fn build_request_body(

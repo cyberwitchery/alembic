@@ -9,8 +9,7 @@ use alembic_core::{
 };
 use anyhow::{Context, Result};
 use serde_json::Value;
-use std::cmp::Reverse;
-use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
+use std::collections::{BTreeMap, BTreeSet};
 
 /// build a deterministic plan from desired and observed state. `match_by_key`
 /// gates the key fallback: off (--no-adopt), only state-known objects match,
@@ -654,7 +653,9 @@ fn op_referenced_uids(op: &Op, schema: &Schema) -> BTreeSet<Uid> {
     }
 }
 
-/// Kahn's algorithm with `op_order_key` as a deterministic tie-breaker.
+/// Kahn's algorithm, a level at a time: every node whose predecessors are placed
+/// goes next, in `op_order_key` order, so no node in a level depends on another
+/// and a level's ops of one type stay together for an adapter to batch.
 /// `edges[a]` holds the nodes that must come *after* node `a`. nodes that
 /// remain in a reference cycle never reach in-degree zero; they are appended in
 /// stable `op_order_key` order so the result is always a total order (the
@@ -670,22 +671,22 @@ fn stable_toposort(ops: &[&Op], edges: &[BTreeSet<usize>]) -> Vec<usize> {
         }
     }
 
-    let mut ready: BinaryHeap<Reverse<(OrderKey, usize)>> = BinaryHeap::new();
-    for (i, &deg) in indegree.iter().enumerate() {
-        if deg == 0 {
-            ready.push(Reverse((keys[i].clone(), i)));
-        }
-    }
-
+    let by_key = |a: &usize, b: &usize| keys[*a].cmp(&keys[*b]).then(a.cmp(b));
+    let mut level: Vec<usize> = (0..n).filter(|&i| indegree[i] == 0).collect();
     let mut order = Vec::with_capacity(n);
-    while let Some(Reverse((_, i))) = ready.pop() {
-        order.push(i);
-        for &b in &edges[i] {
-            indegree[b] -= 1;
-            if indegree[b] == 0 {
-                ready.push(Reverse((keys[b].clone(), b)));
+    while !level.is_empty() {
+        level.sort_by(by_key);
+        let mut next = Vec::new();
+        for &i in &level {
+            for &b in &edges[i] {
+                indegree[b] -= 1;
+                if indegree[b] == 0 {
+                    next.push(b);
+                }
             }
         }
+        order.append(&mut level);
+        level = next;
     }
 
     // cyclic remainder: nodes that never reached in-degree zero. fall back to
@@ -1587,6 +1588,22 @@ mod tests {
         // referenced objects are created before the objects referencing them.
         assert!(order_index(&sorted, 3) < order_index(&sorted, 2));
         assert!(order_index(&sorted, 2) < order_index(&sorted, 1));
+    }
+
+    /// a node goes only after every node of the level before it, so ops that do
+    /// not depend on each other stay together for an adapter to batch.
+    #[test]
+    fn toposort_places_a_level_at_a_time() {
+        let schema = node_schema(&[("next", ref_t())]);
+        let ops = vec![
+            create_node(1, "a", make_attrs(&[("next", uref(3))])),
+            create_node(2, "b", make_attrs(&[("next", uref(4))])),
+            create_node(3, "c", make_attrs(&[])),
+            create_node(4, "d", make_attrs(&[])),
+        ];
+        let sorted = sort_ops_for_apply(&ops, &schema);
+        let uids: Vec<u128> = sorted.iter().map(|op| op.uid().as_u128()).collect();
+        assert_eq!(uids, [3, 4, 1, 2]);
     }
 
     #[test]

@@ -41,13 +41,28 @@ pub enum RetryApplyError {
 }
 
 #[async_trait]
-pub trait RetryApplyDriver {
+pub trait RetryApplyDriver: Send {
     /// error `apply_non_delete` fails with; the retry loop's own failures convert into
     /// it, and an op's failure after progress is boxed as the source of one.
     type Error: From<RetryApplyError> + Into<Box<dyn StdError + Send + Sync>>;
 
     async fn apply_non_delete(&mut self, op: &Op) -> Result<AppliedOp, Self::Error>;
     fn is_retryable(&self, err: &Self::Error) -> bool;
+    /// how many consecutive ops of one type and kind `apply_non_delete_batch` takes at
+    /// once. 1, the default, applies every op on its own.
+    fn batch_size(&self) -> usize {
+        1
+    }
+    /// apply `ops`, of one type and kind, all or nothing: on an error none of them is
+    /// applied, and the loop applies each on its own instead. the default applies them
+    /// in turn, so a driver raising `batch_size` overrides this too.
+    async fn apply_non_delete_batch(&mut self, ops: &[Op]) -> Result<Vec<AppliedOp>, Self::Error> {
+        let mut applied = Vec::with_capacity(ops.len());
+        for op in ops {
+            applied.push(self.apply_non_delete(op).await?);
+        }
+        Ok(applied)
+    }
     /// handed the ops an earlier run applied, before this run's first op, so the
     /// driver can resolve references into objects it is not going to create again.
     fn resume(&mut self, _resumed: &[AppliedOp]) {}
@@ -95,31 +110,39 @@ pub async fn apply_non_delete_with_retries<'a, D: RetryApplyDriver>(
         let current = std::mem::take(&mut pending);
         let applied_before = applied.len();
 
-        for op in current {
-            match driver.apply_non_delete(&op).await {
-                Ok(applied_op) => {
-                    // the journal is append-only, so marking is the persist: the record
-                    // is on disk before the next op is applied against it
-                    if let Some(journal) = journal.as_mut() {
-                        journal
-                            .mark_op_as_done(&op, applied_op.backend_id.as_ref())
-                            .await
-                            .map_err(RetryApplyError::from)?;
-                    }
-                    applied.push(applied_op);
-                }
-                Err(err) if driver.is_retryable(&err) => pending.push(op),
-                Err(err) => {
-                    return Err(match journal.as_deref().and_then(resumable) {
-                        Some((applied, total, journal)) => RetryApplyError::Interrupted {
-                            applied,
-                            total,
-                            journal,
-                            source: err.into(),
+        for batch in batches(current, driver.batch_size()) {
+            if batch.len() > 1 {
+                if let Ok(applied_ops) = driver.apply_non_delete_batch(&batch).await {
+                    if applied_ops.len() == batch.len() {
+                        for (op, applied_op) in batch.iter().zip(applied_ops) {
+                            mark_done(journal.as_deref_mut(), op, &applied_op).await?;
+                            applied.push(applied_op);
                         }
-                        .into(),
-                        None => err,
-                    });
+                        continue;
+                    }
+                }
+                // nothing in the batch was applied: each op goes on its own, which names
+                // the one that failed and lets a missing ref wait for the next pass
+            }
+            for op in batch {
+                match driver.apply_non_delete(&op).await {
+                    Ok(applied_op) => {
+                        mark_done(journal.as_deref_mut(), &op, &applied_op).await?;
+                        applied.push(applied_op);
+                    }
+                    Err(err) if driver.is_retryable(&err) => pending.push(op),
+                    Err(err) => {
+                        return Err(match journal.as_deref().and_then(resumable) {
+                            Some((applied, total, journal)) => RetryApplyError::Interrupted {
+                                applied,
+                                total,
+                                journal,
+                                source: err.into(),
+                            }
+                            .into(),
+                            None => err,
+                        });
+                    }
                 }
             }
         }
@@ -147,6 +170,39 @@ pub async fn apply_non_delete_with_retries<'a, D: RetryApplyDriver>(
         },
         JournalGuard::borrowed(journal),
     ))
+}
+
+/// the journal is append-only, so marking is the persist: the record is on disk before
+/// the next op is applied against it.
+async fn mark_done(
+    journal: Option<&mut Journal>,
+    op: &Op,
+    applied_op: &AppliedOp,
+) -> Result<(), RetryApplyError> {
+    if let Some(journal) = journal {
+        journal
+            .mark_op_as_done(op, applied_op.backend_id.as_ref())
+            .await?;
+    }
+    Ok(())
+}
+
+/// `ops` in order, cut into runs of one type and kind of at most `size` ops each.
+fn batches(ops: Vec<Op>, size: usize) -> Vec<Vec<Op>> {
+    let mut batches: Vec<Vec<Op>> = Vec::new();
+    for op in ops {
+        match batches.last_mut() {
+            Some(batch)
+                if batch.len() < size.max(1)
+                    && batch[0].type_name() == op.type_name()
+                    && std::mem::discriminant(&batch[0]) == std::mem::discriminant(&op) =>
+            {
+                batch.push(op)
+            }
+            _ => batches.push(vec![op]),
+        }
+    }
+    batches
 }
 
 /// run the retry loop over a journal loaded from `journal_storage` under `scope` (none
