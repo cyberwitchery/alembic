@@ -24,7 +24,7 @@ it names the ip's interface assignment `assigned_interface`:
     key: {slug: "fra1"}
     attrs: {name: "Frankfurt DC1", slug: "fra1"}
   # ...
-  - type: ipam.ip_address
+  - type: ipam.ipaddress
     key: {address: "10.0.0.10/24"}
     attrs:
       address: "10.0.0.10/24"
@@ -39,8 +39,7 @@ the model is close to both systems but identical to neither:
   assignment `assigned_object`, a generic foreign key.
 - **nautobot** models a site as `dcim.location`, keyed by its human name with no
   slug and typed by a `dcim.locationtype`, and a device points at `location`,
-  not `site`. a device role is a generic `extras.role`, its type names drop the
-  underscore (`dcim.devicetype`, `ipam.ipaddress`), and an ip reaches its
+  not `site`. a device role is a generic `extras.role`, and an ip reaches its
   interface through a separate `ipam.ipaddresstointerface` object and needs a
   parent prefix. locations, devices, interfaces, prefixes and ips each require a
   status.
@@ -56,9 +55,9 @@ netbox needs a single rename
 ```yaml
 rules:
   - name: rename-assignment
-    match: ipam.ip_address
+    match: ipam.ipaddress
     emit:
-      type: ipam.ip_address
+      type: ipam.ipaddress
       key: {address: "${key.address}"}
       attrs:
         address: "${attrs.address}"
@@ -123,7 +122,7 @@ rules:
         status: "${uids.active}"
   # ... 1:1 rules for the role, manufacturer, device type and interface
   - name: ip-addresses
-    match: ipam.ip_address
+    match: ipam.ipaddress
     uids:
       parent: {v5: {type: ipam.prefix, stable: "10.0.0.0/24"}}
       active: {v5: {type: extras.status, stable: Active}}

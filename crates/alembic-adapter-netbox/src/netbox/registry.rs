@@ -1,5 +1,5 @@
 use alembic_core::TypeName;
-use alembic_engine::{normalize_endpoint, pluralize};
+use alembic_engine::normalize_endpoint;
 use anyhow::{anyhow, Result};
 use netbox::models::ObjectType;
 use std::collections::{BTreeMap, BTreeSet};
@@ -29,8 +29,7 @@ impl ObjectTypeRegistry {
             else {
                 continue;
             };
-            let endpoint_type = type_name(&object_type.app_label, &object_type.model, &endpoint);
-            let model_type = format!("{}.{}", object_type.app_label, object_type.model);
+            let type_name = format!("{}.{}", object_type.app_label, object_type.model);
             // netbox names features with underscores (`custom_fields`); the
             // adapters check the hyphenated spelling nautobot's registry uses.
             let features: BTreeSet<String> = object_type
@@ -40,15 +39,14 @@ impl ObjectTypeRegistry {
                 .map(|feature| feature.replace('_', "-"))
                 .collect();
             let info = ObjectTypeInfo {
-                type_name: TypeName::new(endpoint_type.clone()),
+                type_name: TypeName::new(type_name.clone()),
                 endpoint: endpoint.clone(),
                 features,
                 app_label: object_type.app_label.clone(),
                 model: object_type.model.clone(),
             };
-            registry.by_endpoint.insert(endpoint, endpoint_type.clone());
-            registry.by_type.insert(endpoint_type, info.clone());
-            registry.by_type.insert(model_type, info);
+            registry.by_endpoint.insert(endpoint, type_name.clone());
+            registry.by_type.insert(type_name, info);
         }
 
         if registry.by_type.is_empty() {
@@ -61,18 +59,7 @@ impl ObjectTypeRegistry {
     }
 
     pub(super) fn info_for(&self, type_name: &TypeName) -> Option<ObjectTypeInfo> {
-        if let Some(info) = self.by_type.get(type_name.as_str()) {
-            return Some(info.clone());
-        }
-        let (app_label, model) = split_type_name(type_name.as_str())?;
-        let endpoint = endpoint_from_type_name(type_name.as_str())?;
-        Some(ObjectTypeInfo {
-            type_name: type_name.clone(),
-            endpoint,
-            features: BTreeSet::new(),
-            app_label,
-            model,
-        })
+        self.by_type.get(type_name.as_str()).cloned()
     }
 
     pub(super) fn contains_type(&self, type_name: &TypeName) -> bool {
@@ -112,147 +99,68 @@ impl ObjectTypeRegistry {
     }
 }
 
-/// the user-facing name of a netbox object type: its model, with `_` where the
-/// route spells a word boundary in the stretch the two share
-/// (`ipaddress` + `ip-addresses/` is `ip_address`). both come from netbox, so no
-/// inflection decides an identity.
-fn type_name(app_label: &str, model: &str, endpoint: &str) -> String {
-    let route = endpoint
-        .trim_matches('/')
-        .rsplit('/')
-        .next()
-        .unwrap_or_default();
-    let mut route = route.chars().peekable();
-    let mut name = String::with_capacity(model.len() + 2);
-    for (at, c) in model.char_indices() {
-        while route.next_if_eq(&'-').is_some() {
-            name.push('_');
-        }
-        if route.next_if_eq(&c).is_none() {
-            name.push_str(&model[at..]);
-            break;
-        }
-        name.push(c);
-    }
-    format!("{app_label}.{name}")
-}
-
-fn split_type_name(value: &str) -> Option<(String, String)> {
-    let (app, model) = value.split_once('.')?;
-    Some((app.to_string(), model.to_string()))
-}
-
-fn endpoint_from_type_name(type_name: &str) -> Option<String> {
-    let (app, model) = type_name.split_once('.')?;
-    let resource = pluralize(model).replace('_', "-");
-    Some(format!("{app}/{resource}/"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_type_name_is_the_model_split_where_the_route_splits() {
-        for (app_label, model, endpoint, expected) in [
-            ("dcim", "device", "dcim/devices/", "dcim.device"),
-            ("dcim", "devicebay", "dcim/device-bays/", "dcim.device_bay"),
-            ("ipam", "ipaddress", "ipam/ip-addresses/", "ipam.ip_address"),
-            ("ipam", "prefix", "ipam/prefixes/", "ipam.prefix"),
-            (
-                "extras",
-                "journalentry",
-                "extras/journal-entries/",
-                "extras.journal_entry",
-            ),
-            (
-                "dcim",
-                "virtualchassis",
-                "dcim/virtual-chassis/",
-                "dcim.virtual_chassis",
-            ),
-        ] {
-            assert_eq!(type_name(app_label, model, endpoint), expected);
+    fn object_type(app_label: &str, model: &str, endpoint: &str) -> ObjectType {
+        ObjectType {
+            app_label: app_label.to_string(),
+            model: model.to_string(),
+            rest_api_endpoint: Some(endpoint.to_string()),
+            ..Default::default()
         }
     }
 
-    /// a route named for something other than the model contributes nothing.
+    /// the name and the endpoint are what netbox reports; nothing is derived.
     #[test]
-    fn a_route_named_apart_from_its_model_leaves_the_model() {
-        assert_eq!(
-            type_name(
+    fn a_type_is_its_app_label_and_model_at_its_reported_endpoint() {
+        let registry = ObjectTypeRegistry::from_object_types(vec![
+            object_type("ipam", "ipaddress", "/api/ipam/ip-addresses/"),
+            object_type(
                 "virtualization",
                 "vminterface",
-                "virtualization/interfaces/"
+                "/api/virtualization/interfaces/",
             ),
-            "virtualization.vminterface"
-        );
-        assert_eq!(
-            type_name("users", "objectpermission", "users/permissions/"),
-            "users.objectpermission"
-        );
-        assert_eq!(
-            type_name("extras", "taggeditem", "extras/tagged-objects/"),
-            "extras.tagged_item"
-        );
-    }
-
-    /// a plugin's routes sit under `plugins/<plugin>/`, so the app is the
-    /// app label, never the route's first segment.
-    #[test]
-    fn a_plugin_type_is_named_by_its_app_label() {
-        let registry = ObjectTypeRegistry::from_object_types(vec![
-            ObjectType {
-                app_label: "netbox_custom_objects".to_string(),
-                model: "customobjecttype".to_string(),
-                rest_api_endpoint: Some(
-                    "/api/plugins/custom-objects/custom-object-types/".to_string(),
-                ),
-                ..Default::default()
-            },
-            ObjectType {
-                app_label: "netbox_custom_objects".to_string(),
-                model: "customobjecttypefield".to_string(),
-                rest_api_endpoint: Some(
-                    "/api/plugins/custom-objects/custom-object-type-fields/".to_string(),
-                ),
-                ..Default::default()
-            },
+            object_type(
+                "netbox_custom_objects",
+                "customobjecttype",
+                "/api/plugins/custom-objects/custom-object-types/",
+            ),
         ])
         .unwrap();
 
-        assert_eq!(
-            registry.type_name_for_endpoint("/api/plugins/custom-objects/custom-object-types/1/"),
-            Some("netbox_custom_objects.custom_object_type")
-        );
-        assert_eq!(
-            registry
-                .type_name_for_endpoint("/api/plugins/custom-objects/custom-object-type-fields/"),
-            Some("netbox_custom_objects.custom_object_type_field")
-        );
+        for (name, endpoint) in [
+            ("ipam.ipaddress", "ipam/ip-addresses/"),
+            ("virtualization.vminterface", "virtualization/interfaces/"),
+            (
+                "netbox_custom_objects.customobjecttype",
+                "plugins/custom-objects/custom-object-types/",
+            ),
+        ] {
+            let info = registry.info_for(&TypeName::new(name)).unwrap();
+            assert_eq!(info.endpoint, endpoint);
+            assert_eq!(
+                registry.type_name_for_endpoint(&format!(
+                    "https://netbox.example.com/api/{endpoint}7/"
+                )),
+                Some(name)
+            );
+        }
     }
 
+    /// a name netbox did not report has no endpoint to guess.
     #[test]
-    fn endpoint_from_type_name_handles_pluralization() {
-        assert_eq!(
-            endpoint_from_type_name("ipam.ip_address"),
-            Some("ipam/ip-addresses/".to_string())
-        );
-        assert_eq!(
-            endpoint_from_type_name("circuits.circuit_termination"),
-            Some("circuits/circuit-terminations/".to_string())
-        );
-        assert_eq!(
-            endpoint_from_type_name("dcim.device"),
-            Some("dcim/devices/".to_string())
-        );
-        assert_eq!(
-            endpoint_from_type_name("ipam.prefix"),
-            Some("ipam/prefixes/".to_string())
-        );
-        assert_eq!(
-            endpoint_from_type_name("dcim.device_bay"),
-            Some("dcim/device-bays/".to_string())
-        );
+    fn an_unreported_type_has_no_info() {
+        let registry = ObjectTypeRegistry::from_object_types(vec![object_type(
+            "ipam",
+            "ipaddress",
+            "/api/ipam/ip-addresses/",
+        )])
+        .unwrap();
+
+        assert!(registry
+            .info_for(&TypeName::new("ipam.ip_address"))
+            .is_none());
     }
 }

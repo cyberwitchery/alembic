@@ -131,7 +131,7 @@ fn example_01_maps_the_neutral_model_to_netbox_names() {
     // "the target `schema` only declares the one type you reshape".
     assert_eq!(
         type_names(&spec),
-        BTreeSet::from(["ipam.ip_address".to_string()]),
+        BTreeSet::from(["ipam.ipaddress".to_string()]),
         "the spec should declare only the reshaped type"
     );
     // "the `match: \"*\"` passthrough carries every other type through unchanged",
@@ -144,7 +144,7 @@ fn example_01_maps_the_neutral_model_to_netbox_names() {
     );
 
     // the rename: netbox's `assigned_object` replaces the neutral name.
-    let mapped_fields = field_names(&ir, "ipam.ip_address");
+    let mapped_fields = field_names(&ir, "ipam.ipaddress");
     assert!(
         mapped_fields.contains("assigned_object"),
         "{mapped_fields:?}"
@@ -157,7 +157,7 @@ fn example_01_maps_the_neutral_model_to_netbox_names() {
     // "the ip still points at its interface, and every object keeps the
     // identity you authored": eth0, not eth1, under the authored uid.
     let eth0 = object(&ir, "dcim.interface", "name", "eth0");
-    let ip = object(&ir, "ipam.ip_address", "address", "10.0.0.10/24");
+    let ip = object(&ir, "ipam.ipaddress", "address", "10.0.0.10/24");
     assert_eq!(ip["attrs"]["assigned_object"], uid(eth0));
     assert!(ip["attrs"].get("assigned_interface").is_none());
     let authored = object(&source, "dcim.interface", "name", "eth0");
@@ -184,7 +184,7 @@ fn case_study_01_stands_one_model_up_into_two_backends() {
             .count(),
         0
     );
-    let netbox_ip = object(&netbox, "ipam.ip_address", "address", "10.0.0.10/24");
+    let netbox_ip = object(&netbox, "ipam.ipaddress", "address", "10.0.0.10/24");
     let netbox_eth0 = object(&netbox, "dcim.interface", "name", "eth0");
     assert_eq!(netbox_ip["attrs"]["assigned_object"], uid(netbox_eth0));
 

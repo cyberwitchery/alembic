@@ -1,7 +1,7 @@
 //! string inflection for rest-api endpoint segments.
 
 /// pluralize a django/drf endpoint segment, the way django's url router does.
-/// shared by the netbox, nautobot, and django adapters.
+/// the django emitter names the routes it generates with it.
 pub fn pluralize(value: &str) -> String {
     if value.ends_with("address") {
         return format!("{value}es");

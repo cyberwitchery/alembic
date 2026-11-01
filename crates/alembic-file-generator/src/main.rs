@@ -12,8 +12,8 @@ use std::path::{Path, PathBuf};
 
 const DEVICE: &str = "dcim.device";
 const SITE: &str = "dcim.site";
-const ROLE: &str = "dcim.device_role";
-const MODEL: &str = "dcim.device_type";
+const ROLE: &str = "dcim.devicerole";
+const MODEL: &str = "dcim.devicetype";
 const MANUFACTURER: &str = "dcim.manufacturer";
 const INTERFACE: &str = "dcim.interface";
 const CABLE: &str = "dcim.cable";
@@ -353,7 +353,7 @@ types:
           type: string
         slug:
           type: slug
-    dcim.device_role:
+    dcim.devicerole:
       key:
         slug:
           type: slug
@@ -362,7 +362,7 @@ types:
           type: string
         slug:
           type: slug
-    dcim.device_type:
+    dcim.devicetype:
       key:
         slug:
           type: slug
@@ -397,10 +397,10 @@ types:
           target: dcim.site
         role:
           type: ref
-          target: dcim.device_role
+          target: dcim.devicerole
         device_type:
           type: ref
-          target: dcim.device_type
+          target: dcim.devicetype
         status:
           type: string
     dcim.interface:

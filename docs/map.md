@@ -83,9 +83,9 @@ source object through unchanged. paired with `match: "*"`, it is the terse
 ```yaml
 rules:
   - name: rename-assignment
-    match: ipam.ip_address
+    match: ipam.ipaddress
     emit:
-      type: ipam.ip_address
+      type: ipam.ipaddress
       key: { address: "${key.address}" }
       attrs:
         address: "${attrs.address}"
@@ -144,12 +144,12 @@ objects:
     key: { slug: nokia }
     attrs: { name: Nokia }
     uid: { v5: { type: dcim.manufacturer, stable: nokia } }
-  - type: dcim.device_type
+  - type: dcim.devicetype
     key: { slug: srlinux }
     attrs:
       model: SR Linux
       manufacturer: { v5: { type: dcim.manufacturer, stable: nokia } }
-    uid: { v5: { type: dcim.device_type, stable: srlinux } }
+    uid: { v5: { type: dcim.devicetype, stable: srlinux } }
 ```
 
 ## vars

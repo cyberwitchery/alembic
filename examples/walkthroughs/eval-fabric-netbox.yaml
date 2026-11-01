@@ -3,16 +3,16 @@
 # every other type through unchanged (the neutral names already match netbox).
 schema:
   types:
-    ipam.ip_address:
+    ipam.ipaddress:
       key: {address: {type: ip_address}}
       fields:
         address: {type: ip_address}
         assigned_object: {type: ref, target: dcim.interface}
 rules:
   - name: rename-assignment
-    match: ipam.ip_address
+    match: ipam.ipaddress
     emit:
-      type: ipam.ip_address
+      type: ipam.ipaddress
       key: {address: "${key.address}"}
       attrs:
         address: "${attrs.address}"

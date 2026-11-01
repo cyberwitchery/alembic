@@ -1725,11 +1725,10 @@ fn build_request_body(
     Ok(Value::Object(body))
 }
 
-/// the NetBox content type (`app_label.model`, e.g. `ipam.ipaddress`) for an
-/// alembic `type_name` (`ipam.ip_address`), used to key generic-FK metadata and
-/// to fill a generic FK's `object_type`. falls back to the input when the type
-/// is not in the registry (it is then already a content type, e.g.
-/// `dcim.interface`).
+/// the NetBox content type (`app_label.model`) for an alembic `type_name`: the
+/// name itself for a native type, the plugin's model for a custom object type.
+/// used to key generic-FK metadata and to fill a generic FK's `object_type`.
+/// falls back to the input when the type is not in the registry.
 fn content_type_of(registry: &ObjectTypeRegistry, type_name: &str) -> String {
     registry
         .info_for(&TypeName::new(type_name))
@@ -2357,8 +2356,7 @@ fn custom_field_payload(content_type: &str, field_name: &str, field_schema: &Fie
     payload.insert("label".to_string(), Value::String(field_name.to_string()));
     payload.insert("type".to_string(), Value::String(field_type));
     // netbox keys a custom field's object_types by the django content type
-    // (`ipam.ipaddress`), not the endpoint form (`ipam.ip_address`); the two
-    // diverge for every multi-word model, and posting the endpoint form 400s.
+    // (`ipam.ipaddress`).
     payload.insert(
         "object_types".to_string(),
         Value::Array(vec![Value::String(content_type.to_string())]),
