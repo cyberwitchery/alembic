@@ -21,6 +21,10 @@ struct Cli {
     /// also run `protocol/write-empty` and `protocol/ensure-schema-empty`: they write for real.
     #[arg(long)]
     write_checks: bool,
+    /// a json object sent as the `setup` of every built-in request, for an
+    /// adapter that cannot answer without configuration.
+    #[arg(long)]
+    setup: Option<PathBuf>,
     /// deprecated: off is the default now.
     #[arg(long, conflicts_with = "write_checks")]
     no_provisioning_check: bool,
@@ -36,8 +40,16 @@ fn main() -> ExitCode {
     if cli.no_provisioning_check {
         eprintln!("warning: --no-provisioning-check is the default now; drop it, or pass --write-checks to run the writing checks");
     }
+    let setup = match cli.setup.as_deref().map(load_setup).transpose() {
+        Ok(setup) => setup.unwrap_or_default(),
+        Err(e) => {
+            eprintln!("error: {e:#}");
+            return ExitCode::from(2);
+        }
+    };
     let builtins = Builtins {
         writes: cli.write_checks,
+        setup,
     };
     let mut outcomes = run_builtin_with(&cli.adapter, timeout, builtins);
     if let Some(path) = cli.cases {
@@ -78,6 +90,16 @@ fn main() -> ExitCode {
         outcomes.extend(run_cases(&cli.adapter, timeout, &cases));
     }
     report(&outcomes)
+}
+
+/// the `--setup` file: one json object, as an adapter receives `setup`.
+fn load_setup(path: &Path) -> anyhow::Result<serde_json::Map<String, serde_json::Value>> {
+    let text =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    match serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))? {
+        serde_json::Value::Object(setup) => Ok(setup),
+        _ => anyhow::bail!("{} holds no json object", path.display()),
+    }
 }
 
 /// subdirectories of a `--cases` directory holding case files, sorted. a `--cases`

@@ -8,7 +8,7 @@ use alembic_adapter_sdk::{
 use alembic_core::{key_string, uid_v5, validate_inventory, Inventory, Object, Schema, TypeName};
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use std::io::{Read, Write};
 use std::path::Path;
 use std::process::{Command, ExitStatus, Stdio};
@@ -40,11 +40,14 @@ impl Outcome {
 
 /// which built-in checks to run. the writing ones are off by default: a
 /// conformance run is not asked to touch the operator's backend.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct Builtins {
     /// `protocol/write-empty` and `protocol/ensure-schema-empty` both write, at
     /// the adapter's own default target.
     pub writes: bool,
+    /// the `setup` every built-in request carries, for an adapter that cannot
+    /// answer without configuration. empty by default.
+    pub setup: Map<String, Value>,
 }
 
 /// why a check failed, with the diagnostics needed to debug the adapter.
@@ -85,13 +88,14 @@ pub fn run_builtin_with(adapter: &[String], timeout: Duration, builtins: Builtin
     // requests use the version the engine sends, so the suite tracks the protocol it tests.
     let version = EXTERNAL_PROTOCOL_VERSION;
     // the declared role decides which liveness checks run below, so probe it first.
-    let (role, capabilities) = probe_capabilities(adapter, timeout);
+    let setup = &builtins.setup;
+    let (role, capabilities) = probe_capabilities(adapter, timeout, setup);
     let read_empty = (
         "protocol/read-empty",
         "read",
         json!({
             "version": version,
-            "setup": {},
+            "setup": setup,
             "method": "read",
             "schema": { "types": {} },
             "types": [],
@@ -103,7 +107,7 @@ pub fn run_builtin_with(adapter: &[String], timeout: Duration, builtins: Builtin
         "write",
         json!({
             "version": version,
-            "setup": {},
+            "setup": setup,
             "method": "write",
             "schema": { "types": {} },
             "ops": [],
@@ -115,7 +119,7 @@ pub fn run_builtin_with(adapter: &[String], timeout: Duration, builtins: Builtin
         "preview_schema",
         json!({
             "version": version,
-            "setup": {},
+            "setup": setup,
             "method": "preview_schema",
             "schema": { "types": {} }
         }),
@@ -157,7 +161,7 @@ pub fn run_builtin_with(adapter: &[String], timeout: Duration, builtins: Builtin
             adapter,
             timeout,
             "protocol/unknown-method",
-            &request_bytes(&json!({ "version": version, "setup": {}, "method": "frobnicate" })),
+            &request_bytes(&json!({ "version": version, "setup": setup, "method": "frobnicate" })),
             "read",
             Expectation::MustError,
         ),
@@ -201,7 +205,7 @@ pub fn run_builtin_with(adapter: &[String], timeout: Duration, builtins: Builtin
                 "protocol/ensure-schema-empty",
                 &request_bytes(&json!({
                     "version": version,
-                    "setup": {},
+                    "setup": setup,
                     "method": "ensure_schema",
                     "schema": { "types": {} }
                 })),
@@ -231,10 +235,14 @@ fn skipped(name: &str, reason: &str) -> Outcome {
 /// a structured error (an adapter predating the method) is conformant and means
 /// the default read+write role, exactly as the registry defaults at construction;
 /// only a broken exchange fails the check.
-fn probe_capabilities(adapter: &[String], timeout: Duration) -> (ExternalRole, Outcome) {
+fn probe_capabilities(
+    adapter: &[String],
+    timeout: Duration,
+    setup: &Map<String, Value>,
+) -> (ExternalRole, Outcome) {
     let request = request_bytes(&json!({
         "version": EXTERNAL_PROTOCOL_VERSION,
-        "setup": {},
+        "setup": setup,
         "method": "capabilities"
     }));
     let run = run_once(adapter, timeout, &request);
