@@ -547,6 +547,7 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<ExitCode> {
                     summary: None,
                     schema_preview: None,
                     effects: plan.effects,
+                    adopt_by_key: plan.adopt_by_key,
                 }
             } else {
                 plan
