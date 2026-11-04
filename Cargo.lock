@@ -2425,9 +2425,9 @@ dependencies = [
 
 [[package]]
 name = "nautobot"
-version = "0.9.1"
+version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f97848670c531bd4f7a15e5bf8a6e9392384772f81366b7f6e8c67298e2014d3"
+checksum = "325f870f4fbc10062ae70df611edcd47f89e9dafb38fe53d625b691bb7ab6c6f"
 dependencies = [
  "nautobot-openapi",
  "reqwest 0.13.5",
@@ -2441,9 +2441,9 @@ dependencies = [
 
 [[package]]
 name = "nautobot-openapi"
-version = "0.9.1"
+version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "15d7dea73f7b460ccb66a2ed45b8a054c62b3d92b266d6a104555d7d24983910"
+checksum = "9cd739a2b9e16fc4b14abedf38a436d2070ec96754db1dbbf2c3468901b91022"
 dependencies = [
  "reqwest 0.13.5",
  "serde",
