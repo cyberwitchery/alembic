@@ -307,6 +307,7 @@ impl Emitter for NautobotAdapter {
                 type_name,
                 key,
                 backend_id,
+                ..
             } = op
             {
                 let id = if let Some(BackendId::String(id)) = backend_id {

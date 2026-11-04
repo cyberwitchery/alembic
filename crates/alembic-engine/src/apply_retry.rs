@@ -294,6 +294,7 @@ mod tests {
             type_name: TypeName::new("test.item"),
             key: Key::default(),
             backend_id: None,
+            refs: Default::default(),
         }];
         let mut driver = TestDriver {
             attempts: 0,
@@ -1154,5 +1155,154 @@ mod tests {
             .unwrap();
         assert_eq!(report.applied.len(), 1);
         assert_eq!(report.previously_applied_count, None);
+    }
+
+    fn create_of(uid: u128, type_name: &str) -> Op {
+        let uid = Uid::from_u128(uid);
+        Op::Create {
+            uid,
+            type_name: TypeName::new(type_name),
+            desired: Object {
+                uid,
+                type_name: TypeName::new(type_name),
+                key: Key::default(),
+                attrs: JsonMap::default(),
+                source: None,
+            },
+        }
+    }
+
+    /// records each call: `batch:<uids>` or `op:<uid>`.
+    struct BatchDriver {
+        size: usize,
+        refuse_batches: bool,
+        calls: Vec<String>,
+    }
+
+    impl BatchDriver {
+        fn applied(op: &Op) -> AppliedOp {
+            AppliedOp {
+                uid: op.uid(),
+                type_name: op.type_name().clone(),
+                backend_id: Some(BackendId::Int(op.uid().as_u128() as u64)),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl RetryApplyDriver for BatchDriver {
+        type Error = anyhow::Error;
+
+        async fn apply_non_delete(&mut self, op: &Op) -> Result<AppliedOp> {
+            self.calls.push(format!("op:{}", op.uid().as_u128()));
+            Ok(Self::applied(op))
+        }
+
+        fn is_retryable(&self, _err: &anyhow::Error) -> bool {
+            false
+        }
+
+        fn batch_size(&self) -> usize {
+            self.size
+        }
+
+        async fn apply_non_delete_batch(&mut self, ops: &[Op]) -> Result<Vec<AppliedOp>> {
+            let uids: Vec<String> = ops
+                .iter()
+                .map(|op| op.uid().as_u128().to_string())
+                .collect();
+            self.calls.push(format!("batch:{}", uids.join(",")));
+            if self.refuse_batches {
+                return Err(anyhow!("batch refused"));
+            }
+            Ok(ops.iter().map(Self::applied).collect())
+        }
+    }
+
+    #[test]
+    fn runs_of_one_type_and_kind_go_in_batches_and_are_journaled() {
+        let _guard = journal_guard();
+        let ops = vec![
+            create_of(1, "a"),
+            create_of(2, "a"),
+            create_of(3, "a"),
+            create_of(4, "b"),
+            create_of(5, "a"),
+            create_of(6, "a"),
+        ];
+        let dir = tempdir().unwrap();
+        let mut journal = block_on(Journal::load_or_create_with_file(
+            dir.path(),
+            "batches",
+            &ops,
+        ))
+        .unwrap();
+        let mut driver = BatchDriver {
+            size: 2,
+            refuse_batches: false,
+            calls: vec![],
+        };
+
+        let (result, _) = block_on(apply_non_delete_with_retries(
+            &ops,
+            Some(&mut journal),
+            &mut driver,
+        ))
+        .unwrap();
+
+        assert_eq!(
+            driver.calls,
+            ["batch:1,2", "op:3", "op:4", "batch:5,6"],
+            "plan order holds: a run longer than the batch size splits, and a run of one goes on its own"
+        );
+        assert_eq!(result.applied.len(), 6);
+        assert_eq!(journal.done_ops_count(), 6);
+    }
+
+    #[test]
+    fn a_failed_batch_applies_each_of_its_ops_on_its_own() {
+        let _guard = journal_guard();
+        let ops = vec![create_of(1, "a"), create_of(2, "a")];
+        let mut driver = BatchDriver {
+            size: 10,
+            refuse_batches: true,
+            calls: vec![],
+        };
+
+        let (result, _) = block_on(apply_non_delete_with_retries(&ops, None, &mut driver)).unwrap();
+
+        assert_eq!(driver.calls, ["batch:1,2", "op:1", "op:2"]);
+        assert_eq!(result.applied.len(), 2);
+    }
+
+    #[test]
+    fn a_create_and_an_update_of_one_type_are_not_batched_together() {
+        let _guard = journal_guard();
+        let uid = Uid::from_u128(2);
+        let update = Op::Update {
+            uid,
+            type_name: TypeName::new("a"),
+            desired: Object {
+                uid,
+                type_name: TypeName::new("a"),
+                key: Key::default(),
+                attrs: JsonMap::default(),
+                source: None,
+            },
+            changes: vec![],
+            backend_id: None,
+        };
+        let ops = vec![create_of(1, "a"), update];
+        let mut driver = BatchDriver {
+            size: 10,
+            refuse_batches: false,
+            calls: vec![],
+        };
+
+        // no journal was given, so the guard holds none to finish.
+        let (_, _journal) =
+            block_on(apply_non_delete_with_retries(&ops, None, &mut driver)).unwrap();
+
+        assert_eq!(driver.calls, ["op:1", "op:2"]);
     }
 }

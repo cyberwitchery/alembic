@@ -9,8 +9,7 @@ use alembic_core::{
 };
 use anyhow::{Context, Result};
 use serde_json::Value;
-use std::cmp::Reverse;
-use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
+use std::collections::{BTreeMap, BTreeSet};
 
 /// build a deterministic plan from desired and observed state. `match_by_key`
 /// gates the key fallback: off (--no-adopt), only state-known objects match,
@@ -194,11 +193,18 @@ fn build(
                 .get(&(type_name.clone(), backend_id.clone()))
                 .copied()
                 .unwrap_or_else(|| uid_v5(type_name.as_str(), &key_string(&obs.key)));
+            let mut refs = schema
+                .types
+                .get(type_name.as_str())
+                .map(|type_schema| collect_referenced_uids(type_schema, &obs.attrs))
+                .unwrap_or_default();
+            refs.remove(&uid);
             ops.push(Op::Delete {
                 uid,
                 type_name: type_name.clone(),
                 key: obs.key.clone(),
                 backend_id: Some(backend_id.clone()),
+                refs,
             });
         }
     }
@@ -477,7 +483,11 @@ fn deferred_fields(
             return deferred;
         }
 
-        let component = strongly_connected(deps, &placed);
+        let next: Vec<Vec<usize>> = deps
+            .iter()
+            .map(|edges| edges.keys().copied().collect())
+            .collect();
+        let component = strongly_connected(&next, &placed);
         let candidate = (0..n)
             .filter(|&node| !placed[node])
             .filter(|&node| {
@@ -505,13 +515,14 @@ fn deferred_fields(
 }
 
 /// strongly connected components among the unplaced nodes (iterative kosaraju),
-/// as a component id per node. placed nodes get their own id each.
-fn strongly_connected(deps: &[BTreeMap<usize, CreateDep>], placed: &[bool]) -> Vec<usize> {
-    let n = deps.len();
+/// as a component id per node, over the edges `next` gives for each node. placed
+/// nodes get their own id each.
+fn strongly_connected(next: &[Vec<usize>], placed: &[bool]) -> Vec<usize> {
+    let n = next.len();
     let live = |node: usize| !placed[node];
     let mut reverse: Vec<Vec<usize>> = vec![Vec::new(); n];
-    for (node, edges) in deps.iter().enumerate() {
-        for &dep in edges.keys() {
+    for (node, edges) in next.iter().enumerate() {
+        for &dep in edges {
             if live(node) && live(dep) {
                 reverse[dep].push(node);
             }
@@ -525,13 +536,12 @@ fn strongly_connected(deps: &[BTreeMap<usize, CreateDep>], placed: &[bool]) -> V
             continue;
         }
         visited[start] = true;
-        let mut stack = vec![(start, deps[start].keys().copied().collect::<Vec<_>>())];
+        let mut stack = vec![(start, next[start].clone())];
         while let Some((node, pending)) = stack.last_mut() {
             match pending.pop() {
-                Some(next) if live(next) && !visited[next] => {
-                    visited[next] = true;
-                    let edges = deps[next].keys().copied().collect();
-                    stack.push((next, edges));
+                Some(node) if live(node) && !visited[node] => {
+                    visited[node] = true;
+                    stack.push((node, next[node].clone()));
                 }
                 Some(_) => {}
                 None => {
@@ -638,8 +648,8 @@ fn collect_referenced_uids(
 }
 
 /// the uids an op depends on. creates/updates draw refs from the desired attrs
-/// and key; deletes only carry a key, so refs come from reference-typed key
-/// components (the op has no attrs to inspect).
+/// and key; a delete from its key and the `refs` the planner recorded from the
+/// object it deletes.
 fn op_referenced_uids(op: &Op, schema: &Schema) -> BTreeSet<Uid> {
     let Some(type_schema) = schema.types.get(op.type_name().as_str()) else {
         return BTreeSet::new();
@@ -650,56 +660,73 @@ fn op_referenced_uids(op: &Op, schema: &Schema) -> BTreeSet<Uid> {
             uids.extend(collect_referenced_uids(type_schema, &desired.key));
             uids
         }
-        Op::Delete { key, .. } => collect_referenced_uids(type_schema, key),
+        Op::Delete { key, refs, .. } => {
+            let mut uids = collect_referenced_uids(type_schema, key);
+            uids.extend(refs.iter().copied());
+            uids
+        }
     }
 }
 
-/// Kahn's algorithm with `op_order_key` as a deterministic tie-breaker.
-/// `edges[a]` holds the nodes that must come *after* node `a`. nodes that
-/// remain in a reference cycle never reach in-degree zero; they are appended in
-/// stable `op_order_key` order so the result is always a total order (the
-/// apply_retry fixpoint resolves any residual ordering for them at apply time).
+/// Kahn's algorithm, a level at a time: every node whose predecessors are placed
+/// goes next, in `op_order_key` order, so no node in a level depends on another
+/// and a level's ops of one type stay together for an adapter to batch.
+/// `edges[a]` holds the nodes that must come *after* node `a`. it runs over the
+/// graph's strongly connected components, so the nodes of a reference cycle go
+/// together, in key order, once everything outside the cycle they depend on is
+/// placed (the apply_retry fixpoint resolves the rest at apply time).
 fn stable_toposort(ops: &[&Op], edges: &[BTreeSet<usize>]) -> Vec<usize> {
-    let n = ops.len();
     let keys: Vec<OrderKey> = ops.iter().map(|&op| op_order_key(op)).collect();
-
-    let mut indegree = vec![0usize; n];
-    for succs in edges {
+    let by_key = |a: &usize, b: &usize| keys[*a].cmp(&keys[*b]).then(a.cmp(b));
+    let next: Vec<Vec<usize>> = edges
+        .iter()
+        .map(|succs| succs.iter().copied().collect())
+        .collect();
+    let roots = strongly_connected(&next, &vec![false; ops.len()]);
+    let mut ids: BTreeMap<usize, usize> = BTreeMap::new();
+    let mut components: Vec<Vec<usize>> = Vec::new();
+    let mut component_of = vec![0usize; ops.len()];
+    for (i, root) in roots.into_iter().enumerate() {
+        let c = *ids.entry(root).or_insert_with(|| {
+            components.push(Vec::new());
+            components.len() - 1
+        });
+        components[c].push(i);
+        component_of[i] = c;
+    }
+    let mut successors = vec![BTreeSet::new(); components.len()];
+    let mut indegree = vec![0usize; components.len()];
+    for (a, succs) in edges.iter().enumerate() {
         for &b in succs {
-            indegree[b] += 1;
-        }
-    }
-
-    let mut ready: BinaryHeap<Reverse<(OrderKey, usize)>> = BinaryHeap::new();
-    for (i, &deg) in indegree.iter().enumerate() {
-        if deg == 0 {
-            ready.push(Reverse((keys[i].clone(), i)));
-        }
-    }
-
-    let mut order = Vec::with_capacity(n);
-    while let Some(Reverse((_, i))) = ready.pop() {
-        order.push(i);
-        for &b in &edges[i] {
-            indegree[b] -= 1;
-            if indegree[b] == 0 {
-                ready.push(Reverse((keys[b].clone(), b)));
+            let (ca, cb) = (component_of[a], component_of[b]);
+            if ca != cb && successors[ca].insert(cb) {
+                indegree[cb] += 1;
             }
         }
     }
 
-    // cyclic remainder: nodes that never reached in-degree zero. fall back to
-    // stable ordering for them so we still emit a total order without panicking.
-    if order.len() < n {
-        let mut placed = vec![false; n];
-        for &i in &order {
-            placed[i] = true;
+    let mut level: Vec<usize> = (0..components.len())
+        .filter(|&c| indegree[c] == 0)
+        .collect();
+    let mut order = Vec::with_capacity(ops.len());
+    while !level.is_empty() {
+        let mut nodes: Vec<usize> = level
+            .iter()
+            .flat_map(|&c| components[c].iter().copied())
+            .collect();
+        nodes.sort_by(by_key);
+        order.extend(nodes);
+        let mut next = Vec::new();
+        for &c in &level {
+            for &d in &successors[c] {
+                indegree[d] -= 1;
+                if indegree[d] == 0 {
+                    next.push(d);
+                }
+            }
         }
-        let mut remaining: Vec<usize> = (0..n).filter(|&i| !placed[i]).collect();
-        remaining.sort_by(|&a, &b| keys[a].cmp(&keys[b]).then(a.cmp(&b)));
-        order.extend(remaining);
+        level = next;
     }
-
     order
 }
 
@@ -1452,6 +1479,7 @@ mod tests {
                 type_name: TypeName::new("dcim.site"),
                 key: make_key("fra1"),
                 backend_id: Some(BackendId::Int(100)),
+                refs: Default::default(),
             }]
         );
     }
@@ -1466,12 +1494,14 @@ mod tests {
                 type_name: TypeName::new("a.type"),
                 key: make_key("a"),
                 backend_id: None,
+                refs: Default::default(),
             },
             Op::Delete {
                 uid: Uid::from_u128(2),
                 type_name: TypeName::new("z.type"),
                 key: make_key("z"),
                 backend_id: None,
+                refs: Default::default(),
             },
         ];
         let sorted = sort_ops_for_apply(&ops, &empty_schema());
@@ -1587,6 +1617,93 @@ mod tests {
         // referenced objects are created before the objects referencing them.
         assert!(order_index(&sorted, 3) < order_index(&sorted, 2));
         assert!(order_index(&sorted, 2) < order_index(&sorted, 1));
+    }
+
+    /// a node goes only after every node of the level before it, so ops that do
+    /// not depend on each other stay together for an adapter to batch.
+    #[test]
+    fn toposort_places_a_level_at_a_time() {
+        let schema = node_schema(&[("next", ref_t())]);
+        let ops = vec![
+            create_node(1, "a", make_attrs(&[("next", uref(3))])),
+            create_node(2, "b", make_attrs(&[("next", uref(4))])),
+            create_node(3, "c", make_attrs(&[])),
+            create_node(4, "d", make_attrs(&[])),
+        ];
+        let sorted = sort_ops_for_apply(&ops, &schema);
+        let uids: Vec<u128> = sorted.iter().map(|op| op.uid().as_u128()).collect();
+        assert_eq!(uids, [3, 4, 1, 2]);
+    }
+
+    /// a node depending on a cycle waits for the whole cycle, whatever its key.
+    #[test]
+    fn toposort_places_a_cycle_before_what_depends_on_it() {
+        let schema = node_schema(&[("next", ref_t())]);
+        let ops = vec![
+            create_node(1, "m", make_attrs(&[("next", uref(2))])),
+            create_node(2, "n", make_attrs(&[("next", uref(1))])),
+            create_node(3, "a", make_attrs(&[("next", uref(1))])),
+        ];
+        let sorted = sort_ops_for_apply(&ops, &schema);
+        assert!(order_index(&sorted, 1) < order_index(&sorted, 3));
+        assert!(order_index(&sorted, 2) < order_index(&sorted, 3));
+    }
+
+    fn delete_node(uid: u128, slug: &str, refs: &[u128]) -> Op {
+        Op::Delete {
+            uid: Uid::from_u128(uid),
+            type_name: TypeName::new("node"),
+            key: make_key(slug),
+            backend_id: None,
+            refs: refs.iter().map(|&uid| Uid::from_u128(uid)).collect(),
+        }
+    }
+
+    /// a delete goes before the deletes of what it references outside its key.
+    #[test]
+    fn a_delete_precedes_the_deletes_of_its_refs() {
+        let schema = node_schema(&[("next", ref_t())]);
+        let ops = vec![delete_node(1, "a", &[]), delete_node(2, "z", &[1])];
+        let sorted = sort_ops_for_apply(&ops, &schema);
+        assert!(order_index(&sorted, 2) < order_index(&sorted, 1));
+    }
+
+    #[test]
+    fn a_planned_delete_records_the_refs_of_the_object() {
+        let schema = node_schema(&[("next", ref_t())]);
+        let mut state = empty_state();
+        state.set_backend_id(TypeName::new("node"), Uid::from_u128(1), BackendId::Int(1));
+        state.set_backend_id(TypeName::new("node"), Uid::from_u128(2), BackendId::Int(2));
+        let mut observed = ObservedState::default();
+        for (id, slug, attrs) in [
+            (1, "role", make_attrs(&[])),
+            (2, "device", make_attrs(&[("next", uref(1))])),
+        ] {
+            observed
+                .insert(ObservedObject {
+                    type_name: TypeName::new("node"),
+                    key: make_key(slug),
+                    attrs,
+                    backend_id: Some(BackendId::Int(id)),
+                })
+                .unwrap();
+        }
+
+        let plan = plan(&[], &observed, &state, &schema, None, true, true).unwrap();
+
+        let refs = |uid: u128| {
+            plan.ops
+                .iter()
+                .find_map(|op| match op {
+                    Op::Delete { uid: u, refs, .. } if *u == Uid::from_u128(uid) => {
+                        Some(refs.clone())
+                    }
+                    _ => None,
+                })
+                .unwrap()
+        };
+        assert_eq!(refs(2), BTreeSet::from([Uid::from_u128(1)]));
+        assert!(refs(1).is_empty());
     }
 
     #[test]
@@ -1715,12 +1832,14 @@ mod tests {
                 type_name: TypeName::new("node"),
                 key: parent_key,
                 backend_id: None,
+                refs: Default::default(),
             },
             Op::Delete {
                 uid: Uid::from_u128(2),
                 type_name: TypeName::new("child"),
                 key: child_key_val,
                 backend_id: None,
+                refs: Default::default(),
             },
         ];
         let sorted = sort_ops_for_apply(&ops, &schema);
@@ -1740,6 +1859,7 @@ mod tests {
                 type_name: TypeName::new("node"),
                 key: make_key("z"),
                 backend_id: None,
+                refs: Default::default(),
             },
             create_node(1, "a", make_attrs(&[("next", uref(2))])),
             create_node(2, "b", make_attrs(&[])),
@@ -1807,6 +1927,7 @@ mod tests {
                 type_name,
                 key,
                 backend_id: None,
+                refs: Default::default(),
             };
         }
         Op::Create {

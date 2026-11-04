@@ -234,6 +234,7 @@ mod tests {
                 type_name: TypeName::new("dcim.site"),
                 key: key("fra1"),
                 backend_id: None,
+                refs: Default::default(),
             },
             Op::Create {
                 uid: Uid::from_u128(1),
@@ -264,6 +265,7 @@ mod tests {
                 type_name: TypeName::new("dcim.site"),
                 key: key("fra1"),
                 backend_id: None,
+                refs: Default::default(),
             },
             Op::Create {
                 uid: Uid::from_u128(1),

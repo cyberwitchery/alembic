@@ -281,6 +281,7 @@ mod tests {
             type_name: TypeName::new(type_name),
             key: make_key(slug),
             backend_id: Some(BackendId::Int(200)),
+            refs: Default::default(),
         }
     }
 

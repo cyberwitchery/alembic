@@ -375,6 +375,7 @@ impl InfrahubAdapter {
                 type_name,
                 backend_id,
                 key,
+                ..
             } => (*uid, type_name, backend_id, key),
             _ => return Err(anyhow!("expected delete op")),
         };
@@ -3298,6 +3299,7 @@ schema { query: Query }
                 type_name: TypeName::new("dcim.site"),
                 key,
                 backend_id: Some(BackendId::String("site-3".to_string())),
+                refs: Default::default(),
             },
         ];
 
@@ -3584,6 +3586,7 @@ schema { query: Query }
             type_name: TypeName::new("dcim.site"),
             key,
             backend_id: Some(BackendId::String("site-gone".to_string())),
+            refs: Default::default(),
         }];
 
         let state = StateStore::new(None, StateData::default());
@@ -3631,6 +3634,7 @@ schema { query: Query }
             type_name: TypeName::new("dcim.site"),
             key,
             backend_id: Some(BackendId::String("site-1".to_string())),
+            refs: Default::default(),
         }];
 
         let state = StateStore::new(None, StateData::default());
@@ -3689,6 +3693,7 @@ schema { query: Query }
             type_name: TypeName::new("dcim.site"),
             key,
             backend_id: Some(BackendId::String("site-1".to_string())),
+            refs: Default::default(),
         }];
 
         let state = StateStore::new(None, StateData::default());

@@ -1421,6 +1421,247 @@ mod tests {
         site_update.assert_calls(1);
     }
 
+    fn mock_site_type(server: &MockServer) {
+        let _object_types = mock_list(
+            server,
+            "/api/core/object-types/",
+            json!([{
+                "app_label": "dcim",
+                "model": "site",
+                "rest_api_endpoint": "/api/dcim/sites/",
+                "features": ["custom-fields", "tags"]
+            }]),
+        );
+        let _custom_fields = server.mock(|when, then| {
+            when.method(GET).path("/api/extras/custom-fields/");
+            then.status(200).json_body(page(json!([])));
+        });
+    }
+
+    fn site_create(n: u128) -> Op {
+        let slug = format!("s{n}");
+        Op::Create {
+            uid: uid(n),
+            type_name: TypeName::new("dcim.site"),
+            desired: obj(
+                uid(n),
+                "dcim.site",
+                key("name", json!(slug)),
+                json!({ "slug": slug, "name": slug }),
+            ),
+        }
+    }
+
+    #[tokio::test]
+    async fn creates_of_one_type_go_in_one_bulk_request() {
+        let server = MockServer::start();
+        let dir = tempdir().unwrap();
+        let state = StateStore::load(dir.path().join("state.json")).unwrap();
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
+        mock_site_type(&server);
+        let bulk = server.mock(|when, then| {
+            when.method(POST).path("/api/dcim/sites/").json_body(json!([
+                { "slug": "s1", "name": "s1" },
+                { "slug": "s2", "name": "s2" }
+            ]));
+            then.status(201)
+                .json_body(json!([{ "id": 11, "slug": "s1" }, { "id": 12, "slug": "s2" }]));
+        });
+
+        let report = adapter
+            .write(
+                &site_name_schema(),
+                &[site_create(1), site_create(2)],
+                &state,
+            )
+            .await
+            .unwrap();
+
+        bulk.assert_calls(1);
+        let ids: Vec<_> = report
+            .applied
+            .iter()
+            .map(|op| (op.uid, op.backend_id.clone()))
+            .collect();
+        assert_eq!(
+            ids,
+            [
+                (uid(1), Some(BackendId::Int(11))),
+                (uid(2), Some(BackendId::Int(12)))
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn updates_of_one_type_go_in_one_bulk_request() {
+        use httpmock::Method::PATCH;
+
+        let server = MockServer::start();
+        let dir = tempdir().unwrap();
+        let state = StateStore::load(dir.path().join("state.json")).unwrap();
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
+        mock_site_type(&server);
+        let bulk = server.mock(|when, then| {
+            when.method(PATCH)
+                .path("/api/dcim/sites/")
+                .json_body(json!([
+                    { "id": 1, "slug": "s1", "name": "s1" },
+                    { "id": 2, "slug": "s2", "name": "s2" }
+                ]));
+            then.status(200)
+                .json_body(json!([{ "id": 1 }, { "id": 2 }]));
+        });
+        let update = |n: u128| match site_create(n) {
+            Op::Create {
+                uid,
+                type_name,
+                desired,
+            } => Op::Update {
+                uid,
+                type_name,
+                desired,
+                changes: vec![],
+                backend_id: Some(BackendId::Int(n as u64)),
+            },
+            _ => unreachable!(),
+        };
+
+        let report = adapter
+            .write(&site_name_schema(), &[update(1), update(2)], &state)
+            .await
+            .unwrap();
+
+        bulk.assert_calls(1);
+        assert_eq!(report.applied.len(), 2);
+    }
+
+    /// netbox rolls a rejected batch back whole; each create then goes on its own.
+    #[tokio::test]
+    async fn a_rejected_bulk_create_falls_back_to_single_creates() {
+        let server = MockServer::start();
+        let dir = tempdir().unwrap();
+        let state = StateStore::load(dir.path().join("state.json")).unwrap();
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
+        mock_site_type(&server);
+        let bulk = server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/dcim/sites/")
+                .json_body_includes(r#"[{ "slug": "s1" }]"#);
+            then.status(400).json_body(json!({
+                "detail": "1 of 2 objects could not be created.",
+                "errors": [{ "index": 1, "errors": { "name": ["invalid"] } }]
+            }));
+        });
+        let first = server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/dcim/sites/")
+                .json_body(json!({ "slug": "s1", "name": "s1" }));
+            then.status(201).json_body(json!({ "id": 11 }));
+        });
+        let second = server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/dcim/sites/")
+                .json_body(json!({ "slug": "s2", "name": "s2" }));
+            then.status(201).json_body(json!({ "id": 12 }));
+        });
+
+        let report = adapter
+            .write(
+                &site_name_schema(),
+                &[site_create(1), site_create(2)],
+                &state,
+            )
+            .await
+            .unwrap();
+
+        bulk.assert_calls(1);
+        first.assert_calls(1);
+        second.assert_calls(1);
+        assert_eq!(report.applied.len(), 2);
+    }
+
+    fn site_delete(n: u128) -> Op {
+        Op::Delete {
+            uid: uid(n),
+            type_name: TypeName::new("dcim.site"),
+            key: key("name", json!(format!("s{n}"))),
+            backend_id: Some(BackendId::Int(n as u64)),
+            refs: Default::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn deletes_of_one_type_go_in_one_bulk_request() {
+        use httpmock::Method::DELETE;
+
+        let server = MockServer::start();
+        let dir = tempdir().unwrap();
+        let state = StateStore::load(dir.path().join("state.json")).unwrap();
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
+        mock_site_type(&server);
+        let bulk = server.mock(|when, then| {
+            when.method(DELETE)
+                .path("/api/dcim/sites/")
+                .json_body(json!([{ "id": 1 }, { "id": 2 }]));
+            then.status(204);
+        });
+
+        let report = adapter
+            .write(
+                &site_name_schema(),
+                &[site_delete(1), site_delete(2)],
+                &state,
+            )
+            .await
+            .unwrap();
+
+        bulk.assert_calls(1);
+        assert_eq!(report.applied.len(), 2);
+    }
+
+    /// netbox rolls a refused delete batch back whole; each delete then goes on its own.
+    #[tokio::test]
+    async fn a_refused_bulk_delete_falls_back_to_single_deletes() {
+        use httpmock::Method::DELETE;
+
+        let server = MockServer::start();
+        let dir = tempdir().unwrap();
+        let state = StateStore::load(dir.path().join("state.json")).unwrap();
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
+        mock_site_type(&server);
+        let bulk = server.mock(|when, then| {
+            when.method(DELETE)
+                .path("/api/dcim/sites/")
+                .json_body(json!([{ "id": 1 }, { "id": 2 }]));
+            then.status(409).json_body(json!({
+                "detail": "1 of 2 objects could not be deleted."
+            }));
+        });
+        let singles = [1, 2].map(|id| {
+            server.mock(move |when, then| {
+                when.method(DELETE)
+                    .path("/api/dcim/sites/")
+                    .json_body(json!([{ "id": id }]));
+                then.status(204);
+            })
+        });
+
+        let report = adapter
+            .write(
+                &site_name_schema(),
+                &[site_delete(1), site_delete(2)],
+                &state,
+            )
+            .await
+            .unwrap();
+
+        bulk.assert_calls(1);
+        for single in singles {
+            single.assert_calls(1);
+        }
+        assert_eq!(report.applied.len(), 2);
+    }
+
     #[tokio::test]
     async fn apply_tolerates_already_deleted_404() {
         // re-issued deletes must tolerate an already-gone object (404) as a no-op.
@@ -1456,6 +1697,7 @@ mod tests {
             type_name: TypeName::new("dcim.site"),
             key: key("slug", json!("fra1")),
             backend_id: Some(BackendId::Int(1)),
+            refs: Default::default(),
         }];
 
         let schema = alembic_core::Schema {
@@ -1540,6 +1782,7 @@ mod tests {
                 type_name: TypeName::new("dcim.site"),
                 key: key("slug", json!("ber1")),
                 backend_id: Some(BackendId::Int(2)),
+                refs: Default::default(),
             },
         ];
         let creates: Vec<Op> = ops

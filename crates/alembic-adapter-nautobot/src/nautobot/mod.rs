@@ -1456,6 +1456,7 @@ mod tests {
             type_name: TypeName::new("dcim.site"),
             key: key("name", json!("FRA1")),
             backend_id: Some(BackendId::String(site_id.to_string())),
+            refs: Default::default(),
         }];
 
         let adapter = NautobotAdapter::new(&server.base_url(), "token").unwrap();
@@ -1489,6 +1490,7 @@ mod tests {
             type_name: TypeName::new("dcim.site"),
             key: key("name", json!("FRA1")),
             backend_id: Some(BackendId::String(site_id.to_string())),
+            refs: Default::default(),
         }];
 
         let adapter = NautobotAdapter::new(&server.base_url(), "token").unwrap();

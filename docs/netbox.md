@@ -32,6 +32,8 @@ which is the version it is validated against. use that pin when reporting a comp
   to backend integer ids before sending requests, including refs nested in list and map fields.
 - if a referenced uid cannot be resolved (not in state or created earlier in the same apply),
   apply fails with a missing reference error.
+- apply sends creates, updates and deletes of one type in bulk requests of up to 100 objects,
+  which netbox writes all or nothing. a batch netbox refuses is sent again one object at a time.
 
 ## keys and matching
 

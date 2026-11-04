@@ -1102,6 +1102,7 @@ async fn test_apply_delete_standard() {
         type_name: TypeName::new("device".to_string()),
         key: Key::from(key),
         backend_id: Some(BackendId::Int(42)),
+        refs: Default::default(),
     }];
 
     let state = new_state_store();
@@ -1179,6 +1180,7 @@ fn delete_op(type_name: &str, key_name: &str, backend_id: Option<BackendId>) -> 
         type_name: TypeName::new(type_name.to_string()),
         key: Key::from(key),
         backend_id,
+        refs: Default::default(),
     }
 }
 
@@ -1293,6 +1295,7 @@ async fn test_apply_delete_standard_alongside_create() {
             type_name: TypeName::new("device".to_string()),
             key: Key::from(delete_key),
             backend_id: Some(BackendId::Int(7)),
+            refs: Default::default(),
         },
     ];
 
@@ -1651,6 +1654,7 @@ async fn test_apply_delete_tolerates_not_found() {
         type_name: TypeName::new("device".to_string()),
         key: Key::from(key),
         backend_id: Some(BackendId::Int(42)),
+        refs: Default::default(),
     }];
 
     let state = new_state_store();
