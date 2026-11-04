@@ -17,6 +17,9 @@ which is the version it is validated against. use that pin when reporting a comp
 ## object types and endpoints
 
 - the adapter uses `object_types.rest_api_endpoint` for each type.
+- a type is named `<app_label>.<model>`, as netbox reports it: `ipam.ipaddress`
+  reads from `ipam/ip-addresses/`, `virtualization.vminterface` from
+  `virtualization/interfaces/`.
 - if a type has no REST endpoint in netbox, apply/observe will fail unless the
   netbox custom objects plugin is installed (see below).
 

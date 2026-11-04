@@ -1,5 +1,5 @@
 use alembic_core::TypeName;
-use alembic_engine::{normalize_endpoint, pluralize};
+use alembic_engine::normalize_endpoint;
 use anyhow::{anyhow, Result};
 use netbox::models::ObjectType;
 use std::collections::{BTreeMap, BTreeSet};
@@ -29,9 +29,7 @@ impl ObjectTypeRegistry {
             else {
                 continue;
             };
-            let endpoint_type = type_name_from_endpoint(&endpoint)
-                .unwrap_or_else(|| format!("{}.{}", object_type.app_label, object_type.model));
-            let model_type = format!("{}.{}", object_type.app_label, object_type.model);
+            let type_name = format!("{}.{}", object_type.app_label, object_type.model);
             // netbox names features with underscores (`custom_fields`); the
             // adapters check the hyphenated spelling nautobot's registry uses.
             let features: BTreeSet<String> = object_type
@@ -41,15 +39,14 @@ impl ObjectTypeRegistry {
                 .map(|feature| feature.replace('_', "-"))
                 .collect();
             let info = ObjectTypeInfo {
-                type_name: TypeName::new(endpoint_type.clone()),
+                type_name: TypeName::new(type_name.clone()),
                 endpoint: endpoint.clone(),
                 features,
                 app_label: object_type.app_label.clone(),
                 model: object_type.model.clone(),
             };
-            registry.by_endpoint.insert(endpoint, endpoint_type.clone());
-            registry.by_type.insert(endpoint_type, info.clone());
-            registry.by_type.insert(model_type, info);
+            registry.by_endpoint.insert(endpoint, type_name.clone());
+            registry.by_type.insert(type_name, info);
         }
 
         if registry.by_type.is_empty() {
@@ -62,18 +59,7 @@ impl ObjectTypeRegistry {
     }
 
     pub(super) fn info_for(&self, type_name: &TypeName) -> Option<ObjectTypeInfo> {
-        if let Some(info) = self.by_type.get(type_name.as_str()) {
-            return Some(info.clone());
-        }
-        let (app_label, model) = split_type_name(type_name.as_str())?;
-        let endpoint = endpoint_from_type_name(type_name.as_str())?;
-        Some(ObjectTypeInfo {
-            type_name: type_name.clone(),
-            endpoint,
-            features: BTreeSet::new(),
-            app_label,
-            model,
-        })
+        self.by_type.get(type_name.as_str()).cloned()
     }
 
     pub(super) fn contains_type(&self, type_name: &TypeName) -> bool {
@@ -113,117 +99,68 @@ impl ObjectTypeRegistry {
     }
 }
 
-fn type_name_from_endpoint(endpoint: &str) -> Option<String> {
-    let trimmed = endpoint.trim().trim_matches('/');
-    let mut parts = trimmed.split('/');
-    let app = parts.next()?;
-    let resource = parts.next()?;
-    let singular = singularize(resource);
-    let normalized = singular.replace('-', "_");
-    Some(format!("{app}.{normalized}"))
-}
-
-fn split_type_name(value: &str) -> Option<(String, String)> {
-    let (app, model) = value.split_once('.')?;
-    Some((app.to_string(), model.to_string()))
-}
-
-fn singularize(value: &str) -> String {
-    if let Some(stripped) = value.strip_suffix("resses") {
-        return format!("{stripped}ress");
-    }
-    if let Some(stripped) = value.strip_suffix("ies") {
-        return format!("{stripped}y");
-    }
-    // inverse of pluralize's s/x/z/ch/sh -> +es rule (e.g. prefix -> prefixes, status -> statuses)
-    if ["ses", "xes", "zes", "ches", "shes"]
-        .iter()
-        .any(|s| value.ends_with(s))
-    {
-        return value[..value.len() - 2].to_string();
-    }
-    if let Some(stripped) = value.strip_suffix('s') {
-        return stripped.to_string();
-    }
-    value.to_string()
-}
-
-fn endpoint_from_type_name(type_name: &str) -> Option<String> {
-    let (app, model) = type_name.split_once('.')?;
-    let resource = pluralize(model).replace('_', "-");
-    Some(format!("{app}/{resource}/"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn type_name_from_endpoint_handles_pluralization() {
-        assert_eq!(
-            type_name_from_endpoint("ipam/ip-addresses/"),
-            Some("ipam.ip_address".to_string())
-        );
-        assert_eq!(
-            type_name_from_endpoint("circuits/circuit-terminations/"),
-            Some("circuits.circuit_termination".to_string())
-        );
-        assert_eq!(
-            type_name_from_endpoint("dcim/devices/"),
-            Some("dcim.device".to_string())
-        );
-        assert_eq!(
-            type_name_from_endpoint("ipam/prefixes/"),
-            Some("ipam.prefix".to_string())
-        );
-        assert_eq!(
-            type_name_from_endpoint("dcim/device-bays/"),
-            Some("dcim.device_bay".to_string())
-        );
-        assert_eq!(
-            type_name_from_endpoint("extras/statuses/"),
-            Some("extras.status".to_string())
-        );
-    }
-
-    #[test]
-    fn endpoint_from_type_name_handles_pluralization() {
-        assert_eq!(
-            endpoint_from_type_name("ipam.ip_address"),
-            Some("ipam/ip-addresses/".to_string())
-        );
-        assert_eq!(
-            endpoint_from_type_name("circuits.circuit_termination"),
-            Some("circuits/circuit-terminations/".to_string())
-        );
-        assert_eq!(
-            endpoint_from_type_name("dcim.device"),
-            Some("dcim/devices/".to_string())
-        );
-        assert_eq!(
-            endpoint_from_type_name("ipam.prefix"),
-            Some("ipam/prefixes/".to_string())
-        );
-        assert_eq!(
-            endpoint_from_type_name("dcim.device_bay"),
-            Some("dcim/device-bays/".to_string())
-        );
-    }
-
-    #[test]
-    fn singularize_inverts_pluralize() {
-        for stem in [
-            "device",
-            "prefix",
-            "device_bay",
-            "ip_address",
-            "circuit_termination",
-            "interface",
-            "status",
-            "class",
-            "bus",
-        ] {
-            assert_eq!(singularize(&pluralize(stem)), stem);
+    fn object_type(app_label: &str, model: &str, endpoint: &str) -> ObjectType {
+        ObjectType {
+            app_label: app_label.to_string(),
+            model: model.to_string(),
+            rest_api_endpoint: Some(endpoint.to_string()),
+            ..Default::default()
         }
+    }
+
+    /// the name and the endpoint are what netbox reports; nothing is derived.
+    #[test]
+    fn a_type_is_its_app_label_and_model_at_its_reported_endpoint() {
+        let registry = ObjectTypeRegistry::from_object_types(vec![
+            object_type("ipam", "ipaddress", "/api/ipam/ip-addresses/"),
+            object_type(
+                "virtualization",
+                "vminterface",
+                "/api/virtualization/interfaces/",
+            ),
+            object_type(
+                "netbox_custom_objects",
+                "customobjecttype",
+                "/api/plugins/custom-objects/custom-object-types/",
+            ),
+        ])
+        .unwrap();
+
+        for (name, endpoint) in [
+            ("ipam.ipaddress", "ipam/ip-addresses/"),
+            ("virtualization.vminterface", "virtualization/interfaces/"),
+            (
+                "netbox_custom_objects.customobjecttype",
+                "plugins/custom-objects/custom-object-types/",
+            ),
+        ] {
+            let info = registry.info_for(&TypeName::new(name)).unwrap();
+            assert_eq!(info.endpoint, endpoint);
+            assert_eq!(
+                registry.type_name_for_endpoint(&format!(
+                    "https://netbox.example.com/api/{endpoint}7/"
+                )),
+                Some(name)
+            );
+        }
+    }
+
+    /// a name netbox did not report has no endpoint to guess.
+    #[test]
+    fn an_unreported_type_has_no_info() {
+        let registry = ObjectTypeRegistry::from_object_types(vec![object_type(
+            "ipam",
+            "ipaddress",
+            "/api/ipam/ip-addresses/",
+        )])
+        .unwrap();
+
+        assert!(registry
+            .info_for(&TypeName::new("ipam.ip_address"))
+            .is_none());
     }
 }

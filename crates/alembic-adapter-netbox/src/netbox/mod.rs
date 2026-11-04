@@ -2251,12 +2251,10 @@ mod tests {
         cf_patch.assert_calls(1);
     }
 
-    // ip_address is a multi-word model: its endpoint-form type name is
-    // `ipam.ip_address`, but its django content type (what netbox keys a custom
-    // field's `object_types` by, and returns them under) is `ipam.ipaddress`.
-    // the tests below guard custom-field lookup and `object_types` posting
-    // against mixing the endpoint form into the content-type form. `fields`
-    // holds only the non-key fields under test.
+    // ipaddress is a multi-word model at `ipam/ip-addresses/`. the tests below
+    // guard custom-field lookup and `object_types` posting, which netbox keys
+    // by the django content type `ipam.ipaddress`. `fields` holds only the
+    // non-key fields under test.
     fn ip_address_schema(fields: &[&str]) -> alembic_core::Schema {
         let string_field = || alembic_core::FieldSchema {
             r#type: alembic_core::FieldType::String,
@@ -2272,7 +2270,7 @@ mod tests {
             .collect();
         alembic_core::Schema {
             types: std::collections::BTreeMap::from([(
-                "ipam.ip_address".to_string(),
+                "ipam.ipaddress".to_string(),
                 alembic_core::TypeSchema {
                     key: std::collections::BTreeMap::from([(
                         "address".to_string(),
@@ -2324,10 +2322,10 @@ mod tests {
 
         let ops = vec![Op::Create {
             uid: uid(1),
-            type_name: TypeName::new("ipam.ip_address"),
+            type_name: TypeName::new("ipam.ipaddress"),
             desired: obj(
                 uid(1),
-                "ipam.ip_address",
+                "ipam.ipaddress",
                 key("address", json!("10.0.0.1/32")),
                 json!({ "address": "10.0.0.1/32", "criticality": "high" }),
             ),
@@ -2345,9 +2343,8 @@ mod tests {
         create.assert_calls(1);
     }
 
-    // provision: creating a custom field on a multi-word model must post its
-    // object_types in the django content-type form (`ipam.ipaddress`), not the
-    // endpoint form (`ipam.ip_address`), which netbox rejects.
+    // provision: creating a custom field on a multi-word model posts its
+    // object_types as the django content type (`ipam.ipaddress`).
     #[tokio::test]
     async fn ensure_schema_posts_content_type_for_multi_word_model() {
         let server = MockServer::start();
@@ -2393,7 +2390,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             report.created_fields,
-            vec!["ipam.ip_address.criticality".to_string()]
+            vec!["ipam.ipaddress.criticality".to_string()]
         );
         cf_create.assert_calls(1);
     }

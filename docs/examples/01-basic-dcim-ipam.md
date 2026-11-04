@@ -22,7 +22,7 @@ prefix, ip address). its one netbox-specific wrinkle is how the ip names its
 interface assignment:
 
 ```yaml
-    ipam.ip_address:
+    ipam.ipaddress:
       key:
         address:
           type: ip_address
@@ -38,7 +38,7 @@ interface assignment:
 objects:
   # ...
   - uid: "c4a0c0f0-ef8a-4c7f-9b0a-2ff3a4d14fd1"
-    type: ipam.ip_address
+    type: ipam.ipaddress
     key:
       address: "10.0.0.10/24"
     attrs:
@@ -51,7 +51,7 @@ objects:
 
 netbox's ipam names an ip's interface assignment `assigned_object`, a generic
 foreign key, not `assigned_interface`. one `map` step reshapes the neutral model
-to netbox's names: a rule that renames the field on `ipam.ip_address`, and a
+to netbox's names: a rule that renames the field on `ipam.ipaddress`, and a
 `match: "*"` passthrough that carries every other type through unchanged. because
 passthrough carries each source type's schema too, the target `schema` only
 declares the one type you reshape. identity is inherited, so the ip still
@@ -61,7 +61,7 @@ points at its interface under the uids you authored. the spec is
 ```yaml
 schema:
   types:
-    ipam.ip_address:
+    ipam.ipaddress:
       key: {address: {type: ip_address}}
       fields:
         address: {type: ip_address}
@@ -69,9 +69,9 @@ schema:
         description: {type: string}
 rules:
   - name: rename-assignment
-    match: ipam.ip_address
+    match: ipam.ipaddress
     emit:
-      type: ipam.ip_address
+      type: ipam.ipaddress
       key: {address: "${key.address}"}
       attrs:
         address: "${attrs.address}"

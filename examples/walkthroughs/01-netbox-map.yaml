@@ -3,7 +3,7 @@
 # through unchanged. run: alembic map -f 01-basic.yaml --spec 01-netbox-map.yaml
 schema:
   types:
-    ipam.ip_address:
+    ipam.ipaddress:
       key: {address: {type: ip_address}}
       fields:
         address: {type: ip_address}
@@ -11,9 +11,9 @@ schema:
         description: {type: string}
 rules:
   - name: rename-assignment
-    match: ipam.ip_address
+    match: ipam.ipaddress
     emit:
-      type: ipam.ip_address
+      type: ipam.ipaddress
       key: {address: "${key.address}"}
       attrs:
         address: "${attrs.address}"

@@ -102,7 +102,7 @@ rules:
         status: "${uids.active}"
   # device role -> extras.role, scoped to devices.
   - name: device-roles-to-roles
-    match: dcim.device_role
+    match: dcim.devicerole
     emit:
       type: extras.role
       key: {name: "${attrs.name}"}
@@ -114,7 +114,7 @@ rules:
       key: {name: "${attrs.name}"}
       attrs: {name: "${attrs.name}"}
   - name: device-types
-    match: dcim.device_type
+    match: dcim.devicetype
     emit:
       type: dcim.devicetype
       key: {model: "${attrs.model}"}
@@ -151,7 +151,7 @@ rules:
   # the ip keeps its identity, sits under the declared prefix, and its interface
   # assignment becomes a link object.
   - name: ip-addresses
-    match: ipam.ip_address
+    match: ipam.ipaddress
     uids:
       parent: {v5: {type: ipam.prefix, stable: "10.0.0.0/24"}}
       active: {v5: {type: extras.status, stable: Active}}

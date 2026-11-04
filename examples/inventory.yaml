@@ -9,7 +9,7 @@ schema:
           type: string
         slug:
           type: slug
-    dcim.device_role:
+    dcim.devicerole:
       key:
         slug:
           type: slug
@@ -18,7 +18,7 @@ schema:
           type: string
         slug:
           type: slug
-    dcim.device_type:
+    dcim.devicetype:
       key:
         slug:
           type: slug
@@ -53,10 +53,10 @@ schema:
           target: dcim.site
         role:
           type: ref
-          target: dcim.device_role
+          target: dcim.devicerole
         device_type:
           type: ref
-          target: dcim.device_type
+          target: dcim.devicetype
         status:
           type: string
     dcim.interface:
@@ -87,7 +87,7 @@ schema:
           type: prefix
         description:
           type: string
-    ipam.ip_address:
+    ipam.ipaddress:
       key:
         address:
           type: ip_address
@@ -109,7 +109,7 @@ objects:
       slug: "acme"
 
   - uid: "b1c2d3e4-5f60-4a7b-8c9d-0e1f2a3b4c5d"
-    type: dcim.device_role
+    type: dcim.devicerole
     key:
       slug: "leaf"
     attrs:
@@ -117,7 +117,7 @@ objects:
       slug: "leaf"
 
   - uid: "c2d3e4f5-6071-4b8c-9d0e-1f2a3b4c5d6e"
-    type: dcim.device_type
+    type: dcim.devicetype
     key:
       slug: "leaf-switch"
     attrs:
@@ -176,7 +176,7 @@ objects:
       description: "FRA1 leaf subnet"
 
   - uid: "c4a0c0f0-ef8a-4c7f-9b0a-2ff3a4d14fd1"
-    type: ipam.ip_address
+    type: ipam.ipaddress
     key:
       address: "10.0.0.10/24"
     attrs:

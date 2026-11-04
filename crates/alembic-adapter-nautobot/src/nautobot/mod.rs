@@ -91,37 +91,27 @@ mod tests {
         }
     }
 
-    // the api root and each app root, which is where the registry takes routes from.
-    fn mock_api_root(server: &MockServer, apps: &[(&str, &[&str])]) {
-        let base = server.base_url();
-        let root: serde_json::Map<String, serde_json::Value> = apps
+    // the openapi schema, which is where nautobot.rs takes each model's route
+    // from: a route listing `<serializer>` and accepting creates.
+    fn mock_routes(server: &MockServer, routes: &[(&str, &str)]) {
+        let paths: serde_json::Map<String, serde_json::Value> = routes
             .iter()
-            .map(|(app, _)| ((*app).to_string(), json!(format!("{base}/api/{app}/"))))
+            .map(|(route, serializer)| {
+                let list = json!({"responses": {"200": {"content": {"application/json": {
+                    "schema": {"$ref": format!("#/components/schemas/Paginated{serializer}List")}
+                }}}}});
+                (format!("/{route}"), json!({"get": list, "post": {}}))
+            })
             .collect();
-        let _root = server.mock(|when, then| {
-            when.method(GET).path("/api/");
-            then.status(200).json_body(json!(root));
+        let _schema = server.mock(|when, then| {
+            when.method(GET).path("/api/swagger.json");
+            then.status(200).json_body(json!({ "paths": paths }));
         });
-        for (app, routes) in apps {
-            let body: serde_json::Map<String, serde_json::Value> = routes
-                .iter()
-                .map(|route| {
-                    (
-                        (*route).to_string(),
-                        json!(format!("{base}/api/{app}/{route}/")),
-                    )
-                })
-                .collect();
-            let _app = server.mock(|when, then| {
-                when.method(GET).path(format!("/api/{app}/"));
-                then.status(200).json_body(json!(body));
-            });
-        }
     }
 
     // content-types drives the endpoint registry: "dcim"/"site" -> dcim/sites/.
     fn mock_content_types(server: &MockServer) {
-        mock_api_root(server, &[("dcim", &["sites"])]);
+        mock_routes(server, &[("dcim/sites/", "Site")]);
         let _m = server.mock(|when, then| {
             when.method(GET).path("/api/extras/content-types/");
             then.status(200)
@@ -171,7 +161,10 @@ mod tests {
     // content-types for both dcim.site and dcim.device, plus the sample-object
     // probe each native type needs.
     fn mock_two_content_types(server: &MockServer) {
-        mock_api_root(server, &[("dcim", &["sites", "devices"])]);
+        mock_routes(
+            server,
+            &[("dcim/sites/", "Site"), ("dcim/devices/", "Device")],
+        );
         for path in ["/api/dcim/sites/", "/api/dcim/devices/"] {
             let _probe = server.mock(|when, then| {
                 when.method(GET).path(path);
@@ -1174,13 +1167,12 @@ mod tests {
         );
     }
 
-    /// `locationtype` carries no word boundary to pluralize, so the route only
-    /// spells itself if it came from the api root.
+    /// the route is the one nautobot serves the model at; nothing derives it.
     #[tokio::test]
-    async fn observe_takes_the_route_from_the_api_root() {
+    async fn observe_reads_the_route_nautobot_serves() {
         let server = MockServer::start();
         let dir = tempdir().unwrap();
-        mock_api_root(&server, &[("dcim", &["location-types"])]);
+        mock_routes(&server, &[("dcim/location-types/", "LocationType")]);
         let _content_types = server.mock(|when, then| {
             when.method(GET).path("/api/extras/content-types/");
             then.status(200).json_body(page(
@@ -1219,10 +1211,9 @@ mod tests {
         assert_eq!(object.attrs.get("name"), Some(&json!("campus")));
     }
 
-    /// a deployment that hides `/api/` keeps the derived route, so it stays
-    /// readable rather than erroring on a missing root.
+    /// without the schema there is no route to read from, and nothing to guess one.
     #[tokio::test]
-    async fn observe_falls_back_when_the_api_root_is_unreachable() {
+    async fn observe_fails_when_the_schema_is_unreadable() {
         let server = MockServer::start();
         let dir = tempdir().unwrap();
         let _content_types = server.mock(|when, then| {
@@ -1230,64 +1221,17 @@ mod tests {
             then.status(200)
                 .json_body(page(json!([{ "app_label": "dcim", "model": "site" }])));
         });
-        let _sites = server.mock(|when, then| {
-            when.method(GET).path("/api/dcim/sites/");
-            then.status(200).json_body(page(json!([{
-                "id": "11111111-1111-1111-1111-111111111111",
-                "name": "FRA1",
-                "slug": "fra1",
-            }])));
-        });
 
         let adapter = NautobotAdapter::new(&server.base_url(), "token").unwrap();
-        let observed = adapter
+        let read = adapter
             .read(
                 &site_schema(),
                 &[TypeName::new("dcim.site")],
                 &state(dir.path()),
             )
-            .await
-            .unwrap();
+            .await;
 
-        assert_eq!(observed.len(), 1);
-    }
-
-    /// the same fallback one level down: the root lists the app, the app root
-    /// itself does not answer.
-    #[tokio::test]
-    async fn observe_falls_back_when_an_app_root_is_unreachable() {
-        let server = MockServer::start();
-        let dir = tempdir().unwrap();
-        let _root = server.mock(|when, then| {
-            when.method(GET).path("/api/");
-            then.status(200)
-                .json_body(json!({ "dcim": format!("{}/api/dcim/", server.base_url()) }));
-        });
-        let _content_types = server.mock(|when, then| {
-            when.method(GET).path("/api/extras/content-types/");
-            then.status(200)
-                .json_body(page(json!([{ "app_label": "dcim", "model": "site" }])));
-        });
-        let _sites = server.mock(|when, then| {
-            when.method(GET).path("/api/dcim/sites/");
-            then.status(200).json_body(page(json!([{
-                "id": "11111111-1111-1111-1111-111111111111",
-                "name": "FRA1",
-                "slug": "fra1",
-            }])));
-        });
-
-        let adapter = NautobotAdapter::new(&server.base_url(), "token").unwrap();
-        let observed = adapter
-            .read(
-                &site_schema(),
-                &[TypeName::new("dcim.site")],
-                &state(dir.path()),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(observed.len(), 1);
+        assert!(read.is_err());
     }
 
     #[tokio::test]
@@ -1295,6 +1239,10 @@ mod tests {
         let server = MockServer::start();
         let dir = tempdir().unwrap();
         // dcim.device is in the registry but not the schema, so it is skipped, not an error.
+        mock_routes(
+            &server,
+            &[("dcim/sites/", "Site"), ("dcim/devices/", "Device")],
+        );
         let _content_types = server.mock(|when, then| {
             when.method(GET).path("/api/extras/content-types/");
             then.status(200).json_body(page(json!([

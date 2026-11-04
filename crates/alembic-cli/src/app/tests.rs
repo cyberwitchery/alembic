@@ -1681,8 +1681,8 @@ async fn run_apply_writes_no_report_when_the_apply_fails() {
 }
 
 // registers the nautobot bootstrap list mocks shared by the plan/report tests:
-// content-types (one `dcim.device`), empty custom-fields, empty tags, and a
-// `dcim/devices/` list returning `device_results`. httpmock mocks persist for
+// content-types (one `dcim.device`) and the openapi route serving it, empty
+// custom-fields, empty tags, and a `dcim/devices/` list returning `device_results`. httpmock mocks persist for
 // the server's lifetime (only `MockServer` implements `Drop`), so the mock
 // handles are dropped and just the server is returned.
 fn nautobot_plan_server(device_results: serde_json::Value) -> httpmock::MockServer {
@@ -1691,10 +1691,17 @@ fn nautobot_plan_server(device_results: serde_json::Value) -> httpmock::MockServ
 
     let server = httpmock::MockServer::start();
     server.mock(|when, then| {
-        when.method(GET)
-            .path("/api/extras/content-types/")
-            .query_param("limit", "200")
-            .query_param("offset", "0");
+        when.method(GET).path("/api/swagger.json");
+        then.status(200)
+            .json_body(json!({"paths": {"/dcim/devices/": {
+                "get": {"responses": {"200": {"content": {"application/json": {
+                    "schema": {"$ref": "#/components/schemas/PaginatedDeviceList"}
+                }}}}},
+                "post": {}
+            }}}));
+    });
+    server.mock(|when, then| {
+        when.method(GET).path("/api/extras/content-types/");
         then.status(200).json_body(json!({
             "count": 1,
             "next": null,
