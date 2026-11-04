@@ -3522,3 +3522,36 @@ fn guard_stale_plan_re_diffs_a_no_adopt_plan_without_adopting() {
     let err = futures::executor::block_on(guard_stale_plan(&backend, &legacy, &state)).unwrap_err();
     assert!(format!("{err:#}").contains("did not exist when planned and now does"));
 }
+
+#[test]
+fn guard_stale_plan_re_diffs_a_bound_object_under_a_no_adopt_plan() {
+    // an earlier adopting plan bound the site; --no-adopt keeps that binding
+    let site = obj(uid(1), "dcim.site", "slug=fra1", json!({"name": "B"}));
+    let inventory = inv(vec![site]);
+    let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
+    let backend = site_backend(observed_site("A"));
+    let plan_with = |state: &mut StateStore, adopt_by_key| {
+        futures::executor::block_on(crate::build_plan(
+            backend.observer().unwrap(),
+            &inventory,
+            state,
+            false,
+            adopt_by_key,
+        ))
+        .unwrap()
+        .0
+    };
+    plan_with(&mut state, true);
+    let plan = plan_with(&mut state, false);
+    assert_eq!(plan.adopt_by_key, Some(false));
+    assert!(matches!(plan.ops.as_slice(), [Op::Update { .. }]));
+    futures::executor::block_on(guard_stale_plan(&backend, &plan, &state)).unwrap();
+
+    let moved = site_backend(observed_site("C"));
+    let err = futures::executor::block_on(guard_stale_plan(&moved, &plan, &state)).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains(r#"dcim.site {"slug":"fra1"}: `name` is "C", planned against "A""#),
+        "{msg}"
+    );
+}
