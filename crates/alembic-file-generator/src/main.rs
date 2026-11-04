@@ -60,12 +60,54 @@ enum Topology {
     LeafSpine,
 }
 
-/// what the generator cables: interfaces in pairs, or links between devices,
-/// each with its own interface on both ends.
+/// an interface, as its number on the device and the device's index.
+type Port = (usize, usize);
+
+/// the interfaces the generator emits and the cables between them.
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum Cabling {
-    Pairs { interfaces: usize },
-    Links(Vec<(usize, usize)>),
+struct Cabling {
+    interfaces: Vec<Port>,
+    cables: Vec<(Port, Port)>,
+}
+
+impl Cabling {
+    /// `num_interfaces` interfaces over the devices in turn, neighbours cabled.
+    fn pairs(num_devices: usize, num_interfaces: usize) -> Result<Self> {
+        ensure!(
+            num_devices > 0 || num_interfaces == 0,
+            "{num_interfaces} interfaces need at least one device to sit on"
+        );
+        let interfaces: Vec<Port> = (0..num_interfaces).map(|i| (i, i % num_devices)).collect();
+        // neighbours sit on neighbouring devices, so a cable joins two devices;
+        // with only one there is nothing to cable it to.
+        let cables = if num_devices < 2 {
+            Vec::new()
+        } else {
+            let (pairs, _) = interfaces.as_chunks::<2>();
+            pairs.iter().map(|&[a, b]| (a, b)).collect()
+        };
+        Ok(Cabling { interfaces, cables })
+    }
+
+    /// one cable per link, each end on the next free interface of its device.
+    fn links(num_devices: usize, links: &[(usize, usize)]) -> Result<Self> {
+        let mut ports = vec![0; num_devices];
+        let mut cabling = Cabling {
+            interfaces: Vec::new(),
+            cables: Vec::new(),
+        };
+        for &(a, b) in links {
+            ensure!(a != b, "device_{a} cannot be linked to itself");
+            let [a, b] = [a, b].map(|device| {
+                let port = ports[device];
+                ports[device] += 1;
+                (port, device)
+            });
+            cabling.interfaces.extend([a, b]);
+            cabling.cables.push((a, b));
+        }
+        Ok(cabling)
+    }
 }
 
 #[derive(Parser, Debug)]
@@ -103,11 +145,7 @@ impl Args {
             "--spines only applies to --topology leaf-spine"
         );
         let links = match self.topology {
-            Topology::Pairs => {
-                return Ok(Cabling::Pairs {
-                    interfaces: self.num_interfaces.unwrap_or(n),
-                })
-            }
+            Topology::Pairs => return Cabling::pairs(n, self.num_interfaces.unwrap_or(n)),
             Topology::Chain => chain(n),
             Topology::Ring => ring(n),
             Topology::Star => star(n),
@@ -118,7 +156,7 @@ impl Args {
             self.num_interfaces.is_none(),
             "--num-interfaces only applies to --topology pairs; the other topologies give each link its own interfaces"
         );
-        Ok(Cabling::Links(links))
+        Cabling::links(n, &links)
     }
 }
 
@@ -236,51 +274,13 @@ fn objects(num_devices: usize, cabling: &Cabling) -> Result<Vec<Object>> {
         objects.push(device(i)?);
     }
 
-    match cabling {
-        Cabling::Pairs { interfaces } => pairs(&mut objects, num_devices, *interfaces)?,
-        Cabling::Links(links) => linked(&mut objects, num_devices, links)?,
+    for &(i, device) in &cabling.interfaces {
+        objects.push(interface(i, device)?);
+    }
+    for &(a, b) in &cabling.cables {
+        objects.push(cable(a, b)?);
     }
     Ok(objects)
-}
-
-/// `num_interfaces` interfaces over the devices in turn, neighbours cabled.
-fn pairs(objects: &mut Vec<Object>, num_devices: usize, num_interfaces: usize) -> Result<()> {
-    ensure!(
-        num_devices > 0 || num_interfaces == 0,
-        "{num_interfaces} interfaces need at least one device to sit on"
-    );
-    for i in 0..num_interfaces {
-        objects.push(interface(i, i % num_devices)?);
-    }
-
-    // neighbours sit on neighbouring devices, so a cable joins two devices;
-    // with only one there is nothing to cable it to.
-    if num_devices < 2 {
-        return Ok(());
-    }
-    for a in (0..num_interfaces / 2).map(|pair| 2 * pair) {
-        objects.push(cable((a, a % num_devices), (a + 1, (a + 1) % num_devices))?);
-    }
-    Ok(())
-}
-
-/// one cable per link, each end on the next free interface of its device.
-fn linked(objects: &mut Vec<Object>, num_devices: usize, links: &[(usize, usize)]) -> Result<()> {
-    let mut ports = vec![0; num_devices];
-    let mut cables = Vec::new();
-    for &(a, b) in links {
-        ensure!(a != b, "device_{a} cannot be linked to itself");
-        let [a, b] = [a, b].map(|device| {
-            let port = ports[device];
-            ports[device] += 1;
-            (port, device)
-        });
-        objects.push(interface(a.0, a.1)?);
-        objects.push(interface(b.0, b.1)?);
-        cables.push(cable(a, b)?);
-    }
-    objects.extend(cables);
-    Ok(())
 }
 
 fn manufacturer(i: usize) -> Result<Object> {
@@ -556,15 +556,16 @@ mod tests {
     }
 
     fn num_interfaces(args: &[&str]) -> usize {
-        match parse(args).cabling().expect("args should cable") {
-            Cabling::Pairs { interfaces } => interfaces,
-            other => panic!("expected pairs, got {other:?}"),
-        }
+        parse(args)
+            .cabling()
+            .expect("args should cable")
+            .interfaces
+            .len()
     }
 
-    /// the default cabling: `i` interfaces, neighbours paired.
-    fn paired(i: usize) -> Cabling {
-        Cabling::Pairs { interfaces: i }
+    /// the default cabling: `i` interfaces over `n` devices, neighbours paired.
+    fn paired(n: usize, i: usize) -> Cabling {
+        Cabling::pairs(n, i).expect("pairs should cable")
     }
 
     #[test]
@@ -621,7 +622,8 @@ mod tests {
     fn every_declared_type_is_generated() {
         // the schema is only worth carrying for the types the generator emits,
         // so the claim is checked against the schema rather than a second list.
-        let inventory = build_inventory(20, &paired(INTERFACES)).expect("inventory should build");
+        let inventory =
+            build_inventory(20, &paired(20, INTERFACES)).expect("inventory should build");
         let emitted: BTreeSet<_> = inventory
             .objects
             .iter()
@@ -640,7 +642,7 @@ mod tests {
         // the regression the generator shipped: empty keys made every device
         // one identity, and `validate` rejected the lot.
         for n in [0, 1, 2, 3, 17, 40] {
-            let inventory = build_inventory(n, &paired(n)).expect("inventory should build");
+            let inventory = build_inventory(n, &paired(n, n)).expect("inventory should build");
             assert_eq!(errors(&inventory), Vec::<String>::new(), "at n = {n}");
         }
     }
@@ -648,7 +650,7 @@ mod tests {
     #[test]
     fn generated_plan_objects_validate_as_an_inventory() {
         for n in [0, 1, 3, 17] {
-            let plan = build_plan(n, &paired(n)).expect("plan should build");
+            let plan = build_plan(n, &paired(n, n)).expect("plan should build");
             let inventory = plan_as_inventory(&plan);
             assert_eq!(errors(&inventory), Vec::<String>::new(), "at n = {n}");
         }
@@ -656,7 +658,8 @@ mod tests {
 
     #[test]
     fn every_object_derives_its_uid_from_its_key() {
-        let inventory = build_inventory(30, &paired(INTERFACES)).expect("inventory should build");
+        let inventory =
+            build_inventory(30, &paired(30, INTERFACES)).expect("inventory should build");
         for object in &inventory.objects {
             assert_eq!(
                 object.uid,
@@ -699,7 +702,7 @@ mod tests {
         // an unreferenced pool member is dead weight in every generated file;
         // which interfaces stay uncabled is pinned by its own tests below.
         for (n, i) in [(1, 8), (3, 8), (9, 7), (40, 8), (40, 40)] {
-            let inventory = build_inventory(n, &paired(i)).expect("inventory should build");
+            let inventory = build_inventory(n, &paired(n, i)).expect("inventory should build");
             let referenced = referenced(&inventory.objects);
             for object in &inventory.objects {
                 if [DEVICE, INTERFACE, CABLE].contains(&object.type_name.as_str()) {
@@ -717,7 +720,7 @@ mod tests {
     #[test]
     fn every_interface_is_cabled_at_an_even_count() {
         for (n, i) in [(2, 8), (3, 8), (9, 2), (40, 40)] {
-            let objects = objects(n, &paired(i)).expect("objects should build");
+            let objects = objects(n, &paired(n, i)).expect("objects should build");
             assert_eq!(
                 uncabled(&objects),
                 Vec::<String>::new(),
@@ -729,7 +732,7 @@ mod tests {
     #[test]
     fn an_odd_interface_out_is_left_uncabled() {
         for (n, i) in [(2, 1), (5, 7), (9, 9)] {
-            let objects = objects(n, &paired(i)).expect("objects should build");
+            let objects = objects(n, &paired(n, i)).expect("objects should build");
             assert_eq!(
                 uncabled(&objects),
                 vec![interface_name(i - 1)],
@@ -743,7 +746,7 @@ mod tests {
         // interfaces and cables scale with their own count, so only the pools
         // are counted here.
         let support = |n| {
-            let inventory = build_inventory(n, &paired(n)).expect("inventory should build");
+            let inventory = build_inventory(n, &paired(n, n)).expect("inventory should build");
             inventory
                 .objects
                 .iter()
@@ -761,7 +764,7 @@ mod tests {
     fn the_default_interface_count_grows_with_the_devices() {
         let pools = MANUFACTURERS + MODELS + ROLES + SITES;
         for n in [1000, 2001] {
-            let objects = objects(n, &paired(n)).expect("objects should build");
+            let objects = objects(n, &paired(n, n)).expect("objects should build");
             // a device, an interface and half a cable each.
             assert_eq!(objects.len(), pools + n + n + n / 2, "at n = {n}");
         }
@@ -786,7 +789,7 @@ mod tests {
     #[test]
     fn interface_count_is_independent_of_the_device_count() {
         for (n, i) in [(3, 8), (20, 8), (5, 0), (5, 7)] {
-            let objects = objects(n, &paired(i)).expect("objects should build");
+            let objects = objects(n, &paired(n, i)).expect("objects should build");
             assert_eq!(interface_devices(&objects).len(), i, "at n = {n}, i = {i}");
             assert_eq!(cables(&objects).len(), i / 2, "at n = {n}, i = {i}");
         }
@@ -794,7 +797,7 @@ mod tests {
 
     #[test]
     fn interfaces_are_spread_over_the_devices_in_turn() {
-        let objects = objects(3, &paired(8)).expect("objects should build");
+        let objects = objects(3, &paired(3, 8)).expect("objects should build");
         for (i, object) in objects
             .iter()
             .filter(|object| object.type_name.as_str() == INTERFACE)
@@ -808,17 +811,17 @@ mod tests {
     #[test]
     fn interfaces_without_devices_are_rejected() {
         assert_eq!(
-            objects(0, &paired(8)).unwrap_err().to_string(),
+            Cabling::pairs(0, 8).unwrap_err().to_string(),
             "8 interfaces need at least one device to sit on"
         );
-        assert!(render(Kind::Plan, 0, &paired(8)).is_err());
-        let objects = objects(0, &paired(0)).expect("objects should build");
+        assert!(parse(&["-n", "0", "-i", "8"]).cabling().is_err());
+        let objects = objects(0, &paired(0, 0)).expect("objects should build");
         assert!(objects.is_empty());
     }
 
     #[test]
     fn one_device_means_no_cables() {
-        let objects = objects(1, &paired(8)).expect("objects should build");
+        let objects = objects(1, &paired(1, 8)).expect("objects should build");
         assert_eq!(interface_devices(&objects).len(), 8);
         assert!(cables(&objects).is_empty());
         assert_eq!(uncabled(&objects).len(), 8);
@@ -840,7 +843,7 @@ mod tests {
     #[test]
     fn cables_join_two_devices_once_there_are_two() {
         for (n, i) in [(2, 8), (3, 8), (4, 8), (8, 8), (2, 20), (20, 8)] {
-            let objects = objects(n, &paired(i)).expect("objects should build");
+            let objects = objects(n, &paired(n, i)).expect("objects should build");
             let on = interface_devices(&objects);
             for cable in cables(&objects) {
                 let end = |side: &str| {
@@ -858,8 +861,8 @@ mod tests {
 
     #[test]
     fn build_plan_has_an_op_per_generated_object() {
-        let plan = build_plan(7, &paired(INTERFACES)).expect("plan should build");
-        let objects = objects(7, &paired(INTERFACES)).expect("objects should build");
+        let plan = build_plan(7, &paired(7, INTERFACES)).expect("plan should build");
+        let objects = objects(7, &paired(7, INTERFACES)).expect("objects should build");
         assert_eq!(plan.ops.len(), objects.len());
         assert_eq!(create_ops(&plan).len(), objects.len());
         assert_eq!(devices(&objects).len(), 7);
@@ -867,27 +870,27 @@ mod tests {
 
     #[test]
     fn build_plan_with_zero_ops_is_empty() {
-        let plan = build_plan(0, &paired(0)).expect("empty plan should build");
+        let plan = build_plan(0, &paired(0, 0)).expect("empty plan should build");
         assert!(plan.ops.is_empty());
-        let inventory = build_inventory(0, &paired(0)).expect("empty inventory should build");
+        let inventory = build_inventory(0, &paired(0, 0)).expect("empty inventory should build");
         assert!(inventory.objects.is_empty());
     }
 
     #[test]
     fn build_inventory_carries_the_same_schema_as_the_plan() {
-        let plan = build_plan(3, &paired(INTERFACES)).expect("plan should build");
-        let inventory = build_inventory(3, &paired(INTERFACES)).expect("inventory should build");
+        let plan = build_plan(3, &paired(3, INTERFACES)).expect("plan should build");
+        let inventory = build_inventory(3, &paired(3, INTERFACES)).expect("inventory should build");
         assert_eq!(inventory.schema, plan.schema);
         assert_eq!(
             inventory.objects,
-            objects(3, &paired(INTERFACES)).expect("objects should build"),
+            objects(3, &paired(3, INTERFACES)).expect("objects should build"),
             "the two kinds describe the same objects"
         );
     }
 
     #[test]
     fn every_op_agrees_with_the_object_it_carries() {
-        let plan = build_plan(9, &paired(INTERFACES)).expect("plan should build");
+        let plan = build_plan(9, &paired(9, INTERFACES)).expect("plan should build");
         for op in &plan.ops {
             let Op::Create {
                 uid,
@@ -940,8 +943,8 @@ mod tests {
         );
 
         for kind in [Kind::Plan, Kind::Inventory] {
-            let first = render(kind, 5, &paired(INTERFACES)).expect("artifact should render");
-            let second = render(kind, 5, &paired(INTERFACES)).expect("artifact should render");
+            let first = render(kind, 5, &paired(5, INTERFACES)).expect("artifact should render");
+            let second = render(kind, 5, &paired(5, INTERFACES)).expect("artifact should render");
             assert_eq!(first, second, "{kind:?} is not byte-stable");
         }
     }
@@ -950,7 +953,8 @@ mod tests {
     fn round_trip(kind: Kind, num_devices: usize) -> String {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("out.json");
-        let json = render(kind, num_devices, &paired(INTERFACES)).expect("artifact should render");
+        let json = render(kind, num_devices, &paired(num_devices, INTERFACES))
+            .expect("artifact should render");
         write_json(&json, &path).expect("artifact should write");
         fs::read_to_string(&path).expect("output should exist")
     }
@@ -973,7 +977,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         // a path whose parent directory does not exist cannot be written.
         let path = dir.path().join("does/not/exist/plan.json");
-        let json = render(Kind::Plan, 1, &paired(INTERFACES)).expect("plan should render");
+        let json = render(Kind::Plan, 1, &paired(1, INTERFACES)).expect("plan should render");
         let err = write_json(&json, &path).unwrap_err();
         assert_eq!(err.to_string(), format!("writing to {}", path.display()));
     }
@@ -990,7 +994,8 @@ mod tests {
 
     /// the devices each cable joins, as device indices, in emitted order.
     fn cabled_devices(n: usize, links: Vec<(usize, usize)>) -> Vec<(usize, usize)> {
-        let objects = objects(n, &Cabling::Links(links)).expect("objects should build");
+        let objects = objects(n, &Cabling::links(n, &links).expect("links should cable"))
+            .expect("objects should build");
         let on = interface_devices(&objects);
         let index = |uid: &Value| {
             (0..n)
@@ -1047,7 +1052,8 @@ mod tests {
             ("mesh", 5, mesh(5)),
             ("leaf-spine", 6, leaf_spine(6, 2).expect("leaf-spine")),
         ] {
-            let objects = objects(n, &Cabling::Links(links.clone())).expect("objects should build");
+            let objects = objects(n, &Cabling::links(n, &links).expect("links should cable"))
+                .expect("objects should build");
             assert_eq!(cables(&objects).len(), links.len(), "{name}");
             assert_eq!(interface_devices(&objects).len(), 2 * links.len(), "{name}");
             assert_eq!(uncabled(&objects), Vec::<String>::new(), "{name}");
@@ -1064,7 +1070,8 @@ mod tests {
     #[test]
     fn a_device_numbers_its_interfaces_from_zero() {
         // the hub of a star carries one interface per spoke, the spokes one each
-        let objects = objects(4, &Cabling::Links(star(4))).expect("objects should build");
+        let objects = objects(4, &Cabling::links(4, &star(4)).expect("links should cable"))
+            .expect("objects should build");
         let names_on = |d: usize| -> Vec<String> {
             let uid = json!(device(d).expect("device").uid.to_string());
             objects
@@ -1079,21 +1086,18 @@ mod tests {
 
     #[test]
     fn the_cli_picks_the_topology() {
-        assert_eq!(
-            cabling(&[]).expect("default"),
-            Cabling::Pairs { interfaces: 10 }
-        );
+        assert_eq!(cabling(&[]).expect("default"), paired(10, 10));
         assert_eq!(
             cabling(&["-n", "4", "-t", "ring"]).expect("ring"),
-            Cabling::Links(ring(4))
+            Cabling::links(4, &ring(4)).expect("ring")
         );
         assert_eq!(
             cabling(&["-n", "6", "--topology", "leaf-spine", "--spines", "3"]).expect("leaf-spine"),
-            Cabling::Links(leaf_spine(6, 3).expect("leaf-spine"))
+            Cabling::links(6, &leaf_spine(6, 3).expect("leaf-spine")).expect("leaf-spine")
         );
         assert_eq!(
             cabling(&["-n", "6", "-t", "leaf-spine"]).expect("two spines by default"),
-            Cabling::Links(leaf_spine(6, 2).expect("leaf-spine"))
+            Cabling::links(6, &leaf_spine(6, 2).expect("leaf-spine")).expect("leaf-spine")
         );
     }
 
