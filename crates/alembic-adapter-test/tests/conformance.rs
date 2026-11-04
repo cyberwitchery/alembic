@@ -17,7 +17,14 @@ fn sh(script: &str) -> Vec<String> {
 
 /// the built-ins with the writing checks asked for, now that they are opt-in.
 fn run_builtin_writing(adapter: &[String]) -> Vec<Outcome> {
-    run_builtin_with(adapter, TIMEOUT, Builtins { writes: true })
+    run_builtin_with(
+        adapter,
+        TIMEOUT,
+        Builtins {
+            writes: true,
+            ..Builtins::default()
+        },
+    )
 }
 
 fn find<'a>(outcomes: &'a [Outcome], name: &str) -> &'a Outcome {
@@ -278,7 +285,10 @@ fn forked_adapter_does_not_outlast_the_timeout() {
     let outcomes = run_builtin_with(
         &sh("sleep 30 & wait"),
         Duration::from_millis(300),
-        Builtins { writes: true },
+        Builtins {
+            writes: true,
+            ..Builtins::default()
+        },
     );
     assert!(outcomes.iter().all(|o| !o.passed()));
     assert!(
@@ -838,7 +848,7 @@ fn the_gate_decides_whether_the_liveness_check_reaches_the_artifact() {
     std::fs::write(&artifact, before).unwrap();
     let adapter = sh(&emitter_writing(&artifact.display().to_string()));
 
-    let outcomes = run_builtin_with(&adapter, TIMEOUT, Builtins { writes: false });
+    let outcomes = run_builtin_with(&adapter, TIMEOUT, Builtins::default());
     assert_eq!(
         std::fs::read_to_string(&artifact).unwrap(),
         before,
@@ -846,7 +856,14 @@ fn the_gate_decides_whether_the_liveness_check_reaches_the_artifact() {
     );
     assert!(find(&outcomes, "protocol/write-empty").skipped());
 
-    let outcomes = run_builtin_with(&adapter, TIMEOUT, Builtins { writes: true });
+    let outcomes = run_builtin_with(
+        &adapter,
+        TIMEOUT,
+        Builtins {
+            writes: true,
+            ..Builtins::default()
+        },
+    );
     assert_eq!(
         std::fs::read_to_string(&artifact).unwrap(),
         "rendered",
@@ -936,7 +953,7 @@ fn the_gate_leaves_a_non_writing_liveness_check_alone() {
       *'"method":"read"'*) printf '{"ok":true,"result":[]}' ;;
       *) printf '{"ok":false,"error":"write is not supported"}' ;;
     esac"#;
-    let outcomes = run_builtin_with(&sh(script), TIMEOUT, Builtins { writes: false });
+    let outcomes = run_builtin_with(&sh(script), TIMEOUT, Builtins::default());
     for outcome in &outcomes {
         assert!(
             outcome.passed(),
@@ -968,13 +985,20 @@ fn the_gate_turns_off_a_full_adapters_write_and_leaves_its_read() {
       *'"method":"preview_schema"'*) printf '{"ok":true,"result":null}' ;;
       *) printf '{"ok":false,"error":"unknown method"}' ;;
     esac"#;
-    let outcomes = run_builtin_with(&sh(script), TIMEOUT, Builtins { writes: false });
+    let outcomes = run_builtin_with(&sh(script), TIMEOUT, Builtins::default());
     let write = find(&outcomes, "protocol/write-empty");
     assert!(write.skipped(), "the write must be reported, not dropped");
     assert!(!write.passed(), "a skipped check certifies nothing");
     assert!(find(&outcomes, "protocol/read-empty").passed());
 
-    let outcomes = run_builtin_with(&sh(script), TIMEOUT, Builtins { writes: true });
+    let outcomes = run_builtin_with(
+        &sh(script),
+        TIMEOUT,
+        Builtins {
+            writes: true,
+            ..Builtins::default()
+        },
+    );
     assert!(find(&outcomes, "protocol/write-empty").passed());
 }
 
@@ -1063,4 +1087,58 @@ fn a_misspelled_role_names_the_key() {
         "{}",
         message(capabilities)
     );
+}
+
+/// an adapter that cannot answer without configuration, like a driver whose
+/// server is mandatory: a request whose setup lacks `url` is refused.
+const NEEDS_URL: &str = r#"req=$(cat)
+case "$req" in
+  *'"url":"http://lab.example"'*) ;;
+  *) printf '{"ok":false,"error":"invalid setup: missing url"}'; exit 0 ;;
+esac
+case "$req" in
+  *'"version":1'*) ;;
+  *) printf '{"ok":false,"error":"unsupported protocol version"}'; exit 0 ;;
+esac
+case "$req" in
+  *'"method":"capabilities"'*) printf '{"ok":true,"result":{"role":"observer"}}' ;;
+  *'"method":"read"'*) printf '{"ok":true,"result":[]}' ;;
+  *) printf '{"ok":false,"error":"unknown method"}' ;;
+esac"#;
+
+fn lab_setup() -> Builtins {
+    Builtins {
+        setup: json!({ "url": "http://lab.example" })
+            .as_object()
+            .cloned()
+            .unwrap(),
+        ..Builtins::default()
+    }
+}
+
+#[test]
+fn the_builtins_carry_the_setup_they_are_given() {
+    let outcomes = run_builtin_with(&sh(NEEDS_URL), TIMEOUT, lab_setup());
+    for outcome in &outcomes {
+        assert!(
+            outcome.passed(),
+            "{} failed: {:?}",
+            outcome.name,
+            outcome.failure
+        );
+    }
+    // the capabilities probe carried it too: the declared observer role held,
+    // where a refused probe would have defaulted to read+write and sent a preview.
+    assert!(!outcomes
+        .iter()
+        .any(|o| o.name == "protocol/preview-schema-empty"));
+}
+
+/// without `--setup` the requests carry an empty one, as before.
+#[test]
+fn the_default_setup_is_empty() {
+    assert!(Builtins::default().setup.is_empty());
+    let outcomes = run_builtin(&sh(NEEDS_URL), TIMEOUT);
+    let read = find(&outcomes, "protocol/read-empty");
+    assert!(message(read).contains("missing url"), "{}", message(read));
 }
