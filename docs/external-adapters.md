@@ -206,14 +206,22 @@ follows the state backend and is absent when the run keeps no journal:
 "journal": { "storage": "postgres", "key": "default/external-1a2b3c4d/external-1a2b3c4d_journal_5133211470659736648", "tls": "disable" }
 ```
 
-the path is absolute, and its directory may not exist yet. the postgres key is the
-`journal_key` of the `alembic_journal` rows; the connection url is not sent, so read
-`ALEMBIC_STATE_POSTGRES_URL` from the environment the adapter inherits. the adapter
-owns the journal: record the creates and updates as they land (deletes are not
-journaled), skip the ones an earlier run recorded and answer them as `resumed` with
-their count as `previously_applied_count`, and remove the journal once the whole
-write, deletes included, is through. an adapter that ignores the key applies every
-op on every run, as before.
+the path is absolute, and its directory may not exist yet. the
+postgres key is the `journal_key` of the `alembic_journal` rows. the
+connection url is not sent, so the external adapter must read
+`ALEMBIC_STATE_POSTGRES_URL` from the environment that it
+inherits.
+
+for an adapter to properly support resuming via the journal,
+it must own the journal (as a file or db connection) and perform the
+following tasks:
+
+- record the creates and updates as they land (deletes are not journaled)
+- skip the ops that an earlier run recorded and answer them as
+  `resumed` with their count as `previously_applied_count`
+- remove the journal once the whole write is through (deletes included)
+
+an adapter that ignores the journal key applies every op on every run.
 
 ### ensure_schema
 
