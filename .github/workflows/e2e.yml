@@ -1,8 +1,9 @@
 name: e2e
 
 # the live-backend check: netbox and infrahub in docker, driven through the
-# cli by scripts/e2e_netbox_infrahub.sh. too slow for every push, so it runs
-# weekly, on demand, and on a pull request that changes what it runs.
+# cli by scripts/e2e_netbox_infrahub.sh, which also runs the docs' netbox
+# blocks. too slow for every push, so it runs weekly, on demand, and on a pull
+# request that changes what it runs.
 on:
   schedule:
     - cron: "17 4 * * 1"
@@ -16,6 +17,10 @@ on:
       - "docker-compose.netbox.yml"
       - "docker/**"
       - "examples/e2e.yaml"
+      - "examples/walkthroughs/**"
+      - "docs/examples/**"
+      - "docs/case-studies/**"
+      - "scripts/doc_examples.sh"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}

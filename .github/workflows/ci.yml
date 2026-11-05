@@ -1,14 +1,15 @@
 name: ci
 
 # last match wins in a paths filter, so markdown is out except the skill
-# crates/alembic-cli/src/app/skill.rs include_str!s into the binary.
+# crates/alembic-cli/src/app/skill.rs include_str!s into the binary and the
+# pages scripts/doc_examples.sh runs blocks from.
 on:
   push:
     branches: ["main"]
-    paths: ["**", "!**/*.md", "crates/alembic-cli/skills/**"]
+    paths: ["**", "!**/*.md", "crates/alembic-cli/skills/**", "docs/**", "README.md"]
   pull_request:
     branches: ["main"]
-    paths: ["**", "!**/*.md", "crates/alembic-cli/skills/**"]
+    paths: ["**", "!**/*.md", "crates/alembic-cli/skills/**", "docs/**", "README.md"]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
@@ -200,6 +201,9 @@ jobs:
 
       - name: Agent fixtures
         run: ALEMBIC="$PWD/target/debug/alembic" scripts/agent_fixtures.sh
+
+      - name: Documented examples
+        run: ALEMBIC="$PWD/target/debug/alembic" scripts/doc_examples.sh offline
 
   unsafe-budget:
     name: unsafe-budget

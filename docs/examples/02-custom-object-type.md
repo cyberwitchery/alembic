@@ -36,6 +36,7 @@ reference.
 `--provision` creates the custom object type and its fields before planning, so
 the plan can then create objects against it:
 
+<!-- ci: netbox -->
 ```bash
 BACKEND_CONFIG=/path/to/backend-netbox.yaml
 

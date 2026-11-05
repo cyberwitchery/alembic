@@ -67,6 +67,7 @@ rules:
     emit: passthrough
 ```
 
+<!-- ci: netbox -->
 ```bash
 alembic map -f examples/walkthroughs/eval-fabric.yaml \
   --spec examples/walkthroughs/eval-fabric-netbox.yaml -o /tmp/netbox.json
@@ -152,6 +153,7 @@ valid. the ip rule emits two objects, so it names each uid: the ip
 keeps its own, and the link derives one from it. the ip names the
 prefix as its `parent`, reached through the prefix's `v5` uid.
 
+<!-- ci: skip needs a live nautobot -->
 ```bash
 alembic map -f examples/walkthroughs/eval-fabric.yaml \
   --spec examples/walkthroughs/eval-fabric-nautobot.yaml -o /tmp/nautobot.json
