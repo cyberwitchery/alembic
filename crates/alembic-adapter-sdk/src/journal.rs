@@ -83,6 +83,12 @@ pub enum JournalError {
     NotOpen,
     #[error("journal path `{}` has no parent directory", path.display())]
     NoParent { path: PathBuf },
+    #[error("journal path `{}` is not named `<key>.yaml`", path.display())]
+    NotAJournalFile { path: PathBuf },
+    #[error("{POSTGRES_URL_VAR} is not set, so the postgres journal `{key}` cannot be opened")]
+    NoPostgresUrl { key: String },
+    #[error("the postgres journal `{key}` needs alembic-adapter-sdk's `postgres` feature")]
+    PostgresDisabled { key: String },
     #[error("failed to access the journal at {location}")]
     Backend {
         location: String,
@@ -183,6 +189,47 @@ pub enum JournalStorageLocation {
     None,
     File(PathBuf),
     Backend(Arc<dyn JournalBackendFactory>),
+}
+
+impl JournalSpec {
+    /// the backend this spec names, and the key to hand `Journal::load_or_create_with_key`.
+    /// a postgres spec connects to `ALEMBIC_STATE_POSTGRES_URL`.
+    pub fn open(&self) -> Result<(Box<dyn JournalBackend>, String)> {
+        match self {
+            Self::File { path } => {
+                let directory = path
+                    .parent()
+                    .ok_or_else(|| JournalError::NoParent { path: path.clone() })?;
+                let key = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .and_then(|name| name.strip_suffix(".yaml"))
+                    .ok_or_else(|| JournalError::NotAJournalFile { path: path.clone() })?;
+                let backend = JournalFileBackend::new(directory.to_owned());
+                Ok((Box::new(backend), key.to_owned()))
+            }
+            Self::Postgres { key, tls } => open_postgres(key, *tls),
+        }
+    }
+}
+
+/// where an external adapter finds the database a postgres journal lives in.
+pub const POSTGRES_URL_VAR: &str = "ALEMBIC_STATE_POSTGRES_URL";
+
+#[cfg(feature = "postgres")]
+fn open_postgres(key: &str, tls: PostgresTlsMode) -> Result<(Box<dyn JournalBackend>, String)> {
+    let url = std::env::var(POSTGRES_URL_VAR).map_err(|_| JournalError::NoPostgresUrl {
+        key: key.to_owned(),
+    })?;
+    let backend = crate::journal_postgres::PostgresJournalBackend::unscoped(url, tls);
+    Ok((Box::new(backend), key.to_owned()))
+}
+
+#[cfg(not(feature = "postgres"))]
+fn open_postgres(key: &str, _tls: PostgresTlsMode) -> Result<(Box<dyn JournalBackend>, String)> {
+    Err(JournalError::PostgresDisabled {
+        key: key.to_owned(),
+    })
 }
 
 impl JournalStorageLocation {
@@ -690,6 +737,53 @@ mod tests {
             panic!("expected a file spec, got {spec:?}");
         };
         assert!(path.is_file(), "{} was not written", path.display());
+    }
+
+    #[tokio::test]
+    async fn an_opened_file_spec_resumes_the_journal_it_names() {
+        let dir = tempdir().unwrap();
+        let ops = test_ops();
+        let mut journal = Journal::load_or_create_with_file(dir.path(), "scope", &ops)
+            .await
+            .unwrap();
+        journal.mark_op_as_done(&ops[0], None).await.unwrap();
+
+        let spec = JournalStorageLocation::File(dir.path().to_owned())
+            .spec("scope", &ops)
+            .unwrap()
+            .unwrap();
+        let (backend, key) = spec.open().unwrap();
+        let resumed = Journal::load_or_create_with_key(backend, &key, &ops)
+            .await
+            .unwrap();
+        assert_eq!(resumed.done_ops_count(), 1);
+    }
+
+    #[test]
+    fn a_file_spec_not_named_for_a_key_is_refused() {
+        let spec = JournalSpec::File {
+            path: PathBuf::from("/work/journal.json"),
+        };
+        let Err(err) = spec.open() else {
+            panic!("a non-yaml journal path opened");
+        };
+        assert!(matches!(err, JournalError::NotAJournalFile { .. }), "{err}");
+    }
+
+    #[cfg(not(feature = "postgres"))]
+    #[test]
+    fn a_postgres_spec_needs_the_feature() {
+        let spec = JournalSpec::Postgres {
+            key: "default/x-1/x-1_journal_7".into(),
+            tls: PostgresTlsMode::Disable,
+        };
+        let Err(err) = spec.open() else {
+            panic!("a postgres spec opened without the feature");
+        };
+        assert!(
+            matches!(err, JournalError::PostgresDisabled { .. }),
+            "{err}"
+        );
     }
 
     #[test]
