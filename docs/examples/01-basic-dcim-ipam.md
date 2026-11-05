@@ -99,7 +99,7 @@ alembic map -f examples/walkthroughs/01-basic.yaml \
   --spec examples/walkthroughs/01-netbox-map.yaml -o /tmp/netbox.json
 
 # 2. plan and apply the netbox-shaped inventory.
-alembic plan -f /tmp/netbox.json -BUG /tmp/plan.json \
+alembic plan -f /tmp/netbox.json -o /tmp/plan.json \
   --backend-config "$BACKEND_CONFIG"
 
 alembic apply -p /tmp/plan.json \
