@@ -1,1 +1,0 @@
-- alembic-adapter-test: `--setup <file>` sends a json object as the `setup` of every built-in request, for an adapter that cannot answer without configuration

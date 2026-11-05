@@ -1,1 +1,0 @@
-- apply deletes an object before what it references outside its key, so deleting devices together with their role, type or site no longer fails with netbox's `409`: a planned delete records those uids as `refs`. a plan written before this has none and orders deletes by key as before
