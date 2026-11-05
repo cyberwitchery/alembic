@@ -87,6 +87,43 @@ alembic_external_main!(MyAdapter);
 for more control, call `run_external_adapter()` directly and build custom
 `ExternalResponse` values.
 
+### journaled writes
+
+`write_journaled` receives the [`journal`](#write) the request named; its default
+ignores it and calls `write`. to resume a partial apply, override it and run the ops
+through `apply_non_delete_with_requested_journal`, the retry loop the built-in
+adapters use, with a `RetryApplyDriver` that applies one op. it is async, and a
+postgres journal needs a tokio runtime and the sdk's `postgres` feature:
+
+```rust
+fn write_journaled(
+    &mut self,
+    _schema: &alembic_core::Schema,
+    ops: &[Op],
+    _state: &StateData,
+    journal: Option<&JournalSpec>,
+) -> anyhow::Result<ApplyReport> {
+    // deletes are not journaled: apply them after, and before `finish`
+    let creates_updates: Vec<Op> = ops
+        .iter()
+        .filter(|op| !matches!(op, Op::Delete { .. }))
+        .cloned()
+        .collect();
+    tokio::runtime::Runtime::new()?.block_on(async {
+        let (result, previously_applied_count, journal) =
+            apply_non_delete_with_requested_journal(journal, &creates_updates, &mut self.driver)
+                .await?;
+        journal.finish().await?;
+        Ok(ApplyReport {
+            applied: result.applied,
+            resumed: result.resumed,
+            previously_applied_count,
+            ..ApplyReport::default()
+        })
+    })
+}
+```
+
 ### errors
 
 `type Error` is whatever the adapter's methods fail with, and any `Display` type
@@ -221,7 +258,8 @@ following tasks:
   `resumed` with their count as `previously_applied_count`
 - remove the journal once the whole write is through (deletes included)
 
-an adapter that ignores the journal key applies every op on every run.
+the rust sdk does all three ([journaled writes](#journaled-writes)). an adapter that
+ignores the journal key applies every op on every run.
 
 ### ensure_schema
 
