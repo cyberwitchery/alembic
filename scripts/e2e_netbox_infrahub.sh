@@ -151,10 +151,6 @@ grep -q "edge-dhcp" /tmp/alembic-netbox-import.yaml
 
 echo "e2e imports written to /tmp/alembic-infrahub-import.yaml and /tmp/alembic-netbox-import.yaml"
 
-# the pages' netbox blocks, each on an emptied netbox: apply deletes custom
-# object types its inventory does not declare, so what e2e.yaml or an earlier
-# block provisioned would fail it. a netbox this script did not start is not
-# emptied for that.
 if [[ "${SKIP_DOCKER:-0}" != "1" ]]; then
   cargo build -q -p alembic-cli
   NETBOX_RESET="docker exec -i alembic-netbox-1 /opt/netbox/venv/bin/python /opt/netbox/netbox/manage.py shell < '$ROOT/scripts/netbox_reset.py'" \
