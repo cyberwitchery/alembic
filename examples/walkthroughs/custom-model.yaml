@@ -1,9 +1,22 @@
-# for docs/examples/02-custom-object-type.md: two native netbox types plus one
+# for docs/examples/02-custom-object-type.md: a native site and device (with the
+# manufacturer, device type and role netbox requires of a device) plus one type
 # netbox does not ship (`ops.maintenance_window`), which alembic provisions as a
 # netbox custom object type on apply.
 schema:
   types:
     # native netbox types, applied to their normal endpoints.
+    dcim.manufacturer:
+      key: {slug: {type: slug}}
+      fields: {name: {type: string}, slug: {type: slug}}
+    dcim.devicerole:
+      key: {slug: {type: slug}}
+      fields: {name: {type: string}, slug: {type: slug}}
+    dcim.devicetype:
+      key: {slug: {type: slug}}
+      fields:
+        manufacturer: {type: ref, target: dcim.manufacturer}
+        model: {type: string}
+        slug: {type: slug}
     dcim.site:
       key: {slug: {type: slug}}
       fields: {name: {type: string}, slug: {type: slug}}
@@ -12,6 +25,8 @@ schema:
       fields:
         name: {type: slug}
         site: {type: ref, target: dcim.site}
+        role: {type: ref, target: dcim.devicerole}
+        device_type: {type: ref, target: dcim.devicetype}
     # a type netbox core has no endpoint for: alembic provisions it as a custom
     # object type, with a field per key + field, and applies objects under
     # /api/plugins/custom-objects/. its `device` field references a native device.
@@ -23,6 +38,21 @@ schema:
         ends_at: {type: datetime}
         device: {type: ref, target: dcim.device}
 objects:
+  - uid: "44444444-4444-4444-4444-444444444444"
+    type: dcim.manufacturer
+    key: {slug: "acme"}
+    attrs: {name: "Acme", slug: "acme"}
+  - uid: "55555555-5555-5555-5555-555555555555"
+    type: dcim.devicerole
+    key: {slug: "leaf"}
+    attrs: {name: "leaf", slug: "leaf"}
+  - uid: "66666666-6666-6666-6666-666666666666"
+    type: dcim.devicetype
+    key: {slug: "leaf-switch"}
+    attrs:
+      manufacturer: "44444444-4444-4444-4444-444444444444"
+      model: "leaf-switch"
+      slug: "leaf-switch"
   - uid: "11111111-1111-1111-1111-111111111111"
     type: dcim.site
     key: {slug: "fra1"}
@@ -30,7 +60,11 @@ objects:
   - uid: "22222222-2222-2222-2222-222222222222"
     type: dcim.device
     key: {name: "leaf01"}
-    attrs: {name: "leaf01", site: "11111111-1111-1111-1111-111111111111"}
+    attrs:
+      name: "leaf01"
+      site: "11111111-1111-1111-1111-111111111111"
+      role: "55555555-5555-5555-5555-555555555555"
+      device_type: "66666666-6666-6666-6666-666666666666"
   - uid: "33333333-3333-3333-3333-333333333333"
     type: ops.maintenance_window
     key: {name: "leaf01-firmware"}

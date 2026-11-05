@@ -31,3 +31,4 @@ alembic.yaml
 # Local working notes (not part of the repo)
 memory/
 CLEANUP.md
+/scripts/__pycache__/

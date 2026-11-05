@@ -151,6 +151,14 @@ grep -q "edge-dhcp" /tmp/alembic-netbox-import.yaml
 
 echo "e2e imports written to /tmp/alembic-infrahub-import.yaml and /tmp/alembic-netbox-import.yaml"
 
+if [[ "${SKIP_DOCKER:-0}" != "1" ]]; then
+  cargo build -q -p alembic-cli
+  NETBOX_RESET="docker exec -i alembic-netbox-1 /opt/netbox/venv/bin/python /opt/netbox/netbox/manage.py shell < '$ROOT/scripts/netbox_reset.py'" \
+    ALEMBIC="$ROOT/target/debug/alembic" "$ROOT/scripts/doc_examples.sh" netbox "$NETBOX_CONFIG"
+else
+  echo "SKIP_DOCKER=1: not running the documented netbox examples, which need a netbox they can wipe"
+fi
+
 if [[ "${CLEANUP:-0}" == "1" ]]; then
   docker compose -f "$NETBOX_COMPOSE" down -v
   docker compose -f "$INFRAHUB_COMPOSE" down -v

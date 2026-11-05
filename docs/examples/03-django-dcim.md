@@ -38,6 +38,7 @@ app: dcim_app
 django cannot report existing state, so `plan` produces an all-creates plan (one
 op per object), and `apply` generates the app:
 
+<!-- ci: skip needs django; crates/alembic-cli/tests/django_e2e.rs runs this flow -->
 ```bash
 alembic plan  --backend-config ./django-config.yaml \
   -f examples/walkthroughs/django-dcim.yaml -o plan.json

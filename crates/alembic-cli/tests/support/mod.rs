@@ -97,13 +97,17 @@ fn modules_available(python: &str, imports: &str, label: &str) -> bool {
     available
 }
 
-/// the directory the documented example walkthroughs live in.
-pub fn walkthroughs_dir() -> PathBuf {
+/// the repo's top-level `examples/` directory.
+pub fn examples_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("..")
         .join("examples")
-        .join("walkthroughs")
+}
+
+/// the directory the documented example walkthroughs live in.
+pub fn walkthroughs_dir() -> PathBuf {
+    examples_dir().join("walkthroughs")
 }
 
 /// path to a documented example walkthrough inventory (examples/walkthroughs/<name>).
