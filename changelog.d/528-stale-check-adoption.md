@@ -1,0 +1,1 @@
+- apply: the stale-plan check re-diffs with key adoption as the plan was made, recorded as `adopt_by_key`, so a `plan --no-adopt` create of a same-key twin is no longer refused as stale; a plan without the field is checked as before (#528)

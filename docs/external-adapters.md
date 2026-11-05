@@ -430,6 +430,18 @@ runs, the version probe included, so a bare invocation certifies everything but
 those two. `--no-provisioning-check`, the old spelling, is the default now, so
 it warns and refuses `--write-checks`.
 
+every built-in request carries `setup: {}`. an adapter that cannot answer
+without configuration, a server address say, refuses that, and every check it
+refuses fails. pass `--setup` a file holding the json object to send as `setup`
+instead. the capabilities probe and the must-error checks carry it too, so they
+fail for their own reason rather than for the missing configuration. the empty
+read and preview still run, so point it at configuration they can answer
+without touching anything that matters.
+
+```console
+alembic-adapter-test --setup tests/setup.json -- ./alembic-adapter-mybackend
+```
+
 to exercise `read`, `write`, and `ensure_schema` with requests of your own,
 pass `--cases` a file or directory of cases. a case is a complete request and
 an expectation:

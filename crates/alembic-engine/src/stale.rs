@@ -27,12 +27,13 @@ impl fmt::Display for StalePlan {
 }
 
 /// refuse a plan the backend has moved away from. the plan's objects are
-/// diffed again against the backend as it is now, with identity memory copied
-/// so nothing is bound; every op that diff needs has to be one the plan holds,
-/// with the same `from` values. an op the diff no longer needs was applied
-/// already (an interrupted run, or the same edit made by hand), which is not a
-/// conflict. deletes are not checked: an object already gone is the delete
-/// applied. a write-only backend observes nothing, so it is not checked.
+/// diffed again against the backend as it is now, on a copy of the state and
+/// with the plan's key adoption. every op that diff needs must be in the plan,
+/// with the same `from` values.
+///
+/// an op the diff no longer needs was applied already (an interrupted run, or
+/// the same edit made by hand), which is not a conflict. deletes and write-only
+/// backends are not checked.
 pub async fn guard_stale_plan(backend: &Backend, plan: &Plan, state: &StateStore) -> Result<()> {
     let Ok(observer) = backend.observer() else {
         return Ok(());
@@ -53,8 +54,12 @@ pub async fn guard_stale_plan(backend: &Backend, plan: &Plan, state: &StateStore
             mappings: state.all_mappings().clone(),
         },
     );
+    // adopt by key only if the plan did. bound objects re-diff either way.
+    // a plan without the field predates it and adopted.
+    let adopt_by_key = plan.adopt_by_key.unwrap_or(true);
     let (observed, bootstrap) =
-        crate::pipeline::observe_validated(observer, &inventory, &mut scratch, false, true).await?;
+        crate::pipeline::observe_validated(observer, &inventory, &mut scratch, false, adopt_by_key)
+            .await?;
     let now = crate::planner::plan_with_bootstrap(
         &inventory.objects,
         &observed,
@@ -62,7 +67,7 @@ pub async fn guard_stale_plan(backend: &Backend, plan: &Plan, state: &StateStore
         &inventory.schema,
         None,
         false,
-        true,
+        adopt_by_key,
         &bootstrap,
     )?;
 

@@ -98,7 +98,7 @@ pub async fn build_plan(
 ) -> Result<(Plan, types::BootstrapReport)> {
     let (observed, bootstrap) =
         pipeline::observe(adapter, inventory, state, allow_delete, adopt_by_key).await?;
-    let plan = planner::plan_with_bootstrap(
+    let mut plan = planner::plan_with_bootstrap(
         &inventory.objects,
         &observed,
         state,
@@ -108,6 +108,7 @@ pub async fn build_plan(
         adopt_by_key,
         &bootstrap,
     )?;
+    plan.adopt_by_key = Some(adopt_by_key);
     Ok((plan, bootstrap))
 }
 

@@ -325,3 +325,58 @@ fn no_provisioning_check_warns_and_keeps_its_meaning() {
         .expect("run binary");
     assert_eq!(out.status.code(), Some(2));
 }
+
+/// an adapter that refuses any request whose setup lacks `url`.
+const NEEDS_URL: &str = r#"req=$(cat)
+case "$req" in
+  *'"url":"http://lab.example"'*) ;;
+  *) printf '{"ok":false,"error":"invalid setup: missing url"}'; exit 0 ;;
+esac
+case "$req" in
+  *'"version":1'*) ;;
+  *) printf '{"ok":false,"error":"unsupported protocol version"}'; exit 0 ;;
+esac
+case "$req" in
+  *'"method":"capabilities"'*) printf '{"ok":true,"result":{"role":"observer"}}' ;;
+  *'"method":"read"'*) printf '{"ok":true,"result":[]}' ;;
+  *) printf '{"ok":false,"error":"unknown method"}' ;;
+esac"#;
+
+fn run_with_setup(setup: Option<&Path>) -> std::process::Output {
+    let mut command = Command::new(BIN);
+    if let Some(path) = setup {
+        command.arg("--setup").arg(path);
+    }
+    command
+        .args(["--", "sh", "-c", NEEDS_URL])
+        .output()
+        .expect("run binary")
+}
+
+#[test]
+fn setup_is_sent_with_the_builtin_checks() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("setup.json");
+    std::fs::write(&path, r#"{"url": "http://lab.example"}"#).unwrap();
+    let out = run_with_setup(Some(&path));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(0), "{stdout}");
+
+    let out = run_with_setup(None);
+    assert_eq!(out.status.code(), Some(1));
+}
+
+#[test]
+fn a_setup_that_is_not_a_json_object_exits_2() {
+    let dir = tempdir().unwrap();
+    for (name, text) in [("list.json", "[]"), ("broken.json", "{")] {
+        let path = dir.path().join(name);
+        std::fs::write(&path, text).unwrap();
+        let out = run_with_setup(Some(&path));
+        assert_eq!(out.status.code(), Some(2), "{name}");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.contains(name), "{stderr}");
+    }
+    let out = run_with_setup(Some(&dir.path().join("missing.json")));
+    assert_eq!(out.status.code(), Some(2));
+}

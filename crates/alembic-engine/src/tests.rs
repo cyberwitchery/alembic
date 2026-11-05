@@ -1707,6 +1707,7 @@ fn apply_plan_blocks_deletes_without_flag() {
         summary: None,
         schema_preview: None,
         effects: None,
+        adopt_by_key: None,
     };
     let backend = Backend::Adapter(Box::new(adapter));
     let err = futures::executor::block_on(apply_plan(&backend, &plan, &mut state, false))
@@ -1781,6 +1782,7 @@ fn apply_plan_blocks_schema_deletes_without_flag() {
             ..Default::default()
         }),
         effects: None,
+        adopt_by_key: None,
     };
     let backend = Backend::Adapter(Box::new(adapter));
     let result = futures::executor::block_on(apply_plan(&backend, &plan, &mut state, false));
@@ -1806,6 +1808,7 @@ fn apply_plan_allows_schema_deletes_with_flag() {
             ..Default::default()
         }),
         effects: None,
+        adopt_by_key: None,
     };
     let backend = Backend::Adapter(Box::new(adapter));
     futures::executor::block_on(apply_plan(&backend, &plan, &mut state, true)).unwrap();
@@ -1870,6 +1873,7 @@ fn apply_plan_self_previews_and_blocks_schema_deletes() {
         summary: None,
         schema_preview: None,
         effects: None,
+        adopt_by_key: None,
     };
     let backend = Backend::Adapter(Box::new(adapter));
     let result = futures::executor::block_on(apply_plan(&backend, &plan, &mut state, false));
@@ -1894,6 +1898,7 @@ fn apply_plan_self_preview_allows_schema_deletes_with_flag() {
         summary: None,
         schema_preview: None,
         effects: None,
+        adopt_by_key: None,
     };
     let backend = Backend::Adapter(Box::new(adapter));
     futures::executor::block_on(apply_plan(&backend, &plan, &mut state, true)).unwrap();
@@ -2173,6 +2178,7 @@ fn apply_plan_clears_state_for_deleted_op() {
         summary: None,
         schema_preview: None,
         effects: None,
+        adopt_by_key: None,
     };
     let backend = Backend::Adapter(Box::new(adapter));
     futures::executor::block_on(apply_plan(&backend, &plan, &mut state, true)).unwrap();
@@ -2205,6 +2211,7 @@ fn apply_plan_recovers_state_mappings_for_resumed_ops() {
         summary: None,
         schema_preview: None,
         effects: None,
+        adopt_by_key: None,
     };
     let backend = Backend::Adapter(Box::new(adapter));
     futures::executor::block_on(apply_plan(&backend, &plan, &mut state, true)).unwrap();
@@ -2240,6 +2247,7 @@ fn apply_plan_keeps_the_mapping_a_resumed_op_has_no_id_for() {
         summary: None,
         schema_preview: None,
         effects: None,
+        adopt_by_key: None,
     };
     let backend = Backend::Adapter(Box::new(adapter));
     futures::executor::block_on(apply_plan(&backend, &plan, &mut state, true)).unwrap();
@@ -2304,6 +2312,7 @@ fn empty_plan() -> Plan {
         summary: None,
         schema_preview: None,
         effects: None,
+        adopt_by_key: None,
     }
 }
 
@@ -2352,6 +2361,7 @@ fn apply_plan_rejects_read_only_observer() {
         summary: None,
         schema_preview: None,
         effects: None,
+        adopt_by_key: None,
     };
     let backend = Backend::Observer(Box::new(adapter));
     let err = futures::executor::block_on(apply_plan(&backend, &plan, &mut state, true))
@@ -3484,4 +3494,65 @@ fn guard_stale_plan_skips_a_backend_that_cannot_observe() {
         report: ApplyReport::default(),
     }));
     futures::executor::block_on(guard_stale_plan(&backend, &plan, &state)).unwrap();
+}
+
+#[test]
+fn guard_stale_plan_re_diffs_a_no_adopt_plan_without_adopting() {
+    // the twin is what --no-adopt planned: the same-key object was there, unbound
+    let site = obj(uid(1), "dcim.site", "slug=fra1", json!({"name": "B"}));
+    let inventory = inv(vec![site]);
+    let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
+    let backend = site_backend(observed_site("A"));
+    let (plan, _) = futures::executor::block_on(crate::build_plan(
+        backend.observer().unwrap(),
+        &inventory,
+        &mut state,
+        false,
+        false,
+    ))
+    .unwrap();
+    assert_eq!(plan.adopt_by_key, Some(false));
+    assert!(matches!(plan.ops.as_slice(), [Op::Create { .. }]));
+    futures::executor::block_on(guard_stale_plan(&backend, &plan, &state)).unwrap();
+
+    // a plan from before the field re-diffs adopting, as it did
+    let legacy = Plan {
+        adopt_by_key: None,
+        ..plan
+    };
+    let err = futures::executor::block_on(guard_stale_plan(&backend, &legacy, &state)).unwrap_err();
+    assert!(format!("{err:#}").contains("did not exist when planned and now does"));
+}
+
+#[test]
+fn guard_stale_plan_re_diffs_a_bound_object_under_a_no_adopt_plan() {
+    // an earlier adopting plan bound the site; --no-adopt keeps that binding
+    let site = obj(uid(1), "dcim.site", "slug=fra1", json!({"name": "B"}));
+    let inventory = inv(vec![site]);
+    let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
+    let backend = site_backend(observed_site("A"));
+    let plan_with = |state: &mut StateStore, adopt_by_key| {
+        futures::executor::block_on(crate::build_plan(
+            backend.observer().unwrap(),
+            &inventory,
+            state,
+            false,
+            adopt_by_key,
+        ))
+        .unwrap()
+        .0
+    };
+    plan_with(&mut state, true);
+    let plan = plan_with(&mut state, false);
+    assert_eq!(plan.adopt_by_key, Some(false));
+    assert!(matches!(plan.ops.as_slice(), [Op::Update { .. }]));
+    futures::executor::block_on(guard_stale_plan(&backend, &plan, &state)).unwrap();
+
+    let moved = site_backend(observed_site("C"));
+    let err = futures::executor::block_on(guard_stale_plan(&moved, &plan, &state)).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains(r#"dcim.site {"slug":"fra1"}: `name` is "C", planned against "A""#),
+        "{msg}"
+    );
 }
