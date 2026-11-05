@@ -7,7 +7,7 @@ skill subcommands.
 
 <!-- ci: offline -->
 ```bash
-alembic validate -f examples/inventory.yamlx
+alembic validate -f examples/inventory.yaml
 
 alembic validate -f examples/inventory.yaml -o validation.json
 ```
