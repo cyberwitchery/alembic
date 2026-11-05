@@ -1,14 +1,14 @@
 //! apply journals kept in postgres, next to the state they belong to: one row per
 //! planned op, marked done in place as each one lands.
 
-use crate::state::{connect_postgres, create_table_if_missing, PostgresTlsMode};
-use alembic_adapter_sdk::journal::{
-    JournalBackend, JournalBackendFactory, JournalError, OpWithMeta,
+use crate::journal::{
+    JournalBackend, JournalBackendFactory, JournalError, JournalSpec, OpWithMeta, PostgresTlsMode,
 };
-use alembic_adapter_sdk::BackendId;
+use crate::BackendId;
 use alembic_core::{TypeName, Uid};
 use async_trait::async_trait;
 use std::fmt;
+use thiserror::Error;
 use tokio_postgres::{Client, Statement};
 
 type Result<T, E = JournalError> = std::result::Result<T, E>;
@@ -17,15 +17,74 @@ const MARK_DONE: &str = "UPDATE alembic_journal \
      SET done = TRUE, backend_id = CAST($3 AS TEXT)::jsonb, updated_at = NOW() \
      WHERE journal_key = $1 AND idx = $2";
 
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum PostgresConnectError {
+    #[error("build postgres TLS connector")]
+    Tls(#[source] native_tls::Error),
+    #[error(transparent)]
+    Connect(#[from] tokio_postgres::Error),
+}
+
+/// open a client to `url`, with its connection driven in the background.
+pub async fn connect_postgres(
+    url: &str,
+    tls_mode: PostgresTlsMode,
+) -> Result<Client, PostgresConnectError> {
+    let client = match tls_mode {
+        PostgresTlsMode::Disable => {
+            let (client, connection) = tokio_postgres::connect(url, tokio_postgres::NoTls).await?;
+            spawn_connection_driver(connection);
+            client
+        }
+        PostgresTlsMode::Require => {
+            let connector = native_tls::TlsConnector::builder()
+                .build()
+                .map_err(PostgresConnectError::Tls)?;
+            let connector = postgres_native_tls::MakeTlsConnector::new(connector);
+            let (client, connection) = tokio_postgres::connect(url, connector).await?;
+            spawn_connection_driver(connection);
+            client
+        }
+    };
+    Ok(client)
+}
+
+fn spawn_connection_driver<E, C>(connection: C)
+where
+    E: std::fmt::Display,
+    C: std::future::Future<Output = Result<(), E>> + Send + 'static,
+{
+    tokio::spawn(async move {
+        if let Err(err) = connection.await {
+            tracing::warn!("postgres state backend connection error: {err}");
+        }
+    });
+}
+
+/// run a `CREATE TABLE IF NOT EXISTS`, tolerating another connection creating the
+/// table at the same time: the loser trips the catalog's unique index.
+pub async fn create_table_if_missing(
+    client: &Client,
+    ddl: &str,
+) -> Result<(), tokio_postgres::Error> {
+    match client.execute(ddl, &[]).await {
+        Err(err) if err.code() == Some(&tokio_postgres::error::SqlState::UNIQUE_VIOLATION) => {
+            Ok(())
+        }
+        other => other.map(drop),
+    }
+}
+
 /// opens a `PostgresJournalBackend` per journal; its keys are namespaced by `state_key`.
-pub(crate) struct PostgresJournalFactory {
+pub struct PostgresJournalFactory {
     url: String,
     state_key: String,
     tls_mode: PostgresTlsMode,
 }
 
 impl PostgresJournalFactory {
-    pub(crate) fn new(
+    pub fn new(
         url: impl Into<String>,
         state_key: impl Into<String>,
         tls_mode: PostgresTlsMode,
@@ -52,16 +111,32 @@ impl JournalBackendFactory for PostgresJournalFactory {
     fn open(&self) -> Box<dyn JournalBackend> {
         Box::new(PostgresJournalBackend {
             url: self.url.clone(),
-            state_key: self.state_key.clone(),
+            state_key: Some(self.state_key.clone()),
             tls_mode: self.tls_mode,
             open: None,
         })
+    }
+
+    fn spec(&self, key: &str) -> Option<JournalSpec> {
+        Some(JournalSpec::Postgres {
+            key: journal_key(Some(&self.state_key), key),
+            tls: self.tls_mode,
+        })
+    }
+}
+
+/// the `journal_key` column for journal `key`, namespaced by the state row it belongs
+/// to when there is one; a key from a `JournalSpec` is already namespaced.
+fn journal_key(state_key: Option<&str>, key: &str) -> String {
+    match state_key {
+        Some(state_key) => format!("{state_key}/{key}"),
+        None => key.to_owned(),
     }
 }
 
 pub(crate) struct PostgresJournalBackend {
     url: String,
-    state_key: String,
+    state_key: Option<String>,
     tls_mode: PostgresTlsMode,
     // the connection `load` or `write_all` opened
     open: Option<Opened>,
@@ -90,6 +165,16 @@ impl fmt::Debug for PostgresJournalBackend {
 }
 
 impl PostgresJournalBackend {
+    /// a backend that takes the keys it is given as the `journal_key` itself.
+    pub(crate) fn unscoped(url: String, tls_mode: PostgresTlsMode) -> Self {
+        Self {
+            url,
+            state_key: None,
+            tls_mode,
+            open: None,
+        }
+    }
+
     fn backend_error(
         &self,
         source: impl Into<Box<dyn std::error::Error + Send + Sync>>,
@@ -102,7 +187,7 @@ impl PostgresJournalBackend {
 
     /// connect (once) and remember `key` as the journal this backend holds.
     async fn open(&mut self, key: &str) -> Result<()> {
-        let journal_key = format!("{}/{key}", self.state_key);
+        let journal_key = journal_key(self.state_key.as_deref(), key);
         let opened = match self.open.take() {
             Some(opened) => Opened {
                 journal_key,
@@ -307,8 +392,8 @@ impl JournalBackend for PostgresJournalBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alembic_adapter_sdk::journal::Journal;
-    use alembic_adapter_sdk::Op;
+    use crate::journal::Journal;
+    use crate::Op;
     use alembic_core::Object;
     use uuid::Uuid;
 
@@ -334,6 +419,43 @@ mod tests {
             url.clone(),
             PostgresJournalFactory::new(url, state_key, PostgresTlsMode::Disable),
         ))
+    }
+
+    #[tokio::test]
+    async fn an_unscoped_backend_reads_the_rows_its_spec_names_when_configured() {
+        let Some((url, factory)) = test_factory() else {
+            return;
+        };
+        let ops = vec![create_op(1), create_op(2)];
+        let mut journal = Journal::load_or_create_with_key(factory.open(), "k", &ops)
+            .await
+            .unwrap();
+        journal.mark_op_as_done(&ops[0], None).await.unwrap();
+
+        let Some(JournalSpec::Postgres { key, tls }) = factory.spec("k") else {
+            panic!("a postgres factory names a postgres spec");
+        };
+        let backend = PostgresJournalBackend::unscoped(url, tls);
+        let resumed = Journal::load_or_create_with_key(Box::new(backend), &key, &ops)
+            .await
+            .unwrap();
+        assert_eq!(resumed.done_ops_count(), 1);
+    }
+
+    #[test]
+    fn spec_names_the_row_key_open_uses() {
+        let factory = PostgresJournalFactory::new(
+            "postgres://unused",
+            "default/x-1",
+            PostgresTlsMode::Require,
+        );
+        assert_eq!(
+            factory.spec("x-1_journal_7"),
+            Some(JournalSpec::Postgres {
+                key: "default/x-1/x-1_journal_7".into(),
+                tls: PostgresTlsMode::Require,
+            })
+        );
     }
 
     #[test]

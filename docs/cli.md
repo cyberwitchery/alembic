@@ -356,8 +356,9 @@ any of them resume an apply another one started.
 
 with the postgres state backend, the built-in adapters keep the journal in the same
 database instead, in `alembic_journal` under the state row key (see [state](state.md)),
-and `ALEMBIC_JOURNAL_DIR` is not used. external adapters keep their own journal, if
-any, whatever the state backend.
+and `ALEMBIC_JOURNAL_DIR` is not used. an external adapter is sent the same location
+in its `write` request, and resumes only if it journals there
+([external adapters](external-adapters.md#write)).
 
 when a run stops with operations already applied, its error says so, with the
 operation's own failure underneath, and it exits `75` (see [exit codes](#exit-codes)):

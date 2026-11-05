@@ -83,6 +83,12 @@ pub enum JournalError {
     NotOpen,
     #[error("journal path `{}` has no parent directory", path.display())]
     NoParent { path: PathBuf },
+    #[error("journal path `{}` is not named `<key>.yaml`", path.display())]
+    NotAJournalFile { path: PathBuf },
+    #[error("{POSTGRES_URL_VAR} is not set, so the postgres journal `{key}` cannot be opened")]
+    NoPostgresUrl { key: String },
+    #[error("the postgres journal `{key}` needs alembic-adapter-sdk's `postgres` feature")]
+    PostgresDisabled { key: String },
     #[error("failed to access the journal at {location}")]
     Backend {
         location: String,
@@ -126,6 +132,8 @@ pub trait JournalBackend: Send + Sync + Debug {
 /// opens a fresh, not yet loaded backend for each journal.
 pub trait JournalBackendFactory: Send + Sync + Debug {
     fn open(&self) -> Box<dyn JournalBackend>;
+    /// the journal under `key` as an external adapter is told it; `None` when it has no wire form.
+    fn spec(&self, key: &str) -> Option<JournalSpec>;
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -157,11 +165,93 @@ struct Done {
     backend_id: Option<BackendId>,
 }
 
+/// TLS configuration for postgres state backend connections.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PostgresTlsMode {
+    Disable,
+    Require,
+}
+
+/// where the host keeps the journal for one `write`, sent to external adapters
+/// fully resolved so they never re-derive the key.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "storage", rename_all = "snake_case")]
+pub enum JournalSpec {
+    /// an append-only file at `path`.
+    File { path: PathBuf },
+    /// rows under `key` in `alembic_journal`, in the database `ALEMBIC_STATE_POSTGRES_URL` names.
+    Postgres { key: String, tls: PostgresTlsMode },
+}
+
 #[derive(Debug, Clone)]
 pub enum JournalStorageLocation {
     None,
     File(PathBuf),
     Backend(Arc<dyn JournalBackendFactory>),
+}
+
+impl JournalSpec {
+    /// the backend this spec names, and the key to hand `Journal::load_or_create_with_key`.
+    /// a postgres spec connects to `ALEMBIC_STATE_POSTGRES_URL`.
+    pub fn open(&self) -> Result<(Box<dyn JournalBackend>, String)> {
+        match self {
+            Self::File { path } => {
+                let directory = path
+                    .parent()
+                    .ok_or_else(|| JournalError::NoParent { path: path.clone() })?;
+                let key = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .and_then(|name| name.strip_suffix(".yaml"))
+                    .ok_or_else(|| JournalError::NotAJournalFile { path: path.clone() })?;
+                let backend = JournalFileBackend::new(directory.to_owned());
+                Ok((Box::new(backend), key.to_owned()))
+            }
+            Self::Postgres { key, tls } => open_postgres(key, *tls),
+        }
+    }
+}
+
+/// where an external adapter finds the database a postgres journal lives in.
+pub const POSTGRES_URL_VAR: &str = "ALEMBIC_STATE_POSTGRES_URL";
+
+#[cfg(feature = "postgres")]
+fn open_postgres(key: &str, tls: PostgresTlsMode) -> Result<(Box<dyn JournalBackend>, String)> {
+    let url = std::env::var(POSTGRES_URL_VAR).map_err(|_| JournalError::NoPostgresUrl {
+        key: key.to_owned(),
+    })?;
+    let backend = crate::journal_postgres::PostgresJournalBackend::unscoped(url, tls);
+    Ok((Box::new(backend), key.to_owned()))
+}
+
+#[cfg(not(feature = "postgres"))]
+fn open_postgres(key: &str, _tls: PostgresTlsMode) -> Result<(Box<dyn JournalBackend>, String)> {
+    Err(JournalError::PostgresDisabled {
+        key: key.to_owned(),
+    })
+}
+
+impl JournalStorageLocation {
+    /// where the journal for `ops` under `scope` lives, the same one
+    /// `apply_non_delete_with_journal` opens; a file path is made absolute.
+    pub fn spec(&self, scope: &str, ops: &[Op]) -> Result<Option<JournalSpec>> {
+        let creates_updates: Vec<&Op> = ops
+            .iter()
+            .filter(|op| !matches!(op, Op::Delete { .. }))
+            .collect();
+        let key = Journal::stable_key(scope, &creates_updates);
+        match self {
+            Self::None => Ok(None),
+            Self::File(dir) => {
+                let dir = std::path::absolute(dir).map_err(io_at(dir))?;
+                Ok(Some(JournalSpec::File {
+                    path: JournalFileBackend::file_path(&dir, &key),
+                }))
+            }
+            Self::Backend(factory) => Ok(factory.spec(&key)),
+        }
+    }
 }
 
 fn record_line<T: Serialize>(value: &T) -> Result<String> {
@@ -196,7 +286,7 @@ impl Journal {
     }
 
     /// names one plan's journal: the same scope and ops always yield the same key.
-    fn stable_key(adapter_name: &str, ops: &[Op]) -> String {
+    fn stable_key<T: Serialize>(adapter_name: &str, ops: &[T]) -> String {
         let hash = crate::types::stable_json_hash(&ops);
         format!("{}_journal_{}", adapter_name, hash)
     }
@@ -621,6 +711,96 @@ mod tests {
                 backend_id: None,
             },
         ]
+    }
+
+    #[tokio::test]
+    async fn a_file_spec_names_the_file_the_journal_writes() {
+        let dir = tempdir().unwrap();
+        let mut ops = test_ops();
+        let creates_updates = ops.clone();
+        // deletes are not journaled, so they leave the key alone
+        ops.push(Op::Delete {
+            uid: Uid::from_u128(4),
+            type_name: TypeName::new("dcim.site"),
+            key: Default::default(),
+            backend_id: None,
+            refs: Default::default(),
+        });
+        Journal::load_or_create_with_file(dir.path(), "scope", &creates_updates)
+            .await
+            .unwrap();
+
+        let spec = JournalStorageLocation::File(dir.path().to_owned())
+            .spec("scope", &ops)
+            .unwrap();
+        let Some(JournalSpec::File { path }) = spec else {
+            panic!("expected a file spec, got {spec:?}");
+        };
+        assert!(path.is_file(), "{} was not written", path.display());
+    }
+
+    #[tokio::test]
+    async fn an_opened_file_spec_resumes_the_journal_it_names() {
+        let dir = tempdir().unwrap();
+        let ops = test_ops();
+        let mut journal = Journal::load_or_create_with_file(dir.path(), "scope", &ops)
+            .await
+            .unwrap();
+        journal.mark_op_as_done(&ops[0], None).await.unwrap();
+
+        let spec = JournalStorageLocation::File(dir.path().to_owned())
+            .spec("scope", &ops)
+            .unwrap()
+            .unwrap();
+        let (backend, key) = spec.open().unwrap();
+        let resumed = Journal::load_or_create_with_key(backend, &key, &ops)
+            .await
+            .unwrap();
+        assert_eq!(resumed.done_ops_count(), 1);
+    }
+
+    #[test]
+    fn a_file_spec_not_named_for_a_key_is_refused() {
+        let spec = JournalSpec::File {
+            path: PathBuf::from("/work/journal.json"),
+        };
+        let Err(err) = spec.open() else {
+            panic!("a non-yaml journal path opened");
+        };
+        assert!(matches!(err, JournalError::NotAJournalFile { .. }), "{err}");
+    }
+
+    #[cfg(not(feature = "postgres"))]
+    #[test]
+    fn a_postgres_spec_needs_the_feature() {
+        let spec = JournalSpec::Postgres {
+            key: "default/x-1/x-1_journal_7".into(),
+            tls: PostgresTlsMode::Disable,
+        };
+        let Err(err) = spec.open() else {
+            panic!("a postgres spec opened without the feature");
+        };
+        assert!(
+            matches!(err, JournalError::PostgresDisabled { .. }),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_file_spec_is_absolute() {
+        let spec = JournalStorageLocation::File(PathBuf::from(".alembic"))
+            .spec("scope", &test_ops())
+            .unwrap();
+        let Some(JournalSpec::File { path }) = spec else {
+            panic!("expected a file spec, got {spec:?}");
+        };
+        assert!(path.is_absolute(), "{}", path.display());
+    }
+
+    #[test]
+    fn no_storage_has_no_spec() {
+        let spec = JournalStorageLocation::None.spec("scope", &test_ops());
+        assert_eq!(spec.unwrap(), None);
     }
 
     #[test]
@@ -1165,6 +1345,10 @@ mod tests {
                 store: Arc::clone(&self.0),
                 key: None,
             })
+        }
+
+        fn spec(&self, _key: &str) -> Option<JournalSpec> {
+            None
         }
     }
 
