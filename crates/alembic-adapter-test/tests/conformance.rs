@@ -750,7 +750,7 @@ fn fixtures_match_the_protocol_types() {
         }
         checked += 1;
     }
-    assert_eq!(checked, 8, "expected 8 fixtures, checked {checked}");
+    assert_eq!(checked, 9, "expected 9 fixtures, checked {checked}");
 }
 
 /// opt-in: `run_builtin`, what a caller passing no `Builtins` gets, sends neither

@@ -614,12 +614,15 @@ impl Emitter for ProcessAdapter {
         ops: &[Op],
         state: &StateStore,
     ) -> Result<ApplyReport> {
+        let journal = state
+            .journal_storage()
+            .spec(&state.journal_scope("external"), ops)?;
         let state = StateData::from(state);
         self.call(ExternalRequestRef::Write {
             schema,
             ops,
             state,
-            journal: None,
+            journal,
         })
         .await
     }
@@ -764,7 +767,7 @@ mod tests {
     use serde_json::json;
     use std::collections::BTreeMap;
     use std::fs;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
     use std::sync::{Mutex, OnceLock};
     #[cfg(unix)]
     use std::time::Duration;
@@ -1130,6 +1133,47 @@ esac
             &capabilities_script(r#"{"ok":true,"result":{"role":"adapter"}}"#),
         );
         assert!(matches!(adapter, Backend::Adapter(_)));
+    }
+
+    #[tokio::test]
+    async fn external_write_carries_the_journal_location() {
+        let _spawn = spawn_lock().lock().await;
+        let dir = tempdir().unwrap();
+        let request_path = dir.path().join("request.json");
+        let backend = build_external(
+            dir.path(),
+            "adapter.sh",
+            &answering_script(&format!(
+                r#"printf '%s' "$req" > '{}'; printf '{{"ok":true,"result":{{}}}}'"#,
+                request_path.display()
+            )),
+        );
+        let schema = Schema::default();
+        let emitter = backend.emitter().unwrap();
+        let sent = || -> serde_json::Value {
+            serde_json::from_str(&fs::read_to_string(&request_path).unwrap()).unwrap()
+        };
+
+        let unjournaled = StateStore::new(None, StateData::default());
+        emitter.write(&schema, &[], &unjournaled).await.unwrap();
+        assert!(sent().get("journal").is_none(), "{}", sent());
+
+        let journal_dir = dir.path().join("journals");
+        let journaled =
+            StateStore::new(None, StateData::default()).with_journal_dir(journal_dir.clone());
+        emitter.write(&schema, &[], &journaled).await.unwrap();
+        let journal = &sent()["journal"];
+        assert_eq!(journal["storage"], "file", "{journal}");
+        let path = PathBuf::from(journal["path"].as_str().unwrap());
+        assert_eq!(path.parent(), Some(journal_dir.as_path()));
+        assert!(
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("external_journal_"),
+            "{}",
+            path.display()
+        );
     }
 
     #[tokio::test]

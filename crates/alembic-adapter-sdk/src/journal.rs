@@ -126,6 +126,8 @@ pub trait JournalBackend: Send + Sync + Debug {
 /// opens a fresh, not yet loaded backend for each journal.
 pub trait JournalBackendFactory: Send + Sync + Debug {
     fn open(&self) -> Box<dyn JournalBackend>;
+    /// the journal under `key` as an external adapter is told it; `None` when it has no wire form.
+    fn spec(&self, key: &str) -> Option<JournalSpec>;
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -183,6 +185,28 @@ pub enum JournalStorageLocation {
     Backend(Arc<dyn JournalBackendFactory>),
 }
 
+impl JournalStorageLocation {
+    /// where the journal for `ops` under `scope` lives, the same one
+    /// `apply_non_delete_with_journal` opens; a file path is made absolute.
+    pub fn spec(&self, scope: &str, ops: &[Op]) -> Result<Option<JournalSpec>> {
+        let creates_updates: Vec<&Op> = ops
+            .iter()
+            .filter(|op| !matches!(op, Op::Delete { .. }))
+            .collect();
+        let key = Journal::stable_key(scope, &creates_updates);
+        match self {
+            Self::None => Ok(None),
+            Self::File(dir) => {
+                let dir = std::path::absolute(dir).map_err(io_at(dir))?;
+                Ok(Some(JournalSpec::File {
+                    path: JournalFileBackend::file_path(&dir, &key),
+                }))
+            }
+            Self::Backend(factory) => Ok(factory.spec(&key)),
+        }
+    }
+}
+
 fn record_line<T: Serialize>(value: &T) -> Result<String> {
     Ok(format!(
         "{DOCUMENT_PREFIX}{}\n",
@@ -215,7 +239,7 @@ impl Journal {
     }
 
     /// names one plan's journal: the same scope and ops always yield the same key.
-    fn stable_key(adapter_name: &str, ops: &[Op]) -> String {
+    fn stable_key<T: Serialize>(adapter_name: &str, ops: &[T]) -> String {
         let hash = crate::types::stable_json_hash(&ops);
         format!("{}_journal_{}", adapter_name, hash)
     }
@@ -640,6 +664,49 @@ mod tests {
                 backend_id: None,
             },
         ]
+    }
+
+    #[tokio::test]
+    async fn a_file_spec_names_the_file_the_journal_writes() {
+        let dir = tempdir().unwrap();
+        let mut ops = test_ops();
+        let creates_updates = ops.clone();
+        // deletes are not journaled, so they leave the key alone
+        ops.push(Op::Delete {
+            uid: Uid::from_u128(4),
+            type_name: TypeName::new("dcim.site"),
+            key: Default::default(),
+            backend_id: None,
+            refs: Default::default(),
+        });
+        Journal::load_or_create_with_file(dir.path(), "scope", &creates_updates)
+            .await
+            .unwrap();
+
+        let spec = JournalStorageLocation::File(dir.path().to_owned())
+            .spec("scope", &ops)
+            .unwrap();
+        let Some(JournalSpec::File { path }) = spec else {
+            panic!("expected a file spec, got {spec:?}");
+        };
+        assert!(path.is_file(), "{} was not written", path.display());
+    }
+
+    #[test]
+    fn a_file_spec_is_absolute() {
+        let spec = JournalStorageLocation::File(PathBuf::from(".alembic"))
+            .spec("scope", &test_ops())
+            .unwrap();
+        let Some(JournalSpec::File { path }) = spec else {
+            panic!("expected a file spec, got {spec:?}");
+        };
+        assert!(path.is_absolute(), "{}", path.display());
+    }
+
+    #[test]
+    fn no_storage_has_no_spec() {
+        let spec = JournalStorageLocation::None.spec("scope", &test_ops());
+        assert_eq!(spec.unwrap(), None);
     }
 
     #[test]
@@ -1184,6 +1251,10 @@ mod tests {
                 store: Arc::clone(&self.0),
                 key: None,
             })
+        }
+
+        fn spec(&self, _key: &str) -> Option<JournalSpec> {
+            None
         }
     }
 

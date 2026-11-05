@@ -3,7 +3,7 @@
 
 use crate::state::{connect_postgres, create_table_if_missing, PostgresTlsMode};
 use alembic_adapter_sdk::journal::{
-    JournalBackend, JournalBackendFactory, JournalError, OpWithMeta,
+    JournalBackend, JournalBackendFactory, JournalError, JournalSpec, OpWithMeta,
 };
 use alembic_adapter_sdk::BackendId;
 use alembic_core::{TypeName, Uid};
@@ -57,6 +57,18 @@ impl JournalBackendFactory for PostgresJournalFactory {
             open: None,
         })
     }
+
+    fn spec(&self, key: &str) -> Option<JournalSpec> {
+        Some(JournalSpec::Postgres {
+            key: journal_key(&self.state_key, key),
+            tls: self.tls_mode,
+        })
+    }
+}
+
+/// the `journal_key` column for journal `key`, namespaced by the state row it belongs to.
+fn journal_key(state_key: &str, key: &str) -> String {
+    format!("{state_key}/{key}")
 }
 
 pub(crate) struct PostgresJournalBackend {
@@ -102,7 +114,7 @@ impl PostgresJournalBackend {
 
     /// connect (once) and remember `key` as the journal this backend holds.
     async fn open(&mut self, key: &str) -> Result<()> {
-        let journal_key = format!("{}/{key}", self.state_key);
+        let journal_key = journal_key(&self.state_key, key);
         let opened = match self.open.take() {
             Some(opened) => Opened {
                 journal_key,
@@ -334,6 +346,22 @@ mod tests {
             url.clone(),
             PostgresJournalFactory::new(url, state_key, PostgresTlsMode::Disable),
         ))
+    }
+
+    #[test]
+    fn spec_names_the_row_key_open_uses() {
+        let factory = PostgresJournalFactory::new(
+            "postgres://unused",
+            "default/x-1",
+            PostgresTlsMode::Require,
+        );
+        assert_eq!(
+            factory.spec("x-1_journal_7"),
+            Some(JournalSpec::Postgres {
+                key: "default/x-1/x-1_journal_7".into(),
+                tls: PostgresTlsMode::Require,
+            })
+        );
     }
 
     #[test]
