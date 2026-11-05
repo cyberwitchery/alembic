@@ -1,5 +1,6 @@
 //! helpers for implementing external adapters.
 
+use crate::journal::JournalSpec;
 use crate::state::StateData;
 use crate::types::{ApplyReport, BackendId, Op, ProvisionReport};
 use alembic_core::{JsonMap, Key, Schema, TypeName};
@@ -37,6 +38,9 @@ pub enum ExternalRequest {
         schema: Schema,
         ops: Vec<Op>,
         state: StateData,
+        /// where to journal the creates and updates; absent when the run keeps no journal.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        journal: Option<JournalSpec>,
     },
     /// ensure the backend schema exists.
     EnsureSchema { schema: Schema },
@@ -73,6 +77,9 @@ pub enum ExternalRequestRef<'a> {
         schema: &'a Schema,
         ops: &'a [Op],
         state: StateData,
+        /// where to journal the creates and updates; absent when the run keeps no journal.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        journal: Option<JournalSpec>,
     },
     /// ensure the backend schema exists.
     EnsureSchema { schema: &'a Schema },
@@ -260,7 +267,12 @@ pub fn run_external_adapter<A: ExternalAdapter>(
             let response = ExternalResponse::from_result(adapter.read(&schema, &types, &state));
             write_response(&mut writer, response)
         }
-        ExternalRequest::Write { schema, ops, state } => {
+        ExternalRequest::Write {
+            schema,
+            ops,
+            state,
+            journal: _,
+        } => {
             let response = ExternalResponse::from_result(adapter.write(&schema, &ops, &state));
             write_response(&mut writer, response)
         }
@@ -311,6 +323,7 @@ mod tests {
         ExternalEnvelopeRef, ExternalObject, ExternalRequest, ExternalRequestRef, ExternalResponse,
         ExternalRole, EXTERNAL_PROTOCOL_VERSION,
     };
+    use crate::journal::{JournalSpec, PostgresTlsMode};
     use crate::state::StateData;
     use crate::types::{AppliedOp, ApplyReport, FieldChange, Op, ProvisionReport};
     use alembic_core::{Key, Object, Schema, TypeName, TypeSchema, Uid};
@@ -442,16 +455,22 @@ mod tests {
         .unwrap();
         assert_eq!(owned_read, ref_read);
 
+        let journal = JournalSpec::Postgres {
+            key: "default/external-1a2b3c4d/external-1a2b3c4d_journal_7".into(),
+            tls: PostgresTlsMode::Require,
+        };
         let owned_write = serde_json::to_value(ExternalRequest::Write {
             schema: schema.clone(),
             ops: ops.clone(),
             state: state.clone(),
+            journal: Some(journal.clone()),
         })
         .unwrap();
         let ref_write = serde_json::to_value(ExternalRequestRef::Write {
             schema: &schema,
             ops: &ops,
             state: state.clone(),
+            journal: Some(journal),
         })
         .unwrap();
         assert_eq!(owned_write, ref_write);
@@ -501,6 +520,49 @@ mod tests {
     }
 
     #[test]
+    fn a_write_without_a_journal_still_parses() {
+        let request: ExternalRequest = serde_json::from_value(json!({
+            "method": "write",
+            "schema": {"types": {}},
+            "ops": [],
+            "state": {"mappings": {}}
+        }))
+        .unwrap();
+        assert!(matches!(
+            request,
+            ExternalRequest::Write { journal: None, .. }
+        ));
+    }
+
+    #[test]
+    fn journal_spec_names_its_storage() {
+        let file = JournalSpec::File {
+            path: "/work/.alembic/external-1a2b3c4d_journal_7.yaml".into(),
+        };
+        assert_eq!(
+            serde_json::to_value(&file).unwrap(),
+            json!({"storage": "file", "path": "/work/.alembic/external-1a2b3c4d_journal_7.yaml"})
+        );
+        let postgres = JournalSpec::Postgres {
+            key: "default/external-1a2b3c4d/external-1a2b3c4d_journal_7".into(),
+            tls: PostgresTlsMode::Disable,
+        };
+        let value = serde_json::to_value(&postgres).unwrap();
+        assert_eq!(
+            value,
+            json!({
+                "storage": "postgres",
+                "key": "default/external-1a2b3c4d/external-1a2b3c4d_journal_7",
+                "tls": "disable"
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<JournalSpec>(value).unwrap(),
+            postgres
+        );
+    }
+
+    #[test]
     fn request_method_names_the_serde_tag() {
         // the error context an unreadable result is reported under comes from
         // method(), so it must keep saying what the request said.
@@ -518,6 +580,7 @@ mod tests {
                 schema: &schema,
                 ops: &ops,
                 state: state.clone(),
+                journal: None,
             },
             ExternalRequestRef::EnsureSchema { schema: &schema },
             ExternalRequestRef::PreviewSchema { schema: &schema },
@@ -737,6 +800,7 @@ mod tests {
             schema: Default::default(),
             ops: vec![],
             state: Default::default(),
+            journal: None,
         };
         let envelope = ExternalEnvelope {
             version: EXTERNAL_PROTOCOL_VERSION,

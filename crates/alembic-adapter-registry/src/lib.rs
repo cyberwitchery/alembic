@@ -615,8 +615,13 @@ impl Emitter for ProcessAdapter {
         state: &StateStore,
     ) -> Result<ApplyReport> {
         let state = StateData::from(state);
-        self.call(ExternalRequestRef::Write { schema, ops, state })
-            .await
+        self.call(ExternalRequestRef::Write {
+            schema,
+            ops,
+            state,
+            journal: None,
+        })
+        .await
     }
 
     async fn ensure_schema(&self, schema: &alembic_core::Schema) -> Result<ProvisionReport> {

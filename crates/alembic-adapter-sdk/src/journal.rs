@@ -157,6 +157,25 @@ struct Done {
     backend_id: Option<BackendId>,
 }
 
+/// TLS configuration for postgres state backend connections.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PostgresTlsMode {
+    Disable,
+    Require,
+}
+
+/// where the host keeps the journal for one `write`, sent to external adapters
+/// fully resolved so they never re-derive the key.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "storage", rename_all = "snake_case")]
+pub enum JournalSpec {
+    /// an append-only file at `path`.
+    File { path: PathBuf },
+    /// rows under `key` in `alembic_journal`, in the database `ALEMBIC_STATE_POSTGRES_URL` names.
+    Postgres { key: String, tls: PostgresTlsMode },
+}
+
 #[derive(Debug, Clone)]
 pub enum JournalStorageLocation {
     None,

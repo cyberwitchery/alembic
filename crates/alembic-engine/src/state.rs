@@ -69,12 +69,7 @@ pub enum StateLock {
     Shared,
 }
 
-/// TLS configuration for postgres state backend connections.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PostgresTlsMode {
-    Disable,
-    Require,
-}
+pub use alembic_adapter_sdk::journal::PostgresTlsMode;
 
 /// trait for pluggable state backends.
 #[async_trait::async_trait]
