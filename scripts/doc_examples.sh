@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# the shell blocks the docs mark runnable, run as written. a marker is an html
-# comment on the line before the fence, which the rendered page does not show:
+# mark shell blocks as runnable on ci by adding a marker:
 #
 #   <!-- ci: no-backend -->     needs no backend; ci runs it on every push
 #   <!-- ci: netbox -->         needs a live netbox; the e2e workflow runs it
@@ -9,11 +8,11 @@
 # usage: doc_examples.sh no-backend
 #        doc_examples.sh netbox <backend-config>
 #
-# each block runs in a fresh directory holding a copy of `examples/`, with
-# `alembic` on PATH. in netbox mode the config is copied in as
-# `backend-netbox.yaml` and stands in for the pages' `/path/to/backend-netbox.yaml`,
-# and `$NETBOX_RESET`, when set, runs before each block to empty the netbox the
-# last one left (scripts/netbox_reset.py); unset, the blocks share what they write.
+# each block runs in a fresh directory holding a copy of `examples/`.
+# in netbox mode the config is copied in as `backend-netbox.yaml` and
+# stands in for the pages' `/path/to/backend-netbox.yaml`.
+# when `$NETBOX_RESET` is set, it runs before each block and empties the netbox.
+# when unset, the blocks share what they write!
 # every shell block under docs/examples/ and docs/case-studies/ must carry a
 # marker, so a walkthrough cannot land unchecked without saying why.
 set -euo pipefail
@@ -49,8 +48,7 @@ cd "$ROOT"
 DOCS=(README.md docs/*.md docs/*/*.md)
 
 # one file per marked block under $WORK/blocks, and an index line for each:
-# `<mode> <file>:<line> <block file>`. an unmarked block where one is required,
-# or a malformed marker, is reported on stderr and fails the run.
+# `<mode> <file>:<line> <block file>`.
 awk -v dir="$WORK/blocks" '
   FNR == 1 { prev = ""; inblock = 0 }
   inblock {
