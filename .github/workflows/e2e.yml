@@ -21,6 +21,7 @@ on:
       - "docs/examples/**"
       - "docs/case-studies/**"
       - "scripts/doc_examples.sh"
+      - "scripts/netbox_reset.py"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}

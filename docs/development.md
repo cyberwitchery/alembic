@@ -74,7 +74,7 @@ notes:
 - requires docker and a sibling checkout of `../infrahub.rs` (uses its `docker-compose.yml`).
 - writes plans and imports under `/tmp` (see script output for paths).
 - use `SKIP_DOCKER=1` to reuse running containers, or `CLEANUP=1` to tear them down afterward.
-- afterwards it recreates netbox and runs the docs' netbox blocks (below); `SKIP_DOCKER=1` skips them.
+- afterwards it runs the docs' netbox blocks (below), emptying netbox before each with `scripts/netbox_reset.py`; `SKIP_DOCKER=1` skips them.
 
 ## documented examples
 

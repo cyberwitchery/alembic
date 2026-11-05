@@ -11,7 +11,9 @@
 #
 # each block runs in a fresh directory holding a copy of `examples/`, with
 # `alembic` on PATH. in netbox mode the config is copied in as
-# `backend-netbox.yaml` and stands in for the pages' `/path/to/backend-netbox.yaml`.
+# `backend-netbox.yaml` and stands in for the pages' `/path/to/backend-netbox.yaml`,
+# and `$NETBOX_RESET`, when set, runs before each block to empty the netbox the
+# last one left (scripts/netbox_reset.py); unset, the blocks share what they write.
 # every shell block under docs/examples/ and docs/case-studies/ must carry a
 # marker, so a walkthrough cannot land unchecked without saying why.
 set -euo pipefail
@@ -93,6 +95,10 @@ while read -r mode where block; do
   mkdir -p "$run"
   cp -R "$ROOT/examples" "$run/"
   if [[ "$MODE" == netbox ]]; then
+    if [[ -n "${NETBOX_RESET:-}" ]] && ! bash -c "$NETBOX_RESET" >"$WORK/out.log" 2>&1; then
+      cat "$WORK/out.log" >&2
+      fail "resetting netbox before $where"
+    fi
     cp "$NETBOX_CONFIG" "$run/backend-netbox.yaml"
     sed -i.orig 's#/path/to/backend-netbox.yaml#backend-netbox.yaml#g' "$block"
   fi

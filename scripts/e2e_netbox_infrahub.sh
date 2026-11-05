@@ -58,24 +58,21 @@ fi
 # backend config the cli hands it.
 export INFRAHUB_API_TOKEN="$INFRAHUB_TOKEN"
 
+wait_for_url "http://localhost:8000/api/config" "infrahub"
+wait_for_url "http://localhost:8001/api/" "netbox" 180 1
+wait_for_url "http://localhost:8001/api/plugins/custom-objects/custom-object-types/" "netbox custom objects" 180 1
+
 NETBOX_CONFIG="$(mktemp /tmp/alembic-netbox-XXXXXX.yaml)"
 INFRAHUB_CONFIG="$(mktemp /tmp/alembic-infrahub-XXXXXX.yaml)"
 trap 'rm -f "$NETBOX_CONFIG" "$INFRAHUB_CONFIG" "$INFRAHUB_STATE_PATH" "$NETBOX_STATE_PATH"' EXIT
 
-# wait for netbox, mint an admin token, and write $NETBOX_CONFIG with it.
-netbox_config() {
-  wait_for_url "http://localhost:8001/api/" "netbox" 180 1
-  wait_for_url "http://localhost:8001/api/plugins/custom-objects/custom-object-types/" "netbox custom objects" 180 1
-  NETBOX_TOKEN="$(docker exec -i alembic-netbox-1 /opt/netbox/venv/bin/python /opt/netbox/netbox/manage.py shell -c 'from django.contrib.auth import get_user_model; from users.models import Token; User=get_user_model(); u=User.objects.get(username="admin"); t=Token.objects.create(user=u); print("nbt_{}.{}".format(t.key, t.token))' | tail -n 1)"
-  cat >"$NETBOX_CONFIG" <<EOF
+NETBOX_TOKEN="$(docker exec -i alembic-netbox-1 /opt/netbox/venv/bin/python /opt/netbox/netbox/manage.py shell -c 'from django.contrib.auth import get_user_model; from users.models import Token; User=get_user_model(); u=User.objects.get(username="admin"); t=Token.objects.create(user=u); print("nbt_{}.{}".format(t.key, t.token))' | tail -n 1)"
+
+cat >"$NETBOX_CONFIG" <<EOF
 backend: netbox
 url: "$NETBOX_URL"
 token: "$NETBOX_TOKEN"
 EOF
-}
-
-wait_for_url "http://localhost:8000/api/config" "infrahub"
-netbox_config
 
 cat >"$INFRAHUB_CONFIG" <<EOF
 backend: infrahub
@@ -154,16 +151,14 @@ grep -q "edge-dhcp" /tmp/alembic-netbox-import.yaml
 
 echo "e2e imports written to /tmp/alembic-infrahub-import.yaml and /tmp/alembic-netbox-import.yaml"
 
-# the pages' netbox blocks, on a netbox of their own: apply deletes custom
-# object types its inventory does not declare, so the ones e2e.yaml provisioned
-# would fail them. a netbox this script did not start is not wiped for that.
+# the pages' netbox blocks, each on an emptied netbox: apply deletes custom
+# object types its inventory does not declare, so what e2e.yaml or an earlier
+# block provisioned would fail it. a netbox this script did not start is not
+# emptied for that.
 if [[ "${SKIP_DOCKER:-0}" != "1" ]]; then
-  echo "recreating netbox for the documented examples..."
-  docker compose -f "$NETBOX_COMPOSE" down -v
-  docker compose -f "$NETBOX_COMPOSE" up -d
-  netbox_config
   cargo build -q -p alembic-cli
-  ALEMBIC="$ROOT/target/debug/alembic" "$ROOT/scripts/doc_examples.sh" netbox "$NETBOX_CONFIG"
+  NETBOX_RESET="docker exec -i alembic-netbox-1 /opt/netbox/venv/bin/python /opt/netbox/netbox/manage.py shell < '$ROOT/scripts/netbox_reset.py'" \
+    ALEMBIC="$ROOT/target/debug/alembic" "$ROOT/scripts/doc_examples.sh" netbox "$NETBOX_CONFIG"
 else
   echo "SKIP_DOCKER=1: not running the documented netbox examples, which need a netbox they can wipe"
 fi
