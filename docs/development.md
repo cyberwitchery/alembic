@@ -79,12 +79,12 @@ notes:
 ## documented examples
 
 a shell block in the docs runs on ci when the line before its fence marks it:
-`<!-- ci: offline -->` (every push) or `<!-- ci: netbox -->` (the e2e run).
+`<!-- ci: no-backend -->` (every push) or `<!-- ci: netbox -->` (the e2e run).
 `<!-- ci: skip <reason> -->` says why one does not; every block under
 `docs/examples/` and `docs/case-studies/` carries one of the three.
 
 ```bash
-ALEMBIC=target/debug/alembic ./scripts/doc_examples.sh offline
+ALEMBIC=target/debug/alembic ./scripts/doc_examples.sh no-backend
 ```
 
 ## linting
@@ -109,7 +109,7 @@ cargo llvm-cov --workspace --all-features --fail-under-lines 80 \
 ./scripts/ci.sh
 ```
 
-- runs the same steps as ci: fmt, clippy, cargo-deny, docs, one instrumented test and coverage pass, the agent fixtures, and the offline documented examples
+- runs the same steps as ci: fmt, clippy, cargo-deny, docs, one instrumented test and coverage pass, the agent fixtures, and the no-backend documented examples
 - needs `cargo-deny` and `cargo-llvm-cov` on the path, and django + djangorestframework + django-filter + drf-spectacular importable from `ALEMBIC_DJANGO_PYTHON`, which defaults to `python3`; exits with an install hint without any of them
 - the postgres state store tests no-op unless `ALEMBIC_TEST_POSTGRES_URL` is set; ci runs them against a service
 - local mock servers require binding to loopback; some environments may need elevated privileges

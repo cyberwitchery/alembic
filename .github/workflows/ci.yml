@@ -203,7 +203,7 @@ jobs:
         run: ALEMBIC="$PWD/target/debug/alembic" scripts/agent_fixtures.sh
 
       - name: Documented examples
-        run: ALEMBIC="$PWD/target/debug/alembic" scripts/doc_examples.sh offline
+        run: ALEMBIC="$PWD/target/debug/alembic" scripts/doc_examples.sh no-backend
 
   unsafe-budget:
     name: unsafe-budget

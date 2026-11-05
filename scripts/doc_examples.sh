@@ -2,11 +2,11 @@
 # the shell blocks the docs mark runnable, run as written. a marker is an html
 # comment on the line before the fence, which the rendered page does not show:
 #
-#   <!-- ci: offline -->        backend-free; ci runs it on every push
+#   <!-- ci: no-backend -->     needs no backend; ci runs it on every push
 #   <!-- ci: netbox -->         needs a live netbox; the e2e workflow runs it
 #   <!-- ci: skip <reason> -->  deliberately not run
 #
-# usage: doc_examples.sh offline
+# usage: doc_examples.sh no-backend
 #        doc_examples.sh netbox <backend-config>
 #
 # each block runs in a fresh directory holding a copy of `examples/`, with
@@ -29,11 +29,11 @@ fail() {
 }
 
 case "$MODE" in
-  offline) ;;
+  no-backend) ;;
   netbox)
     [[ -f "$NETBOX_CONFIG" ]] || fail "netbox mode needs a backend config: $0 netbox <backend-config>"
     ;;
-  *) fail "usage: $0 offline | $0 netbox <backend-config>" ;;
+  *) fail "usage: $0 no-backend | $0 netbox <backend-config>" ;;
 esac
 [[ -x "$ALEMBIC" ]] || fail "no alembic binary at $ALEMBIC; build it with cargo build -p alembic-cli or set ALEMBIC"
 # the shim links to it from another directory
@@ -63,7 +63,7 @@ awk -v dir="$WORK/blocks" '
     out = ""
     if ($0 !~ /^```(bash|sh|shell|console)[[:space:]]*$/) next
     if (prev ~ /^<!-- ci:/) {
-      if (prev ~ /^<!-- ci: (offline|netbox) -->$/) {
+      if (prev ~ /^<!-- ci: (no-backend|netbox) -->$/) {
         mode = prev; sub(/^<!-- ci: /, "", mode); sub(/ -->$/, "", mode)
         n++
         out = dir "/" n ".sh"

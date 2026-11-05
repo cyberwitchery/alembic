@@ -61,7 +61,7 @@ cargo build -p alembic-cli
 ALEMBIC="$PWD/target/debug/alembic" ./scripts/agent_fixtures.sh
 
 echo "--- Documented Examples ---"
-# the shell blocks the docs mark `<!-- ci: offline -->`, run as written
-ALEMBIC="$PWD/target/debug/alembic" ./scripts/doc_examples.sh offline
+# the shell blocks the docs mark `<!-- ci: no-backend -->`, run as written
+ALEMBIC="$PWD/target/debug/alembic" ./scripts/doc_examples.sh no-backend
 
 echo "--- Personal Assurance Check: PASSED ---"
