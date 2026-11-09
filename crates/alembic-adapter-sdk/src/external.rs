@@ -38,7 +38,6 @@ pub enum ExternalRequest {
         schema: Schema,
         ops: Vec<Op>,
         state: StateData,
-        /// where to journal the creates and updates; absent when the run keeps no journal.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         journal: Option<JournalSpec>,
     },
@@ -77,7 +76,6 @@ pub enum ExternalRequestRef<'a> {
         schema: &'a Schema,
         ops: &'a [Op],
         state: StateData,
-        /// where to journal the creates and updates; absent when the run keeps no journal.
         #[serde(skip_serializing_if = "Option::is_none")]
         journal: Option<JournalSpec>,
     },
@@ -207,9 +205,8 @@ pub trait ExternalAdapter {
         state: &StateData,
     ) -> Result<ApplyReport, Self::Error>;
 
-    /// [`ExternalAdapter::write`], with the journal the host named for it. override this
-    /// to resume a partial apply ([`crate::apply_retry::apply_non_delete_with_requested_journal`]);
-    /// the default ignores the journal.
+    /// like [`ExternalAdapter::write`], but with a possible journal.
+    /// override this to resume a partial apply.
     fn write_journaled(
         &mut self,
         schema: &Schema,

@@ -26,7 +26,6 @@ pub enum PostgresConnectError {
     Connect(#[from] tokio_postgres::Error),
 }
 
-/// open a client to `url`, with its connection driven in the background.
 pub async fn connect_postgres(
     url: &str,
     tls_mode: PostgresTlsMode,

@@ -233,8 +233,7 @@ fn open_postgres(key: &str, _tls: PostgresTlsMode) -> Result<(Box<dyn JournalBac
 }
 
 impl JournalStorageLocation {
-    /// where the journal for `ops` under `scope` lives, the same one
-    /// `apply_non_delete_with_journal` opens; a file path is made absolute.
+    /// where the journal for `ops` under `scope` lives.
     pub fn spec(&self, scope: &str, ops: &[Op]) -> Result<Option<JournalSpec>> {
         let creates_updates: Vec<&Op> = ops
             .iter()
