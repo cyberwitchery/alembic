@@ -4,11 +4,11 @@ name: ci
 # crates/alembic-cli/src/app/skill.rs include_str!s into the binary.
 on:
   push:
-    branches: ["main"]
-    paths: ["**", "!**/*.md", "crates/alembic-cli/skills/**"]
+    branches: [ "main" ]
+    paths: [ "**", "!**/*.md", "crates/alembic-cli/skills/**" ]
   pull_request:
-    branches: ["main"]
-    paths: ["**", "!**/*.md", "crates/alembic-cli/skills/**"]
+    branches: [ "main" ]
+    paths: [ "**", "!**/*.md", "crates/alembic-cli/skills/**" ]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
@@ -50,6 +50,9 @@ jobs:
 
       - name: Lint (clippy)
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+      - name: sdk without the postgres feature
+        run: cargo test -p alembic-adapter-sdk --lib
 
       - uses: taiki-e/install-action@1919c4a95903d2c33e4a221102edca87309fc14b # v2.89.0
         with:
@@ -231,7 +234,7 @@ jobs:
 
   success:
     name: success
-    needs: [lint, coverage, doc, agents, unsafe-budget, sbom]
+    needs: [ lint, coverage, doc, agents, unsafe-budget, sbom ]
     runs-on: ubuntu-latest
     if: always()
     steps:
