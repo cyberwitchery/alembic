@@ -231,9 +231,6 @@ pub async fn apply_non_delete_with_journal<D: RetryApplyDriver>(
     apply_non_delete_with_owned_journal(journal, creates_updates, driver).await
 }
 
-/// `apply_non_delete_with_journal` for an external adapter, over the journal the host
-/// named in its `write` request (none when it named none). `creates_updates` are the
-/// request's ops without its deletes, which is what the host keyed the journal on.
 pub async fn apply_non_delete_with_requested_journal<D: RetryApplyDriver>(
     journal: Option<&JournalSpec>,
     creates_updates: &[Op],
