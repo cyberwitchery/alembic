@@ -40,61 +40,60 @@ esac
 
 WORK="$(mktemp -d /tmp/alembic-doc-examples-XXXXXX)"
 trap 'rm -rf "$WORK"' EXIT
-mkdir -p "$WORK/bin" "$WORK/blocks"
+mkdir -p "$WORK/bin" "$WORK/blocks" "$WORK/template"
 ln -s "$ALEMBIC" "$WORK/bin/alembic"
 : >"$WORK/blocks/index"
+# every block starts from a copy of this directory
+cp -R "$ROOT/examples" "$WORK/template/"
+[[ "$MODE" != netbox ]] || cp "$NETBOX_CONFIG" "$WORK/template/backend-netbox.yaml"
 
 cd "$ROOT"
 DOCS=(README.md docs/*.md docs/*/*.md)
 
-# one file per marked block under $WORK/blocks, and an index line for each:
-# `<mode> <file>:<line> <block file>`.
-awk -v dir="$WORK/blocks" '
+# one file per block of this mode under $WORK/blocks, and an index line for
+# each: `<file>:<line> <block file>`. prints how many blocks it left out.
+skipped="$(awk -v mode="$MODE" -v dir="$WORK/blocks" '
   function reset() { if (out != "") close(out); inblock = 0; out = ""; prev = "" }
+  function complain(msg) { print FILENAME ":" FNR ": " msg > "/dev/stderr"; bad = 1 }
   FNR == 1 { reset() }
   inblock && /^```/ { reset(); next }
-  inblock { if (out != "") print > out; next }
-  /^```/ {
+  inblock {
+    if (out == "") next
+    if (mode == "netbox") gsub(/\/path\/to\/backend-netbox\.yaml/, "backend-netbox.yaml")
+    print > out
+    next
+  }
+  /^```(bash|sh|shell|console)[[:space:]]*$/ {
     inblock = 1
-    if ($0 !~ /^```(bash|sh|shell|console)[[:space:]]*$/) next
-    where = FILENAME ":" FNR
-    if (prev ~ /^<!-- ci: (no-backend|netbox) -->$/) {
-      split(prev, marker, " ")
+    if (prev == "<!-- ci: " mode " -->") {
       n++
       out = dir "/" n ".sh"
       printf "" > out
-      print marker[3], where, out > (dir "/index")
-    } else if (prev ~ /^<!-- ci: skip [^ ].* -->$/) {
-      print "skip", where, "-" > (dir "/index")
+      print FILENAME ":" FNR, out > (dir "/index")
+    } else if (prev ~ /^<!-- ci: (no-backend|netbox|skip [^ ].*) -->$/) {
+      skipped++
     } else if (prev ~ /^<!-- ci:/) {
-      print where ": malformed marker: " prev > "/dev/stderr"; bad = 1
+      complain("malformed marker: " prev)
     } else if (FILENAME ~ /^docs\/(examples|case-studies)\//) {
-      print where ": shell block has no <!-- ci: ... --> marker" > "/dev/stderr"; bad = 1
+      complain("shell block has no <!-- ci: ... --> marker")
     }
     next
   }
+  NF && prev ~ /^<!-- ci:/ { complain("marker is not followed by a bash, sh, shell or console block") }
+  /^```/ { inblock = 1; next }
   NF { prev = $0 }
-  END { exit bad }
-' "${DOCS[@]}" || fail "unmarked or malformed blocks (see above)"
+  END { print skipped + 0; exit bad }
+' "${DOCS[@]}")" || fail "unmarked or malformed blocks (see above)"
 
+# the index is read on fd 3, so a block reading stdin cannot eat it
 ran=0
-skipped=0
-while read -r mode where block; do
-  if [[ "$mode" != "$MODE" ]]; then
-    skipped=$((skipped + 1))
-    continue
-  fi
+while read -r where block <&3; do
   run="$WORK/run"
   rm -rf "$run"
-  mkdir -p "$run"
-  cp -R "$ROOT/examples" "$run/"
-  if [[ "$MODE" == netbox ]]; then
-    if [[ -n "${NETBOX_RESET:-}" ]] && ! bash -c "$NETBOX_RESET" >"$WORK/out.log" 2>&1; then
-      cat "$WORK/out.log" >&2
-      fail "resetting netbox before $where"
-    fi
-    cp "$NETBOX_CONFIG" "$run/backend-netbox.yaml"
-    sed -i.orig 's#/path/to/backend-netbox.yaml#backend-netbox.yaml#g' "$block"
+  cp -R "$WORK/template" "$run"
+  if [[ "$MODE" == netbox && -n "${NETBOX_RESET:-}" ]] && ! bash -c "$NETBOX_RESET" >"$WORK/out.log" 2>&1; then
+    cat "$WORK/out.log" >&2
+    fail "resetting netbox before $where"
   fi
   if ! (cd "$run" && PATH="$WORK/bin:$PATH" bash -euo pipefail "$block") >"$WORK/out.log" 2>&1; then
     cat "$WORK/out.log" >&2
@@ -102,6 +101,6 @@ while read -r mode where block; do
   fi
   ran=$((ran + 1))
   echo "  ok: $where"
-done <"$WORK/blocks/index"
+done 3<"$WORK/blocks/index"
 
 echo "$MODE: $ran block(s) ran, $skipped left to another mode or skipped"
