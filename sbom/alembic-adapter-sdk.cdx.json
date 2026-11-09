@@ -2,9 +2,9 @@
   "bomFormat": "CycloneDX",
   "specVersion": "1.3",
   "version": 1,
-  "serialNumber": "urn:uuid:674d9d5f-4362-4388-b3da-c9791f246f7c",
+  "serialNumber": "urn:uuid:82de918e-7a7d-4823-91bf-06ea395a35f4",
   "metadata": {
-    "timestamp": "2026-10-13T08:03:35.656889000Z",
+    "timestamp": "2026-11-05T13:50:54.880757011Z",
     "tools": [
       {
         "vendor": "CycloneDX",
@@ -14,9 +14,9 @@
     ],
     "component": {
       "type": "library",
-      "bom-ref": "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl-sec-divinate/4a3f5dce-4ce6-4f41-b541-9b0d44dc8a61/scratchpad/wt/alembic/crates/alembic-adapter-sdk#0.10.0",
+      "bom-ref": "path+file:///home/runner/work/alembic/alembic/crates/alembic-adapter-sdk#0.12.0",
       "name": "alembic-adapter-sdk",
-      "version": "0.10.0",
+      "version": "0.12.0",
       "description": "SDK for developing external alembic adapters.",
       "scope": "required",
       "licenses": [
@@ -24,7 +24,7 @@
           "expression": "Apache-2.0"
         }
       ],
-      "purl": "pkg:cargo/alembic-adapter-sdk@0.10.0?download_url=file://.",
+      "purl": "pkg:cargo/alembic-adapter-sdk@0.12.0?download_url=file://.",
       "externalReferences": [
         {
           "type": "documentation",
@@ -42,10 +42,10 @@
       "components": [
         {
           "type": "library",
-          "bom-ref": "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl-sec-divinate/4a3f5dce-4ce6-4f41-b541-9b0d44dc8a61/scratchpad/wt/alembic/crates/alembic-adapter-sdk#0.10.0 bin-target-0",
+          "bom-ref": "path+file:///home/runner/work/alembic/alembic/crates/alembic-adapter-sdk#0.12.0 bin-target-0",
           "name": "alembic_adapter_sdk",
-          "version": "0.10.0",
-          "purl": "pkg:cargo/alembic-adapter-sdk@0.10.0?download_url=file://.#src/lib.rs"
+          "version": "0.12.0",
+          "purl": "pkg:cargo/alembic-adapter-sdk@0.12.0?download_url=file://.#src/lib.rs"
         }
       ]
     },
@@ -59,9 +59,9 @@
   "components": [
     {
       "type": "library",
-      "bom-ref": "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl-sec-divinate/4a3f5dce-4ce6-4f41-b541-9b0d44dc8a61/scratchpad/wt/alembic/crates/alembic-core#0.10.0",
+      "bom-ref": "path+file:///home/runner/work/alembic/alembic/crates/alembic-core#0.12.0",
       "name": "alembic-core",
-      "version": "0.10.0",
+      "version": "0.12.0",
       "description": "Core IR types and validation for Alembic.",
       "scope": "required",
       "licenses": [
@@ -69,7 +69,7 @@
           "expression": "Apache-2.0"
         }
       ],
-      "purl": "pkg:cargo/alembic-core@0.10.0?download_url=file://../alembic-core",
+      "purl": "pkg:cargo/alembic-core@0.12.0?download_url=file://../alembic-core",
       "externalReferences": [
         {
           "type": "documentation",
@@ -742,16 +742,16 @@
     },
     {
       "type": "library",
-      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#granit-parser@1.3.0",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#granit-parser@2.0.0",
       "author": "Ethiraric <ethiraric@gmail.com>, David Aguilar <davvid@gmail.com>, Yuheng Chen <yuhengchen@sensetime.com>, Bourumir Wyngs <bourumir-wyngs@gmail.com>",
       "name": "granit-parser",
-      "version": "1.3.0",
-      "description": "A YAML parser with comment and style support, written in pure Rust",
+      "version": "2.0.0",
+      "description": "A YAML parser with comment, tag and style support, written in pure Rust",
       "scope": "required",
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "e20f99e46474f56bd905c56e817ebddcf377a611f94c53ac4649e4d3fa3c0cd0"
+          "content": "da55feca5d1625466bae068f9fd4b87892caeae70c3fe671ddb0f50d41aebf37"
         }
       ],
       "licenses": [
@@ -759,7 +759,7 @@
           "expression": "MIT OR Apache-2.0"
         }
       ],
-      "purl": "pkg:cargo/granit-parser@1.3.0",
+      "purl": "pkg:cargo/granit-parser@2.0.0",
       "externalReferences": [
         {
           "type": "documentation",
@@ -1763,15 +1763,15 @@
     },
     {
       "type": "library",
-      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#serde-saphyr@1.3.0",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#serde-saphyr@2.0.0",
       "name": "serde-saphyr",
-      "version": "1.3.0",
+      "version": "2.0.0",
       "description": "YAML (de)serializer for Serde, emphasizing panic-free parsing, fast builds and good error reporting. Supports properties, include, tag and comment capture",
       "scope": "required",
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "b8050abb251097357e24aff63ba2c52a6309ecb7d23a5474023df960a02694d8"
+          "content": "a253edfdea34032da21af84e16fcc94f4c7a6ba237f9f3bc2dbf43cea8535c44"
         }
       ],
       "licenses": [
@@ -1779,7 +1779,7 @@
           "expression": "MIT OR Apache-2.0"
         }
       ],
-      "purl": "pkg:cargo/serde-saphyr@1.3.0",
+      "purl": "pkg:cargo/serde-saphyr@2.0.0",
       "externalReferences": [
         {
           "type": "documentation",
@@ -1898,16 +1898,15 @@
     },
     {
       "type": "library",
-      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#serde_json@1.0.151",
-      "author": "Erick Tryzelaar <erick.tryzelaar@gmail.com>, David Tolnay <dtolnay@gmail.com>",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#serde_json@1.0.154",
       "name": "serde_json",
-      "version": "1.0.151",
+      "version": "1.0.154",
       "description": "A JSON serialization file format",
       "scope": "required",
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "c841b55ecdae098c80dcae9cf767f6f8a0c2cdb3416bbef72181df4d0fe73f14"
+          "content": "e7e9cc8b1b85264074fbcc02a88680c4096b1e47df8f739dceb03bf482f04bd6"
         }
       ],
       "licenses": [
@@ -1915,7 +1914,7 @@
           "expression": "MIT OR Apache-2.0"
         }
       ],
-      "purl": "pkg:cargo/serde_json@1.0.151",
+      "purl": "pkg:cargo/serde_json@1.0.154",
       "externalReferences": [
         {
           "type": "documentation",
@@ -2363,16 +2362,16 @@
     },
     {
       "type": "library",
-      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#uuid@1.27.0",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#uuid@1.29.0",
       "author": "Ashley Mannix<ashleymannix@live.com.au>, Dylan DPC<dylan.dpc@gmail.com>, Hunar Roop Kahlon<hunar.roop@gmail.com>",
       "name": "uuid",
-      "version": "1.27.0",
+      "version": "1.29.0",
       "description": "A library to generate and parse UUIDs.",
       "scope": "required",
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "97277d36b9c3ace13e58fa6e753f8b0bbbf302a18dd193240d70f9e29681059a"
+          "content": "4a0e2d11620c50695fe12bbbfde96b3477fe606e7284c22d505c12ce51214514"
         }
       ],
       "licenses": [
@@ -2380,7 +2379,7 @@
           "expression": "Apache-2.0 OR MIT"
         }
       ],
-      "purl": "pkg:cargo/uuid@1.27.0",
+      "purl": "pkg:cargo/uuid@1.29.0",
       "externalReferences": [
         {
           "type": "documentation",
@@ -2747,15 +2746,16 @@
     },
     {
       "type": "library",
-      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#windows-link@0.2.1",
-      "name": "windows-link",
-      "version": "0.2.1",
-      "description": "Linking for Windows",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#windows-sys@0.52.0",
+      "author": "Microsoft",
+      "name": "windows-sys",
+      "version": "0.52.0",
+      "description": "Rust for Windows",
       "scope": "required",
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "f0805222e57f7521d6a62e36fa9163bc891acd422f971defe97d64e70d0a4fe5"
+          "content": "282be5f36a8ce781fad8c8ae18fa3f9beff57ec1b52cb3de0789201425d9a33d"
         }
       ],
       "licenses": [
@@ -2763,7 +2763,7 @@
           "expression": "MIT OR Apache-2.0"
         }
       ],
-      "purl": "pkg:cargo/windows-link@0.2.1",
+      "purl": "pkg:cargo/windows-sys@0.52.0",
       "externalReferences": [
         {
           "type": "vcs",
@@ -2773,15 +2773,16 @@
     },
     {
       "type": "library",
-      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#windows-sys@0.61.2",
-      "name": "windows-sys",
-      "version": "0.61.2",
-      "description": "Rust for Windows",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#windows-targets@0.52.6",
+      "author": "Microsoft",
+      "name": "windows-targets",
+      "version": "0.52.6",
+      "description": "Import libs for Windows",
       "scope": "required",
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "ae137229bcbd6cdf0f7b80a31df61766145077ddf49416a728b02cb3921ff3fc"
+          "content": "9b724f72796e036ab90c1021d4780d4d3d648aca59e491e6b98e725b84e99973"
         }
       ],
       "licenses": [
@@ -2789,7 +2790,223 @@
           "expression": "MIT OR Apache-2.0"
         }
       ],
-      "purl": "pkg:cargo/windows-sys@0.61.2",
+      "purl": "pkg:cargo/windows-targets@0.52.6",
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/microsoft/windows-rs"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#windows_aarch64_gnullvm@0.52.6",
+      "author": "Microsoft",
+      "name": "windows_aarch64_gnullvm",
+      "version": "0.52.6",
+      "description": "Import lib for Windows",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "32a4622180e7a0ec044bb555404c800bc9fd9ec262ec147edd5989ccd0c02cd3"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/windows_aarch64_gnullvm@0.52.6",
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/microsoft/windows-rs"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#windows_aarch64_msvc@0.52.6",
+      "author": "Microsoft",
+      "name": "windows_aarch64_msvc",
+      "version": "0.52.6",
+      "description": "Import lib for Windows",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "09ec2a7bb152e2252b53fa7803150007879548bc709c039df7627cabbd05d469"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/windows_aarch64_msvc@0.52.6",
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/microsoft/windows-rs"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#windows_i686_gnu@0.52.6",
+      "author": "Microsoft",
+      "name": "windows_i686_gnu",
+      "version": "0.52.6",
+      "description": "Import lib for Windows",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "8e9b5ad5ab802e97eb8e295ac6720e509ee4c243f69d781394014ebfe8bbfa0b"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/windows_i686_gnu@0.52.6",
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/microsoft/windows-rs"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#windows_i686_gnullvm@0.52.6",
+      "author": "Microsoft",
+      "name": "windows_i686_gnullvm",
+      "version": "0.52.6",
+      "description": "Import lib for Windows",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "0eee52d38c090b3caa76c563b86c3a4bd71ef1a819287c19d586d7334ae8ed66"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/windows_i686_gnullvm@0.52.6",
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/microsoft/windows-rs"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#windows_i686_msvc@0.52.6",
+      "author": "Microsoft",
+      "name": "windows_i686_msvc",
+      "version": "0.52.6",
+      "description": "Import lib for Windows",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "240948bc05c5e7c6dabba28bf89d89ffce3e303022809e73deaefe4f6ec56c66"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/windows_i686_msvc@0.52.6",
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/microsoft/windows-rs"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#windows_x86_64_gnu@0.52.6",
+      "author": "Microsoft",
+      "name": "windows_x86_64_gnu",
+      "version": "0.52.6",
+      "description": "Import lib for Windows",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "147a5c80aabfbf0c7d901cb5895d1de30ef2907eb21fbbab29ca94c5b08b1a78"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/windows_x86_64_gnu@0.52.6",
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/microsoft/windows-rs"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#windows_x86_64_gnullvm@0.52.6",
+      "author": "Microsoft",
+      "name": "windows_x86_64_gnullvm",
+      "version": "0.52.6",
+      "description": "Import lib for Windows",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "24d5b23dc417412679681396f2b49f3de8c1473deb516bd34410872eff51ed0d"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/windows_x86_64_gnullvm@0.52.6",
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/microsoft/windows-rs"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#windows_x86_64_msvc@0.52.6",
+      "author": "Microsoft",
+      "name": "windows_x86_64_msvc",
+      "version": "0.52.6",
+      "description": "Import lib for Windows",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/windows_x86_64_msvc@0.52.6",
       "externalReferences": [
         {
           "type": "vcs",
@@ -3056,28 +3273,28 @@
   ],
   "dependencies": [
     {
-      "ref": "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl-sec-divinate/4a3f5dce-4ce6-4f41-b541-9b0d44dc8a61/scratchpad/wt/alembic/crates/alembic-adapter-sdk#0.10.0",
+      "ref": "path+file:///home/runner/work/alembic/alembic/crates/alembic-adapter-sdk#0.12.0",
       "dependsOn": [
-        "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl-sec-divinate/4a3f5dce-4ce6-4f41-b541-9b0d44dc8a61/scratchpad/wt/alembic/crates/alembic-core#0.10.0",
+        "path+file:///home/runner/work/alembic/alembic/crates/alembic-core#0.12.0",
         "registry+https://github.com/rust-lang/crates.io-index#async-trait@0.1.92",
         "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.229",
-        "registry+https://github.com/rust-lang/crates.io-index#serde-saphyr@1.3.0",
-        "registry+https://github.com/rust-lang/crates.io-index#serde_json@1.0.151",
+        "registry+https://github.com/rust-lang/crates.io-index#serde-saphyr@2.0.0",
+        "registry+https://github.com/rust-lang/crates.io-index#serde_json@1.0.154",
         "registry+https://github.com/rust-lang/crates.io-index#tempfile@3.27.0",
         "registry+https://github.com/rust-lang/crates.io-index#thiserror@2.0.21",
         "registry+https://github.com/rust-lang/crates.io-index#tracing@0.1.44",
-        "registry+https://github.com/rust-lang/crates.io-index#uuid@1.27.0"
+        "registry+https://github.com/rust-lang/crates.io-index#uuid@1.29.0"
       ]
     },
     {
-      "ref": "path+file:///private/tmp/claude-501/-Users-veitheller-Documents-Code-Github-cwl-sec-divinate/4a3f5dce-4ce6-4f41-b541-9b0d44dc8a61/scratchpad/wt/alembic/crates/alembic-core#0.10.0",
+      "ref": "path+file:///home/runner/work/alembic/alembic/crates/alembic-core#0.12.0",
       "dependsOn": [
         "registry+https://github.com/rust-lang/crates.io-index#ipnet@2.12.2",
         "registry+https://github.com/rust-lang/crates.io-index#regex@1.13.1",
         "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.229",
-        "registry+https://github.com/rust-lang/crates.io-index#serde_json@1.0.151",
+        "registry+https://github.com/rust-lang/crates.io-index#serde_json@1.0.154",
         "registry+https://github.com/rust-lang/crates.io-index#thiserror@2.0.21",
-        "registry+https://github.com/rust-lang/crates.io-index#uuid@1.27.0"
+        "registry+https://github.com/rust-lang/crates.io-index#uuid@1.29.0"
       ]
     },
     {
@@ -3165,7 +3382,7 @@
       "ref": "registry+https://github.com/rust-lang/crates.io-index#errno@0.3.14",
       "dependsOn": [
         "registry+https://github.com/rust-lang/crates.io-index#libc@0.2.189",
-        "registry+https://github.com/rust-lang/crates.io-index#windows-sys@0.61.2"
+        "registry+https://github.com/rust-lang/crates.io-index#windows-sys@0.52.0"
       ]
     },
     {
@@ -3198,7 +3415,7 @@
       ]
     },
     {
-      "ref": "registry+https://github.com/rust-lang/crates.io-index#granit-parser@1.3.0",
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#granit-parser@2.0.0",
       "dependsOn": [
         "registry+https://github.com/rust-lang/crates.io-index#arraydeque@0.5.1",
         "registry+https://github.com/rust-lang/crates.io-index#smallvec@1.15.1"
@@ -3353,7 +3570,7 @@
         "registry+https://github.com/rust-lang/crates.io-index#errno@0.3.14",
         "registry+https://github.com/rust-lang/crates.io-index#libc@0.2.189",
         "registry+https://github.com/rust-lang/crates.io-index#linux-raw-sys@0.12.1",
-        "registry+https://github.com/rust-lang/crates.io-index#windows-sys@0.61.2"
+        "registry+https://github.com/rust-lang/crates.io-index#windows-sys@0.52.0"
       ]
     },
     {
@@ -3363,13 +3580,13 @@
       "ref": "registry+https://github.com/rust-lang/crates.io-index#semver@1.0.28"
     },
     {
-      "ref": "registry+https://github.com/rust-lang/crates.io-index#serde-saphyr@1.3.0",
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#serde-saphyr@2.0.0",
       "dependsOn": [
         "registry+https://github.com/rust-lang/crates.io-index#annotate-snippets@0.12.16",
         "registry+https://github.com/rust-lang/crates.io-index#base64@0.23.1",
         "registry+https://github.com/rust-lang/crates.io-index#encoding_rs_io@0.1.8",
         "registry+https://github.com/rust-lang/crates.io-index#figment@0.10.19",
-        "registry+https://github.com/rust-lang/crates.io-index#granit-parser@1.3.0",
+        "registry+https://github.com/rust-lang/crates.io-index#granit-parser@2.0.0",
         "registry+https://github.com/rust-lang/crates.io-index#nohash-hasher@0.2.0",
         "registry+https://github.com/rust-lang/crates.io-index#num-traits@0.2.19",
         "registry+https://github.com/rust-lang/crates.io-index#serde_core@1.0.229",
@@ -3399,7 +3616,7 @@
       ]
     },
     {
-      "ref": "registry+https://github.com/rust-lang/crates.io-index#serde_json@1.0.151",
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#serde_json@1.0.154",
       "dependsOn": [
         "registry+https://github.com/rust-lang/crates.io-index#itoa@1.0.17",
         "registry+https://github.com/rust-lang/crates.io-index#memchr@2.8.1",
@@ -3437,7 +3654,7 @@
         "registry+https://github.com/rust-lang/crates.io-index#getrandom@0.4.2",
         "registry+https://github.com/rust-lang/crates.io-index#once_cell@1.21.4",
         "registry+https://github.com/rust-lang/crates.io-index#rustix@1.1.4",
-        "registry+https://github.com/rust-lang/crates.io-index#windows-sys@0.61.2"
+        "registry+https://github.com/rust-lang/crates.io-index#windows-sys@0.52.0"
       ]
     },
     {
@@ -3494,7 +3711,7 @@
       "ref": "registry+https://github.com/rust-lang/crates.io-index#unicode-xid@0.2.6"
     },
     {
-      "ref": "registry+https://github.com/rust-lang/crates.io-index#uuid@1.27.0",
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#uuid@1.29.0",
       "dependsOn": [
         "registry+https://github.com/rust-lang/crates.io-index#getrandom@0.4.2",
         "registry+https://github.com/rust-lang/crates.io-index#js-sys@0.3.85",
@@ -3580,13 +3797,47 @@
       ]
     },
     {
-      "ref": "registry+https://github.com/rust-lang/crates.io-index#windows-link@0.2.1"
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#windows-sys@0.52.0",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#windows-targets@0.52.6"
+      ]
     },
     {
-      "ref": "registry+https://github.com/rust-lang/crates.io-index#windows-sys@0.61.2",
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#windows-targets@0.52.6",
       "dependsOn": [
-        "registry+https://github.com/rust-lang/crates.io-index#windows-link@0.2.1"
+        "registry+https://github.com/rust-lang/crates.io-index#windows_aarch64_gnullvm@0.52.6",
+        "registry+https://github.com/rust-lang/crates.io-index#windows_aarch64_msvc@0.52.6",
+        "registry+https://github.com/rust-lang/crates.io-index#windows_i686_gnu@0.52.6",
+        "registry+https://github.com/rust-lang/crates.io-index#windows_i686_gnullvm@0.52.6",
+        "registry+https://github.com/rust-lang/crates.io-index#windows_i686_msvc@0.52.6",
+        "registry+https://github.com/rust-lang/crates.io-index#windows_x86_64_gnu@0.52.6",
+        "registry+https://github.com/rust-lang/crates.io-index#windows_x86_64_gnullvm@0.52.6",
+        "registry+https://github.com/rust-lang/crates.io-index#windows_x86_64_msvc@0.52.6"
       ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#windows_aarch64_gnullvm@0.52.6"
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#windows_aarch64_msvc@0.52.6"
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#windows_i686_gnu@0.52.6"
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#windows_i686_gnullvm@0.52.6"
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#windows_i686_msvc@0.52.6"
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#windows_x86_64_gnu@0.52.6"
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#windows_x86_64_gnullvm@0.52.6"
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#windows_x86_64_msvc@0.52.6"
     },
     {
       "ref": "registry+https://github.com/rust-lang/crates.io-index#wit-bindgen-core@0.51.0",
@@ -3636,7 +3887,7 @@
         "registry+https://github.com/rust-lang/crates.io-index#log@0.4.29",
         "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.229",
         "registry+https://github.com/rust-lang/crates.io-index#serde_derive@1.0.229",
-        "registry+https://github.com/rust-lang/crates.io-index#serde_json@1.0.151",
+        "registry+https://github.com/rust-lang/crates.io-index#serde_json@1.0.154",
         "registry+https://github.com/rust-lang/crates.io-index#wasm-encoder@0.244.0",
         "registry+https://github.com/rust-lang/crates.io-index#wasm-metadata@0.244.0",
         "registry+https://github.com/rust-lang/crates.io-index#wasmparser@0.244.0",
@@ -3653,7 +3904,7 @@
         "registry+https://github.com/rust-lang/crates.io-index#semver@1.0.28",
         "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.229",
         "registry+https://github.com/rust-lang/crates.io-index#serde_derive@1.0.229",
-        "registry+https://github.com/rust-lang/crates.io-index#serde_json@1.0.151",
+        "registry+https://github.com/rust-lang/crates.io-index#serde_json@1.0.154",
         "registry+https://github.com/rust-lang/crates.io-index#unicode-xid@0.2.6",
         "registry+https://github.com/rust-lang/crates.io-index#wasmparser@0.244.0"
       ]

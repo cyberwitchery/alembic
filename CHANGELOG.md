@@ -4,6 +4,15 @@
 
 unreleased changes live in `changelog.d/` until a release collects them.
 
+## [0.13.0] - 2026-11-05
+
+- `alembic-file-generator`: `--topology` cables the devices as a `chain`, `ring`, `star`, full `mesh` or `leaf-spine` (with `--spines`), each link with its own interface on both ends; `pairs` stays the default (#514)
+- apply: the stale-plan check re-diffs with key adoption as the plan was made, recorded as `adopt_by_key`, so a `plan --no-adopt` create of a same-key twin is no longer refused as stale; a plan without the field is checked as before (#528)
+- alembic-adapter-test: `--setup <file>` sends a json object as the `setup` of every built-in request, for an adapter that cannot answer without configuration
+- apply deletes an object before what it references outside its key, so deleting devices together with their role, type or site no longer fails with netbox's `409`: a planned delete records those uids as `refs`. a plan written before this has none and orders deletes by key as before
+- netbox adapter: apply sends creates, updates and deletes of one type in bulk requests of up to 100 objects instead of one request each, and orders ops a dependency level at a time so a level's objects of one type go together; a 1118-object apply against netbox 4.6.2 drops from 86s to 51s on localhost
+- **breaking** netbox and nautobot adapters: a type is named `app_label.model` and read from the route the backend serves it at, with no english inflection; every netbox type with a multi-word model is renamed (`ipam.ip_address` is now `ipam.ipaddress`, `dcim.device_type` `dcim.devicetype`, `virtualization.interface` `virtualization.vminterface`), nautobot types reach routes the derived spelling missed (`virtualization.vminterface`, `extras.joblogentry`) and a type no route serves fails instead of guessing one; rename these in schemas, maps and state (#419)
+
 ## [0.12.0] - 2026-10-26
 
 - **breaking** apply: before writing, checks that the backend still holds what the plan was diffed against, and refuses, naming each object and what moved, when a planned update's `from` values no longer hold, a planned create's object now exists, or an updated object is gone, exiting `65`; `--no-stale-check` skips it (#467)
