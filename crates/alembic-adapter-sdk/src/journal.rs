@@ -235,20 +235,22 @@ fn open_postgres(key: &str, _tls: PostgresTlsMode) -> Result<(Box<dyn JournalBac
 impl JournalStorageLocation {
     /// where the journal for `ops` under `scope` lives.
     pub fn spec(&self, scope: &str, ops: &[Op]) -> Result<Option<JournalSpec>> {
-        let creates_updates: Vec<&Op> = ops
-            .iter()
-            .filter(|op| !matches!(op, Op::Delete { .. }))
-            .collect();
-        let key = Journal::stable_key(scope, &creates_updates);
+        let key = || {
+            let creates_updates: Vec<&Op> = ops
+                .iter()
+                .filter(|op| !matches!(op, Op::Delete { .. }))
+                .collect();
+            Journal::stable_key(scope, &creates_updates)
+        };
         match self {
             Self::None => Ok(None),
             Self::File(dir) => {
                 let dir = std::path::absolute(dir).map_err(io_at(dir))?;
                 Ok(Some(JournalSpec::File {
-                    path: JournalFileBackend::file_path(&dir, &key),
+                    path: JournalFileBackend::file_path(&dir, &key()),
                 }))
             }
-            Self::Backend(factory) => Ok(factory.spec(&key)),
+            Self::Backend(factory) => Ok(factory.spec(&key())),
         }
     }
 }
