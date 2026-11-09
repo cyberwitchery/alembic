@@ -103,19 +103,27 @@ fn write_journaled(
     _state: &StateData,
     journal: Option<&JournalSpec>,
 ) -> anyhow::Result<ApplyReport> {
-    // deletes are not journaled: apply them after, and before `finish`
-    let creates_updates: Vec<Op> = ops
+    let (creates_updates, deletes): (Vec<Op>, Vec<Op>) = ops
         .iter()
-        .filter(|op| !matches!(op, Op::Delete { .. }))
         .cloned()
-        .collect();
+        .partition(|op| !matches!(op, Op::Delete { .. }));
     tokio::runtime::Runtime::new()?.block_on(async {
         let (result, previously_applied_count, journal) =
             apply_non_delete_with_requested_journal(journal, &creates_updates, &mut self.driver)
                 .await?;
+        let mut applied = result.applied;
+        // deletes are not journaled: apply them after, and before `finish`
+        for op in &deletes {
+            self.delete(op)?; // your backend's delete
+            applied.push(AppliedOp {
+                uid: op.uid(),
+                type_name: op.type_name().clone(),
+                backend_id: None,
+            });
+        }
         journal.finish().await?;
         Ok(ApplyReport {
-            applied: result.applied,
+            applied,
             resumed: result.resumed,
             previously_applied_count,
             ..ApplyReport::default()
