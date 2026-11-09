@@ -153,7 +153,11 @@ echo "e2e imports written to /tmp/alembic-infrahub-import.yaml and /tmp/alembic-
 
 if [[ "${SKIP_DOCKER:-0}" != "1" ]]; then
   cargo build -q -p alembic-cli
-  NETBOX_RESET="docker exec -i alembic-netbox-1 /opt/netbox/venv/bin/python /opt/netbox/netbox/manage.py shell < '$ROOT/scripts/netbox_reset.py'" \
+  # doc_examples.sh runs NETBOX_RESET with bash -c, which expands the two paths
+  # from the environment
+  # shellcheck disable=SC2016
+  NETBOX_RESET='docker compose -f "$NETBOX_COMPOSE" exec -T netbox /opt/netbox/venv/bin/python /opt/netbox/netbox/manage.py shell < "$NETBOX_RESET_PY"' \
+    NETBOX_COMPOSE="$NETBOX_COMPOSE" NETBOX_RESET_PY="$ROOT/scripts/netbox_reset.py" \
     ALEMBIC="$ROOT/target/debug/alembic" "$ROOT/scripts/doc_examples.sh" netbox "$NETBOX_CONFIG"
 else
   echo "SKIP_DOCKER=1: not running the documented netbox examples, which need a netbox they can wipe"
