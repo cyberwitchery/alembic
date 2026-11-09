@@ -50,30 +50,26 @@ DOCS=(README.md docs/*.md docs/*/*.md)
 # one file per marked block under $WORK/blocks, and an index line for each:
 # `<mode> <file>:<line> <block file>`.
 awk -v dir="$WORK/blocks" '
-  FNR == 1 { prev = ""; inblock = 0 }
-  inblock {
-    if ($0 ~ /^```/) { inblock = 0; if (out != "") close(out); out = ""; next }
-    if (out != "") print > out
-    next
-  }
+  function reset() { if (out != "") close(out); inblock = 0; out = ""; prev = "" }
+  FNR == 1 { reset() }
+  inblock && /^```/ { reset(); next }
+  inblock { if (out != "") print > out; next }
   /^```/ {
     inblock = 1
-    out = ""
     if ($0 !~ /^```(bash|sh|shell|console)[[:space:]]*$/) next
-    if (prev ~ /^<!-- ci:/) {
-      if (prev ~ /^<!-- ci: (no-backend|netbox) -->$/) {
-        mode = prev; sub(/^<!-- ci: /, "", mode); sub(/ -->$/, "", mode)
-        n++
-        out = dir "/" n ".sh"
-        printf "" > out
-        print mode, FILENAME ":" FNR, out > (dir "/index")
-      } else if (prev ~ /^<!-- ci: skip [^ ].* -->$/) {
-        print "skip", FILENAME ":" FNR, "-" > (dir "/index")
-      } else {
-        print FILENAME ":" FNR ": malformed marker: " prev > "/dev/stderr"; bad = 1
-      }
+    where = FILENAME ":" FNR
+    if (prev ~ /^<!-- ci: (no-backend|netbox) -->$/) {
+      split(prev, marker, " ")
+      n++
+      out = dir "/" n ".sh"
+      printf "" > out
+      print marker[3], where, out > (dir "/index")
+    } else if (prev ~ /^<!-- ci: skip [^ ].* -->$/) {
+      print "skip", where, "-" > (dir "/index")
+    } else if (prev ~ /^<!-- ci:/) {
+      print where ": malformed marker: " prev > "/dev/stderr"; bad = 1
     } else if (FILENAME ~ /^docs\/(examples|case-studies)\//) {
-      print FILENAME ":" FNR ": shell block has no <!-- ci: ... --> marker" > "/dev/stderr"; bad = 1
+      print where ": shell block has no <!-- ci: ... --> marker" > "/dev/stderr"; bad = 1
     }
     next
   }
