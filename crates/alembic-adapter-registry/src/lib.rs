@@ -901,9 +901,6 @@ mod tests {
         }
     }
 
-    /// every backend config `examples/` ships builds a backend, and the generic
-    /// adapter config does through `config_path`. the directory is read, so a
-    /// config added later is gated too; nothing here connects.
     #[cfg(feature = "all")]
     #[test]
     fn every_committed_example_config_builds() {
