@@ -509,8 +509,6 @@ impl StateBackend for PostgresBackend {
     }
 }
 
-/// spawn the background task that drives a postgres connection to completion,
-/// logging the error if the connection fails.
 impl PostgresBackend {
     async fn ensure_table(&mut self, client: &Client) -> Result<()> {
         if self.table_ensured {
