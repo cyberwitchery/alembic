@@ -12,6 +12,7 @@ reshape keys and attrs.
 
 ## running
 
+<!-- ci: no-backend -->
 ```bash
 alembic map -f examples/map-input.yaml --spec examples/map.yaml -o ir.json
 ```

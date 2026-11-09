@@ -74,6 +74,7 @@ from the repo root (or point `-f` at your own inventory).
 
 2) validate:
 
+<!-- ci: no-backend -->
 ```bash
 alembic validate -f examples/inventory.yaml
 ```

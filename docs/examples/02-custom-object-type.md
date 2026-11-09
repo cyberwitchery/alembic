@@ -10,8 +10,8 @@ and device it relates to.
 ## the model
 
 [`examples/walkthroughs/custom-model.yaml`](../../examples/walkthroughs/custom-model.yaml)
-declares two native netbox types (`dcim.site`, `dcim.device`) and one netbox does
-not ship:
+declares a native site and device (plus the manufacturer, device type and role
+netbox requires of a device) and one type netbox does not ship:
 
 ```yaml
     ops.maintenance_window:
@@ -23,8 +23,8 @@ not ship:
         device: {type: ref, target: dcim.device}   # references a native device
 ```
 
-alembic resolves each type against netbox's object types. `dcim.site` and
-`dcim.device` are native and go to their normal endpoints. `ops.maintenance_window`
+alembic resolves each type against netbox's object types. the `dcim.*` types are
+native and go to their normal endpoints. `ops.maintenance_window`
 is not, so on apply the adapter provisions it as a custom object type (with a
 field per schema key and field) through the netbox custom objects plugin, then
 creates the object under `/api/plugins/custom-objects/`. its `device` field is an
@@ -36,6 +36,7 @@ reference.
 `--provision` creates the custom object type and its fields before planning, so
 the plan can then create objects against it:
 
+<!-- ci: netbox -->
 ```bash
 BACKEND_CONFIG=/path/to/backend-netbox.yaml
 

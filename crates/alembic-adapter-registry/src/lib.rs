@@ -901,6 +901,38 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "all")]
+    #[test]
+    fn every_committed_example_config_builds() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
+        let mut built = 0;
+        for entry in std::fs::read_dir(&dir).expect("examples dir") {
+            let path = entry.expect("dir entry").path();
+            if path.extension().is_none_or(|ext| ext != "yaml") {
+                continue;
+            }
+            let content = std::fs::read_to_string(&path).expect("read example");
+            let doc: serde_json::Value =
+                alembic_engine::yaml::from_str(&content).expect("example parses as yaml");
+            let config = if doc.get("backend").is_some() {
+                super::load_config(&path).unwrap_or_else(|err| panic!("{err:#}"))
+            } else if doc.get("base_url").is_some() {
+                AdapterConfig::Generic(super::GenericConfig {
+                    config: None,
+                    config_path: Some(path.clone()),
+                    instance: None,
+                })
+            } else {
+                continue;
+            };
+            config
+                .build()
+                .unwrap_or_else(|err| panic!("{}: {err:#}", path.display()));
+            built += 1;
+        }
+        assert!(built > 0, "no backend config found in {}", dir.display());
+    }
+
     /// the tag the enum dispatches on is not itself an unknown field.
     #[test]
     fn known_backend_config_still_parses() {
