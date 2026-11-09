@@ -105,12 +105,10 @@ pub fn examples_dir() -> PathBuf {
         .join("examples")
 }
 
-/// the directory the documented example walkthroughs live in.
 pub fn walkthroughs_dir() -> PathBuf {
     examples_dir().join("walkthroughs")
 }
 
-/// path to a documented example walkthrough inventory (examples/walkthroughs/<name>).
 pub fn walkthrough_path(name: &str) -> PathBuf {
     walkthroughs_dir().join(name)
 }
