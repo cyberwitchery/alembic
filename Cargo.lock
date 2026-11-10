@@ -145,11 +145,11 @@ dependencies = [
  "alembic-engine",
  "anyhow",
  "async-trait",
- "log",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

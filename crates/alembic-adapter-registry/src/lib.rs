@@ -23,7 +23,7 @@ use tokio::time::timeout;
 #[cfg(feature = "django")]
 use alembic_adapter_django::emit::DjangoConfig;
 use alembic_adapter_sdk::{ApplyReport, Op, ProvisionReport, StateData};
-use log::warn;
+use tracing::warn;
 
 const SUPPORTED_BACKENDS: &[&str] = &[
     #[cfg(feature = "netbox")]
