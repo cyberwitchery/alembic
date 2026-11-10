@@ -1,5 +1,6 @@
 //! helpers for implementing external adapters.
 
+use crate::journal::JournalSpec;
 use crate::state::StateData;
 use crate::types::{ApplyReport, BackendId, Op, ProvisionReport};
 use alembic_core::{JsonMap, Key, Schema, TypeName};
@@ -37,6 +38,8 @@ pub enum ExternalRequest {
         schema: Schema,
         ops: Vec<Op>,
         state: StateData,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        journal: Option<JournalSpec>,
     },
     /// ensure the backend schema exists.
     EnsureSchema { schema: Schema },
@@ -73,6 +76,8 @@ pub enum ExternalRequestRef<'a> {
         schema: &'a Schema,
         ops: &'a [Op],
         state: StateData,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        journal: Option<JournalSpec>,
     },
     /// ensure the backend schema exists.
     EnsureSchema { schema: &'a Schema },
@@ -200,6 +205,19 @@ pub trait ExternalAdapter {
         state: &StateData,
     ) -> Result<ApplyReport, Self::Error>;
 
+    /// like [`ExternalAdapter::write`], but with a possible journal.
+    /// override this to resume a partial apply.
+    fn write_journaled(
+        &mut self,
+        schema: &Schema,
+        ops: &[Op],
+        state: &StateData,
+        journal: Option<&JournalSpec>,
+    ) -> Result<ApplyReport, Self::Error> {
+        let _ = journal;
+        self.write(schema, ops, state)
+    }
+
     /// provision backend schema elements.
     fn ensure_schema(&mut self, schema: &Schema) -> Result<ProvisionReport, Self::Error> {
         let _ = schema;
@@ -260,8 +278,18 @@ pub fn run_external_adapter<A: ExternalAdapter>(
             let response = ExternalResponse::from_result(adapter.read(&schema, &types, &state));
             write_response(&mut writer, response)
         }
-        ExternalRequest::Write { schema, ops, state } => {
-            let response = ExternalResponse::from_result(adapter.write(&schema, &ops, &state));
+        ExternalRequest::Write {
+            schema,
+            ops,
+            state,
+            journal,
+        } => {
+            let response = ExternalResponse::from_result(adapter.write_journaled(
+                &schema,
+                &ops,
+                &state,
+                journal.as_ref(),
+            ));
             write_response(&mut writer, response)
         }
         ExternalRequest::EnsureSchema { schema } => {
@@ -311,8 +339,10 @@ mod tests {
         ExternalEnvelopeRef, ExternalObject, ExternalRequest, ExternalRequestRef, ExternalResponse,
         ExternalRole, EXTERNAL_PROTOCOL_VERSION,
     };
+    use crate::apply_retry::{apply_non_delete_with_requested_journal, RetryApplyDriver};
+    use crate::journal::{JournalSpec, PostgresTlsMode};
     use crate::state::StateData;
-    use crate::types::{AppliedOp, ApplyReport, FieldChange, Op, ProvisionReport};
+    use crate::types::{AppliedOp, ApplyReport, BackendId, FieldChange, Op, ProvisionReport};
     use alembic_core::{Key, Object, Schema, TypeName, TypeSchema, Uid};
     use serde_json::json;
     use serde_json::Value;
@@ -442,16 +472,22 @@ mod tests {
         .unwrap();
         assert_eq!(owned_read, ref_read);
 
+        let journal = JournalSpec::Postgres {
+            key: "default/external-1a2b3c4d/external-1a2b3c4d_journal_7".into(),
+            tls: PostgresTlsMode::Require,
+        };
         let owned_write = serde_json::to_value(ExternalRequest::Write {
             schema: schema.clone(),
             ops: ops.clone(),
             state: state.clone(),
+            journal: Some(journal.clone()),
         })
         .unwrap();
         let ref_write = serde_json::to_value(ExternalRequestRef::Write {
             schema: &schema,
             ops: &ops,
             state: state.clone(),
+            journal: Some(journal),
         })
         .unwrap();
         assert_eq!(owned_write, ref_write);
@@ -501,6 +537,49 @@ mod tests {
     }
 
     #[test]
+    fn a_write_without_a_journal_still_parses() {
+        let request: ExternalRequest = serde_json::from_value(json!({
+            "method": "write",
+            "schema": {"types": {}},
+            "ops": [],
+            "state": {"mappings": {}}
+        }))
+        .unwrap();
+        assert!(matches!(
+            request,
+            ExternalRequest::Write { journal: None, .. }
+        ));
+    }
+
+    #[test]
+    fn journal_spec_names_its_storage() {
+        let file = JournalSpec::File {
+            path: "/work/.alembic/external-1a2b3c4d_journal_7.yaml".into(),
+        };
+        assert_eq!(
+            serde_json::to_value(&file).unwrap(),
+            json!({"storage": "file", "path": "/work/.alembic/external-1a2b3c4d_journal_7.yaml"})
+        );
+        let postgres = JournalSpec::Postgres {
+            key: "default/external-1a2b3c4d/external-1a2b3c4d_journal_7".into(),
+            tls: PostgresTlsMode::Disable,
+        };
+        let value = serde_json::to_value(&postgres).unwrap();
+        assert_eq!(
+            value,
+            json!({
+                "storage": "postgres",
+                "key": "default/external-1a2b3c4d/external-1a2b3c4d_journal_7",
+                "tls": "disable"
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<JournalSpec>(value).unwrap(),
+            postgres
+        );
+    }
+
+    #[test]
     fn request_method_names_the_serde_tag() {
         // the error context an unreadable result is reported under comes from
         // method(), so it must keep saying what the request said.
@@ -518,6 +597,7 @@ mod tests {
                 schema: &schema,
                 ops: &ops,
                 state: state.clone(),
+                journal: None,
             },
             ExternalRequestRef::EnsureSchema { schema: &schema },
             ExternalRequestRef::PreviewSchema { schema: &schema },
@@ -721,6 +801,142 @@ mod tests {
         assert!(back.result.flatten().is_none());
     }
 
+    /// applies every op but `fail`, the way a backend refusing one object would.
+    struct RefusingDriver {
+        fail: Option<Uid>,
+    }
+
+    #[async_trait::async_trait]
+    impl RetryApplyDriver for RefusingDriver {
+        type Error = anyhow::Error;
+
+        async fn apply_non_delete(&mut self, op: &Op) -> anyhow::Result<AppliedOp> {
+            if Some(op.uid()) == self.fail {
+                anyhow::bail!("backend refused {}", op.uid());
+            }
+            Ok(AppliedOp {
+                uid: op.uid(),
+                type_name: op.type_name().clone(),
+                backend_id: Some(BackendId::Int(op.uid().as_u128() as u64)),
+            })
+        }
+
+        fn is_retryable(&self, _err: &anyhow::Error) -> bool {
+            false
+        }
+    }
+
+    struct JournalingAdapter(RefusingDriver);
+
+    impl ExternalAdapter for JournalingAdapter {
+        type Error = anyhow::Error;
+
+        fn setup(&mut self, _configuration: &Value) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn read(
+            &mut self,
+            _schema: &Schema,
+            _types: &[TypeName],
+            _state: &StateData,
+        ) -> anyhow::Result<Vec<ExternalObject>> {
+            Ok(Vec::new())
+        }
+
+        fn write(
+            &mut self,
+            schema: &Schema,
+            ops: &[Op],
+            state: &StateData,
+        ) -> anyhow::Result<ApplyReport> {
+            self.write_journaled(schema, ops, state, None)
+        }
+
+        fn write_journaled(
+            &mut self,
+            _schema: &Schema,
+            ops: &[Op],
+            _state: &StateData,
+            journal: Option<&JournalSpec>,
+        ) -> anyhow::Result<ApplyReport> {
+            let creates_updates: Vec<Op> = ops
+                .iter()
+                .filter(|op| !matches!(op, Op::Delete { .. }))
+                .cloned()
+                .collect();
+            let runtime = tokio::runtime::Builder::new_current_thread().build()?;
+            runtime.block_on(async {
+                let (result, previously_applied_count, journal) =
+                    apply_non_delete_with_requested_journal(journal, &creates_updates, &mut self.0)
+                        .await?;
+                journal.finish().await?;
+                Ok(ApplyReport {
+                    applied: result.applied,
+                    resumed: result.resumed,
+                    previously_applied_count,
+                    ..ApplyReport::default()
+                })
+            })
+        }
+    }
+
+    fn create(n: u128) -> Op {
+        Op::Create {
+            uid: Uid::from_u128(n),
+            type_name: TypeName::new("dcim.site"),
+            desired: Object {
+                uid: Uid::from_u128(n),
+                type_name: TypeName::new("dcim.site"),
+                key: Key::default(),
+                attrs: Default::default(),
+                source: None,
+            },
+        }
+    }
+
+    fn write_through(fail: Option<Uid>, journal: &JournalSpec) -> ExternalResponse<ApplyReport> {
+        let envelope = ExternalEnvelope {
+            version: EXTERNAL_PROTOCOL_VERSION,
+            setup: Default::default(),
+            request: ExternalRequest::Write {
+                schema: Schema::default(),
+                ops: vec![create(1), create(2)],
+                state: StateData::default(),
+                journal: Some(journal.clone()),
+            },
+        };
+        let request = serde_json::to_vec(&envelope).unwrap();
+        let mut response = Vec::new();
+        let adapter = JournalingAdapter(RefusingDriver { fail });
+        run_external_adapter(adapter, (request.as_slice(), &mut response)).unwrap();
+        serde_json::from_slice(&response).unwrap()
+    }
+
+    #[test]
+    fn a_journaling_adapter_resumes_from_the_journal_the_request_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("external-1a2b3c4d_journal_7.yaml");
+        let journal = JournalSpec::File { path: path.clone() };
+
+        let failed = write_through(Some(Uid::from_u128(2)), &journal);
+        let error = failed.error.unwrap();
+        assert!(error.contains("apply stopped after 1 of 2"), "{error}");
+        assert!(path.is_file(), "the interrupted run keeps its journal");
+
+        let resumed = write_through(None, &journal).result.unwrap();
+        assert_eq!(resumed.previously_applied_count, Some(1));
+        assert_eq!(
+            resumed.resumed.iter().map(|op| op.uid).collect::<Vec<_>>(),
+            vec![Uid::from_u128(1)]
+        );
+        assert_eq!(
+            resumed.applied.iter().map(|op| op.uid).collect::<Vec<_>>(),
+            vec![Uid::from_u128(2)]
+        );
+        assert!(!path.exists(), "a finished write removes its journal");
+    }
+
     #[test]
     fn external_adapter_communication_error() {
         let adapter = TestExternalAdapter::default();
@@ -737,6 +953,7 @@ mod tests {
             schema: Default::default(),
             ops: vec![],
             state: Default::default(),
+            journal: None,
         };
         let envelope = ExternalEnvelope {
             version: EXTERNAL_PROTOCOL_VERSION,

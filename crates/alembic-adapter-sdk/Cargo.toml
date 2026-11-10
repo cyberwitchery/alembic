@@ -20,6 +20,14 @@ tempfile.workspace = true
 tracing.workspace = true
 async-trait.workspace = true
 thiserror.workspace = true
+tokio = { workspace = true, optional = true }
+tokio-postgres = { workspace = true, optional = true }
+native-tls = { workspace = true, optional = true }
+postgres-native-tls = { workspace = true, optional = true }
+
+[features]
+# journals kept in postgres (`JournalSpec::Postgres`)
+postgres = ["dep:tokio", "dep:tokio-postgres", "dep:native-tls", "dep:postgres-native-tls"]
 
 [dev-dependencies]
 anyhow.workspace = true

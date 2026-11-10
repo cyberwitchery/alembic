@@ -87,6 +87,51 @@ alembic_external_main!(MyAdapter);
 for more control, call `run_external_adapter()` directly and build custom
 `ExternalResponse` values.
 
+### journaled writes
+
+`write_journaled` receives the [`journal`](#write) the request named; its default
+ignores it and calls `write`. to resume a partial apply, override it and run the ops
+through `apply_non_delete_with_requested_journal`, the retry loop the built-in
+adapters use, with a `RetryApplyDriver` that applies one op. it is async, and a
+postgres journal needs a tokio runtime and the sdk's `postgres` feature:
+
+```rust
+fn write_journaled(
+    &mut self,
+    _schema: &alembic_core::Schema,
+    ops: &[Op],
+    _state: &StateData,
+    journal: Option<&JournalSpec>,
+) -> anyhow::Result<ApplyReport> {
+    let (creates_updates, deletes): (Vec<Op>, Vec<Op>) = ops
+        .iter()
+        .cloned()
+        .partition(|op| !matches!(op, Op::Delete { .. }));
+    tokio::runtime::Runtime::new()?.block_on(async {
+        let (result, previously_applied_count, journal) =
+            apply_non_delete_with_requested_journal(journal, &creates_updates, &mut self.driver)
+                .await?;
+        let mut applied = result.applied;
+        // deletes are not journaled: apply them after, and before `finish`
+        for op in &deletes {
+            self.delete(op)?; // your backend's delete
+            applied.push(AppliedOp {
+                uid: op.uid(),
+                type_name: op.type_name().clone(),
+                backend_id: None,
+            });
+        }
+        journal.finish().await?;
+        Ok(ApplyReport {
+            applied,
+            resumed: result.resumed,
+            previously_applied_count,
+            ..ApplyReport::default()
+        })
+    })
+}
+```
+
 ### errors
 
 `type Error` is whatever the adapter's methods fail with, and any `Display` type
@@ -196,6 +241,33 @@ returns, for anything the write itself provisioned. this is for what only the op
 reveal: the built-in netbox and nautobot adapters create the tags their objects
 reference here, since a schema pass cannot know them. the host merges it with the
 `ensure_schema` report, so fill only the categories your write actually created.
+
+the request may also carry a `journal` key, naming where this plan's apply journal
+lives so a write that fails partway can resume on any worker (`docs/state.md`). it
+follows the state backend and is absent when the run keeps no journal:
+
+```json
+"journal": { "storage": "file", "path": "/work/.alembic/external-1a2b3c4d_journal_5133211470659736648.yaml" }
+"journal": { "storage": "postgres", "key": "default/external-1a2b3c4d/external-1a2b3c4d_journal_5133211470659736648", "tls": "disable" }
+```
+
+the path is absolute, and its directory may not exist yet. the
+postgres key is the `journal_key` of the `alembic_journal` rows. the
+connection url is not sent, so the external adapter must read
+`ALEMBIC_STATE_POSTGRES_URL` from the environment that it
+inherits.
+
+for an adapter to properly support resuming via the journal,
+it must own the journal (as a file or db connection) and perform the
+following tasks:
+
+- record the creates and updates as they land (deletes are not journaled)
+- skip the ops that an earlier run recorded and answer them as
+  `resumed` with their count as `previously_applied_count`
+- remove the journal once the whole write is through (deletes included)
+
+the rust sdk does all three ([journaled writes](#journaled-writes)). an adapter that
+ignores the journal key applies every op on every run.
 
 ### ensure_schema
 

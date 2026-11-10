@@ -11,7 +11,7 @@ protocol](../../docs/external-adapters.md). each file describes one exchange:
 }
 ```
 
-there is one fixture per protocol case: `read`, `write`, `ensure_schema`,
+there is one fixture per protocol case: `read`, `write`, `write_journal`, `ensure_schema`,
 `preview_schema`, a `preview_schema` that reports it cannot preview (a null
 result), `capabilities`, an adapter `error`, and a `version_mismatch`.
 
