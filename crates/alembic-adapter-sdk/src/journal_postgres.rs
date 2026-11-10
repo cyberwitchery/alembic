@@ -56,7 +56,7 @@ where
 {
     tokio::spawn(async move {
         if let Err(err) = connection.await {
-            tracing::warn!("postgres journal connection error: {err}");
+            tracing::warn!("postgres connection error: {err}");
         }
     });
 }
