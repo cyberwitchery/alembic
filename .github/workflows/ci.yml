@@ -4,11 +4,11 @@ name: ci
 # crates/alembic-cli/src/app/skill.rs include_str!s into the binary.
 on:
   push:
-    branches: [ "main" ]
-    paths: [ "**", "!**/*.md", "crates/alembic-cli/skills/**" ]
+    branches: ["main"]
+    paths: ["**", "!**/*.md", "crates/alembic-cli/skills/**"]
   pull_request:
-    branches: [ "main" ]
-    paths: [ "**", "!**/*.md", "crates/alembic-cli/skills/**" ]
+    branches: ["main"]
+    paths: ["**", "!**/*.md", "crates/alembic-cli/skills/**"]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
