@@ -23,6 +23,7 @@ use tokio::time::timeout;
 #[cfg(feature = "django")]
 use alembic_adapter_django::emit::DjangoConfig;
 use alembic_adapter_sdk::{ApplyReport, Op, ProvisionReport, StateData};
+use log::warn;
 
 const SUPPORTED_BACKENDS: &[&str] = &[
     #[cfg(feature = "netbox")]
@@ -705,14 +706,26 @@ pub fn create_backend(
         }
         config
     } else {
-        let backend = backend.ok_or_else(|| {
-            InputError::Usage("--backend or --backend-config is required".to_string())
-        })?;
+        let backend_name = backend
+            .ok_or_else(|| {
+                InputError::Usage("--backend or --backend-config is required".to_string())
+            })?
+            .to_lowercase();
 
-        if let Some(plugin) = plugins.iter().find(|p| p.name == backend.to_lowercase()) {
+        let found_plugin = plugins.iter().find(|p| p.name == backend_name);
+        let found_config = AdapterConfig::from_env(plugins, &backend_name);
+
+        if found_plugin.is_some() && found_config.is_ok() {
+            warn!(
+                "the plugin '{}' shadows a built-in adapter with the same name",
+                backend_name
+            );
+        }
+
+        if let Some(plugin) = found_plugin {
             load_config(&plugin.path)?
         } else {
-            AdapterConfig::from_env(plugins, backend)?
+            found_config?
         }
     };
 
