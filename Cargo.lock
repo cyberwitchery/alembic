@@ -174,7 +174,6 @@ version = "0.13.0"
 dependencies = [
  "alembic-adapter-sdk",
  "alembic-core",
- "alembic-engine",
  "anyhow",
  "clap",
  "serde",
