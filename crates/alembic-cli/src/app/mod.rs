@@ -283,8 +283,6 @@ fn should_detect_deletes(allow_delete: bool, report: bool) -> bool {
     allow_delete || report
 }
 
-/// how a `plan` run holds the state lock. a run that saves nothing needs no more
-/// than a reader's share; `--provision` writes backend schema, so it is not one.
 /// a preview the backend could not answer must not sink the read-only plan, so
 /// it is reported and planning goes on. a schema the backend says it will
 /// reject fails the plan here rather than the apply.
@@ -302,6 +300,8 @@ fn schema_preview_failure(err: anyhow::Error) -> Result<()> {
     Ok(())
 }
 
+/// how a `plan` run holds the state lock. a run that saves nothing needs no more
+/// than a reader's share; `--provision` writes backend schema, so it is not one.
 fn state_lock_for_plan(report: bool, dry_run: bool, provision: bool) -> StateLock {
     if (report || dry_run) && !provision {
         StateLock::Shared
