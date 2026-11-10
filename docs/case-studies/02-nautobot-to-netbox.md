@@ -14,6 +14,7 @@ the flow is `import` (nautobot to ir), `map` (ir to ir), `plan` + `apply`
 
 ## 1) import from nautobot
 
+<!-- ci: skip needs a live nautobot -->
 ```bash
 alembic import -o nautobot-ir.json \
   --backend-config backend-nautobot.yaml \
@@ -126,6 +127,7 @@ rules:
 
 run it:
 
+<!-- ci: skip maps the ir the nautobot import writes; documented_walkthroughs.rs maps the committed copy -->
 ```bash
 alembic map -f nautobot-ir.json --spec map-nautobot-to-netbox.yaml -o netbox-ir.json
 ```
@@ -149,6 +151,7 @@ site:
 
 ## 3) apply to netbox
 
+<!-- ci: skip applies the ir the nautobot import writes -->
 ```bash
 alembic plan -f netbox-ir.json -o /tmp/plan.json \
   --backend-config backend-netbox.yaml

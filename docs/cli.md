@@ -5,6 +5,7 @@ skill subcommands.
 
 ## validate
 
+<!-- ci: no-backend -->
 ```bash
 alembic validate -f examples/inventory.yaml
 
@@ -407,6 +408,7 @@ means an apply is unfinished.
 
 ## map
 
+<!-- ci: no-backend -->
 ```bash
 alembic map -f examples/map-input.yaml --spec examples/map.yaml -o ir.json
 ```
@@ -417,6 +419,7 @@ alembic map -f examples/map-input.yaml --spec examples/map.yaml -o ir.json
 
 ### map transform
 
+<!-- ci: no-backend -->
 ```bash
 alembic map transform --spec examples/map.yaml site_code '"fra1"'
 ```

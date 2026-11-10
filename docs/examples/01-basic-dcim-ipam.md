@@ -90,6 +90,7 @@ inventory, exactly as if you had authored it netbox-shaped.
 
 run from a checkout of this repo (or point `-f`/`--spec` at your own copies):
 
+<!-- ci: netbox -->
 ```bash
 BACKEND_CONFIG=/path/to/backend-netbox.yaml
 
