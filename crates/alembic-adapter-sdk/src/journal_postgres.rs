@@ -62,17 +62,21 @@ where
 }
 
 /// run a `CREATE TABLE IF NOT EXISTS`, tolerating another connection creating the
-/// table at the same time: the loser trips the catalog's unique index.
+/// table at the same time (`23505` unique violation, `42710` type, `42P07` relation).
 pub async fn create_table_if_missing(
     client: &Client,
     ddl: &str,
 ) -> Result<(), tokio_postgres::Error> {
     match client.execute(ddl, &[]).await {
-        Err(err) if err.code() == Some(&tokio_postgres::error::SqlState::UNIQUE_VIOLATION) => {
-            Ok(())
-        }
+        Err(err) if table_already_there(err.code()) => Ok(()),
         other => other.map(drop),
     }
+}
+
+fn table_already_there(code: Option<&tokio_postgres::error::SqlState>) -> bool {
+    code == Some(&tokio_postgres::error::SqlState::UNIQUE_VIOLATION)
+        || code == Some(&tokio_postgres::error::SqlState::DUPLICATE_OBJECT)
+        || code == Some(&tokio_postgres::error::SqlState::DUPLICATE_TABLE)
 }
 
 /// opens a `PostgresJournalBackend` per journal; its keys are namespaced by `state_key`.
@@ -418,6 +422,42 @@ mod tests {
             url.clone(),
             PostgresJournalFactory::new(url, state_key, PostgresTlsMode::Disable),
         ))
+    }
+
+    /// several connections create one fresh table at once, staggered so one can
+    /// commit while another is still creating it. each round drops the table.
+    #[tokio::test]
+    async fn create_table_if_missing_tolerates_a_concurrent_creator_when_configured() {
+        let Ok(url) = std::env::var("ALEMBIC_TEST_POSTGRES_URL") else {
+            return;
+        };
+        let n = 16;
+        for _ in 0..8 {
+            let name = format!("alembic_race_{}", Uuid::new_v4().simple());
+            let ddl = format!("CREATE TABLE IF NOT EXISTS {name} (id INTEGER PRIMARY KEY)");
+            let mut tasks = Vec::with_capacity(n);
+            for i in 0..n {
+                let url = url.clone();
+                let ddl = ddl.clone();
+                tasks.push(tokio::spawn(async move {
+                    let client = connect_postgres(&url, PostgresTlsMode::Disable)
+                        .await
+                        .unwrap();
+                    tokio::time::sleep(std::time::Duration::from_micros(i as u64 * 500)).await;
+                    create_table_if_missing(&client, &ddl).await.unwrap();
+                }));
+            }
+            for task in tasks {
+                task.await.unwrap();
+            }
+            let client = connect_postgres(&url, PostgresTlsMode::Disable)
+                .await
+                .unwrap();
+            client
+                .execute(&format!("DROP TABLE IF EXISTS {name}"), &[])
+                .await
+                .unwrap();
+        }
     }
 
     #[tokio::test]
