@@ -5,7 +5,9 @@ use crate::state::StateData;
 use crate::types::{ApplyReport, BackendId, Op, ProvisionReport};
 use alembic_core::{JsonMap, Key, Schema, TypeName};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fmt;
+use std::fmt::Display;
 use std::io::{self, BufReader, Read, Write};
 
 /// current external adapter protocol version.
@@ -189,6 +191,11 @@ pub trait ExternalAdapter {
     /// initial configuration of the adapter
     fn setup(&mut self, configuration: &serde_json::Value) -> Result<(), Self::Error>;
 
+    /// which keys that can be sent in `setup`, and their types. defaults to *no* keys.
+    fn allowed_setup_keys(&self) -> HashMap<String, SetupType> {
+        HashMap::new()
+    }
+
     /// read objects from the backend.
     fn read(
         &mut self,
@@ -246,6 +253,7 @@ pub trait ExternalAdapter {
 pub fn run_external_adapter<A: ExternalAdapter>(
     mut adapter: A,
     (reader, mut writer): (impl Read, impl Write),
+    allowed_setup_keys: HashMap<String, SetupType>,
 ) -> io::Result<()> {
     let mut input = String::new();
     BufReader::new(reader).read_to_string(&mut input)?;
@@ -263,6 +271,10 @@ pub fn run_external_adapter<A: ExternalAdapter>(
                 envelope.version, EXTERNAL_PROTOCOL_VERSION
             ),
         );
+    }
+
+    if let Err(e) = reject_unknown_setup_keys(&envelope.setup, &allowed_setup_keys) {
+        return write_error(&mut writer, format!("rejected setup keys: {e:#}"));
     }
 
     if let Err(e) = adapter.setup(&envelope.setup) {
@@ -306,6 +318,77 @@ pub fn run_external_adapter<A: ExternalAdapter>(
     }
 }
 
+fn reject_unknown_setup_keys(
+    config: &serde_json::Value,
+    accepted: &HashMap<String, SetupType>,
+) -> Result<(), String> {
+    if config.is_null() {
+        return Ok(());
+    }
+    let mapping = config
+        .as_object()
+        .ok_or_else(|| "invalid `setup`: expected a mapping of configuration keys".to_string())?;
+    for (name, value) in mapping {
+        if let Some(expected_type) = accepted.get(name.as_str()) {
+            if !expected_type.matches_json_value(value) {
+                return Err(format!("the setup key `{name}` was expected to be a `{expected_type}`, but it's a `{}`", SetupType::from_json(value).map(|t| t.to_string()).unwrap_or("unknown".to_string())));
+            }
+        } else {
+            return Err(format!(
+                "unknown `setup` key `{}`; this adapter accepts: {}",
+                name,
+                accepted
+                    .keys()
+                    .map(|s| s.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum SetupType {
+    Bool,
+    Number,
+    String,
+    Array,
+}
+
+impl SetupType {
+    pub fn matches_json_value(&self, value: &serde_json::Value) -> bool {
+        match value {
+            serde_json::Value::Bool(_) => matches!(self, Self::Bool),
+            serde_json::Value::Number(_) => matches!(self, Self::Number),
+            serde_json::Value::String(_) => matches!(self, Self::String),
+            serde_json::Value::Array(_) => matches!(self, Self::Array),
+            _ => false,
+        }
+    }
+
+    pub fn from_json(value: &serde_json::Value) -> Option<Self> {
+        match value {
+            serde_json::Value::Bool(_) => Some(Self::Bool),
+            serde_json::Value::Number(_) => Some(Self::Number),
+            serde_json::Value::String(_) => Some(Self::String),
+            serde_json::Value::Array(_) => Some(Self::Array),
+            _ => None,
+        }
+    }
+}
+
+impl Display for SetupType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SetupType::Bool => f.write_str("Bool"),
+            SetupType::Number => f.write_str("Number"),
+            SetupType::String => f.write_str("String"),
+            SetupType::Array => f.write_str("Array"),
+        }
+    }
+}
+
 fn write_error(out: &mut impl Write, message: String) -> io::Result<()> {
     let response = ExternalResponse::<serde_json::Value>::error(message);
     write_response(out, response)
@@ -327,7 +410,9 @@ macro_rules! alembic_external_main {
         fn main() -> std::io::Result<()> {
             let stdin = std::io::stdin();
             let mut stdout = std::io::BufWriter::new(std::io::stdout());
-            $crate::external::run_external_adapter($adapter, (stdin, stdout))
+            let adapter = $adapter;
+            let allowed_setup_keys = adapter.allowed_setup_keys();
+            $crate::external::run_external_adapter(adapter, (stdin, stdout), allowed_setup_keys)
         }
     };
 }
