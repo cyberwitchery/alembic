@@ -580,10 +580,27 @@ impl InfrahubAdapter {
 
     async fn process_repository(&self, repo_id: &str) -> Result<()> {
         let mutation = "mutation($data: IdentifierInput!) { InfrahubRepositoryProcess(data: $data) { ok task { id } } }";
-        self.client
+        let response = self
+            .client
             .execute_raw(mutation, Some(json!({ "data": { "id": repo_id } })), None)
             .await
             .context("trigger infrahub repository process")?;
+        let data = response
+            .data
+            .ok_or_else(|| anyhow!("missing data in infrahub repository process response"))?;
+        let root = data
+            .get("InfrahubRepositoryProcess")
+            .ok_or_else(|| anyhow!("missing InfrahubRepositoryProcess response"))?;
+        if root.get("ok").and_then(Value::as_bool) != Some(true) {
+            return Err(anyhow!(
+                "infrahub repository process for {repo_id} did not report ok"
+            ));
+        }
+        let task_id = root
+            .get("task")
+            .and_then(|task| task.get("id"))
+            .and_then(Value::as_str);
+        tracing::info!(repo_id, task_id, "infrahub repository process queued");
         Ok(())
     }
 }
@@ -3178,6 +3195,61 @@ schema { query: Query }
         let config_path = repo_root.join(".infrahub.yml");
         let config_raw = fs::read_to_string(&config_path).unwrap();
         assert!(config_raw.contains("schemas/site.yaml"));
+    }
+
+    async fn apply_schema_repository_with_process_data(data: Value) -> Result<()> {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST)
+                .path("/graphql")
+                .body_includes("InfrahubRepositoryProcess");
+            then.status(200)
+                .json_body(json!({ "data": data, "errors": [] }));
+        });
+
+        let repo_dir = temp_dir("repo");
+        let repo_root = repo_dir.path();
+        let schema_path = repo_root.join("schemas/site.yaml");
+        fs::create_dir_all(schema_path.parent().unwrap()).unwrap();
+        fs::write(&schema_path, "version: 1.0").unwrap();
+
+        let adapter = InfrahubAdapter::new(&server.base_url(), "token", None).unwrap();
+        let config = SchemaPushConfig {
+            schema_path,
+            mode: SchemaApplyMode::Repository,
+            repository_id: Some("repo-1".to_string()),
+            repository_name: None,
+            repository_root: Some(repo_root.to_path_buf()),
+            branch: None,
+            infrahubctl_path: None,
+        };
+        adapter.apply_schema_repository(&config).await
+    }
+
+    #[tokio::test]
+    async fn apply_schema_repository_rejects_ok_false() {
+        let err = apply_schema_repository_with_process_data(json!({
+            "InfrahubRepositoryProcess": { "ok": false, "task": null }
+        }))
+        .await
+        .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("infrahub repository process for repo-1 did not report ok"),
+            "{err:#}"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_schema_repository_rejects_missing_payload() {
+        let err = apply_schema_repository_with_process_data(json!({}))
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("missing InfrahubRepositoryProcess response"),
+            "{err:#}"
+        );
     }
 
     #[tokio::test]

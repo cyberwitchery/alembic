@@ -1,0 +1,1 @@
+- infrahub adapter: repository-mode schema provisioning fails with its own error when `InfrahubRepositoryProcess` does not report `ok`, instead of a later schema mismatch
