@@ -49,15 +49,19 @@ use alembic_adapter_sdk::alembic_external_main;
 
 struct MyAdapter;
 
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MyConfig {
+    #[serde(default)]
+    my_backend_variable_x: f64,
+}
+
 impl ExternalAdapter for MyAdapter {
     type Error = anyhow::Error;
+    type Config = MyConfig;
 
-    fn setup(&mut self, configuration: &serde_json::Value) -> anyhow::Result<()> {
-        if let Some(x) = configuration
-            .get("my_backend_variable_x")
-            .and_then(serde_json::Value::as_f64) {
-            ...
-        }
+    fn setup(&mut self, configuration: MyConfig) -> anyhow::Result<()> {
+        let _ = configuration.my_backend_variable_x;
         Ok(())
     }
 
@@ -147,11 +151,10 @@ formatted with `{:#}`, as `error`; nothing else about the error reaches alembic.
 ```rust
 impl ExternalAdapter for MyAdapter {
     type Error = String;
+    type Config = MyConfig;
 
-    fn setup(&mut self, configuration: &serde_json::Value) -> Result<(), String> {
-        configuration
-            .get("my_backend_variable_x")
-            .ok_or_else(|| "setup needs `my_backend_variable_x`".to_string())?;
+    fn setup(&mut self, configuration: MyConfig) -> Result<(), String> {
+        let _ = configuration.my_backend_variable_x;
         Ok(())
     }
     // read, write, ...

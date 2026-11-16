@@ -10,8 +10,9 @@ pub struct AppliedOpsAdapter {}
 
 impl ExternalAdapter for AppliedOpsAdapter {
     type Error = anyhow::Error;
+    type Config = serde_json::Value;
 
-    fn setup(&mut self, _configuration: &serde_json::Value) -> Result<()> {
+    fn setup(&mut self, _configuration: serde_json::Value) -> Result<()> {
         Ok(())
     }
 
