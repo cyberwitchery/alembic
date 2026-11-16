@@ -2,13 +2,12 @@ use alembic_core::TypeName;
 use alembic_engine::normalize_endpoint;
 use anyhow::{anyhow, Result};
 use nautobot::ObjectTypes;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone)]
 pub(super) struct ObjectTypeInfo {
     pub(super) type_name: TypeName,
     pub(super) endpoint: String,
-    pub(super) features: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -26,14 +25,9 @@ impl ObjectTypeRegistry {
             let Some(route) = object_type.route() else {
                 continue;
             };
-            let features: BTreeSet<String> = ["custom-fields", "tags", "local-context"]
-                .iter()
-                .map(|s| s.to_string())
-                .collect();
             let info = ObjectTypeInfo {
                 type_name: TypeName::new(object_type.name()),
                 endpoint: route.to_string(),
-                features,
             };
             registry
                 .by_endpoint
