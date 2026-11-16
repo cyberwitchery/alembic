@@ -1124,6 +1124,42 @@ mod tests {
     }
 
     #[test]
+    fn external_adapter_rejects_invalid_config_type() {
+        let adapter = TestExternalAdapter::default();
+
+        let (in_reader, mut in_writer) = std::io::pipe().unwrap();
+        let (out_reader, out_writer) = std::io::pipe().unwrap();
+
+        let t = std::thread::spawn(move || {
+            assert!(run_external_adapter(adapter, (in_reader, out_writer)).is_ok());
+        });
+
+        let envelope = ExternalEnvelope {
+            version: EXTERNAL_PROTOCOL_VERSION,
+            setup: json!({ "x": "I'm a string" }),
+            request: ExternalRequest::Read {
+                schema: Default::default(),
+                types: vec![],
+                state: Default::default(),
+            },
+        };
+
+        writeln!(in_writer, "{}", serde_json::to_string(&envelope).unwrap()).unwrap();
+        drop(in_writer);
+
+        let mut response = String::new();
+        BufReader::new(out_reader).read_line(&mut response).unwrap();
+
+        let response: ExternalResponse<Vec<ExternalObject>> =
+            serde_json::from_str(&response).unwrap();
+        assert!(!response.ok);
+        let error = response.error.unwrap();
+        assert!(error.contains("`x` was expected to be a `Number`, but it's a `String`"));
+
+        t.join().unwrap();
+    }
+
+    #[test]
     fn external_adapter_outdated() {
         let adapter = TestExternalAdapter::default();
 
