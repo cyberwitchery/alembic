@@ -12,7 +12,6 @@ readme = "../../README.md"
 
 [dependencies]
 alembic-core.workspace = true
-alembic-engine.workspace = true
 alembic-adapter-sdk.workspace = true
 anyhow.workspace = true
 clap.workspace = true

@@ -23,6 +23,7 @@ use tokio::time::timeout;
 #[cfg(feature = "django")]
 use alembic_adapter_django::emit::DjangoConfig;
 use alembic_adapter_sdk::{ApplyReport, Op, ProvisionReport, StateData};
+use tracing::warn;
 
 const SUPPORTED_BACKENDS: &[&str] = &[
     #[cfg(feature = "netbox")]
@@ -614,9 +615,17 @@ impl Emitter for ProcessAdapter {
         ops: &[Op],
         state: &StateStore,
     ) -> Result<ApplyReport> {
+        let journal = state
+            .journal_storage()
+            .spec(&state.journal_scope("external"), ops)?;
         let state = StateData::from(state);
-        self.call(ExternalRequestRef::Write { schema, ops, state })
-            .await
+        self.call(ExternalRequestRef::Write {
+            schema,
+            ops,
+            state,
+            journal,
+        })
+        .await
     }
 
     async fn ensure_schema(&self, schema: &alembic_core::Schema) -> Result<ProvisionReport> {
@@ -705,14 +714,26 @@ pub fn create_backend(
         }
         config
     } else {
-        let backend = backend.ok_or_else(|| {
-            InputError::Usage("--backend or --backend-config is required".to_string())
-        })?;
+        let backend_name = backend
+            .ok_or_else(|| {
+                InputError::Usage("--backend or --backend-config is required".to_string())
+            })?
+            .to_lowercase();
 
-        if let Some(plugin) = plugins.iter().find(|p| p.name == backend.to_lowercase()) {
+        let found_plugin = plugins.iter().find(|p| p.name == backend_name);
+        let found_config = AdapterConfig::from_env(plugins, &backend_name);
+
+        if found_plugin.is_some() && found_config.is_ok() {
+            warn!(
+                "the plugin '{}' shadows a built-in adapter with the same name",
+                backend_name
+            );
+        }
+
+        if let Some(plugin) = found_plugin {
             load_config(&plugin.path)?
         } else {
-            AdapterConfig::from_env(plugins, backend)?
+            found_config?
         }
     };
 
@@ -759,7 +780,7 @@ mod tests {
     use serde_json::json;
     use std::collections::BTreeMap;
     use std::fs;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
     use std::sync::{Mutex, OnceLock};
     #[cfg(unix)]
     use std::time::Duration;
@@ -1157,6 +1178,47 @@ esac
             &capabilities_script(r#"{"ok":true,"result":{"role":"adapter"}}"#),
         );
         assert!(matches!(adapter, Backend::Adapter(_)));
+    }
+
+    #[tokio::test]
+    async fn external_write_carries_the_journal_location() {
+        let _spawn = spawn_lock().lock().await;
+        let dir = tempdir().unwrap();
+        let request_path = dir.path().join("request.json");
+        let backend = build_external(
+            dir.path(),
+            "adapter.sh",
+            &answering_script(&format!(
+                r#"printf '%s' "$req" > '{}'; printf '{{"ok":true,"result":{{}}}}'"#,
+                request_path.display()
+            )),
+        );
+        let schema = Schema::default();
+        let emitter = backend.emitter().unwrap();
+        let sent = || -> serde_json::Value {
+            serde_json::from_str(&fs::read_to_string(&request_path).unwrap()).unwrap()
+        };
+
+        let unjournaled = StateStore::new(None, StateData::default());
+        emitter.write(&schema, &[], &unjournaled).await.unwrap();
+        assert!(sent().get("journal").is_none(), "{}", sent());
+
+        let journal_dir = dir.path().join("journals");
+        let journaled =
+            StateStore::new(None, StateData::default()).with_journal_dir(journal_dir.clone());
+        emitter.write(&schema, &[], &journaled).await.unwrap();
+        let journal = &sent()["journal"];
+        assert_eq!(journal["storage"], "file", "{journal}");
+        let path = PathBuf::from(journal["path"].as_str().unwrap());
+        assert_eq!(path.parent(), Some(journal_dir.as_path()));
+        assert!(
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("external_journal_"),
+            "{}",
+            path.display()
+        );
     }
 
     #[tokio::test]

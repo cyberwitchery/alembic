@@ -640,7 +640,10 @@ objects:
             output: None,
         },
     };
-    run(cli, AppConfig::load().unwrap()).await.unwrap();
+    assert_eq!(
+        run(cli, AppConfig::load().unwrap()).await.unwrap(),
+        ExitCode::SUCCESS
+    );
 }
 
 /// an inventory declaring `dcim.site`, with `attrs` extended by `extra`.
@@ -684,7 +687,10 @@ async fn run_validate_writes_an_empty_report_when_the_inventory_validates() {
             output: Some(out.clone()),
         },
     };
-    run(cli, AppConfig::load().unwrap()).await.unwrap();
+    assert_eq!(
+        run(cli, AppConfig::load().unwrap()).await.unwrap(),
+        ExitCode::SUCCESS
+    );
 
     let raw = std::fs::read_to_string(&out).unwrap();
     let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
@@ -786,7 +792,10 @@ rules:
             output: Some(out.clone()),
         },
     };
-    run(cli, AppConfig::load().unwrap()).await.unwrap();
+    assert_eq!(
+        run(cli, AppConfig::load().unwrap()).await.unwrap(),
+        ExitCode::SUCCESS
+    );
     let raw = std::fs::read_to_string(out).unwrap();
     assert!(raw.contains("location.site"));
     assert!(raw.contains("\"label\""));
@@ -815,7 +824,10 @@ async fn run_map_transform_evaluates_a_transform() {
             output: None,
         },
     };
-    run(cli, AppConfig::load().unwrap()).await.unwrap();
+    assert_eq!(
+        run(cli, AppConfig::load().unwrap()).await.unwrap(),
+        ExitCode::SUCCESS
+    );
 }
 
 #[tokio::test]
@@ -1198,7 +1210,10 @@ async fn run_apply_refuses_a_plan_the_backend_moved_away_from() {
     assert_eq!(exit::code_for(&err), exit::INVALID_INPUT);
     assert_eq!(creates.calls(), 0, "nothing is written");
 
-    run(apply(true), AppConfig::load().unwrap()).await.unwrap();
+    assert_eq!(
+        run(apply(true), AppConfig::load().unwrap()).await.unwrap(),
+        ExitCode::SUCCESS
+    );
     assert_eq!(creates.calls(), 1);
 }
 
@@ -1247,7 +1262,7 @@ async fn run_apply_writes_the_report_to_output() {
         },
     };
     let result = run(cli, AppConfig::load().unwrap()).await;
-    result.unwrap();
+    assert_eq!(result.unwrap(), ExitCode::SUCCESS);
 
     let raw = std::fs::read_to_string(&report_path).unwrap();
     let report: ApplyReport = serde_json::from_str(&raw).unwrap();
@@ -1435,12 +1450,15 @@ async fn run_apply_only_applies_the_named_uids_and_reports_the_rest() {
     assert_eq!(exit::code_for(&err), exit::USAGE);
     assert_eq!(sites.calls() + devices.calls(), 0);
 
-    run(
-        apply(vec![uuid::Uuid::from_u128(1)]),
-        AppConfig::load().unwrap(),
-    )
-    .await
-    .unwrap();
+    assert_eq!(
+        run(
+            apply(vec![uuid::Uuid::from_u128(1)]),
+            AppConfig::load().unwrap(),
+        )
+        .await
+        .unwrap(),
+        ExitCode::SUCCESS
+    );
     assert_eq!((sites.calls(), devices.calls()), (1, 0));
     let report: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&report_path).unwrap()).unwrap();
@@ -1563,7 +1581,7 @@ async fn run_apply_resumes_with_the_ids_the_interrupted_run_created() {
         AppConfig::load().unwrap(),
     )
     .await;
-    result.unwrap();
+    assert_eq!(result.unwrap(), ExitCode::SUCCESS);
 
     sites.assert_calls(0);
     devices.assert_calls(1);
@@ -1818,7 +1836,10 @@ objects:
             no_adopt: false,
         },
     };
-    run(cli, AppConfig::load().unwrap()).await.unwrap();
+    assert_eq!(
+        run(cli, AppConfig::load().unwrap()).await.unwrap(),
+        ExitCode::SUCCESS
+    );
 
     let plan = read_plan(&out).unwrap();
     assert!(
@@ -1884,8 +1905,11 @@ async fn two_concurrent_report_runs_both_succeed() {
     );
     drop(reader);
 
-    first.expect("first drift report");
-    second.expect("a second drift report must not be refused by the first");
+    assert_eq!(first.expect("first drift report"), ExitCode::from(2));
+    assert_eq!(
+        second.expect("a second drift report must not be refused by the first"),
+        ExitCode::from(2)
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -2151,7 +2175,7 @@ objects:
         },
     };
     let result = run(cli, AppConfig::load().unwrap()).await;
-    result.unwrap();
+    assert_eq!(result.unwrap(), ExitCode::from(2));
 
     let raw = std::fs::read_to_string(&out).unwrap();
     let drift: DriftReport = serde_json::from_str(&raw).unwrap();
@@ -2764,8 +2788,14 @@ async fn run_plan_and_import_an_external_adapter_declaring_observer() {
     )
     .await;
 
-    planned.expect("a declared observer plans");
-    imported.expect("a declared observer imports");
+    assert_eq!(
+        planned.expect("a declared observer plans"),
+        ExitCode::SUCCESS
+    );
+    assert_eq!(
+        imported.expect("a declared observer imports"),
+        ExitCode::SUCCESS
+    );
     let methods = methods_without_provisioning(&log);
     assert!(methods.contains("read"), "both commands read: {methods}");
 }
@@ -2888,7 +2918,7 @@ async fn run_plan_adopts_a_backend_whose_keys_hold_refs() {
         AppConfig::load().unwrap(),
     )
     .await;
-    planned.expect("the chain plans");
+    assert_eq!(planned.expect("the chain plans"), ExitCode::SUCCESS);
 
     let plan: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
@@ -3002,7 +3032,10 @@ async fn planned(
             no_adopt: false,
         },
     };
-    run(cli, AppConfig::load().unwrap()).await.unwrap();
+    assert_eq!(
+        run(cli, AppConfig::load().unwrap()).await.unwrap(),
+        ExitCode::SUCCESS
+    );
     read_plan(&out).unwrap()
 }
 
@@ -3465,7 +3498,10 @@ async fn run_plan_previews_schema_over_a_write_only_backend() {
         },
     };
     let result = run(cli, AppConfig::load().unwrap()).await;
-    result.expect("plan over a write-only backend still plans");
+    assert_eq!(
+        result.expect("plan over a write-only backend still plans"),
+        ExitCode::SUCCESS
+    );
 
     let plan: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&out_path).unwrap()).unwrap();
@@ -3588,8 +3624,14 @@ async fn run_applies_a_converged_hand_written_adapter_that_omits_applied() {
 
         let mut ops = Vec::new();
         for (round, (planned, applied, plan_path)) in rounds.into_iter().enumerate() {
-            planned.unwrap_or_else(|err| panic!("{case}: plan {round} failed: {err:#}"));
-            applied.unwrap_or_else(|err| panic!("{case}: apply {round} failed: {err:#}"));
+            assert_eq!(
+                planned.unwrap_or_else(|err| panic!("{case}: plan {round} failed: {err:#}")),
+                ExitCode::SUCCESS
+            );
+            assert_eq!(
+                applied.unwrap_or_else(|err| panic!("{case}: apply {round} failed: {err:#}")),
+                ExitCode::SUCCESS
+            );
             ops.push(read_plan(&plan_path).unwrap().ops.len());
         }
         assert_eq!(ops, [1, 0], "{case}: the second run is the converged one");
@@ -3643,7 +3685,10 @@ async fn run_skill_install_writes_the_skill_under_the_given_root() {
             },
         },
     };
-    run(cli, AppConfig::load().unwrap()).await.unwrap();
+    assert_eq!(
+        run(cli, AppConfig::load().unwrap()).await.unwrap(),
+        ExitCode::SUCCESS
+    );
 
     let installed = std::fs::read_to_string(root.join("alembic/SKILL.md")).unwrap();
     assert!(
@@ -3680,7 +3725,10 @@ async fn run_skill_install_touches_no_state() {
             },
         },
     };
-    run(cli, AppConfig::load().unwrap()).await.unwrap();
+    assert_eq!(
+        run(cli, AppConfig::load().unwrap()).await.unwrap(),
+        ExitCode::SUCCESS
+    );
 
     assert!(
         !state_path.exists(),
@@ -3700,14 +3748,17 @@ async fn run_skill_show_and_list_write_no_files() {
             name: Some("alembic".to_string()),
         },
     ] {
-        run(
-            Cli {
-                command: Command::Skill { action },
-            },
-            AppConfig::load().unwrap(),
-        )
-        .await
-        .unwrap();
+        assert_eq!(
+            run(
+                Cli {
+                    command: Command::Skill { action },
+                },
+                AppConfig::load().unwrap(),
+            )
+            .await
+            .unwrap(),
+            ExitCode::SUCCESS
+        );
     }
 
     assert_eq!(
@@ -3772,14 +3823,17 @@ async fn run_completion_writes_no_files() {
     let _cwd = CwdGuard::acquire_async().await;
     std::env::set_current_dir(dir.path()).unwrap();
 
-    run(
-        Cli {
-            command: Command::Completion { shell: Shell::Zsh },
-        },
-        AppConfig::load().unwrap(),
-    )
-    .await
-    .unwrap();
+    assert_eq!(
+        run(
+            Cli {
+                command: Command::Completion { shell: Shell::Zsh },
+            },
+            AppConfig::load().unwrap(),
+        )
+        .await
+        .unwrap(),
+        ExitCode::SUCCESS
+    );
 
     assert_eq!(
         fs::read_dir(dir.path()).unwrap().count(),

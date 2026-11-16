@@ -1,8 +1,10 @@
 //! uid -> backend id state store: identity memory, scoped to one backend
 //! instance.
 
-use crate::journal_postgres::PostgresJournalFactory;
 use alembic_adapter_sdk::journal::JournalStorageLocation;
+use alembic_adapter_sdk::journal_postgres::{
+    connect_postgres, create_table_if_missing, PostgresJournalFactory,
+};
 use alembic_adapter_sdk::{BackendId, StateData};
 use alembic_core::{uid_v5, TypeName, Uid};
 use anyhow::{anyhow, Context, Result};
@@ -69,12 +71,7 @@ pub enum StateLock {
     Shared,
 }
 
-/// TLS configuration for postgres state backend connections.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PostgresTlsMode {
-    Disable,
-    Require,
-}
+pub use alembic_adapter_sdk::journal::PostgresTlsMode;
 
 /// trait for pluggable state backends.
 #[async_trait::async_trait]
@@ -512,20 +509,6 @@ impl StateBackend for PostgresBackend {
     }
 }
 
-/// spawn the background task that drives a postgres connection to completion,
-/// logging the error if the connection fails.
-fn spawn_connection_driver<E, C>(connection: C)
-where
-    E: std::fmt::Display,
-    C: std::future::Future<Output = Result<(), E>> + Send + 'static,
-{
-    tokio::spawn(async move {
-        if let Err(err) = connection.await {
-            tracing::warn!("postgres state backend connection error: {err}");
-        }
-    });
-}
-
 impl PostgresBackend {
     async fn ensure_table(&mut self, client: &Client) -> Result<()> {
         if self.table_ensured {
@@ -558,49 +541,12 @@ impl PostgresBackend {
     }
 
     async fn connect(&mut self) -> Result<tokio_postgres::Client> {
-        let client = connect_postgres(&self.url, self.tls_mode).await?;
+        let client = connect_postgres(&self.url, self.tls_mode)
+            .await
+            .with_context(|| "connect postgres state backend")?;
         self.ensure_table(&client).await?;
         Ok(client)
     }
-}
-
-/// run a `CREATE TABLE IF NOT EXISTS`, tolerating another connection creating the
-/// table at the same time: the loser trips the catalog's unique index.
-pub(crate) async fn create_table_if_missing(
-    client: &Client,
-    ddl: &str,
-) -> Result<(), tokio_postgres::Error> {
-    match client.execute(ddl, &[]).await {
-        Err(err) if err.code() == Some(&tokio_postgres::error::SqlState::UNIQUE_VIOLATION) => {
-            Ok(())
-        }
-        other => other.map(drop),
-    }
-}
-
-/// open a client to `url`, with its connection driven in the background.
-pub(crate) async fn connect_postgres(url: &str, tls_mode: PostgresTlsMode) -> Result<Client> {
-    let client = match tls_mode {
-        PostgresTlsMode::Disable => {
-            let (client, connection) = tokio_postgres::connect(url, tokio_postgres::NoTls)
-                .await
-                .with_context(|| "connect postgres state backend")?;
-            spawn_connection_driver(connection);
-            client
-        }
-        PostgresTlsMode::Require => {
-            let connector = native_tls::TlsConnector::builder()
-                .build()
-                .with_context(|| "build postgres TLS connector")?;
-            let connector = postgres_native_tls::MakeTlsConnector::new(connector);
-            let (client, connection) = tokio_postgres::connect(url, connector)
-                .await
-                .with_context(|| "connect postgres state backend")?;
-            spawn_connection_driver(connection);
-            client
-        }
-    };
-    Ok(client)
 }
 
 #[cfg(test)]

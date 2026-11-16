@@ -1,0 +1,1 @@
+- external adapters: `write` requests carry a `journal` key naming the apply journal's file path or postgres row key, so an adapter can resume a partial apply on any worker; the sdk's `JournalBackendFactory` gains a `spec` method and `PostgresTlsMode` moves into the sdk (#540)

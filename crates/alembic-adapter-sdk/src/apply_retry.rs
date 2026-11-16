@@ -1,5 +1,5 @@
 use crate::errors::AdapterApplyError;
-use crate::journal::{Journal, JournalError, JournalStorageLocation};
+use crate::journal::{Journal, JournalError, JournalSpec, JournalStorageLocation};
 use crate::types::{AppliedOp, Op};
 use alembic_core::Uid;
 use async_trait::async_trait;
@@ -215,7 +215,7 @@ pub async fn apply_non_delete_with_journal<D: RetryApplyDriver>(
     creates_updates: &[Op],
     driver: &mut D,
 ) -> Result<(RetryApplyResult, Option<usize>, JournalGuard<'static>), D::Error> {
-    let mut journal = match journal_storage {
+    let journal = match journal_storage {
         JournalStorageLocation::File(dir) => Some(
             Journal::load_or_create_with_file(dir, scope, creates_updates)
                 .await
@@ -228,6 +228,33 @@ pub async fn apply_non_delete_with_journal<D: RetryApplyDriver>(
         ),
         JournalStorageLocation::None => None,
     };
+    apply_non_delete_with_owned_journal(journal, creates_updates, driver).await
+}
+
+pub async fn apply_non_delete_with_requested_journal<D: RetryApplyDriver>(
+    journal: Option<&JournalSpec>,
+    creates_updates: &[Op],
+    driver: &mut D,
+) -> Result<(RetryApplyResult, Option<usize>, JournalGuard<'static>), D::Error> {
+    let journal = match journal {
+        Some(spec) => {
+            let (backend, key) = spec.open().map_err(RetryApplyError::from)?;
+            Some(
+                Journal::load_or_create_with_key(backend, &key, creates_updates)
+                    .await
+                    .map_err(RetryApplyError::from)?,
+            )
+        }
+        None => None,
+    };
+    apply_non_delete_with_owned_journal(journal, creates_updates, driver).await
+}
+
+async fn apply_non_delete_with_owned_journal<D: RetryApplyDriver>(
+    mut journal: Option<Journal>,
+    creates_updates: &[Op],
+    driver: &mut D,
+) -> Result<(RetryApplyResult, Option<usize>, JournalGuard<'static>), D::Error> {
     let (result, borrowed) =
         apply_non_delete_with_retries(creates_updates, journal.as_mut(), driver).await?;
     // the borrow guard covers the local only; the owned one below is what the caller keeps
