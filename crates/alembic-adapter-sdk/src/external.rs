@@ -1029,8 +1029,10 @@ mod tests {
         assert!(!path.exists(), "a finished write removes its journal");
     }
 
-    #[test]
-    fn external_adapter_communication_error() {
+    /// sends `envelope` to a `TestExternalAdapter` over stdio and returns its response.
+    fn send_to_test_adapter<T: serde::de::DeserializeOwned>(
+        envelope: &ExternalEnvelope,
+    ) -> ExternalResponse<T> {
         let adapter = TestExternalAdapter::default();
 
         let (in_reader, mut in_writer) = std::io::pipe().unwrap();
@@ -1040,6 +1042,17 @@ mod tests {
             assert!(run_external_adapter(adapter, (in_reader, out_writer)).is_ok());
         });
 
+        writeln!(in_writer, "{}", serde_json::to_string(envelope).unwrap()).unwrap();
+        drop(in_writer);
+
+        let mut response = String::new();
+        BufReader::new(out_reader).read_line(&mut response).unwrap();
+        t.join().unwrap();
+        serde_json::from_str(&response).unwrap()
+    }
+
+    #[test]
+    fn external_adapter_communication_error() {
         // the 'Write' request is booby trapped on TestExternalAdapter
         let request = ExternalRequest::Write {
             schema: Default::default(),
@@ -1053,17 +1066,9 @@ mod tests {
             request,
         };
 
-        writeln!(in_writer, "{}", serde_json::to_string(&envelope).unwrap()).unwrap();
-        drop(in_writer);
-
-        let mut response = String::new();
-        BufReader::new(out_reader).read_line(&mut response).unwrap();
-
-        let response: ExternalResponse<ProvisionReport> = serde_json::from_str(&response).unwrap();
+        let response: ExternalResponse<ProvisionReport> = send_to_test_adapter(&envelope);
         assert_eq!(response.error.as_deref(), Some("unsupported operation"));
         assert!(!response.ok);
-
-        t.join().unwrap();
     }
 
     #[test]
@@ -1093,15 +1098,6 @@ mod tests {
 
     #[test]
     fn external_adapter_rejects_invalid_setup() {
-        let adapter = TestExternalAdapter::default();
-
-        let (in_reader, mut in_writer) = std::io::pipe().unwrap();
-        let (out_reader, out_writer) = std::io::pipe().unwrap();
-
-        let t = std::thread::spawn(move || {
-            assert!(run_external_adapter(adapter, (in_reader, out_writer)).is_ok());
-        });
-
         let envelope = ExternalEnvelope {
             version: EXTERNAL_PROTOCOL_VERSION,
             setup: json!({ "fail_setup": true }),
@@ -1112,32 +1108,14 @@ mod tests {
             },
         };
 
-        writeln!(in_writer, "{}", serde_json::to_string(&envelope).unwrap()).unwrap();
-        drop(in_writer);
-
-        let mut response = String::new();
-        BufReader::new(out_reader).read_line(&mut response).unwrap();
-
-        let response: ExternalResponse<Vec<ExternalObject>> =
-            serde_json::from_str(&response).unwrap();
+        let response: ExternalResponse<Vec<ExternalObject>> = send_to_test_adapter(&envelope);
         assert!(!response.ok);
         let error = response.error.unwrap();
         assert!(error.contains("rejected setup keys: unknown `setup` key `fail_setup`"));
-
-        t.join().unwrap();
     }
 
     #[test]
     fn external_adapter_rejects_invalid_config_type() {
-        let adapter = TestExternalAdapter::default();
-
-        let (in_reader, mut in_writer) = std::io::pipe().unwrap();
-        let (out_reader, out_writer) = std::io::pipe().unwrap();
-
-        let t = std::thread::spawn(move || {
-            assert!(run_external_adapter(adapter, (in_reader, out_writer)).is_ok());
-        });
-
         let envelope = ExternalEnvelope {
             version: EXTERNAL_PROTOCOL_VERSION,
             setup: json!({ "x": "I'm a string" }),
@@ -1148,32 +1126,14 @@ mod tests {
             },
         };
 
-        writeln!(in_writer, "{}", serde_json::to_string(&envelope).unwrap()).unwrap();
-        drop(in_writer);
-
-        let mut response = String::new();
-        BufReader::new(out_reader).read_line(&mut response).unwrap();
-
-        let response: ExternalResponse<Vec<ExternalObject>> =
-            serde_json::from_str(&response).unwrap();
+        let response: ExternalResponse<Vec<ExternalObject>> = send_to_test_adapter(&envelope);
         assert!(!response.ok);
         let error = response.error.unwrap();
         assert!(error.contains("`x` was expected to be a `Number`, but it's a `String`"));
-
-        t.join().unwrap();
     }
 
     #[test]
     fn external_adapter_outdated() {
-        let adapter = TestExternalAdapter::default();
-
-        let (in_reader, mut in_writer) = std::io::pipe().unwrap();
-        let (out_reader, out_writer) = std::io::pipe().unwrap();
-
-        let t = std::thread::spawn(move || {
-            assert!(run_external_adapter(adapter, (in_reader, out_writer)).is_ok());
-        });
-
         let request = ExternalRequest::EnsureSchema {
             schema: Default::default(),
         };
@@ -1183,13 +1143,7 @@ mod tests {
             request,
         };
 
-        writeln!(in_writer, "{}", serde_json::to_string(&envelope).unwrap()).unwrap();
-        drop(in_writer);
-
-        let mut response = String::new();
-        BufReader::new(out_reader).read_line(&mut response).unwrap();
-
-        let response: ExternalResponse<ProvisionReport> = serde_json::from_str(&response).unwrap();
+        let response: ExternalResponse<ProvisionReport> = send_to_test_adapter(&envelope);
         assert_eq!(
             response.error,
             Some(format!(
@@ -1199,21 +1153,10 @@ mod tests {
             ))
         );
         assert!(!response.ok);
-
-        t.join().unwrap();
     }
 
     #[test]
     fn external_adapter_configuration() {
-        let adapter = TestExternalAdapter::default();
-
-        let (in_reader, mut in_writer) = std::io::pipe().unwrap();
-        let (out_reader, out_writer) = std::io::pipe().unwrap();
-
-        let t = std::thread::spawn(move || {
-            assert!(run_external_adapter(adapter, (in_reader, out_writer)).is_ok());
-        });
-
         let request = ExternalRequest::Read {
             schema: Default::default(),
             types: vec![],
@@ -1227,18 +1170,9 @@ mod tests {
             request,
         };
 
-        writeln!(in_writer, "{}", serde_json::to_string(&envelope).unwrap()).unwrap();
-        drop(in_writer);
-
-        let mut response = String::new();
-        BufReader::new(out_reader).read_line(&mut response).unwrap();
-
-        let response: ExternalResponse<Vec<ExternalObject>> =
-            serde_json::from_str(&response).unwrap();
+        let response: ExternalResponse<Vec<ExternalObject>> = send_to_test_adapter(&envelope);
         assert!(response.ok);
         assert_eq!(response.result.unwrap().len(), MAGIC_NUMBER,);
-
-        t.join().unwrap();
     }
 
     #[test]
