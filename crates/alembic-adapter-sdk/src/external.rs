@@ -253,7 +253,6 @@ pub trait ExternalAdapter {
 pub fn run_external_adapter<A: ExternalAdapter>(
     mut adapter: A,
     (reader, mut writer): (impl Read, impl Write),
-    allowed_setup_keys: HashMap<String, SetupType>,
 ) -> io::Result<()> {
     let mut input = String::new();
     BufReader::new(reader).read_to_string(&mut input)?;
@@ -273,7 +272,7 @@ pub fn run_external_adapter<A: ExternalAdapter>(
         );
     }
 
-    if let Err(e) = reject_unknown_setup_keys(&envelope.setup, &allowed_setup_keys) {
+    if let Err(e) = reject_unknown_setup_keys(&envelope.setup, &adapter.allowed_setup_keys()) {
         return write_error(&mut writer, format!("rejected setup keys: {e:#}"));
     }
 
@@ -411,8 +410,7 @@ macro_rules! alembic_external_main {
             let stdin = std::io::stdin();
             let mut stdout = std::io::BufWriter::new(std::io::stdout());
             let adapter = $adapter;
-            let allowed_setup_keys = adapter.allowed_setup_keys();
-            $crate::external::run_external_adapter(adapter, (stdin, stdout), allowed_setup_keys)
+            $crate::external::run_external_adapter(adapter, (stdin, stdout))
         }
     };
 }
@@ -422,7 +420,7 @@ mod tests {
     use super::{
         run_external_adapter, ExternalAdapter, ExternalCapabilities, ExternalEnvelope,
         ExternalEnvelopeRef, ExternalObject, ExternalRequest, ExternalRequestRef, ExternalResponse,
-        ExternalRole, EXTERNAL_PROTOCOL_VERSION,
+        ExternalRole, SetupType, EXTERNAL_PROTOCOL_VERSION,
     };
     use crate::apply_retry::{apply_non_delete_with_requested_journal, RetryApplyDriver};
     use crate::journal::{JournalSpec, PostgresTlsMode};
@@ -431,6 +429,7 @@ mod tests {
     use alembic_core::{Key, Object, Schema, TypeName, TypeSchema, Uid};
     use serde_json::json;
     use serde_json::Value;
+    use std::collections::HashMap;
     use std::io::BufReader;
     use std::io::{BufRead, Write};
 
@@ -728,6 +727,10 @@ mod tests {
                 self.x = x;
             }
             Ok(())
+        }
+
+        fn allowed_setup_keys(&self) -> HashMap<String, SetupType> {
+            [("x".to_string(), SetupType::Number)].into()
         }
 
         fn read(
@@ -1115,8 +1118,7 @@ mod tests {
             serde_json::from_str(&response).unwrap();
         assert!(!response.ok);
         let error = response.error.unwrap();
-        assert!(error.contains("invalid setup: parsing setup"));
-        assert!(error.contains("rejected by test adapter"));
+        assert!(error.contains("rejected setup keys: unknown `setup` key `fail_setup`"));
 
         t.join().unwrap();
     }
