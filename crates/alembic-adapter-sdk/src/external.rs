@@ -353,6 +353,7 @@ pub enum SetupType {
     Number,
     String,
     Array,
+    Object,
 }
 
 impl SetupType {
@@ -362,6 +363,7 @@ impl SetupType {
             serde_json::Value::Number(_) => matches!(self, Self::Number),
             serde_json::Value::String(_) => matches!(self, Self::String),
             serde_json::Value::Array(_) => matches!(self, Self::Array),
+            serde_json::Value::Object(_) => matches!(self, Self::Object),
             _ => false,
         }
     }
@@ -372,6 +374,7 @@ impl SetupType {
             serde_json::Value::Number(_) => Some(Self::Number),
             serde_json::Value::String(_) => Some(Self::String),
             serde_json::Value::Array(_) => Some(Self::Array),
+            serde_json::Value::Object(_) => Some(Self::Object),
             _ => None,
         }
     }
@@ -384,6 +387,7 @@ impl Display for SetupType {
             SetupType::Number => f.write_str("Number"),
             SetupType::String => f.write_str("String"),
             SetupType::Array => f.write_str("Array"),
+            SetupType::Object => f.write_str("Object"),
         }
     }
 }
