@@ -330,7 +330,16 @@ fn reject_unknown_setup_keys(
     for (name, value) in mapping {
         if let Some(expected_type) = accepted.get(name.as_str()) {
             if !expected_type.matches_json_value(value) {
-                return Err(format!("the setup key `{name}` was expected to be a `{expected_type}`, but it's a `{}`", SetupType::from_json(value).map(|t| t.to_string()).unwrap_or("unknown".to_string())));
+                let found = SetupType::from_json(value)
+                    .map(|t| t.to_string())
+                    .unwrap_or("unknown".to_string());
+                let mut message = format!(
+                    "the setup key `{name}` was expected to be a `{expected_type}`, but it's a `{found}`"
+                );
+                if let (SetupType::Bool, Some(hint)) = (expected_type, yaml11_bool_hint(value)) {
+                    message.push_str(&hint);
+                }
+                return Err(message);
             }
         } else {
             return Err(format!(
@@ -345,6 +354,19 @@ fn reject_unknown_setup_keys(
         }
     }
     Ok(())
+}
+
+/// a hint for a string that YAML 1.1 reads as a boolean but YAML 1.2 keeps as a string.
+fn yaml11_bool_hint(value: &serde_json::Value) -> Option<String> {
+    let text = value.as_str()?;
+    let fix = match text.to_ascii_lowercase().as_str() {
+        "y" | "yes" | "on" => "true",
+        "n" | "no" | "off" => "false",
+        _ => return None,
+    };
+    Some(format!(
+        "; `{text}` is a YAML 1.1 boolean that YAML 1.2 reads as a string, write `{fix}` instead"
+    ))
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -718,6 +740,8 @@ mod tests {
     #[derive(Debug, Default)]
     struct TestExternalAdapter {
         pub x: i64,
+        #[allow(dead_code)]
+        pub yes_or_no: bool,
     }
 
     impl ExternalAdapter for TestExternalAdapter {
@@ -734,7 +758,11 @@ mod tests {
         }
 
         fn allowed_setup_keys(&self) -> HashMap<String, SetupType> {
-            [("x".to_string(), SetupType::Number)].into()
+            [
+                ("x".to_string(), SetupType::Number),
+                ("yes_or_no".to_string(), SetupType::Bool),
+            ]
+            .into()
         }
 
         fn read(
@@ -1130,6 +1158,43 @@ mod tests {
         assert!(!response.ok);
         let error = response.error.unwrap();
         assert!(error.contains("`x` was expected to be a `Number`, but it's a `String`"));
+    }
+
+    fn read_with_setup(setup: Value) -> ExternalResponse<Vec<ExternalObject>> {
+        send_to_test_adapter(&ExternalEnvelope {
+            version: EXTERNAL_PROTOCOL_VERSION,
+            setup,
+            request: ExternalRequest::Read {
+                schema: Default::default(),
+                types: vec![],
+                state: Default::default(),
+            },
+        })
+    }
+
+    #[test]
+    fn external_adapter_hints_at_yaml11_booleans() {
+        let response = read_with_setup(json!({ "yes_or_no": "Yes" }));
+        assert!(!response.ok);
+        let error = response.error.unwrap();
+        assert!(error.contains("`yes_or_no` was expected to be a `Bool`, but it's a `String`"));
+        assert!(error.contains("`Yes` is a YAML 1.1 boolean"), "{error}");
+        assert!(error.contains("write `true` instead"), "{error}");
+    }
+
+    #[test]
+    fn external_adapter_gives_no_yaml11_hint_for_other_strings() {
+        let response = read_with_setup(json!({ "yes_or_no": "I'm a string" }));
+        assert!(!response.ok);
+        let error = response.error.unwrap();
+        assert!(error.contains("`yes_or_no` was expected to be a `Bool`, but it's a `String`"));
+        assert!(!error.contains("YAML 1.1"), "{error}");
+    }
+
+    #[test]
+    fn external_adapter_accepts_a_real_boolean() {
+        let response = read_with_setup(json!({ "yes_or_no": false }));
+        assert!(response.ok, "{:?}", response.error);
     }
 
     #[test]
