@@ -1,0 +1,1 @@
+- postgres: creating `alembic_state` or `alembic_journal` tolerates another connection creating the table at the same time when postgres reports the type or relation as already existing
