@@ -2246,38 +2246,44 @@ async fn native_fields_for_type(
     type_schema: &TypeSchema,
 ) -> Result<BTreeSet<String>> {
     let mut native: BTreeSet<String> = type_schema.key.keys().cloned().collect();
-    match adapter.client.endpoint_fields(&info.endpoint).await {
-        Some(fields) => native.extend(fields),
-        // without OPTIONS metadata, fall back to the columns most types carry.
-        None => {
-            for field in [
-                "name",
-                "slug",
-                "description",
-                "status",
-                "role",
-                "type",
-                "site",
-                "tenant",
-                "device",
-                "tags",
-                "custom_fields",
-                "local_context_data",
-                "created",
-                "last_updated",
-            ] {
-                native.insert(field.to_string());
-            }
-        }
+    let options = adapter.client.endpoint_fields(&info.endpoint).await;
+    let answered_options = options.is_some();
+    if let Some(fields) = options {
+        native.extend(fields);
     }
 
     let resource: Resource<Value> = adapter.client.resource(info.endpoint.clone());
     let page = resource
         .list(Some(QueryBuilder::default().limit(1)))
         .await?;
-    if let Some(Value::Object(map)) = page.results.into_iter().next() {
-        for key in map.keys() {
-            native.insert(key.clone());
+    let sample = page.results.into_iter().next();
+    let answered_sample = matches!(sample, Some(Value::Object(_)));
+    if let Some(Value::Object(map)) = sample {
+        native.extend(map.into_iter().map(|(key, _)| key));
+    }
+
+    if !answered_options && !answered_sample {
+        // neither source names the type's columns, so a declared plain field
+        // could be netbox's or need a custom field: refuse rather than guess.
+        let unjudged: Vec<&str> = type_schema
+            .fields
+            .iter()
+            .filter(|(name, field)| {
+                !native.contains(*name)
+                    && !matches!(
+                        field.r#type,
+                        FieldType::Ref { .. } | FieldType::ListRef { .. }
+                    )
+            })
+            .map(|(name, _)| name.as_str())
+            .collect();
+        if !unjudged.is_empty() {
+            return Err(anyhow!(
+                "cannot tell which fields of {} are netbox's: {} answered no OPTIONS metadata and has no object to sample, so {} could be a native field or a custom field",
+                info.type_name,
+                info.endpoint,
+                unjudged.join(", "),
+            ));
         }
     }
 

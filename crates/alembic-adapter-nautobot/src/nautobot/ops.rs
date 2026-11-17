@@ -1191,27 +1191,12 @@ async fn native_fields_for_type(
     type_schema: &TypeSchema,
 ) -> Result<BTreeSet<String>> {
     let mut native: BTreeSet<String> = type_schema.key.keys().cloned().collect();
-    for field in [
-        "name",
-        "slug",
-        "description",
-        "status",
-        "role",
-        "type",
-        "site",
-        "tenant",
-        "device",
-        "tags",
-        "_custom_field_data",
-        "created",
-        "last_updated",
-    ] {
-        native.insert(field.to_string());
-    }
 
     // what a create accepts, from the endpoint's own metadata: this holds on
     // an endpoint with no objects yet, where a sample below has nothing to show.
-    if let Some(fields) = adapter.client.create_accepts(&info.endpoint).await {
+    let options = adapter.client.create_accepts(&info.endpoint).await;
+    let answered_options = options.is_some();
+    if let Some(fields) = options {
         native.extend(fields);
     } else {
         // an older server or a proxy can refuse OPTIONS; the sample still counts.
@@ -1222,9 +1207,34 @@ async fn native_fields_for_type(
     let page = resource
         .list(Some(QueryBuilder::default().limit(1)))
         .await?;
-    if let Some(Value::Object(map)) = page.results.into_iter().next() {
-        for key in map.keys() {
-            native.insert(key.clone());
+    let sample = page.results.into_iter().next();
+    let answered_sample = matches!(sample, Some(Value::Object(_)));
+    if let Some(Value::Object(map)) = sample {
+        native.extend(map.into_iter().map(|(key, _)| key));
+    }
+
+    if !answered_options && !answered_sample {
+        // neither source names the type's columns, so a declared plain field
+        // could be nautobot's or need a custom field: refuse rather than guess.
+        let unjudged: Vec<&str> = type_schema
+            .fields
+            .iter()
+            .filter(|(name, field)| {
+                !native.contains(*name)
+                    && !matches!(
+                        field.r#type,
+                        FieldType::Ref { .. } | FieldType::ListRef { .. }
+                    )
+            })
+            .map(|(name, _)| name.as_str())
+            .collect();
+        if !unjudged.is_empty() {
+            return Err(anyhow!(
+                "cannot tell which fields of {} are nautobot's: {} answered no OPTIONS metadata and has no object to sample, so {} could be a native field or a custom field",
+                info.type_name,
+                info.endpoint,
+                unjudged.join(", "),
+            ));
         }
     }
 
