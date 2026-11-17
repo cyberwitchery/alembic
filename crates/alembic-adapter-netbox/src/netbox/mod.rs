@@ -514,6 +514,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn plan_refuses_a_ref_brief_that_reads_back_as_a_backend_id() {
+        // site 7 is neither in state nor observed, and its brief omits the `slug`
+        // key, so the read leaves `site` as netbox's integer id.
+        let server = MockServer::start();
+        let dir = tempdir().unwrap();
+        let mut state = StateStore::load(dir.path().join("state.json")).unwrap();
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
+        let _mocks = mock_import_backend(
+            &server,
+            json!({
+                "id": 7,
+                "url": "https://netbox.example.com/api/dcim/sites/7/",
+                "display": "AMS1",
+                "name": "AMS1"
+            }),
+        );
+        let inventory = alembic_core::Inventory {
+            schema: import_schema("slug"),
+            scope: None,
+            objects: Vec::new(),
+        };
+
+        let err = alembic_engine::build_plan(&adapter, &inventory, &mut state, true, false)
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(
+            err.contains("reported 1 reference(s) as backend ids"),
+            "{err}"
+        );
+        assert!(err.contains("dcim.device.site -> dcim.site 7"), "{err}");
+    }
+
+    #[tokio::test]
     async fn apply_orders_creates_by_dependency() {
         let server = MockServer::start();
         let dir = tempdir().unwrap();

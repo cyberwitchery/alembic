@@ -1734,8 +1734,8 @@ fn normalize_value(
                 if let Some(uid) = resolve_ref_uid(&map, target_hint, schema, registry, mappings) {
                     return Value::String(uid.to_string());
                 }
-                // if it looks like a resource summary but isn't managed by us,
-                // fall back to the ID integer to match desired state integers.
+                // an unresolved brief keeps netbox's integer id; the engine refuses
+                // it in a ref-typed field, where desired holds a uid.
                 if map.contains_key("url") || map.contains_key("display") {
                     return Value::Number(id.into());
                 }
