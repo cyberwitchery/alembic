@@ -3228,6 +3228,19 @@ schema { query: Query }
                 "errors": []
             }));
         });
+        let task_mock = server.mock(|when, then| {
+            when.method(POST)
+                .path("/graphql")
+                .body_includes("InfrahubTask(");
+            then.status(200).json_body(json!({
+                "data": {
+                    "InfrahubTask": {
+                        "edges": [ { "node": { "id": "task-1", "state": "COMPLETED", "logs": { "edges": [] } } } ]
+                    }
+                },
+                "errors": []
+            }));
+        });
 
         let repo_dir = temp_dir("repo");
         let repo_root = repo_dir.path();
@@ -3249,6 +3262,7 @@ schema { query: Query }
         adapter.apply_schema_repository(&config).await.unwrap();
         repo_mock.assert();
         process_mock.assert();
+        task_mock.assert();
         let config_path = repo_root.join(".infrahub.yml");
         let config_raw = fs::read_to_string(&config_path).unwrap();
         assert!(config_raw.contains("schemas/site.yaml"));
