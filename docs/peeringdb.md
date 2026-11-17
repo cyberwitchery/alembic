@@ -41,11 +41,17 @@ absent.
 
 ## reads
 
-a run that only needs objects already bound in state asks peeringdb for those ids
-alone (`id__in`, 100 per request), and skips a type state binds nothing of
-([#481](https://github.com/cyberwitchery/alembic/issues/481)). `import`, `plan` while
-still adopting by key, and `--allow-delete` read whole tables, so a netixlan read there
-still pulls around 90k rows.
+a run that only needs objects already bound in state asks peeringdb
+for just those ids (`id__in`, 100 per request). it skips the types
+that state doesn't bind. note that the following situations still
+require a full read:
+
+- `import`
+- `plan` with `--allow-delete`
+- `plan` while a declared object is not yet bound in state, unless
+  `--no-adopt` is set
+
+beware that a full netixlan read is around 90k rows.
 
 ## known limitations
 
