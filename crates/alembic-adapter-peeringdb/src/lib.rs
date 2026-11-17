@@ -82,7 +82,7 @@ fn fetch<T: Serialize + HasId>(
 }
 
 /// fetch by `id__in`. performed in chunks so that a large set of ids doesn't
-// outgrow the query string.
+/// outgrow the query string.
 fn load_by_ids<T>(load: FilteredLoad<T>, ids: &[u64]) -> Result<Vec<T>> {
     const CHUNK: usize = 500;
     let mut data = Vec::new();
