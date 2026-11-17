@@ -39,11 +39,21 @@ absent.
   decides object identity. a key field missing from the record is an error.
 - `backend_id` is peeringdb's own integer id.
 
+## reads
+
+a run that only needs objects already bound in state asks peeringdb
+for just those ids (`id__in`, 500 per request). it skips the types
+that state doesn't bind. note that the following situations still
+require a full read:
+
+- `import`
+- `plan` with `--allow-delete`
+- `plan` while a declared object is not yet bound in state, unless
+  `--no-adopt` is set
+
+beware that a full netixlan read is around 90k rows.
+
 ## known limitations
 
-- every read fetches a whole table. `peeringdb-rs` 0.2.0 added filtered variants
-  (`load_peeringdb_*_filtered`) that take peeringdb's own query parameters, and the
-  adapter does not use them yet, so a netixlan read still pulls around 90k rows and
-  peeringdb throttles it hard.
 - anonymous reads work but are rate-limited; set `PEERINGDB_API_KEY` for anything
   beyond a small read.

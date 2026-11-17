@@ -1,0 +1,1 @@
+- peeringdb: a run that only needs objects already bound in state reads those ids instead of whole tables (#481)
