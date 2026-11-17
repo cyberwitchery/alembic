@@ -11,8 +11,8 @@ use async_trait::async_trait;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 
-/// blocking fetch plus conversion for one supported type. `Some(ids)` narrows
-/// the fetch to those peeringdb ids, `None` reads the whole table.
+/// blocking fetch plus conversion for one supported type.
+/// `Some(ids)` narrows the fetch, `None` reads the whole table.
 type Loader =
     fn(&TypeName, &alembic_core::TypeSchema, Option<&[u64]>) -> Result<Vec<ObservedObject>>;
 
@@ -81,9 +81,10 @@ fn fetch<T: Serialize + HasId>(
     to_observed_objects(type_name, type_schema, data)
 }
 
-/// fetch by `id__in`, in chunks, so a long id set cannot outgrow the query string.
+/// fetch by `id__in`. performed in chunks so that a large set of ids doesn't
+// outgrow the query string.
 fn load_by_ids<T>(load: FilteredLoad<T>, ids: &[u64]) -> Result<Vec<T>> {
-    const CHUNK: usize = 100;
+    const CHUNK: usize = 500;
     let mut data = Vec::new();
     for chunk in ids.chunks(CHUNK) {
         let joined = chunk
@@ -488,13 +489,13 @@ mod tests {
             panic!("expected one id__in filter, got {params:?}");
         };
         let ids: Vec<u32> = ids.split(',').map(|id| id.parse().unwrap()).collect();
-        assert!(ids.len() <= 100, "chunk of {} ids", ids.len());
+        assert!(ids.len() <= 500, "chunk of {} ids", ids.len());
         Ok(ids.into_iter().map(|id| sample_ix(id, "x")).collect())
     }
 
     #[test]
     fn load_by_ids_chunks_the_id_filter() {
-        let ids: Vec<u64> = (1..=250).collect();
+        let ids: Vec<u64> = (1..=1200).collect();
         let loaded = load_by_ids(fake_ix_filtered, &ids).unwrap();
         let loaded: Vec<u64> = loaded.iter().map(|ix| u64::from(ix.id)).collect();
         assert_eq!(loaded, ids);

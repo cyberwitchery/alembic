@@ -42,7 +42,7 @@ absent.
 ## reads
 
 a run that only needs objects already bound in state asks peeringdb
-for just those ids (`id__in`, 100 per request). it skips the types
+for just those ids (`id__in`, 500 per request). it skips the types
 that state doesn't bind. note that the following situations still
 require a full read:
 
