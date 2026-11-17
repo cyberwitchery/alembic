@@ -494,6 +494,7 @@ impl NautobotAdapter {
 
             let native_fields = native_fields_for_type(self, &info, type_schema).await?;
             let existing = custom_fields_by_type.get(type_name.as_str());
+            let mut unjudged = Vec::new();
 
             for (field_name, field_schema) in &type_schema.fields {
                 if matches!(
@@ -503,7 +504,7 @@ impl NautobotAdapter {
                     continue;
                 }
                 // a model column of the same name is nautobot's, not ours.
-                if native_fields.contains(field_name) {
+                if native_fields.names.contains(field_name) {
                     continue;
                 }
                 if let Some(def) = existing.and_then(|fields| fields.get(field_name)) {
@@ -552,7 +553,15 @@ impl NautobotAdapter {
                     shared.declarations.push(declared);
                     continue;
                 }
+                // with the type's columns unknown, creating the field is a guess.
+                if !native_fields.known {
+                    unjudged.push(field_name.as_str());
+                    continue;
+                }
                 missing.push((type_name.clone(), field_name, field_schema));
+            }
+            if !unjudged.is_empty() {
+                return Err(refuse_unjudged_fields(&info, &unjudged));
             }
         }
 
@@ -1185,11 +1194,18 @@ fn query_from_key(
     Ok(query)
 }
 
+/// a type's own columns, and whether the backend named them at all.
+struct NativeFields {
+    names: BTreeSet<String>,
+    /// false when neither OPTIONS nor a sample answered: only the key is known.
+    known: bool,
+}
+
 async fn native_fields_for_type(
     adapter: &NautobotAdapter,
     info: &super::registry::ObjectTypeInfo,
     type_schema: &TypeSchema,
-) -> Result<BTreeSet<String>> {
+) -> Result<NativeFields> {
     let mut native: BTreeSet<String> = type_schema.key.keys().cloned().collect();
 
     // what a create accepts, from the endpoint's own metadata: this holds on
@@ -1213,32 +1229,24 @@ async fn native_fields_for_type(
         native.extend(map.into_iter().map(|(key, _)| key));
     }
 
-    if !answered_options && !answered_sample {
-        // neither source names the type's columns, so a declared plain field
-        // could be nautobot's or need a custom field: refuse rather than guess.
-        let unjudged: Vec<&str> = type_schema
-            .fields
-            .iter()
-            .filter(|(name, field)| {
-                !native.contains(*name)
-                    && !matches!(
-                        field.r#type,
-                        FieldType::Ref { .. } | FieldType::ListRef { .. }
-                    )
-            })
-            .map(|(name, _)| name.as_str())
-            .collect();
-        if !unjudged.is_empty() {
-            return Err(anyhow!(
-                "cannot tell which fields of {} are nautobot's: {} answered no OPTIONS metadata and has no object to sample, so {} could be a native field or a custom field",
-                info.type_name,
-                info.endpoint,
-                unjudged.join(", "),
-            ));
-        }
-    }
+    Ok(NativeFields {
+        names: native,
+        known: answered_options || answered_sample,
+    })
+}
 
-    Ok(native)
+/// refuse to provision `unjudged`, the declared fields of a type whose columns
+/// nautobot did not name: each could be a native field or a custom field.
+fn refuse_unjudged_fields(
+    info: &super::registry::ObjectTypeInfo,
+    unjudged: &[&str],
+) -> anyhow::Error {
+    anyhow!(
+        "cannot tell which fields of {} are nautobot's: {} gave no OPTIONS create metadata (the server or a proxy refused OPTIONS, or the token cannot create there) and has no object to sample, so {} could be a native field or a custom field",
+        info.type_name,
+        info.endpoint,
+        unjudged.join(", "),
+    )
 }
 
 /// fail on a declared ref a type has neither as a field nor as a custom field:
@@ -2033,7 +2041,8 @@ mod tests {
         };
         let native = native_fields_for_type(&adapter, &info, &type_schema)
             .await
-            .unwrap();
+            .unwrap()
+            .names;
         assert!(native.contains("content_types"), "{native:?}");
         assert!(native.contains("nestable"), "{native:?}");
     }
@@ -2066,8 +2075,71 @@ mod tests {
         };
         let native = native_fields_for_type(&adapter, &info, &type_schema)
             .await
-            .unwrap();
+            .unwrap()
+            .names;
         assert!(native.contains("content_types"), "{native:?}");
+    }
+
+    // `dcim.platform` keyed on `name`, declaring a plain `status` it has no
+    // column for, with no platform to sample.
+    fn platform_declaring_status(
+        server: &httpmock::MockServer,
+    ) -> (super::super::registry::ObjectTypeInfo, TypeSchema) {
+        server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/api/dcim/platforms/");
+            then.status(200).json_body(json!({
+                "count": 0, "next": null, "previous": null, "results": [],
+            }));
+        });
+        let info = super::super::registry::ObjectTypeInfo {
+            type_name: TypeName::new("dcim.platform"),
+            endpoint: "dcim/platforms/".to_string(),
+            features: BTreeSet::new(),
+        };
+        let string = FieldSchema {
+            r#type: FieldType::String,
+            ..ref_field(TypeName::new("dcim.platform"))
+        };
+        let type_schema = TypeSchema {
+            key: BTreeMap::from([("name".to_string(), string.clone())]),
+            fields: BTreeMap::from([
+                ("name".to_string(), string.clone()),
+                ("status".to_string(), string),
+            ]),
+        };
+        (info, type_schema)
+    }
+
+    // OPTIONS names the type's columns, so a `status` it does not list is not
+    // nautobot's: it is provisioned as a custom field rather than dropped.
+    #[tokio::test]
+    async fn test_native_fields_do_not_assume_a_status_column() {
+        let server = httpmock::MockServer::start();
+        let (info, type_schema) = platform_declaring_status(&server);
+        mock_options(&server, "/api/dcim/platforms/", &["name", "manufacturer"]);
+        let adapter = NautobotAdapter::new(&server.base_url(), "token").unwrap();
+
+        let native = native_fields_for_type(&adapter, &info, &type_schema)
+            .await
+            .unwrap();
+        assert!(native.known);
+        assert!(!native.names.contains("status"), "{:?}", native.names);
+    }
+
+    // with neither OPTIONS metadata nor an object to sample, only the key is
+    // known to be native, and the result says the rest is unknown.
+    #[tokio::test]
+    async fn test_native_fields_are_unknown_without_options_or_a_sample() {
+        let server = httpmock::MockServer::start();
+        let (info, type_schema) = platform_declaring_status(&server);
+        let adapter = NautobotAdapter::new(&server.base_url(), "token").unwrap();
+
+        let native = native_fields_for_type(&adapter, &info, &type_schema)
+            .await
+            .unwrap();
+        assert!(!native.known);
+        assert_eq!(native.names, BTreeSet::from(["name".to_string()]));
     }
 
     // a minimal field, like mod.rs `field()` but scoped to these tests.

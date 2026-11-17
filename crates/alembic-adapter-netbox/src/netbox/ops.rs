@@ -1253,6 +1253,7 @@ impl NetBoxAdapter {
                 let native = native_fields_for_type(self, &info, type_schema).await?;
                 let content_type = content_type_of(registry, type_name.as_str());
                 let existing = custom_fields_by_type.get(&content_type);
+                let mut unjudged = Vec::new();
                 for (field_name, field_schema) in &type_schema.fields {
                     if matches!(
                         field_schema.r#type,
@@ -1261,7 +1262,7 @@ impl NetBoxAdapter {
                         continue;
                     }
                     // a model column of the same name is netbox's, not ours.
-                    if native.contains(field_name) {
+                    if native.names.contains(field_name) {
                         continue;
                     }
                     if let Some(def) = existing.and_then(|fields| fields.get(field_name)) {
@@ -1312,6 +1313,11 @@ impl NetBoxAdapter {
                         shared.declarations.push(declared);
                         continue;
                     }
+                    // with the type's columns unknown, creating the field is a guess.
+                    if !native.known {
+                        unjudged.push(field_name.as_str());
+                        continue;
+                    }
                     let declared = declared_choices(field_schema);
                     if !declared.is_empty() {
                         let new_set = new_choice_sets.entry(field_name.as_str()).or_default();
@@ -1330,6 +1336,9 @@ impl NetBoxAdapter {
                         field_schema,
                         choice_set: (!declared.is_empty()).then(|| field_name.clone()),
                     });
+                }
+                if !unjudged.is_empty() {
+                    return Err(refuse_unjudged_fields(&info, &unjudged));
                 }
                 continue;
             }
@@ -2240,11 +2249,18 @@ struct PlannedTypeDelete {
     type_id: u64,
 }
 
+/// a type's own columns, and whether the backend named them at all.
+struct NativeFields {
+    names: BTreeSet<String>,
+    /// false when neither OPTIONS nor a sample answered: only the key is known.
+    known: bool,
+}
+
 async fn native_fields_for_type(
     adapter: &NetBoxAdapter,
     info: &super::registry::ObjectTypeInfo,
     type_schema: &TypeSchema,
-) -> Result<BTreeSet<String>> {
+) -> Result<NativeFields> {
     let mut native: BTreeSet<String> = type_schema.key.keys().cloned().collect();
     let options = adapter.client.endpoint_fields(&info.endpoint).await;
     let answered_options = options.is_some();
@@ -2262,32 +2278,24 @@ async fn native_fields_for_type(
         native.extend(map.into_iter().map(|(key, _)| key));
     }
 
-    if !answered_options && !answered_sample {
-        // neither source names the type's columns, so a declared plain field
-        // could be netbox's or need a custom field: refuse rather than guess.
-        let unjudged: Vec<&str> = type_schema
-            .fields
-            .iter()
-            .filter(|(name, field)| {
-                !native.contains(*name)
-                    && !matches!(
-                        field.r#type,
-                        FieldType::Ref { .. } | FieldType::ListRef { .. }
-                    )
-            })
-            .map(|(name, _)| name.as_str())
-            .collect();
-        if !unjudged.is_empty() {
-            return Err(anyhow!(
-                "cannot tell which fields of {} are netbox's: {} answered no OPTIONS metadata and has no object to sample, so {} could be a native field or a custom field",
-                info.type_name,
-                info.endpoint,
-                unjudged.join(", "),
-            ));
-        }
-    }
+    Ok(NativeFields {
+        names: native,
+        known: answered_options || answered_sample,
+    })
+}
 
-    Ok(native)
+/// refuse to provision `unjudged`, the declared fields of a type whose columns
+/// netbox did not name: each could be a native field or a custom field.
+fn refuse_unjudged_fields(
+    info: &super::registry::ObjectTypeInfo,
+    unjudged: &[&str],
+) -> anyhow::Error {
+    anyhow!(
+        "cannot tell which fields of {} are netbox's: {} gave no OPTIONS create metadata (the server or a proxy refused OPTIONS, or the token cannot create there) and has no object to sample, so {} could be a native field or a custom field",
+        info.type_name,
+        info.endpoint,
+        unjudged.join(", "),
+    )
 }
 
 fn custom_object_type_name(type_name: &TypeName) -> String {
