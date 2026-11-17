@@ -81,8 +81,8 @@ fn fetch<T: Serialize + HasId>(
     to_observed_objects(type_name, type_schema, data)
 }
 
-/// fetch by `id__in`. performed in chunks so that a large set of ids doesn't
-/// outgrow the query string.
+/// fetch by `id__in`. 500 ids per request, which keeps the query string short
+/// and the number of requests low.
 fn load_by_ids<T>(load: FilteredLoad<T>, ids: &[u64]) -> Result<Vec<T>> {
     const CHUNK: usize = 500;
     let mut data = Vec::new();
