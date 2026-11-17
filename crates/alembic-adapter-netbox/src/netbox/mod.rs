@@ -215,9 +215,7 @@ mod tests {
         assert_eq!(observed.len(), 0);
     }
 
-    // the native-field probe on `path`: no object to sample, and OPTIONS
-    // metadata naming `fields` as the type's own.
-    fn mock_native_probe(server: &MockServer, path: &str, fields: &[&str]) {
+    fn mock_native_fields_from_options(server: &MockServer, path: &str, fields: &[&str]) {
         let post: serde_json::Map<String, serde_json::Value> = fields
             .iter()
             .map(|field| ((*field).to_string(), json!({})))
@@ -2048,7 +2046,7 @@ mod tests {
             when.method(GET).path("/api/extras/custom-fields/");
             then.status(200).json_body(body);
         });
-        mock_native_probe(server, "/api/dcim/sites/", &["name", "slug"]);
+        mock_native_fields_from_options(server, "/api/dcim/sites/", &["name", "slug"]);
     }
 
     /// `dcim.site` declaring a single `asset_tag` custom field.
@@ -2229,7 +2227,7 @@ mod tests {
     /// `dcim.site` and `dcim.device`, both custom-field capable.
     fn mock_two_object_types(server: &MockServer) -> Mock<'_> {
         for path in ["/api/dcim/sites/", "/api/dcim/devices/"] {
-            mock_native_probe(server, path, &["name"]);
+            mock_native_fields_from_options(server, path, &["name"]);
         }
         mock_list(
             server,
@@ -2652,7 +2650,7 @@ mod tests {
             when.method(GET).path("/api/extras/custom-fields/");
             then.status(200).json_body(page(json!([])));
         });
-        mock_native_probe(&server, "/api/ipam/ip-addresses/", &["address"]);
+        mock_native_fields_from_options(&server, "/api/ipam/ip-addresses/", &["address"]);
         // the create must carry object_types in the content-type form.
         let cf_create = server.mock(|when, then| {
             when.method(POST)
@@ -3506,7 +3504,7 @@ mod tests {
             when.method(GET).path("/api/extras/custom-fields/");
             then.status(200).json_body(page(json!([])));
         });
-        mock_native_probe(&server, "/api/dcim/sites/", &["name", "slug"]);
+        mock_native_fields_from_options(&server, "/api/dcim/sites/", &["name", "slug"]);
         let _custom_object_types = server.mock(|when, then| {
             when.method(GET)
                 .path("/api/plugins/custom-objects/custom-object-types/")
@@ -4018,7 +4016,7 @@ mod tests {
             when.method(GET).path("/api/extras/custom-fields/");
             then.status(200).json_body(page(fields));
         });
-        mock_native_probe(server, "/api/dcim/sites/", &["name", "slug"]);
+        mock_native_fields_from_options(server, "/api/dcim/sites/", &["name", "slug"]);
     }
 
     /// the choice-sets list holding `sets`.
