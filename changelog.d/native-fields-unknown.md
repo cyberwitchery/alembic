@@ -1,1 +1,1 @@
-- **breaking** netbox and nautobot adapters: `plan` and `apply` refuse a declared field that is not already a custom field
+- **breaking** netbox and nautobot adapters: status/role/site are no longer assumed native. refuse native field when neither OPTIONS nor a sample answers.
