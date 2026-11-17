@@ -187,8 +187,14 @@ impl InfrahubAdapter {
             let edges = connection
                 .get("edges")
                 .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default();
+                .ok_or_else(|| {
+                    anyhow!("expected edges array in infrahub response for {gql_type}")
+                })?;
+            let count = connection
+                .get("count")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| anyhow!("expected count in infrahub response for {gql_type}"))?
+                as usize;
 
             if edges.is_empty() {
                 break;
@@ -197,18 +203,18 @@ impl InfrahubAdapter {
             for edge in edges {
                 let node = edge
                     .get("node")
-                    .ok_or_else(|| anyhow!("missing node in infrahub response"))?;
+                    .ok_or_else(|| anyhow!("missing node in infrahub response for {gql_type}"))?;
                 let backend_id = node
                     .get("id")
                     .and_then(Value::as_str)
-                    .ok_or_else(|| anyhow!("missing id in infrahub response"))?
+                    .ok_or_else(|| anyhow!("missing id in infrahub response for {gql_type}"))?
                     .to_string();
 
-                let attrs = extract_attrs(node, &field_kinds)?;
+                let attrs = extract_attrs(node, &field_kinds)
+                    .with_context(|| format!("read {gql_type} node {backend_id}"))?;
                 observed.push((BackendId::String(backend_id), attrs));
             }
 
-            let count = connection.get("count").and_then(Value::as_u64).unwrap_or(0) as usize;
             offset += limit;
             if count > 0 && offset >= count {
                 break;
@@ -1052,71 +1058,31 @@ fn extract_field_value(node: &Value, field: &str, kind: &FieldKind) -> Result<Op
         return Ok(None);
     }
     let value = match kind {
-        FieldKind::Attribute => field_val.get("value").cloned().unwrap_or(Value::Null),
-        FieldKind::RelationSingle(RelationShape::RelatedNode) => field_val
-            .get("id")
-            .and_then(Value::as_str)
-            .map(|s| Value::String(s.to_string()))
-            .unwrap_or(Value::Null),
-        FieldKind::RelationSingle(RelationShape::NestedEdged) => field_val
-            .get("node")
-            .and_then(|node| node.get("id"))
-            .and_then(Value::as_str)
-            .map(|s| Value::String(s.to_string()))
-            .unwrap_or(Value::Null),
-        FieldKind::RelationSingle(RelationShape::NestedPaginated) => field_val
-            .get("node")
-            .and_then(|node| node.get("id"))
-            .and_then(Value::as_str)
-            .map(|s| Value::String(s.to_string()))
-            .unwrap_or(Value::Null),
+        FieldKind::Attribute => field_val
+            .get("value")
+            .cloned()
+            .ok_or_else(|| anyhow!("expected value in infrahub field {field}"))?,
+        FieldKind::RelationSingle(RelationShape::RelatedNode) => {
+            node_id(field_val, field)?.unwrap_or(Value::Null)
+        }
+        FieldKind::RelationSingle(RelationShape::NestedEdged | RelationShape::NestedPaginated) => {
+            edge_id(field_val, field)?.unwrap_or(Value::Null)
+        }
         FieldKind::RelationList(RelationShape::RelatedNode) => {
-            let items = field_val
-                .as_array()
-                .cloned()
-                .unwrap_or_default()
-                .into_iter()
-                .filter_map(|item| {
-                    item.get("id")
-                        .and_then(Value::as_str)
-                        .map(|s| s.to_string())
-                })
-                .map(Value::String)
-                .collect::<Vec<_>>();
+            let items = field_array(field_val, field)?
+                .iter()
+                .filter_map(|item| node_id(item, field).transpose())
+                .collect::<Result<Vec<_>>>()?;
             Value::Array(items)
         }
         FieldKind::RelationList(RelationShape::NestedPaginated) => {
-            let items = field_val
+            let edges = field_val
                 .get("edges")
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default()
-                .into_iter()
-                .filter_map(|edge| {
-                    edge.get("node")
-                        .and_then(|node| node.get("id"))
-                        .and_then(Value::as_str)
-                        .map(|s| s.to_string())
-                })
-                .map(Value::String)
-                .collect::<Vec<_>>();
-            Value::Array(items)
+                .ok_or_else(|| anyhow!("expected edges in infrahub field {field}"))?;
+            Value::Array(edge_ids(field_array(edges, field)?, field)?)
         }
         FieldKind::RelationList(RelationShape::NestedEdged) => {
-            let items = field_val
-                .as_array()
-                .cloned()
-                .unwrap_or_default()
-                .into_iter()
-                .filter_map(|edge| {
-                    edge.get("node")
-                        .and_then(|node| node.get("id"))
-                        .and_then(Value::as_str)
-                        .map(|s| s.to_string())
-                })
-                .map(Value::String)
-                .collect::<Vec<_>>();
-            Value::Array(items)
+            Value::Array(edge_ids(field_array(field_val, field)?, field)?)
         }
     };
     if value.is_null() {
@@ -1124,6 +1090,43 @@ fn extract_field_value(node: &Value, field: &str, kind: &FieldKind) -> Result<Op
     } else {
         Ok(Some(value))
     }
+}
+
+/// the string `id` of a related node. a null node or id is unset; a node
+/// without an `id` key is an error.
+fn node_id(value: &Value, field: &str) -> Result<Option<Value>> {
+    if value.is_null() {
+        return Ok(None);
+    }
+    match value.get("id") {
+        Some(Value::String(id)) => Ok(Some(Value::String(id.clone()))),
+        Some(Value::Null) => Ok(None),
+        _ => Err(anyhow!("expected id in infrahub field {field}")),
+    }
+}
+
+/// the id under an edge's `node`, with the same null handling as `node_id`.
+fn edge_id(edge: &Value, field: &str) -> Result<Option<Value>> {
+    if edge.is_null() {
+        return Ok(None);
+    }
+    let node = edge
+        .get("node")
+        .ok_or_else(|| anyhow!("expected node in infrahub field {field}"))?;
+    node_id(node, field)
+}
+
+fn edge_ids(edges: &[Value], field: &str) -> Result<Vec<Value>> {
+    edges
+        .iter()
+        .filter_map(|edge| edge_id(edge, field).transpose())
+        .collect()
+}
+
+fn field_array<'a>(value: &'a Value, field: &str) -> Result<&'a Vec<Value>> {
+    value
+        .as_array()
+        .ok_or_else(|| anyhow!("expected array in infrahub field {field}"))
 }
 
 #[derive(Debug, Default)]
@@ -3857,19 +3860,11 @@ schema { query: Query }
         assert_eq!(id, Some("site-42".to_string()));
     }
 
-    // characterization tests pinning the empty-list vs absent-single asymmetry
-    // in `extract_field_value`. the `RelationList` arms always build a
-    // `Value::Array`, so an empty or missing inner array produces an empty array
-    // rather than null, and the final `value.is_null()` guard then lets it
-    // through as `Some(Value::Array([]))`. the `RelationSingle` arms instead fall
-    // back to `Value::Null` when the id is absent, which the same guard collapses
-    // to `None`. a future refactor of these arms must preserve this distinction.
-
+    // a null field, node or id reads as unset (and is skipped in a list); a
+    // field, edge or node missing its `value`, `node` or `id` key is an error.
     #[test]
     fn extract_field_value_maps_each_node_shape() {
         let cases = [
-            // the field is absent, or present but null: both return before the
-            // `kind` match, so the result is `None` for any kind.
             (
                 json!({ "present": { "value": "x" } }),
                 "absent",
@@ -3877,55 +3872,148 @@ schema { query: Query }
                 None,
             ),
             (json!({ "name": null }), "name", FieldKind::Attribute, None),
-            // edges array present but empty.
+            (
+                json!({ "name": { "value": null } }),
+                "name",
+                FieldKind::Attribute,
+                None,
+            ),
             (
                 json!({ "peers": { "edges": [] } }),
                 "peers",
                 FieldKind::RelationList(RelationShape::NestedPaginated),
                 Some(json!([])),
             ),
-            // relation object present and non-null but with no `edges` key at
-            // all: `unwrap_or_default()` still yields an empty array.
-            (
-                json!({ "peers": {} }),
-                "peers",
-                FieldKind::RelationList(RelationShape::NestedPaginated),
-                Some(json!([])),
-            ),
-            // flat (node-edged) list shape, empty array.
             (
                 json!({ "peers": [] }),
                 "peers",
                 FieldKind::RelationList(RelationShape::NestedEdged),
                 Some(json!([])),
             ),
-            // flat (related-node) list shape, empty array.
             (
                 json!({ "children": [] }),
                 "children",
                 FieldKind::RelationList(RelationShape::RelatedNode),
                 Some(json!([])),
             ),
-            // contrast with the list rows: a single relation whose object is
-            // present but carries no `id` falls back to `Value::Null` -> None.
             (
-                json!({ "parent": { "kind": "DcimSite" } }),
+                json!({ "owner": { "node": null } }),
+                "owner",
+                FieldKind::RelationSingle(RelationShape::NestedEdged),
+                None,
+            ),
+            (
+                json!({ "parent": { "id": null, "kind": null } }),
                 "parent",
                 FieldKind::RelationSingle(RelationShape::RelatedNode),
                 None,
             ),
-            // same contrast for the nested-edged single shape: `node` present but
-            // without an `id`.
             (
-                json!({ "owner": { "node": {} } }),
-                "owner",
-                FieldKind::RelationSingle(RelationShape::NestedEdged),
-                None,
+                json!({ "children": [{ "id": "c1" }, null, { "id": null }] }),
+                "children",
+                FieldKind::RelationList(RelationShape::RelatedNode),
+                Some(json!(["c1"])),
+            ),
+            (
+                json!({ "peers": { "edges": [{ "node": null }, null, { "node": { "id": "p1" } }] } }),
+                "peers",
+                FieldKind::RelationList(RelationShape::NestedPaginated),
+                Some(json!(["p1"])),
+            ),
+            (
+                json!({ "peers": [{ "node": { "id": "p1" } }, { "node": null }] }),
+                "peers",
+                FieldKind::RelationList(RelationShape::NestedEdged),
+                Some(json!(["p1"])),
             ),
         ];
         for (node, field, kind, expected) in cases {
             let value = extract_field_value(&node, field, &kind).unwrap();
             assert_eq!(value, expected, "{field} in {node}");
+        }
+    }
+
+    #[test]
+    fn extract_field_value_refuses_unrecognised_shapes() {
+        let cases = [
+            (json!({ "name": {} }), "name", FieldKind::Attribute),
+            (
+                json!({ "peers": {} }),
+                "peers",
+                FieldKind::RelationList(RelationShape::NestedPaginated),
+            ),
+            (
+                json!({ "peers": { "edges": [{ "node": {} }] } }),
+                "peers",
+                FieldKind::RelationList(RelationShape::NestedPaginated),
+            ),
+            (
+                json!({ "peers": { "node": { "id": "p1" } } }),
+                "peers",
+                FieldKind::RelationList(RelationShape::NestedEdged),
+            ),
+            (
+                json!({ "children": [{ "id": "c1" }, { "kind": "DcimSite" }] }),
+                "children",
+                FieldKind::RelationList(RelationShape::RelatedNode),
+            ),
+            (
+                json!({ "parent": { "kind": "DcimSite" } }),
+                "parent",
+                FieldKind::RelationSingle(RelationShape::RelatedNode),
+            ),
+            (
+                json!({ "owner": { "node": {} } }),
+                "owner",
+                FieldKind::RelationSingle(RelationShape::NestedEdged),
+            ),
+            (
+                json!({ "owner": {} }),
+                "owner",
+                FieldKind::RelationSingle(RelationShape::NestedPaginated),
+            ),
+        ];
+        for (node, field, kind) in cases {
+            let err = extract_field_value(&node, field, &kind).unwrap_err();
+            assert!(err.to_string().contains(field), "{field} in {node}: {err}");
+        }
+    }
+
+    #[tokio::test]
+    async fn read_refuses_a_connection_without_edges_or_count() {
+        for (connection, expected) in [
+            (json!({ "count": 1 }), "expected edges array"),
+            (json!({ "edges": [] }), "expected count"),
+            (
+                json!({ "count": 1, "edges": [
+                    { "node": { "id": "site-1", "hfid": "site-1", "name": {} } }
+                ] }),
+                "read DcimSite node site-1",
+            ),
+        ] {
+            let server = MockServer::start();
+            server.mock(|when, then| {
+                when.method(GET).path("/schema.graphql");
+                then.status(200).body(GRAPHQL_SCHEMA);
+            });
+            server.mock(|when, then| {
+                when.method(POST).path("/graphql").body_includes("DcimSite");
+                then.status(200).json_body(json!({
+                    "data": { "DcimSite": connection },
+                    "errors": []
+                }));
+            });
+
+            let adapter = InfrahubAdapter::new(&server.base_url(), "token", None).unwrap();
+            let state = StateStore::new(None, StateData::default());
+            let err = adapter
+                .read(&site_only_schema(), &[], &state)
+                .await
+                .unwrap_err();
+
+            let chain = format!("{err:#}");
+            assert!(chain.contains(expected), "{chain}");
+            assert!(chain.contains("DcimSite"), "{chain}");
         }
     }
 
