@@ -1743,8 +1743,10 @@ fn normalize_value(
                 if let Some(uid) = resolve_ref_uid(&map, target_hint, schema, registry, mappings) {
                     return Value::String(uid.to_string());
                 }
-                // an unresolved brief keeps netbox's integer id; the engine refuses
-                // it in a ref-typed field, where desired holds a uid.
+
+                // a nested object that couldn't be matched to a uid is kept as a netbox
+                // integer id. desired state holds uids in ref fields, so the
+                // engine rejects it instead of treating it as a match.
                 if map.contains_key("url") || map.contains_key("display") {
                     return Value::Number(id.into());
                 }
