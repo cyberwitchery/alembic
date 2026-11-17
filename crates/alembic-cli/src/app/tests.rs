@@ -2104,6 +2104,12 @@ async fn run_plan_report_carries_the_schema_preview_into_the_drift_report() {
     // the native-field probe preview issues before deciding a declared field is
     // custom; without it the preview errors and never reaches the report.
     server.mock(|when, then| {
+        when.method(httpmock::Method::OPTIONS)
+            .path("/api/dcim/devices/");
+        then.status(200)
+            .json_body(json!({ "actions": { "POST": { "name": {} } } }));
+    });
+    server.mock(|when, then| {
         when.method(httpmock::Method::GET)
             .path("/api/dcim/devices/")
             .query_param("limit", "1");
