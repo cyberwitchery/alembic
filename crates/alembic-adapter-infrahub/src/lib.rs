@@ -3364,6 +3364,35 @@ schema { query: Query }
     }
 
     #[tokio::test]
+    async fn wait_for_task_times_out_while_running() {
+        let server = MockServer::start();
+        let task_mock = server.mock(|when, then| {
+            when.method(POST)
+                .path("/graphql")
+                .body_includes("InfrahubTask(");
+            then.status(200).json_body(json!({
+                "data": {
+                    "InfrahubTask": {
+                        "edges": [ { "node": { "id": "task-1", "state": "RUNNING", "logs": { "edges": [] } } } ]
+                    }
+                },
+                "errors": []
+            }));
+        });
+
+        let adapter = InfrahubAdapter::new(&server.base_url(), "token", None).unwrap();
+        let err = adapter
+            .wait_for_task("task-1".to_string(), 1)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "infrahub repository process task task-1 did not finish within 1s"
+        );
+        task_mock.assert_calls(1);
+    }
+
+    #[tokio::test]
     async fn read_observes_objects() {
         let server = MockServer::start();
         server.mock(|when, then| {
