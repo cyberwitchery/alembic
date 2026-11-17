@@ -1,1 +1,1 @@
-- **breaking** netbox and nautobot adapters: status/role/site are no longer assumed native. refuse native field when neither OPTIONS nor a sample answers.
+- **breaking** netbox and nautobot adapters: status/role/site are no longer assumed native; a declared field that is not yet a custom field is refused when neither OPTIONS nor a sample shows the type's fields
