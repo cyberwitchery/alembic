@@ -19,7 +19,7 @@ use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::process::Command;
 use tokio::time::sleep;
 
@@ -554,7 +554,8 @@ impl InfrahubAdapter {
 
     async fn wait_for_task(&self, task_id: String, timeout_secs: u32) -> Result<()> {
         let query = "query($ids: [String]) { InfrahubTask(ids: $ids) { edges { node { id state logs { edges { node { message severity } } } } } } }";
-        for _ in 0..timeout_secs {
+        let deadline = Instant::now() + Duration::from_secs(timeout_secs.into());
+        loop {
             let response = self
                 .client
                 .execute_raw(query, Some(json!({ "ids": [task_id] })), None)
@@ -592,17 +593,26 @@ impl InfrahubAdapter {
                         })
                         .filter_map(|log| log.get("message").and_then(Value::as_str))
                         .collect();
+                    let reason = if messages.is_empty() {
+                        String::new()
+                    } else {
+                        format!(": {}", messages.join("; "))
+                    };
                     return Err(anyhow!(
-                        "infrahub repository process task {task_id} ended {state}: {}",
-                        messages.join("; ")
+                        "infrahub repository process task {task_id} ended {state}{reason}"
                     ));
                 }
-                _ => sleep(Duration::from_secs(1)).await,
+                _ => {
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    if remaining.is_zero() {
+                        return Err(anyhow!(
+                            "infrahub repository process task {task_id} did not finish within {timeout_secs}s"
+                        ));
+                    }
+                    sleep(remaining.min(Duration::from_secs(1))).await;
+                }
             }
         }
-        Err(anyhow!(
-            "infrahub repository process task {task_id} did not finish within {timeout_secs}s"
-        ))
     }
 
     async fn resolve_repository_id(&self, name: &str) -> Result<String> {
@@ -656,7 +666,9 @@ impl InfrahubAdapter {
             .and_then(|task| task.get("id"))
             .and_then(Value::as_str)
             .map(str::to_string)
-            .ok_or_else(|| anyhow!("no task id for repo `{}`", repo_id))?;
+            .ok_or_else(|| {
+                anyhow!("infrahub repository process for {repo_id} returned no task id")
+            })?;
         tracing::info!(repo_id, task_id, "infrahub repository process queued");
         Ok(task_id)
     }
@@ -3382,12 +3394,12 @@ schema { query: Query }
 
         let adapter = InfrahubAdapter::new(&server.base_url(), "token", None).unwrap();
         let err = adapter
-            .wait_for_task("task-1".to_string(), 1)
+            .wait_for_task("task-1".to_string(), 0)
             .await
             .unwrap_err();
         assert_eq!(
             err.to_string(),
-            "infrahub repository process task task-1 did not finish within 1s"
+            "infrahub repository process task task-1 did not finish within 0s"
         );
         task_mock.assert_calls(1);
     }
