@@ -1051,9 +1051,9 @@ fn extract_attrs(node: &Value, field_kinds: &BTreeMap<String, FieldKind>) -> Res
 }
 
 fn extract_field_value(node: &Value, field: &str, kind: &FieldKind) -> Result<Option<Value>> {
-    let Some(field_val) = node.get(field) else {
-        return Ok(None);
-    };
+    let field_val = node
+        .get(field)
+        .ok_or_else(|| anyhow!("missing infrahub field {field}"))?;
     if field_val.is_null() {
         return Ok(None);
     }
@@ -3520,7 +3520,7 @@ schema { query: Query }
     }
 
     #[tokio::test]
-    async fn read_key_field_absent_from_the_response_names_the_type() {
+    async fn read_key_field_null_in_the_response_names_the_type() {
         let server = MockServer::start();
         server.mock(|when, then| {
             when.method(GET).path("/schema.graphql");
@@ -3530,7 +3530,7 @@ schema { query: Query }
             when.method(POST).path("/graphql").body_includes("DcimSite");
             then.status(200).json_body(json!({
                 "data": { "DcimSite": { "count": 1, "edges": [
-                    { "node": { "id": "site-1", "hfid": "site-1" } }
+                    { "node": { "id": "site-1", "hfid": "site-1", "name": null } }
                 ] } },
                 "errors": []
             }));
@@ -3865,12 +3865,6 @@ schema { query: Query }
     #[test]
     fn extract_field_value_maps_each_node_shape() {
         let cases = [
-            (
-                json!({ "present": { "value": "x" } }),
-                "absent",
-                FieldKind::Attribute,
-                None,
-            ),
             (json!({ "name": null }), "name", FieldKind::Attribute, None),
             (
                 json!({ "name": { "value": null } }),
@@ -3936,6 +3930,11 @@ schema { query: Query }
     #[test]
     fn extract_field_value_refuses_unrecognised_shapes() {
         let cases = [
+            (
+                json!({ "present": { "value": "x" } }),
+                "absent",
+                FieldKind::Attribute,
+            ),
             (json!({ "name": {} }), "name", FieldKind::Attribute),
             (
                 json!({ "peers": {} }),
