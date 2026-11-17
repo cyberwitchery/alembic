@@ -11,6 +11,9 @@ ignore = [
     # starlark crate. Unmaintained-only advisories, not vulnerabilities.
     "RUSTSEC-2025-0057",
     "RUSTSEC-2024-0436",
+    # chrono is unmaintained; pulled in by peeringdb-rs, which has no release
+    # without it. Unmaintained-only advisory, not a vulnerability.
+    "RUSTSEC-2026-0543",
 ]
 
 [licenses]
@@ -21,23 +24,13 @@ allow = [
     "BSD-3-Clause",
     "BSD-2-Clause",
     "ISC",
-    "0BSD",
-    "MPL-2.0",
     "Unicode-3.0",
-    "Unicode-DFS-2016",
     "CDLA-Permissive-2.0",
     # BSL-1.0 (Boost) and Zlib entered with the starlark dependency tree
     # (rustyline's windows clipboard crates; foldhash via hashbrown). Both are
     # permissive, OSI-approved licenses.
     "BSL-1.0",
     "Zlib",
-]
-exceptions = [
-    # aws-lc-sys vendors AWS-LC (a BoringSSL fork), whose license expression
-    # includes the OpenSSL license alongside ISC/Apache-2.0. It is pulled in
-    # transitively via rustls's default aws-lc-rs crypto provider. The OpenSSL
-    # license is acceptable for our use, so allow it for this crate only.
-    { name = "aws-lc-sys", allow = ["OpenSSL"] },
 ]
 confidence-threshold = 0.8
 

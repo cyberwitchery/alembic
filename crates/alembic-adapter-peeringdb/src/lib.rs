@@ -12,22 +12,27 @@ use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// blocking fetch plus conversion for one supported type.
-type Loader = fn(&TypeName, &alembic_core::TypeSchema) -> Result<Vec<ObservedObject>>;
+/// `Some(ids)` narrows the fetch, `None` reads the whole table.
+type Loader =
+    fn(&TypeName, &alembic_core::TypeSchema, Option<&[u64]>) -> Result<Vec<ObservedObject>>;
+
+/// a peeringdb-rs `load_peeringdb_*_filtered` function.
+type FilteredLoad<T> = fn(&[(&str, &str)]) -> Result<Vec<T>>;
 
 /// every type this adapter observes, paired with the fetch behind it. the
 /// supported set and the dispatch read these same rows, so neither can drift.
 const LOADERS: &[(&str, Loader)] = &[
-    ("peeringdb.ix", |tn, ts| {
-        fetch(peeringdb_rs::load_peeringdb_ix, tn, ts)
+    ("peeringdb.ix", |tn, ts, ids| {
+        fetch(peeringdb_rs::load_peeringdb_ix_filtered, tn, ts, ids)
     }),
-    ("peeringdb.net", |tn, ts| {
-        fetch(peeringdb_rs::load_peeringdb_net, tn, ts)
+    ("peeringdb.net", |tn, ts, ids| {
+        fetch(peeringdb_rs::load_peeringdb_net_filtered, tn, ts, ids)
     }),
-    ("peeringdb.org", |tn, ts| {
-        fetch(peeringdb_rs::load_peeringdb_org, tn, ts)
+    ("peeringdb.org", |tn, ts, ids| {
+        fetch(peeringdb_rs::load_peeringdb_org_filtered, tn, ts, ids)
     }),
-    ("peeringdb.netixlan", |tn, ts| {
-        fetch(peeringdb_rs::load_peeringdb_netixlan, tn, ts)
+    ("peeringdb.netixlan", |tn, ts, ids| {
+        fetch(peeringdb_rs::load_peeringdb_netixlan_filtered, tn, ts, ids)
     }),
 ];
 
@@ -62,13 +67,53 @@ fn witness_fields(type_name: &TypeName) -> &'static [&'static str] {
 }
 
 fn fetch<T: Serialize + HasId>(
-    load: fn() -> Result<Vec<T>>,
+    load: FilteredLoad<T>,
     type_name: &TypeName,
     type_schema: &alembic_core::TypeSchema,
+    ids: Option<&[u64]>,
 ) -> Result<Vec<ObservedObject>> {
     let short = type_name.as_str().trim_start_matches("peeringdb.");
-    let data = load().map_err(|e| anyhow!("failed to load {} data: {}", short, e))?;
+    let data = match ids {
+        Some(ids) => load_by_ids(load, ids),
+        None => load(&[]),
+    }
+    .map_err(|e| anyhow!("failed to load {} data: {}", short, e))?;
     to_observed_objects(type_name, type_schema, data)
+}
+
+/// fetch by `id__in`. 500 ids per request, which keeps the query string short
+/// and the number of requests low.
+fn load_by_ids<T>(load: FilteredLoad<T>, ids: &[u64]) -> Result<Vec<T>> {
+    const CHUNK: usize = 500;
+    let mut data = Vec::new();
+    for chunk in ids.chunks(CHUNK) {
+        let joined = chunk
+            .iter()
+            .map(u64::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        data.extend(load(&[("id__in", &joined)])?);
+    }
+    Ok(data)
+}
+
+/// the peeringdb ids bound in state for one type. an empty vec means the type
+/// has no bindings and can be skipped. `None` means at least one binding is not
+/// a peeringdb integer id, so the caller must fall back to the full table.
+fn bound_int_ids(
+    state_store: &alembic_engine::StateStore,
+    type_name: &TypeName,
+) -> Option<Vec<u64>> {
+    let Some(bound) = state_store.backend_ids().get(type_name) else {
+        return Some(Vec::new());
+    };
+    bound
+        .keys()
+        .map(|id| match id {
+            BackendId::Int(id) => Some(*id),
+            BackendId::String(_) => None,
+        })
+        .collect()
 }
 
 pub struct PeeringDBAdapter;
@@ -94,7 +139,28 @@ impl Observer for PeeringDBAdapter {
         &self,
         schema: &Schema,
         types: &[TypeName],
-        _state: &alembic_engine::StateStore,
+        state_store: &alembic_engine::StateStore,
+    ) -> Result<ObservedState> {
+        self.read_listing(schema, types, state_store, false).await
+    }
+
+    async fn read_bound(
+        &self,
+        schema: &Schema,
+        types: &[TypeName],
+        state_store: &alembic_engine::StateStore,
+    ) -> Result<ObservedState> {
+        self.read_listing(schema, types, state_store, true).await
+    }
+}
+
+impl PeeringDBAdapter {
+    async fn read_listing(
+        &self,
+        schema: &Schema,
+        types: &[TypeName],
+        state_store: &alembic_engine::StateStore,
+        bound_only: bool,
     ) -> Result<ObservedState> {
         let requested: BTreeSet<TypeName> = if types.is_empty() {
             // empty means every schema-declared supported type; skip types the schema omits.
@@ -117,9 +183,17 @@ impl Observer for PeeringDBAdapter {
                 .get(type_name.as_str())
                 .ok_or_else(|| anyhow!("missing schema for {}", type_name))?
                 .clone();
+            let bound = bound_only
+                .then(|| bound_int_ids(state_store, &type_name))
+                .flatten();
+            if bound.as_ref().is_some_and(|ids| ids.is_empty()) {
+                continue;
+            }
 
             let tn = type_name.clone();
-            let objects = tokio::task::spawn_blocking(move || load(&tn, &type_schema)).await??;
+            let objects =
+                tokio::task::spawn_blocking(move || load(&tn, &type_schema, bound.as_deref()))
+                    .await??;
 
             for object in objects {
                 state.insert(object)?;
@@ -205,7 +279,7 @@ fn to_observed_objects<T: Serialize + HasId>(
 mod tests {
     use super::*;
     use alembic_adapter_sdk::StateData;
-    use alembic_core::{FieldSchema, FieldType, TypeSchema};
+    use alembic_core::{FieldSchema, FieldType, TypeSchema, Uid};
 
     fn ix_schema() -> TypeSchema {
         TypeSchema {
@@ -408,6 +482,59 @@ mod tests {
         )
         .expect("an ix record is not witness-checked");
         assert_eq!(objects.len(), 1);
+    }
+
+    fn fake_ix_filtered(params: &[(&str, &str)]) -> Result<Vec<peeringdb_rs::PeeringdbIx>> {
+        let [("id__in", ids)] = params else {
+            panic!("expected one id__in filter, got {params:?}");
+        };
+        let ids: Vec<u32> = ids.split(',').map(|id| id.parse().unwrap()).collect();
+        assert!(ids.len() <= 500, "chunk of {} ids", ids.len());
+        Ok(ids.into_iter().map(|id| sample_ix(id, "x")).collect())
+    }
+
+    #[test]
+    fn load_by_ids_chunks_the_id_filter() {
+        let ids: Vec<u64> = (1..=1200).collect();
+        let loaded = load_by_ids(fake_ix_filtered, &ids).unwrap();
+        let loaded: Vec<u64> = loaded.iter().map(|ix| u64::from(ix.id)).collect();
+        assert_eq!(loaded, ids);
+    }
+
+    #[test]
+    fn bound_int_ids_separates_unbound_from_unaddressable() {
+        let mut state = alembic_engine::StateStore::new(None, StateData::default());
+        let ix = TypeName::new("peeringdb.ix");
+        let net = TypeName::new("peeringdb.net");
+        assert_eq!(bound_int_ids(&state, &ix), Some(Vec::new()));
+
+        state.set_backend_id(
+            ix.clone(),
+            Uid::parse_str("00000000-0000-0000-0000-0000000000a1").unwrap(),
+            BackendId::Int(26),
+        );
+        assert_eq!(bound_int_ids(&state, &ix), Some(vec![26]));
+
+        state.set_backend_id(
+            net.clone(),
+            Uid::parse_str("00000000-0000-0000-0000-0000000000a2").unwrap(),
+            BackendId::String("abc".to_string()),
+        );
+        assert_eq!(bound_int_ids(&state, &net), None);
+    }
+
+    #[tokio::test]
+    async fn a_bound_read_skips_a_type_with_no_state_bindings() {
+        let adapter = PeeringDBAdapter::new();
+        let schema = Schema {
+            types: BTreeMap::from([("peeringdb.netixlan".to_string(), ix_schema())]),
+        };
+        let state = alembic_engine::StateStore::new(None, StateData::default());
+        let observed = adapter
+            .read_bound(&schema, &[TypeName::new("peeringdb.netixlan")], &state)
+            .await
+            .unwrap();
+        assert!(observed.is_empty());
     }
 
     #[test]

@@ -215,6 +215,24 @@ mod tests {
         assert_eq!(observed.len(), 0);
     }
 
+    // the native-field probe on `path`: no object to sample, and OPTIONS
+    // metadata naming `fields` as the type's own.
+    fn mock_native_probe(server: &MockServer, path: &str, fields: &[&str]) {
+        let post: serde_json::Map<String, serde_json::Value> = fields
+            .iter()
+            .map(|field| ((*field).to_string(), json!({})))
+            .collect();
+        let _options = server.mock(|when, then| {
+            when.method(httpmock::Method::OPTIONS).path(path);
+            then.status(200)
+                .json_body(json!({ "actions": { "POST": post } }));
+        });
+        let _sample = server.mock(|when, then| {
+            when.method(GET).path(path).query_param("limit", "1");
+            then.status(200).json_body(page(json!([])));
+        });
+    }
+
     fn mock_list<'a>(
         server: &'a MockServer,
         path: &'a str,
@@ -511,6 +529,41 @@ mod tests {
 
         assert_import_resolves_site(&adapter, &import_schema("slug"), key("slug", json!("fra1")))
             .await;
+    }
+
+    #[tokio::test]
+    async fn plan_refuses_a_ref_brief_that_reads_back_as_a_backend_id() {
+        // site 7 is neither in state nor observed, and its brief omits the `slug`
+        // key, so the read leaves `site` as netbox's integer id.
+        let server = MockServer::start();
+        let dir = tempdir().unwrap();
+        let mut state = StateStore::load(dir.path().join("state.json")).unwrap();
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
+        let _mocks = mock_import_backend(
+            &server,
+            json!({
+                "id": 7,
+                "url": "https://netbox.example.com/api/dcim/sites/7/",
+                "display": "AMS1",
+                "name": "AMS1"
+            }),
+        );
+        let inventory = alembic_core::Inventory {
+            schema: import_schema("slug"),
+            scope: None,
+            objects: Vec::new(),
+        };
+
+        let err = alembic_engine::build_plan(&adapter, &inventory, &mut state, true, false)
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(
+            err.contains("reported 1 reference(s) as backend ids"),
+            "{err}"
+        );
+        assert!(err.contains("dcim.device.site -> dcim.site 7"), "{err}");
     }
 
     #[tokio::test]
@@ -1995,12 +2048,7 @@ mod tests {
             when.method(GET).path("/api/extras/custom-fields/");
             then.status(200).json_body(body);
         });
-        let _probe = server.mock(|when, then| {
-            when.method(GET)
-                .path("/api/dcim/sites/")
-                .query_param("limit", "1");
-            then.status(200).json_body(page(json!([])));
-        });
+        mock_native_probe(server, "/api/dcim/sites/", &["name", "slug"]);
     }
 
     /// `dcim.site` declaring a single `asset_tag` custom field.
@@ -2181,10 +2229,7 @@ mod tests {
     /// `dcim.site` and `dcim.device`, both custom-field capable.
     fn mock_two_object_types(server: &MockServer) -> Mock<'_> {
         for path in ["/api/dcim/sites/", "/api/dcim/devices/"] {
-            let _probe = server.mock(|when, then| {
-                when.method(GET).path(path).query_param("limit", "1");
-                then.status(200).json_body(page(json!([])));
-            });
+            mock_native_probe(server, path, &["name"]);
         }
         mock_list(
             server,
@@ -2607,13 +2652,7 @@ mod tests {
             when.method(GET).path("/api/extras/custom-fields/");
             then.status(200).json_body(page(json!([])));
         });
-        // native-field probe reads one sample object.
-        let _probe = server.mock(|when, then| {
-            when.method(GET)
-                .path("/api/ipam/ip-addresses/")
-                .query_param("limit", "1");
-            then.status(200).json_body(page(json!([])));
-        });
+        mock_native_probe(&server, "/api/ipam/ip-addresses/", &["address"]);
         // the create must carry object_types in the content-type form.
         let cf_create = server.mock(|when, then| {
             when.method(POST)
@@ -3467,12 +3506,7 @@ mod tests {
             when.method(GET).path("/api/extras/custom-fields/");
             then.status(200).json_body(page(json!([])));
         });
-        let _sites = server.mock(|when, then| {
-            when.method(GET)
-                .path("/api/dcim/sites/")
-                .query_param("limit", "1");
-            then.status(200).json_body(page(json!([])));
-        });
+        mock_native_probe(&server, "/api/dcim/sites/", &["name", "slug"]);
         let _custom_object_types = server.mock(|when, then| {
             when.method(GET)
                 .path("/api/plugins/custom-objects/custom-object-types/")
@@ -3784,9 +3818,8 @@ mod tests {
         read_prefixes(&adapter).await.unwrap();
     }
 
-    // a native column the fixed list does not name, on a type with no objects
-    // to sample, is still netbox's: provisioning must not create a custom field
-    // for it.
+    // a native column on a type with no objects to sample is still netbox's:
+    // provisioning must not create a custom field for it.
     #[tokio::test]
     async fn preview_takes_native_fields_from_options_on_an_empty_endpoint() {
         let server = MockServer::start();
@@ -3813,6 +3846,121 @@ mod tests {
             "{:?}",
             preview.created_fields
         );
+    }
+
+    /// `ipam.prefix` keyed on `prefix`, declaring a plain `device` it has no
+    /// column for.
+    fn prefix_declaring_device() -> alembic_core::Schema {
+        serde_json::from_value(json!({
+            "types": {
+                "ipam.prefix": {
+                    "key": { "prefix": { "type": "prefix" } },
+                    "fields": {
+                        "prefix": { "type": "prefix" },
+                        "device": { "type": "string" }
+                    }
+                }
+            }
+        }))
+        .unwrap()
+    }
+
+    // with neither OPTIONS metadata nor an object to sample, a declared plain
+    // field cannot be judged, so provisioning refuses instead of guessing.
+    #[tokio::test]
+    async fn preview_refuses_without_options_or_a_sample() {
+        let server = MockServer::start();
+        mock_prefix_backend(&server, json!([]));
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
+
+        let err = adapter
+            .preview_schema(&prefix_declaring_device())
+            .await
+            .unwrap_err();
+        let message = format!("{err:#}");
+        assert!(message.contains("ipam.prefix"), "{message}");
+        assert!(message.contains("device"), "{message}");
+    }
+
+    // without OPTIONS metadata a sample still names the type's columns, and a
+    // `device` it does not show is provisioned rather than assumed native.
+    #[tokio::test]
+    async fn preview_provisions_a_field_the_sample_does_not_show() {
+        let server = MockServer::start();
+        mock_list(
+            &server,
+            "/api/core/object-types/",
+            json!([{
+                "app_label": "ipam",
+                "model": "prefix",
+                "rest_api_endpoint": "/api/ipam/prefixes/",
+                "features": ["custom-fields", "tags"]
+            }]),
+        );
+        server.mock(|when, then| {
+            when.method(GET).path("/api/extras/custom-fields/");
+            then.status(200).json_body(page(json!([])));
+        });
+        server.mock(|when, then| {
+            when.method(GET)
+                .path("/api/ipam/prefixes/")
+                .query_param("limit", "1");
+            then.status(200)
+                .json_body(page(json!([{ "id": 1, "prefix": "10.0.0.0/8" }])));
+        });
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
+
+        let preview = adapter
+            .preview_schema(&prefix_declaring_device())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            preview
+                .created_fields
+                .iter()
+                .any(|field| field.contains("ipam.prefix.device")),
+            "{:?}",
+            preview.created_fields
+        );
+    }
+
+    // a custom field netbox already holds for the type answers the question the
+    // columns cannot, so it still converges with neither OPTIONS nor a sample.
+    #[tokio::test]
+    async fn ensure_schema_converges_an_existing_field_with_columns_unknown() {
+        let server = MockServer::start();
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
+        let _object_types = mock_site_object_type(&server);
+        server.mock(|when, then| {
+            when.method(GET).path("/api/extras/custom-fields/");
+            then.status(200).json_body(page(json!([{
+                "id": EXISTING_FIELD_ID,
+                "name": "asset_tag",
+                "object_types": ["dcim.site"],
+                "type": {"value": "text", "label": "Text"},
+                "required": false,
+                "description": "",
+                "validation_regex": "",
+            }])));
+        });
+        server.mock(|when, then| {
+            when.method(GET)
+                .path("/api/dcim/sites/")
+                .query_param("limit", "1");
+            then.status(200).json_body(page(json!([])));
+        });
+        let cf_patch = server.mock(|when, then| {
+            when.method(PATCH)
+                .path(format!("/api/extras/custom-fields/{EXISTING_FIELD_ID}/"));
+            then.status(200).json_body(json!({}));
+        });
+
+        adapter
+            .ensure_schema(&declaring_schema(None, Some("asset tag"), true))
+            .await
+            .unwrap();
+        cf_patch.assert_calls(1);
     }
 
     // netbox 4.x names its model features with underscores (`custom_fields`),
@@ -3870,12 +4018,7 @@ mod tests {
             when.method(GET).path("/api/extras/custom-fields/");
             then.status(200).json_body(page(fields));
         });
-        let _probe = server.mock(|when, then| {
-            when.method(GET)
-                .path("/api/dcim/sites/")
-                .query_param("limit", "1");
-            then.status(200).json_body(page(json!([])));
-        });
+        mock_native_probe(server, "/api/dcim/sites/", &["name", "slug"]);
     }
 
     /// the choice-sets list holding `sets`.

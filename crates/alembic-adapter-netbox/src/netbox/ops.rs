@@ -1253,6 +1253,7 @@ impl NetBoxAdapter {
                 let native = native_fields_for_type(self, &info, type_schema).await?;
                 let content_type = content_type_of(registry, type_name.as_str());
                 let existing = custom_fields_by_type.get(&content_type);
+                let mut unjudged = Vec::new();
                 for (field_name, field_schema) in &type_schema.fields {
                     if matches!(
                         field_schema.r#type,
@@ -1261,7 +1262,7 @@ impl NetBoxAdapter {
                         continue;
                     }
                     // a model column of the same name is netbox's, not ours.
-                    if native.contains(field_name) {
+                    if native.names.contains(field_name) {
                         continue;
                     }
                     if let Some(def) = existing.and_then(|fields| fields.get(field_name)) {
@@ -1312,6 +1313,11 @@ impl NetBoxAdapter {
                         shared.declarations.push(declared);
                         continue;
                     }
+                    // with the type's columns unknown, creating the field is a guess.
+                    if !native.known {
+                        unjudged.push(field_name.as_str());
+                        continue;
+                    }
                     let declared = declared_choices(field_schema);
                     if !declared.is_empty() {
                         let new_set = new_choice_sets.entry(field_name.as_str()).or_default();
@@ -1330,6 +1336,9 @@ impl NetBoxAdapter {
                         field_schema,
                         choice_set: (!declared.is_empty()).then(|| field_name.clone()),
                     });
+                }
+                if !unjudged.is_empty() {
+                    return Err(refuse_unjudged_fields(&info, &unjudged));
                 }
                 continue;
             }
@@ -1734,8 +1743,8 @@ fn normalize_value(
                 if let Some(uid) = resolve_ref_uid(&map, target_hint, schema, registry, mappings) {
                     return Value::String(uid.to_string());
                 }
-                // if it looks like a resource summary but isn't managed by us,
-                // fall back to the ID integer to match desired state integers.
+                // an unresolved brief keeps netbox's integer id; the engine refuses
+                // it in a ref-typed field, where desired holds a uid.
                 if map.contains_key("url") || map.contains_key("display") {
                     return Value::Number(id.into());
                 }
@@ -2240,48 +2249,53 @@ struct PlannedTypeDelete {
     type_id: u64,
 }
 
+/// a type's own columns, and whether the backend named them at all.
+struct NativeFields {
+    names: BTreeSet<String>,
+    /// false when neither OPTIONS nor a sample answered: only the key is known.
+    known: bool,
+}
+
 async fn native_fields_for_type(
     adapter: &NetBoxAdapter,
     info: &super::registry::ObjectTypeInfo,
     type_schema: &TypeSchema,
-) -> Result<BTreeSet<String>> {
+) -> Result<NativeFields> {
     let mut native: BTreeSet<String> = type_schema.key.keys().cloned().collect();
-    match adapter.client.endpoint_fields(&info.endpoint).await {
-        Some(fields) => native.extend(fields),
-        // without OPTIONS metadata, fall back to the columns most types carry.
-        None => {
-            for field in [
-                "name",
-                "slug",
-                "description",
-                "status",
-                "role",
-                "type",
-                "site",
-                "tenant",
-                "device",
-                "tags",
-                "custom_fields",
-                "local_context_data",
-                "created",
-                "last_updated",
-            ] {
-                native.insert(field.to_string());
-            }
-        }
+    let options = adapter.client.endpoint_fields(&info.endpoint).await;
+    let answered_options = options.is_some();
+    if let Some(fields) = options {
+        native.extend(fields);
     }
 
     let resource: Resource<Value> = adapter.client.resource(info.endpoint.clone());
     let page = resource
         .list(Some(QueryBuilder::default().limit(1)))
         .await?;
-    if let Some(Value::Object(map)) = page.results.into_iter().next() {
-        for key in map.keys() {
-            native.insert(key.clone());
-        }
+    let sample = page.results.into_iter().next();
+    let answered_sample = matches!(sample, Some(Value::Object(_)));
+    if let Some(Value::Object(map)) = sample {
+        native.extend(map.into_iter().map(|(key, _)| key));
     }
 
-    Ok(native)
+    Ok(NativeFields {
+        names: native,
+        known: answered_options || answered_sample,
+    })
+}
+
+/// refuse to provision `unjudged`, the declared fields of a type whose columns
+/// netbox did not name: each could be a native field or a custom field.
+fn refuse_unjudged_fields(
+    info: &super::registry::ObjectTypeInfo,
+    unjudged: &[&str],
+) -> anyhow::Error {
+    anyhow!(
+        "cannot tell which fields of {} are netbox's: {} gave no OPTIONS create metadata (the server or a proxy refused OPTIONS, or the token cannot create there) and has no object to sample, so {} could be a native field or a custom field",
+        info.type_name,
+        info.endpoint,
+        unjudged.join(", "),
+    )
 }
 
 fn custom_object_type_name(type_name: &TypeName) -> String {
