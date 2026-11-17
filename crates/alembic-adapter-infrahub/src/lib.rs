@@ -18,7 +18,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::process::Command;
@@ -548,21 +547,62 @@ impl InfrahubAdapter {
         };
 
         let task_id = self.process_repository(&repo_id).await?;
-        self.wait_for_task(task_id).await?;
+        self.wait_for_task(task_id, 60).await?;
 
         Ok(())
     }
 
-    async fn wait_for_task(&self, task_id: String) -> Result<()> {
-        let query = "";
-        loop {
-            match self.client.execute_raw(query, Some(json!({})), None).await {
-                Ok(_) => {}
-                Err(_) => {}
+    async fn wait_for_task(&self, task_id: String, timeout_secs: u32) -> Result<()> {
+        let query = "query($ids: [String]) { InfrahubTask(ids: $ids) { edges { node { id state logs { edges { node { message severity } } } } } } }";
+        for _ in 0..timeout_secs {
+            let response = self
+                .client
+                .execute_raw(query, Some(json!({ "ids": [task_id] })), None)
+                .await
+                .context("query infrahub task")?;
+            let node = response
+                .data
+                .as_ref()
+                .and_then(|data| data.get("InfrahubTask"))
+                .and_then(|root| root.get("edges"))
+                .and_then(Value::as_array)
+                .and_then(|edges| edges.first())
+                .and_then(|edge| edge.get("node"));
+            let state = node
+                .and_then(|node| node.get("state"))
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            match state {
+                "COMPLETED" => return Ok(()),
+                "FAILED" | "CANCELLED" | "CRASHED" => {
+                    let messages: Vec<&str> = node
+                        .and_then(|node| node.get("logs"))
+                        .and_then(|logs| logs.get("edges"))
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|edge| edge.get("node"))
+                        .filter(|log| {
+                            log.get("severity")
+                                .and_then(Value::as_str)
+                                .is_some_and(|severity| {
+                                    severity.eq_ignore_ascii_case("error")
+                                        || severity.eq_ignore_ascii_case("critical")
+                                })
+                        })
+                        .filter_map(|log| log.get("message").and_then(Value::as_str))
+                        .collect();
+                    return Err(anyhow!(
+                        "infrahub repository process task {task_id} ended {state}: {}",
+                        messages.join("; ")
+                    ));
+                }
+                _ => sleep(Duration::from_secs(1)).await,
             }
-            sleep(Duration::from_secs(1)).await;
         }
-        Ok(())
+        Err(anyhow!(
+            "infrahub repository process task {task_id} did not finish within {timeout_secs}s"
+        ))
     }
 
     async fn resolve_repository_id(&self, name: &str) -> Result<String> {
@@ -614,7 +654,8 @@ impl InfrahubAdapter {
         let task_id = root
             .get("task")
             .and_then(|task| task.get("id"))
-            .and_then(Value::to_string)
+            .and_then(Value::as_str)
+            .map(str::to_string)
             .ok_or_else(|| anyhow!("no task id for repo `{}`", repo_id))?;
         tracing::info!(repo_id, task_id, "infrahub repository process queued");
         Ok(task_id)
