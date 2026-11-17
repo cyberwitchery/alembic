@@ -1,1 +1,1 @@
-- infrahub adapter: repository-mode schema provisioning fails with its own error when `InfrahubRepositoryProcess` does not report `ok`, instead of a later schema mismatch
+- infrahub adapter: repository-mode schema provisioning waits for the `InfrahubRepositoryProcess` import task and fails if it is not queued, does not complete, or runs past 60s (instead of a later schema mismatch)

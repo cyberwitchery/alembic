@@ -3268,14 +3268,24 @@ schema { query: Query }
         assert!(config_raw.contains("schemas/site.yaml"));
     }
 
-    async fn apply_schema_repository_with_process_data(data: Value) -> Result<()> {
+    async fn apply_schema_repository_with_process_data(
+        process_data: Value,
+        task_data: Value,
+    ) -> Result<()> {
         let server = MockServer::start();
         server.mock(|when, then| {
             when.method(POST)
                 .path("/graphql")
                 .body_includes("InfrahubRepositoryProcess");
             then.status(200)
-                .json_body(json!({ "data": data, "errors": [] }));
+                .json_body(json!({ "data": process_data, "errors": [] }));
+        });
+        server.mock(|when, then| {
+            when.method(POST)
+                .path("/graphql")
+                .body_includes("InfrahubTask(");
+            then.status(200)
+                .json_body(json!({ "data": task_data, "errors": [] }));
         });
 
         let repo_dir = temp_dir("repo");
@@ -3299,9 +3309,12 @@ schema { query: Query }
 
     #[tokio::test]
     async fn apply_schema_repository_rejects_ok_false() {
-        let err = apply_schema_repository_with_process_data(json!({
-            "InfrahubRepositoryProcess": { "ok": false, "task": null }
-        }))
+        let err = apply_schema_repository_with_process_data(
+            json!({
+                "InfrahubRepositoryProcess": { "ok": false, "task": null }
+            }),
+            json!({}),
+        )
         .await
         .unwrap_err();
         assert!(
@@ -3313,13 +3326,40 @@ schema { query: Query }
 
     #[tokio::test]
     async fn apply_schema_repository_rejects_missing_payload() {
-        let err = apply_schema_repository_with_process_data(json!({}))
+        let err = apply_schema_repository_with_process_data(json!({}), json!({}))
             .await
             .unwrap_err();
         assert!(
             err.to_string()
                 .contains("missing InfrahubRepositoryProcess response"),
             "{err:#}"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_schema_repository_rejects_failed_task() {
+        let err = apply_schema_repository_with_process_data(
+            json!({
+                "InfrahubRepositoryProcess": { "ok": true, "task": { "id": "task-1" } }
+            }),
+            json!({
+                "InfrahubTask": {
+                    "edges": [ { "node": {
+                        "id": "task-1",
+                        "state": "FAILED",
+                        "logs": { "edges": [
+                            { "node": { "message": "importing schema", "severity": "info" } },
+                            { "node": { "message": "schema is invalid", "severity": "error" } }
+                        ] }
+                    } } ]
+                }
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "infrahub repository process task task-1 ended FAILED: schema is invalid"
         );
     }
 
