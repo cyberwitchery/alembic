@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::process::Command;
@@ -546,7 +547,21 @@ impl InfrahubAdapter {
             }
         };
 
-        self.process_repository(&repo_id).await?;
+        let task_id = self.process_repository(&repo_id).await?;
+        self.wait_for_task(task_id).await?;
+
+        Ok(())
+    }
+
+    async fn wait_for_task(&self, task_id: String) -> Result<()> {
+        let query = "";
+        loop {
+            match self.client.execute_raw(query, Some(json!({})), None).await {
+                Ok(_) => {}
+                Err(_) => {}
+            }
+            sleep(Duration::from_secs(1)).await;
+        }
         Ok(())
     }
 
@@ -578,7 +593,7 @@ impl InfrahubAdapter {
         Err(anyhow!("infrahub repository not found: {name}"))
     }
 
-    async fn process_repository(&self, repo_id: &str) -> Result<()> {
+    async fn process_repository(&self, repo_id: &str) -> Result<String> {
         let mutation = "mutation($data: IdentifierInput!) { InfrahubRepositoryProcess(data: $data) { ok task { id } } }";
         let response = self
             .client
@@ -599,9 +614,10 @@ impl InfrahubAdapter {
         let task_id = root
             .get("task")
             .and_then(|task| task.get("id"))
-            .and_then(Value::as_str);
+            .and_then(Value::to_string)
+            .ok_or_else(|| anyhow!("no task id for repo `{}`", repo_id))?;
         tracing::info!(repo_id, task_id, "infrahub repository process queued");
-        Ok(())
+        Ok(task_id)
     }
 }
 
