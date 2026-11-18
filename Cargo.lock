@@ -2023,9 +2023,9 @@ dependencies = [
 
 [[package]]
 name = "infrahub"
-version = "0.5.1"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c22b4547fcc80578c41d24f23b177ea57ab1a9d805b8d6686d3469e6f7187c37"
+checksum = "04ebedc0c6cd1df17c17346e1a969d54eb9bc050013e11cd113450385f5f9f52"
 dependencies = [
  "graphql-parser",
  "reqwest 0.13.5",
@@ -2413,9 +2413,9 @@ dependencies = [
 
 [[package]]
 name = "nautobot"
-version = "0.10.0"
+version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "325f870f4fbc10062ae70df611edcd47f89e9dafb38fe53d625b691bb7ab6c6f"
+checksum = "b49659ae8c3e334698223c4b6677869d0e44cb810e2262841af64fa453ae0274"
 dependencies = [
  "nautobot-openapi",
  "reqwest 0.13.5",
@@ -2429,9 +2429,9 @@ dependencies = [
 
 [[package]]
 name = "nautobot-openapi"
-version = "0.10.0"
+version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9cd739a2b9e16fc4b14abedf38a436d2070ec96754db1dbbf2c3468901b91022"
+checksum = "fc9a45ee40261b5845781e546f1d5681663bdba8b7c6bc9dba6c6a4af03eb4d6"
 dependencies = [
  "reqwest 0.13.5",
  "serde",
@@ -2444,12 +2444,12 @@ dependencies = [
 
 [[package]]
 name = "netbox"
-version = "0.12.0"
+version = "0.12.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a391ad7b28bbc615530b53247c3836609a1b22ec7db90324e3159b75fe3abae5"
+checksum = "0a4349414cfdcf4209bf5cd8b2eef7faf3121ee8c1f04ae5f3a18fc5a99a9a95"
 dependencies = [
  "netbox-openapi",
- "reqwest 0.12.28",
+ "reqwest 0.13.5",
  "serde",
  "serde_json",
  "serde_urlencoded",
@@ -2460,11 +2460,11 @@ dependencies = [
 
 [[package]]
 name = "netbox-openapi"
-version = "0.12.0"
+version = "0.12.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ef7161ab6d12e333f64658afa937c39beb418a3961f7d9f8d3ef4f1a5b5b1ea3"
+checksum = "cde93326bf52d6146fb9e70a9de5c0a0708549d090c0ed7469ba4d3c3d52513d"
 dependencies = [
- "reqwest 0.12.28",
+ "reqwest 0.13.5",
  "serde",
  "serde_derive",
  "serde_json",
@@ -3110,7 +3110,6 @@ dependencies = [
  "js-sys",
  "log",
  "mime",
- "mime_guess",
  "percent-encoding",
  "pin-project-lite",
  "quinn",
@@ -3144,7 +3143,6 @@ dependencies = [
  "base64 0.23.1",
  "bytes",
  "encoding_rs",
- "futures-channel",
  "futures-core",
  "futures-util",
  "h2",
