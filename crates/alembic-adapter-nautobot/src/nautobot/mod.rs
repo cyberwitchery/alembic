@@ -119,6 +119,22 @@ mod tests {
         });
     }
 
+    fn mock_native_fields_from_options(server: &MockServer, path: &str, fields: &[&str]) {
+        let post: serde_json::Map<String, serde_json::Value> = fields
+            .iter()
+            .map(|field| ((*field).to_string(), json!({})))
+            .collect();
+        let _options = server.mock(|when, then| {
+            when.method(httpmock::Method::OPTIONS).path(path);
+            then.status(200)
+                .json_body(json!({ "actions": { "POST": post } }));
+        });
+        let _sample = server.mock(|when, then| {
+            when.method(GET).path(path);
+            then.status(200).json_body(page(json!([])));
+        });
+    }
+
     const EXISTING_FIELD_ID: &str = "44444444-4444-4444-4444-444444444444";
 
     /// how nautobot reports a field type, or the empty object a backend that
@@ -166,10 +182,7 @@ mod tests {
             &[("dcim/sites/", "Site"), ("dcim/devices/", "Device")],
         );
         for path in ["/api/dcim/sites/", "/api/dcim/devices/"] {
-            let _probe = server.mock(|when, then| {
-                when.method(GET).path(path);
-                then.status(200).json_body(page(json!([])));
-            });
+            mock_native_fields_from_options(server, path, &["name"]);
         }
         let _m = server.mock(|when, then| {
             when.method(GET).path("/api/extras/content-types/");
@@ -311,10 +324,7 @@ mod tests {
         offering: &[&str],
     ) {
         mock_content_types(server);
-        let _probe = server.mock(|when, then| {
-            when.method(GET).path("/api/dcim/sites/");
-            then.status(200).json_body(page(json!([])));
-        });
+        mock_native_fields_from_options(server, "/api/dcim/sites/", &["name", "slug"]);
         mock_typed_custom_field(
             server,
             field_type,
@@ -837,10 +847,7 @@ mod tests {
         let server = MockServer::start();
         let adapter = NautobotAdapter::new(&server.base_url(), "token").unwrap();
         mock_content_types(&server);
-        let _probe = server.mock(|when, then| {
-            when.method(GET).path("/api/dcim/sites/");
-            then.status(200).json_body(page(json!([])));
-        });
+        mock_native_fields_from_options(&server, "/api/dcim/sites/", &["name", "slug"]);
         mock_existing_custom_field(
             &server,
             json!({"required": true, "description": "asset tag", "validation_regex": ""}),
@@ -1512,11 +1519,7 @@ mod tests {
         let server = MockServer::start();
         mock_content_types(&server);
         mock_empty_custom_fields(&server);
-        // native-field probe: one object, none present.
-        let _probe = server.mock(|when, then| {
-            when.method(GET).path("/api/dcim/sites/");
-            then.status(200).json_body(page(json!([])));
-        });
+        mock_native_fields_from_options(&server, "/api/dcim/sites/", &["name", "slug"]);
         // the create must carry `key` (= the field name), not `name`: this mock
         // only matches when the body includes `"key": "assetTag"`.
         let cf_create = server.mock(|when, then| {
@@ -1559,10 +1562,7 @@ mod tests {
         let server = MockServer::start();
         mock_content_types(&server);
         mock_empty_custom_fields(&server);
-        let _probe = server.mock(|when, then| {
-            when.method(GET).path("/api/dcim/sites/");
-            then.status(200).json_body(page(json!([])));
-        });
+        mock_native_fields_from_options(&server, "/api/dcim/sites/", &["name", "slug"]);
         let field_id = "44444444-4444-4444-4444-444444444444";
         let cf_create = server.mock(|when, then| {
             when.method(POST)
@@ -1689,11 +1689,7 @@ mod tests {
         let server = MockServer::start();
         mock_content_types(&server);
         mock_empty_custom_fields(&server);
-        // native-field probe: one object, none present.
-        let _probe = server.mock(|when, then| {
-            when.method(GET).path("/api/dcim/sites/");
-            then.status(200).json_body(page(json!([])));
-        });
+        mock_native_fields_from_options(&server, "/api/dcim/sites/", &["name", "slug"]);
         // preview must never touch the custom-field create endpoint.
         let cf_create = server.mock(|when, then| {
             when.method(POST).path("/api/extras/custom-fields/");
@@ -1738,10 +1734,7 @@ mod tests {
             &server,
             json!({"required": false, "description": "", "validation_regex": ""}),
         );
-        let _probe = server.mock(|when, then| {
-            when.method(GET).path("/api/dcim/sites/");
-            then.status(200).json_body(page(json!([])));
-        });
+        mock_native_fields_from_options(&server, "/api/dcim/sites/", &["name", "slug"]);
         let cf_create = server.mock(|when, then| {
             when.method(POST).path("/api/extras/custom-fields/");
             then.status(201).json_body(json!({}));
@@ -1788,10 +1781,7 @@ mod tests {
                 "validation_regex": "^SITE-",
             }),
         );
-        let _probe = server.mock(|when, then| {
-            when.method(GET).path("/api/dcim/sites/");
-            then.status(200).json_body(page(json!([])));
-        });
+        mock_native_fields_from_options(&server, "/api/dcim/sites/", &["name", "slug"]);
         let cf_patch = server.mock(|when, then| {
             when.method(PATCH)
                 .path(format!("/api/extras/custom-fields/{EXISTING_FIELD_ID}/"));
@@ -1823,10 +1813,7 @@ mod tests {
                 "validation_regex": "",
             }),
         );
-        let _probe = server.mock(|when, then| {
-            when.method(GET).path("/api/dcim/sites/");
-            then.status(200).json_body(page(json!([])));
-        });
+        mock_native_fields_from_options(&server, "/api/dcim/sites/", &["name", "slug"]);
         let cf_patch = server.mock(|when, then| {
             when.method(PATCH)
                 .path(format!("/api/extras/custom-fields/{EXISTING_FIELD_ID}/"))
@@ -1856,10 +1843,7 @@ mod tests {
             &server,
             json!({"required": false, "description": "", "validation_regex": ""}),
         );
-        let _probe = server.mock(|when, then| {
-            when.method(GET).path("/api/dcim/sites/");
-            then.status(200).json_body(page(json!([])));
-        });
+        mock_native_fields_from_options(&server, "/api/dcim/sites/", &["name", "slug"]);
         let cf_patch = server.mock(|when, then| {
             when.method(PATCH)
                 .path(format!("/api/extras/custom-fields/{EXISTING_FIELD_ID}/"));
@@ -1880,6 +1864,76 @@ mod tests {
             ],
         );
         cf_patch.assert_calls(0);
+    }
+
+    fn mock_unknown_site_columns(server: &MockServer) {
+        mock_content_types(server);
+        let _sample = server.mock(|when, then| {
+            when.method(GET).path("/api/dcim/sites/");
+            then.status(200).json_body(page(json!([])));
+        });
+    }
+
+    // refuse provisioning when the field is neither a known column nor a custom field
+    #[tokio::test]
+    async fn preview_schema_refuses_a_field_it_cannot_judge() {
+        let server = MockServer::start();
+        mock_unknown_site_columns(&server);
+        mock_empty_custom_fields(&server);
+        let adapter = NautobotAdapter::new(&server.base_url(), "token").unwrap();
+
+        let err = adapter
+            .preview_schema(&declaring_schema(None, Some("asset tag"), true))
+            .await
+            .unwrap_err();
+        let message = format!("{err:#}");
+        assert!(message.contains("dcim.site"), "{message}");
+        assert!(message.contains("asset_tag"), "{message}");
+    }
+
+    // a custom field nautobot already holds for the type answers the question
+    // the columns cannot, so it still converges.
+    #[tokio::test]
+    async fn ensure_schema_converges_an_existing_field_with_columns_unknown() {
+        let server = MockServer::start();
+        mock_unknown_site_columns(&server);
+        mock_existing_custom_field(
+            &server,
+            json!({"required": false, "description": "", "validation_regex": ""}),
+        );
+        let cf_patch = server.mock(|when, then| {
+            when.method(PATCH)
+                .path(format!("/api/extras/custom-fields/{EXISTING_FIELD_ID}/"));
+            then.status(200).json_body(json!({}));
+        });
+        let adapter = NautobotAdapter::new(&server.base_url(), "token").unwrap();
+
+        adapter
+            .ensure_schema(&declaring_schema(None, Some("asset tag"), true))
+            .await
+            .unwrap();
+        cf_patch.assert_calls(1);
+    }
+
+    // a type declaring only its key and a ref leaves nothing to judge.
+    #[tokio::test]
+    async fn preview_schema_judges_nothing_a_type_does_not_declare() {
+        let server = MockServer::start();
+        mock_unknown_site_columns(&server);
+        mock_empty_custom_fields(&server);
+        let adapter = NautobotAdapter::new(&server.base_url(), "token").unwrap();
+
+        let mut schema = site_schema();
+        let site = schema.types.get_mut("dcim.site").unwrap();
+        site.fields.remove("slug");
+        site.fields.insert(
+            "region".to_string(),
+            field(FieldType::Ref {
+                target: "dcim.region".to_string(),
+            }),
+        );
+        let report = adapter.preview_schema(&schema).await.unwrap().unwrap();
+        assert!(report.created_fields.is_empty());
     }
 
     #[tokio::test]

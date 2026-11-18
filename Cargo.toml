@@ -21,7 +21,6 @@ edition = "2021"
 rust-version = "1.95"
 license = "Apache-2.0"
 repository = "https://github.com/cyberwitchery/alembic"
-homepage = "https://github.com/cyberwitchery/alembic"
 
 [workspace.dependencies]
 alembic-core = { version = "0.13.0", path = "crates/alembic-core" }
