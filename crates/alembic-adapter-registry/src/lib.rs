@@ -721,19 +721,21 @@ pub fn create_backend(
             .to_lowercase();
 
         let found_plugin = plugins.iter().find(|p| p.name == backend_name);
-        let found_config = AdapterConfig::from_env(plugins, &backend_name);
-
-        if found_plugin.is_some() && found_config.is_ok() {
-            warn!(
-                "the plugin '{}' shadows a built-in adapter with the same name",
-                backend_name
-            );
-        }
-
-        if let Some(plugin) = found_plugin {
-            load_config(&plugin.path)?
-        } else {
-            found_config?
+        match (
+            AdapterConfig::from_env(plugins, &backend_name),
+            found_plugin,
+        ) {
+            (Ok(config), Some(plugin)) => {
+                warn!(
+                    "ignoring plugin {}: a built-in adapter is named '{}'",
+                    plugin.path.display(),
+                    backend_name
+                );
+                config
+            }
+            (Ok(config), None) => config,
+            (Err(_), Some(plugin)) => load_config(&plugin.path)?,
+            (Err(err), None) => return Err(err),
         }
     };
 
@@ -864,6 +866,42 @@ mod tests {
         if let Some(value) = old_token {
             std::env::set_var("NETBOX_TOKEN", value);
         }
+    }
+
+    #[cfg(feature = "netbox")]
+    #[test]
+    fn create_backend_prefers_the_builtin_over_a_plugin_of_the_same_name() {
+        let _guard = env_lock().lock().unwrap();
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("netbox.yaml");
+        fs::write(
+            &path,
+            "backend: netbox\nurl: http://plugin.invalid\ntoken: t\ninstance: plugin\n",
+        )
+        .unwrap();
+        let plugins = [super::Plugin {
+            name: "netbox".to_string(),
+            path,
+        }];
+        let old_url = std::env::var("NETBOX_URL").ok();
+        let old_token = std::env::var("NETBOX_TOKEN").ok();
+        std::env::set_var("NETBOX_URL", "http://env.invalid");
+        std::env::set_var("NETBOX_TOKEN", "envtoken");
+
+        let result = super::create_backend(&plugins, Some("netbox"), None);
+
+        match old_url {
+            Some(value) => std::env::set_var("NETBOX_URL", value),
+            None => std::env::remove_var("NETBOX_URL"),
+        }
+        match old_token {
+            Some(value) => std::env::set_var("NETBOX_TOKEN", value),
+            None => std::env::remove_var("NETBOX_TOKEN"),
+        }
+
+        let (_, identity) = result.unwrap();
+        assert_eq!(identity.adapter, "netbox");
+        assert_eq!(identity.instance, "http://env.invalid");
     }
 
     #[cfg(feature = "infrahub")]

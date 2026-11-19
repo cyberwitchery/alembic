@@ -1,0 +1,1 @@
+- **breaking** plugins: a plugin named like a built-in adapter is ignored with a warning; `--backend <name>` always uses the built-in

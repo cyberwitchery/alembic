@@ -131,8 +131,8 @@ for example, with a backend config for a custom external adapter in
 $ alembic apply --backend my_adapter
 ```
 
-plugins should not be sharing names with the built-in adapters, doing so
-will result in a runtime warning when using it.
+a built-in adapter always wins over a plugin with the same name: the plugin
+is ignored, with a warning, and `--backend <name>` uses the built-in.
 
 ## plan
 
