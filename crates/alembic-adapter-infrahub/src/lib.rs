@@ -19,7 +19,7 @@ use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::process::Command;
 use tokio::time::sleep;
 
@@ -546,8 +546,73 @@ impl InfrahubAdapter {
             }
         };
 
-        self.process_repository(&repo_id).await?;
+        let task_id = self.process_repository(&repo_id).await?;
+        self.wait_for_task(task_id, 60).await?;
+
         Ok(())
+    }
+
+    async fn wait_for_task(&self, task_id: String, timeout_secs: u32) -> Result<()> {
+        let query = "query($ids: [String]) { InfrahubTask(ids: $ids) { edges { node { id state logs { edges { node { message severity } } } } } } }";
+        let deadline = Instant::now() + Duration::from_secs(timeout_secs.into());
+        loop {
+            let response = self
+                .client
+                .execute_raw(query, Some(json!({ "ids": [task_id] })), None)
+                .await
+                .context("query infrahub task")?;
+            let node = response
+                .data
+                .as_ref()
+                .and_then(|data| data.get("InfrahubTask"))
+                .and_then(|root| root.get("edges"))
+                .and_then(Value::as_array)
+                .and_then(|edges| edges.first())
+                .and_then(|edge| edge.get("node"));
+            let state = node
+                .and_then(|node| node.get("state"))
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            match state {
+                "COMPLETED" => return Ok(()),
+                "FAILED" | "CANCELLED" | "CRASHED" => {
+                    let messages: Vec<&str> = node
+                        .and_then(|node| node.get("logs"))
+                        .and_then(|logs| logs.get("edges"))
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|edge| edge.get("node"))
+                        .filter(|log| {
+                            log.get("severity")
+                                .and_then(Value::as_str)
+                                .is_some_and(|severity| {
+                                    severity.eq_ignore_ascii_case("error")
+                                        || severity.eq_ignore_ascii_case("critical")
+                                })
+                        })
+                        .filter_map(|log| log.get("message").and_then(Value::as_str))
+                        .collect();
+                    let reason = if messages.is_empty() {
+                        String::new()
+                    } else {
+                        format!(": {}", messages.join("; "))
+                    };
+                    return Err(anyhow!(
+                        "infrahub repository process task {task_id} ended {state}{reason}"
+                    ));
+                }
+                _ => {
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    if remaining.is_zero() {
+                        return Err(anyhow!(
+                            "infrahub repository process task {task_id} did not finish within {timeout_secs}s"
+                        ));
+                    }
+                    sleep(remaining.min(Duration::from_secs(1))).await;
+                }
+            }
+        }
     }
 
     async fn resolve_repository_id(&self, name: &str) -> Result<String> {
@@ -578,13 +643,34 @@ impl InfrahubAdapter {
         Err(anyhow!("infrahub repository not found: {name}"))
     }
 
-    async fn process_repository(&self, repo_id: &str) -> Result<()> {
+    async fn process_repository(&self, repo_id: &str) -> Result<String> {
         let mutation = "mutation($data: IdentifierInput!) { InfrahubRepositoryProcess(data: $data) { ok task { id } } }";
-        self.client
+        let response = self
+            .client
             .execute_raw(mutation, Some(json!({ "data": { "id": repo_id } })), None)
             .await
             .context("trigger infrahub repository process")?;
-        Ok(())
+        let data = response
+            .data
+            .ok_or_else(|| anyhow!("missing data in infrahub repository process response"))?;
+        let root = data
+            .get("InfrahubRepositoryProcess")
+            .ok_or_else(|| anyhow!("missing InfrahubRepositoryProcess response"))?;
+        if root.get("ok").and_then(Value::as_bool) != Some(true) {
+            return Err(anyhow!(
+                "infrahub repository process for {repo_id} did not report ok"
+            ));
+        }
+        let task_id = root
+            .get("task")
+            .and_then(|task| task.get("id"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .ok_or_else(|| {
+                anyhow!("infrahub repository process for {repo_id} returned no task id")
+            })?;
+        tracing::info!(repo_id, task_id, "infrahub repository process queued");
+        Ok(task_id)
     }
 }
 
@@ -3154,6 +3240,19 @@ schema { query: Query }
                 "errors": []
             }));
         });
+        let task_mock = server.mock(|when, then| {
+            when.method(POST)
+                .path("/graphql")
+                .body_includes("InfrahubTask(");
+            then.status(200).json_body(json!({
+                "data": {
+                    "InfrahubTask": {
+                        "edges": [ { "node": { "id": "task-1", "state": "COMPLETED", "logs": { "edges": [] } } } ]
+                    }
+                },
+                "errors": []
+            }));
+        });
 
         let repo_dir = temp_dir("repo");
         let repo_root = repo_dir.path();
@@ -3175,9 +3274,134 @@ schema { query: Query }
         adapter.apply_schema_repository(&config).await.unwrap();
         repo_mock.assert();
         process_mock.assert();
+        task_mock.assert();
         let config_path = repo_root.join(".infrahub.yml");
         let config_raw = fs::read_to_string(&config_path).unwrap();
         assert!(config_raw.contains("schemas/site.yaml"));
+    }
+
+    async fn apply_schema_repository_with_process_data(
+        process_data: Value,
+        task_data: Value,
+    ) -> Result<()> {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST)
+                .path("/graphql")
+                .body_includes("InfrahubRepositoryProcess");
+            then.status(200)
+                .json_body(json!({ "data": process_data, "errors": [] }));
+        });
+        server.mock(|when, then| {
+            when.method(POST)
+                .path("/graphql")
+                .body_includes("InfrahubTask(");
+            then.status(200)
+                .json_body(json!({ "data": task_data, "errors": [] }));
+        });
+
+        let repo_dir = temp_dir("repo");
+        let repo_root = repo_dir.path();
+        let schema_path = repo_root.join("schemas/site.yaml");
+        fs::create_dir_all(schema_path.parent().unwrap()).unwrap();
+        fs::write(&schema_path, "version: 1.0").unwrap();
+
+        let adapter = InfrahubAdapter::new(&server.base_url(), "token", None).unwrap();
+        let config = SchemaPushConfig {
+            schema_path,
+            mode: SchemaApplyMode::Repository,
+            repository_id: Some("repo-1".to_string()),
+            repository_name: None,
+            repository_root: Some(repo_root.to_path_buf()),
+            branch: None,
+            infrahubctl_path: None,
+        };
+        adapter.apply_schema_repository(&config).await
+    }
+
+    #[tokio::test]
+    async fn apply_schema_repository_rejects_ok_false() {
+        let err = apply_schema_repository_with_process_data(
+            json!({
+                "InfrahubRepositoryProcess": { "ok": false, "task": null }
+            }),
+            json!({}),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("infrahub repository process for repo-1 did not report ok"),
+            "{err:#}"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_schema_repository_rejects_missing_payload() {
+        let err = apply_schema_repository_with_process_data(json!({}), json!({}))
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("missing InfrahubRepositoryProcess response"),
+            "{err:#}"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_schema_repository_rejects_failed_task() {
+        let err = apply_schema_repository_with_process_data(
+            json!({
+                "InfrahubRepositoryProcess": { "ok": true, "task": { "id": "task-1" } }
+            }),
+            json!({
+                "InfrahubTask": {
+                    "edges": [ { "node": {
+                        "id": "task-1",
+                        "state": "FAILED",
+                        "logs": { "edges": [
+                            { "node": { "message": "importing schema", "severity": "info" } },
+                            { "node": { "message": "schema is invalid", "severity": "error" } }
+                        ] }
+                    } } ]
+                }
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "infrahub repository process task task-1 ended FAILED: schema is invalid"
+        );
+    }
+
+    #[tokio::test]
+    async fn wait_for_task_times_out_while_running() {
+        let server = MockServer::start();
+        let task_mock = server.mock(|when, then| {
+            when.method(POST)
+                .path("/graphql")
+                .body_includes("InfrahubTask(");
+            then.status(200).json_body(json!({
+                "data": {
+                    "InfrahubTask": {
+                        "edges": [ { "node": { "id": "task-1", "state": "RUNNING", "logs": { "edges": [] } } } ]
+                    }
+                },
+                "errors": []
+            }));
+        });
+
+        let adapter = InfrahubAdapter::new(&server.base_url(), "token", None).unwrap();
+        let err = adapter
+            .wait_for_task("task-1".to_string(), 0)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "infrahub repository process task task-1 did not finish within 0s"
+        );
+        task_mock.assert_calls(1);
     }
 
     #[tokio::test]
