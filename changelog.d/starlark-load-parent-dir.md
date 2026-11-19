@@ -1,0 +1,1 @@
+- map transforms: `load()` refuses paths with `..`, so a load can no longer read files outside the spec file's directory

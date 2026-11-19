@@ -9,8 +9,8 @@
 //! hermetic by construction: the standard globals expose no i/o, the language
 //! has no `while`, and recursion is rejected at evaluation time, so transforms
 //! terminate and map runs stay deterministic. `load()` is supported but
-//! restricted to relative paths, which all resolve against the map spec's
-//! directory (including transitive loads).
+//! restricted to relative paths without `..`, which all resolve against the
+//! map spec's directory (including transitive loads).
 
 use anyhow::{anyhow, Context, Result};
 use serde_json::Value as JsonValue;
@@ -21,7 +21,7 @@ use starlark::values::dict::AllocDict;
 use starlark::values::list::AllocList;
 use starlark::values::{Heap, Value};
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Component, Path};
 
 /// a compiled set of user transforms: the frozen module holding the top-level
 /// `def`s from the map spec's `transforms:` source.
@@ -100,10 +100,13 @@ fn compile_module(
             ));
         };
         let load_path = Path::new(&module_id);
-        if load_path.is_absolute() {
+        if !load_path
+            .components()
+            .all(|part| matches!(part, Component::Normal(_) | Component::CurDir))
+        {
             return Err(anyhow!(
-                "load(\"{module_id}\") in {filename}: absolute paths are not allowed; \
-                 paths resolve relative to the spec file"
+                "load(\"{module_id}\") in {filename}: paths must be relative and \
+                 must stay inside the spec file's directory"
             ));
         }
         if visiting.iter().any(|seen| seen == &module_id) {
@@ -276,9 +279,31 @@ mod tests {
         )
         .unwrap_err();
         assert!(
-            err.to_string().contains("absolute paths are not allowed"),
+            err.to_string().contains("paths must be relative"),
             "{err:#}"
         );
+    }
+
+    #[test]
+    fn load_rejects_paths_outside_the_spec_dir() {
+        let root = tempfile::tempdir().unwrap();
+        let spec_dir = root.path().join("maps");
+        std::fs::create_dir(&spec_dir).unwrap();
+        std::fs::write(root.path().join("secret.star"), "TOKEN = \"abc\"\n").unwrap();
+        for module_id in ["../secret.star", "sub/../../secret.star"] {
+            let result = StarlarkTransforms::compile(
+                &format!("load(\"{module_id}\", \"TOKEN\")\n"),
+                "test",
+                Some(&spec_dir),
+            );
+            assert!(result.is_err(), "load(\"{module_id}\") left the spec dir");
+            let err = result.unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("must stay inside the spec file's directory"),
+                "{err:#}"
+            );
+        }
     }
 
     #[test]

@@ -219,8 +219,9 @@ syntax: `${attrs.primary_ip|cidr_host}`. semantics:
 - `fail("message")` rejects a value; the error surfaces in the usual
   `rule <name>: ... in <context>` shape with a starlark traceback.
 - transforms are hermetic: no i/o, no `while`, no recursion, so they terminate
-  and map runs stay deterministic. `load()` works but only with relative paths,
-  which all resolve against the spec file's directory (transitive loads too).
+  and map runs stay deterministic. `load()` works but only with relative paths
+  without `..`, which all resolve against the spec file's directory (transitive
+  loads too).
 
 requires the `starlark` cargo feature on `alembic-engine` (the cli binary ships
 with it enabled).
