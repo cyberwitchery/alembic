@@ -2047,7 +2047,6 @@ mod tests {
         let info = super::super::registry::ObjectTypeInfo {
             type_name: TypeName::new("dcim.platform"),
             endpoint: "dcim/platforms/".to_string(),
-            features: BTreeSet::new(),
         };
         let string = FieldSchema {
             r#type: FieldType::String,
