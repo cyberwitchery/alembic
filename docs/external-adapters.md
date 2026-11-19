@@ -37,6 +37,10 @@ role, a response carries only the keys the protocol defines, at every level: an
 unknown one is an error naming it, rather than a default standing in for an
 answer the adapter never gave. the `key` and `attrs` maps you fill stay your own.
 
+a response is capped at 256 MiB: an adapter that writes more to stdout is stopped
+and the request fails. alembic keeps the first 1 MiB of stderr and discards the
+rest.
+
 ## rust sdk
 
 the `alembic-adapter-sdk` crate ships a small helper module for external

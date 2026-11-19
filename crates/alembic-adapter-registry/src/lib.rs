@@ -16,7 +16,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 use tokio::time::timeout;
 
@@ -421,6 +421,12 @@ fn normalize_instance_url(url: &str) -> String {
 /// default external-adapter request timeout, in seconds.
 const DEFAULT_EXTERNAL_TIMEOUT_SECS: u64 = 120;
 
+/// largest external-adapter response alembic buffers; a longer one is an error.
+const EXTERNAL_STDOUT_LIMIT: usize = 256 << 20;
+
+/// adapter stderr kept for warnings and error messages; the rest is discarded.
+const EXTERNAL_STDERR_LIMIT: usize = 1 << 20;
+
 #[derive(Debug)]
 struct ProcessAdapter {
     command: String,
@@ -429,6 +435,8 @@ struct ProcessAdapter {
     env: BTreeMap<String, String>,
     timeout: Duration,
     setup: serde_json::Value,
+    stdout_limit: usize,
+    stderr_limit: usize,
 }
 
 impl ProcessAdapter {
@@ -446,6 +454,8 @@ impl ProcessAdapter {
             env: cfg.env,
             timeout,
             setup: cfg.setup,
+            stdout_limit: EXTERNAL_STDOUT_LIMIT,
+            stderr_limit: EXTERNAL_STDERR_LIMIT,
         })
     }
 
@@ -542,23 +552,62 @@ impl ProcessAdapter {
 
         let mut child = cmd.spawn().context("spawn external adapter")?;
         let stdin = child.stdin.take();
+        let stdout = child.stdout.take();
+        let stderr = child.stderr.take();
+        let (stdout_limit, stderr_limit) = (self.stdout_limit, self.stderr_limit);
         // write the request to the child's stdin concurrently with draining its
         // stdout/stderr, all under the one timeout, so a child that floods its output or
         // never reads its stdin can't deadlock the write and hang the cli forever, but
-        // instead trips the timeout like any other stall.
+        // instead trips the timeout like any other stall. buffering is capped too: a
+        // response over the limit fails at once, stderr past its limit is drained unkept.
         let output = timeout(self.timeout, async move {
             let write = async move {
                 if let Some(mut stdin) = stdin {
                     // ignore a BrokenPipe from a crashed adapter so its real exit error surfaces below.
                     let _ = stdin.write_all(&payload).await;
                 }
+                Ok(())
             };
-            let (_, output) = tokio::join!(write, child.wait_with_output());
-            output
+            let read_stdout = async move {
+                let mut buf = Vec::new();
+                if let Some(stdout) = stdout {
+                    stdout
+                        .take(stdout_limit as u64 + 1)
+                        .read_to_end(&mut buf)
+                        .await
+                        .context("read external adapter stdout")?;
+                }
+                if buf.len() > stdout_limit {
+                    return Err(anyhow!(
+                        "external adapter wrote more than {stdout_limit} bytes to stdout"
+                    ));
+                }
+                Ok(buf)
+            };
+            let read_stderr = async move {
+                let mut buf = Vec::new();
+                if let Some(mut stderr) = stderr {
+                    (&mut stderr)
+                        .take(stderr_limit as u64)
+                        .read_to_end(&mut buf)
+                        .await
+                        .context("read external adapter stderr")?;
+                    tokio::io::copy(&mut stderr, &mut tokio::io::sink())
+                        .await
+                        .context("read external adapter stderr")?;
+                }
+                Ok(buf)
+            };
+            let ((), stdout, stderr) = tokio::try_join!(write, read_stdout, read_stderr)?;
+            let status = child.wait().await.context("wait for external adapter")?;
+            Ok::<_, anyhow::Error>(std::process::Output {
+                status,
+                stdout,
+                stderr,
+            })
         })
         .await
-        .context("external adapter timed out")?
-        .context("wait for external adapter")?;
+        .context("external adapter timed out")??;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -1363,6 +1412,8 @@ esac
             env: BTreeMap::new(),
             timeout: Duration::from_secs(1),
             setup: serde_json::Value::default(),
+            stdout_limit: super::EXTERNAL_STDOUT_LIMIT,
+            stderr_limit: super::EXTERNAL_STDERR_LIMIT,
         };
 
         let err = adapter.run(Vec::new()).await.unwrap_err();
@@ -1404,6 +1455,8 @@ esac
             env: BTreeMap::new(),
             timeout: Duration::from_secs(5),
             setup: serde_json::Value::default(),
+            stdout_limit: super::EXTERNAL_STDOUT_LIMIT,
+            stderr_limit: super::EXTERNAL_STDERR_LIMIT,
         };
 
         // 100 KB > the 64 KB pipe buffer, so the unread write hits BrokenPipe.
@@ -1438,6 +1491,8 @@ esac
             env: BTreeMap::new(),
             timeout: Duration::from_secs(1),
             setup: serde_json::Value::default(),
+            stdout_limit: super::EXTERNAL_STDOUT_LIMIT,
+            stderr_limit: super::EXTERNAL_STDERR_LIMIT,
         };
 
         // 256 KB > the 64 KB pipe buffer, so an un-drained write blocks once the
@@ -1449,6 +1504,41 @@ esac
         assert!(
             run_result.unwrap_err().to_string().contains("timed out"),
             "expected a timeout error once the un-drained stdin write is under the guard"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_bounds_adapter_output() {
+        // serialize against the other spawning tests so no sibling fork can race
+        // the write-then-exec of the script below (see `spawn_lock`).
+        let _spawn = spawn_lock().lock().await;
+        let dir = tempdir().unwrap();
+        let script_path = dir.path().join("flood.sh");
+        // floods stderr, then stdout, forever.
+        write_script(
+            &script_path,
+            "#!/usr/bin/env bash\nhead -c 100000 /dev/zero >&2\nexec yes\n",
+        );
+
+        let adapter = ProcessAdapter {
+            command: script_path.to_string_lossy().to_string(),
+            args: Vec::new(),
+            working_dir: None,
+            env: BTreeMap::new(),
+            timeout: Duration::from_secs(10),
+            setup: serde_json::Value::default(),
+            stdout_limit: 64 * 1024,
+            stderr_limit: 1024,
+        };
+
+        let result = tokio::time::timeout(Duration::from_secs(5), adapter.run(Vec::new())).await;
+        let err = result
+            .expect("run() kept buffering adapter output until the timeout")
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("more than 65536 bytes"),
+            "expected an output-limit error, got: {err}"
         );
     }
 }

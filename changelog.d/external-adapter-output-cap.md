@@ -1,0 +1,1 @@
+- external adapters: a response over 256 MiB on stdout fails the request instead of being buffered until the timeout, and only the first 1 MiB of stderr is kept
