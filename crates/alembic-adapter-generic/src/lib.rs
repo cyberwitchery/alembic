@@ -274,7 +274,7 @@ impl GenericAdapter {
         let id = backend_id
             .or_else(|| resolved.get(&uid))
             .ok_or_else(|| anyhow!("update requires backend id"))?;
-        let url = self.backend_id_to_url(endpoint, id);
+        let url = self.backend_id_to_url(endpoint, id)?;
         let body = resolve_attrs(&desired.attrs, type_schema, resolved)?;
 
         let req = match endpoint.update_method.as_str() {
@@ -300,7 +300,7 @@ impl GenericAdapter {
 
         match endpoint.delete_strategy {
             DeleteStrategy::Standard => {
-                let url = self.backend_id_to_url(endpoint, id);
+                let url = self.backend_id_to_url(endpoint, id)?;
                 let resp = self.client.delete(&url).send().await?;
                 match resp.error_for_status() {
                     Ok(_) => {}
@@ -379,17 +379,18 @@ impl GenericAdapter {
         ))
     }
 
-    fn backend_id_to_url(&self, endpoint: &EndpointConfig, id: &BackendId) -> String {
-        let id_str = match id {
+    /// the url of one object: the id is a single path segment under the type's `path`.
+    fn backend_id_to_url(&self, endpoint: &EndpointConfig, id: &BackendId) -> Result<String> {
+        let segment = match id {
             BackendId::Int(n) => n.to_string(),
-            BackendId::String(s) => s.clone(),
+            BackendId::String(s) => id_segment(s)?,
         };
-        format!(
+        Ok(format!(
             "{}/{}/{}",
             self.config.base_url.trim_end_matches('/'),
             endpoint.path.trim_matches('/'),
-            id_str
-        )
+            segment
+        ))
     }
 }
 
@@ -851,6 +852,25 @@ fn parse_backend_id(id_val: serde_json::Value) -> Result<BackendId> {
         serde_json::Value::String(s) => Ok(BackendId::String(s)),
         _ => Err(anyhow!("id must be number or string")),
     }
+}
+
+/// percent-encode a string id as one path segment. `.`, `..` and the empty
+/// string cannot be one: a url parser resolves them against the type's path.
+fn id_segment(id: &str) -> Result<String> {
+    if matches!(id, "" | "." | "..") {
+        return Err(anyhow!(
+            "backend id {id:?} cannot be used as a url path segment"
+        ));
+    }
+    let mut out = String::with_capacity(id.len());
+    for byte in id.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            out.push(byte as char);
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    Ok(out)
 }
 
 /// build an object's key from what the api returned, naming where it came from.

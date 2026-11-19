@@ -359,10 +359,15 @@ fn test_backend_id_to_url() {
             BackendId::String("abc-123".to_string()),
             "http://example.com/api/devices/abc-123",
         ),
+        (
+            "http://example.com",
+            BackendId::String("a/b c%2e~_.-".to_string()),
+            "http://example.com/api/devices/a%2Fb%20c%252e~_.-",
+        ),
     ] {
         let adapter = GenericAdapter::new(test_config(base_url)).unwrap();
         let endpoint = adapter.config.types.get("device").unwrap();
-        assert_eq!(adapter.backend_id_to_url(endpoint, &id), expected);
+        assert_eq!(adapter.backend_id_to_url(endpoint, &id).unwrap(), expected);
     }
 }
 
@@ -1304,6 +1309,68 @@ async fn test_apply_delete_standard_alongside_create() {
     create.assert();
     delete.assert();
     assert_eq!(report.applied.len(), 2);
+}
+
+fn device_update(id: &str) -> Vec<Op> {
+    let uid = Uid::new_v4();
+    let key = BTreeMap::from([("name".to_string(), serde_json::json!("fra1"))]);
+    let attrs = BTreeMap::from([("name".to_string(), serde_json::json!("fra1"))]);
+    vec![Op::Update {
+        uid,
+        type_name: TypeName::new("device".to_string()),
+        desired: alembic_core::Object {
+            uid,
+            type_name: TypeName::new("device".to_string()),
+            key: Key::from(key),
+            attrs: attrs.into(),
+            source: None,
+        },
+        backend_id: Some(BackendId::String(id.to_string())),
+        changes: vec![],
+    }]
+}
+
+#[tokio::test]
+async fn test_apply_update_sends_a_string_id_as_one_segment_of_the_type_path() {
+    let server = MockServer::start();
+    let elsewhere = server.mock(|when, then| {
+        when.method(PATCH).path("/admin/users/7");
+        then.status(200).json_body(serde_json::json!({}));
+    });
+    let inside = server.mock(|when, then| {
+        when.method(PATCH)
+            .path("/api/devices/..%2F..%2Fadmin%2Fusers%2F7%3Fa%23b");
+        then.status(200).json_body(serde_json::json!({}));
+    });
+
+    let adapter = GenericAdapter::new(test_config(&server.base_url())).unwrap();
+    let ops = device_update("../../admin/users/7?a#b");
+    let result = adapter
+        .write(&test_schema(), &ops, &new_state_store())
+        .await;
+
+    assert_eq!(elsewhere.calls(), 0);
+    assert_eq!(inside.calls(), 1);
+    result.unwrap();
+}
+
+#[tokio::test]
+async fn test_apply_refuses_a_string_id_that_is_not_a_path_segment() {
+    let server = MockServer::start();
+    let any = server.mock(|when, then| {
+        when.any_request();
+        then.status(200).json_body(serde_json::json!({}));
+    });
+    let adapter = GenericAdapter::new(test_config(&server.base_url())).unwrap();
+
+    for id in ["", ".", ".."] {
+        let ops = device_update(id);
+        let result = adapter
+            .write(&test_schema(), &ops, &new_state_store())
+            .await;
+        assert!(result.is_err(), "id {id:?} was sent");
+    }
+    assert_eq!(any.calls(), 0);
 }
 
 #[tokio::test]

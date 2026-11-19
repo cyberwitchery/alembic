@@ -50,6 +50,7 @@ typo'd `delete_strategy` would refuse the plan those delete ops came from.
   way observe does, and reuses the existing object whose key matches; if none matches, the
   conflict is returned.
 - update sends `update_method` (patch or put) to `path`/`id` with the attrs as the json body.
+  a string id is percent-encoded as one path segment; an empty, `.` or `..` id is refused.
 - delete with `delete_strategy: standard` sends DELETE to `path`/`id` (a 404 is treated as
   already gone). a delete this config cannot perform, whether its type has no `types:` entry,
   its strategy is the default `none`, or the op carries no backend id, refuses the whole plan

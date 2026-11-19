@@ -1,0 +1,1 @@
+- generic adapter: a string backend id is percent-encoded as one path segment of the type's `path` on update and delete; an empty, `.` or `..` id is refused
