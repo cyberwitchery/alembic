@@ -15,8 +15,9 @@ pub struct ProvisioningEmitterAdapter {}
 
 impl ExternalAdapter for ProvisioningEmitterAdapter {
     type Error = anyhow::Error;
+    type Config = serde_json::Value;
 
-    fn setup(&mut self, _configuration: &serde_json::Value) -> Result<()> {
+    fn setup(&mut self, _configuration: serde_json::Value) -> Result<()> {
         Ok(())
     }
 

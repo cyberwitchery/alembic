@@ -4,6 +4,7 @@ use crate::journal::JournalSpec;
 use crate::state::StateData;
 use crate::types::{ApplyReport, BackendId, Op, ProvisionReport};
 use alembic_core::{JsonMap, Key, Schema, TypeName};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::io::{self, BufReader, Read, Write};
@@ -186,8 +187,10 @@ pub trait ExternalAdapter {
     /// error returned by the adapter's methods; only its `Display` reaches the host.
     type Error: fmt::Display;
 
+    type Config: DeserializeOwned;
+
     /// initial configuration of the adapter
-    fn setup(&mut self, configuration: &serde_json::Value) -> Result<(), Self::Error>;
+    fn setup(&mut self, configuration: Self::Config) -> Result<(), Self::Error>;
 
     /// read objects from the backend.
     fn read(
@@ -265,7 +268,25 @@ pub fn run_external_adapter<A: ExternalAdapter>(
         );
     }
 
-    if let Err(e) = adapter.setup(&envelope.setup) {
+    let setup = match envelope.setup {
+        serde_json::Value::Null => serde_json::Value::Object(Default::default()),
+        setup @ serde_json::Value::Object(_) => setup,
+        serde_json::Value::Bool(_)
+        | serde_json::Value::Number(_)
+        | serde_json::Value::String(_)
+        | serde_json::Value::Array(_) => {
+            return write_error(
+                &mut writer,
+                "invalid setup: expected a mapping of configuration keys".to_string(),
+            )
+        }
+    };
+    let config = match serde_path_to_error::deserialize(&setup) {
+        Ok(config) => config,
+        Err(e) => return write_error(&mut writer, setup_error(&e, &setup)),
+    };
+
+    if let Err(e) = adapter.setup(config) {
         return write_error(&mut writer, format!("invalid setup: {e:#}"));
     }
 
@@ -306,6 +327,45 @@ pub fn run_external_adapter<A: ExternalAdapter>(
     }
 }
 
+fn setup_error(
+    error: &serde_path_to_error::Error<serde_json::Error>,
+    setup: &serde_json::Value,
+) -> String {
+    let hint = error
+        .inner()
+        .to_string()
+        .contains("expected a boolean")
+        .then(|| value_at(setup, error.path()))
+        .flatten()
+        .and_then(yaml11_bool_hint)
+        .unwrap_or_default();
+    format!("invalid setup: {error}{hint}")
+}
+
+fn value_at<'a>(
+    value: &'a serde_json::Value,
+    path: &serde_path_to_error::Path,
+) -> Option<&'a serde_json::Value> {
+    path.iter().try_fold(value, |value, segment| match segment {
+        serde_path_to_error::Segment::Map { key } => value.get(key),
+        serde_path_to_error::Segment::Seq { index } => value.get(index),
+        serde_path_to_error::Segment::Enum { .. } | serde_path_to_error::Segment::Unknown => None,
+    })
+}
+
+/// a hint for a string that YAML 1.1 reads as a boolean but YAML 1.2 keeps as a string.
+fn yaml11_bool_hint(value: &serde_json::Value) -> Option<String> {
+    let text = value.as_str()?;
+    let fix = match text.to_ascii_lowercase().as_str() {
+        "y" | "yes" | "on" => "true",
+        "n" | "no" | "off" => "false",
+        _ => return None,
+    };
+    Some(format!(
+        "; `{text}` is a YAML 1.1 boolean that YAML 1.2 reads as a string, write `{fix}` instead"
+    ))
+}
+
 fn write_error(out: &mut impl Write, message: String) -> io::Result<()> {
     let response = ExternalResponse::<serde_json::Value>::error(message);
     write_response(out, response)
@@ -327,7 +387,8 @@ macro_rules! alembic_external_main {
         fn main() -> std::io::Result<()> {
             let stdin = std::io::stdin();
             let mut stdout = std::io::BufWriter::new(std::io::stdout());
-            $crate::external::run_external_adapter($adapter, (stdin, stdout))
+            let adapter = $adapter;
+            $crate::external::run_external_adapter(adapter, (stdin, stdout))
         }
     };
 }
@@ -632,16 +693,35 @@ mod tests {
         pub x: i64,
     }
 
+    #[derive(Debug, serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct TestConfig {
+        #[serde(default)]
+        x: i64,
+        #[serde(default)]
+        #[allow(dead_code)]
+        yes_or_no: bool,
+        #[serde(default)]
+        #[allow(dead_code)]
+        name: String,
+        #[serde(default)]
+        #[allow(dead_code)]
+        tls: Option<TestTls>,
+    }
+
+    #[derive(Debug, serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct TestTls {
+        #[allow(dead_code)]
+        verify: bool,
+    }
+
     impl ExternalAdapter for TestExternalAdapter {
         type Error = anyhow::Error;
+        type Config = TestConfig;
 
-        fn setup(&mut self, configuration: &Value) -> anyhow::Result<()> {
-            if configuration.get("fail_setup").and_then(Value::as_bool) == Some(true) {
-                return Err(anyhow::anyhow!("rejected by test adapter").context("parsing setup"));
-            }
-            if let Some(x) = configuration.get("x").and_then(Value::as_i64) {
-                self.x = x;
-            }
+        fn setup(&mut self, configuration: TestConfig) -> anyhow::Result<()> {
+            self.x = configuration.x;
             Ok(())
         }
 
@@ -830,8 +910,9 @@ mod tests {
 
     impl ExternalAdapter for JournalingAdapter {
         type Error = anyhow::Error;
+        type Config = Value;
 
-        fn setup(&mut self, _configuration: &Value) -> anyhow::Result<()> {
+        fn setup(&mut self, _configuration: Value) -> anyhow::Result<()> {
             Ok(())
         }
 
@@ -937,8 +1018,10 @@ mod tests {
         assert!(!path.exists(), "a finished write removes its journal");
     }
 
-    #[test]
-    fn external_adapter_communication_error() {
+    /// sends `envelope` to a `TestExternalAdapter` over stdio and returns its response.
+    fn send_to_test_adapter<T: serde::de::DeserializeOwned>(
+        envelope: &ExternalEnvelope,
+    ) -> ExternalResponse<T> {
         let adapter = TestExternalAdapter::default();
 
         let (in_reader, mut in_writer) = std::io::pipe().unwrap();
@@ -948,6 +1031,17 @@ mod tests {
             assert!(run_external_adapter(adapter, (in_reader, out_writer)).is_ok());
         });
 
+        writeln!(in_writer, "{}", serde_json::to_string(envelope).unwrap()).unwrap();
+        drop(in_writer);
+
+        let mut response = String::new();
+        BufReader::new(out_reader).read_line(&mut response).unwrap();
+        t.join().unwrap();
+        serde_json::from_str(&response).unwrap()
+    }
+
+    #[test]
+    fn external_adapter_communication_error() {
         // the 'Write' request is booby trapped on TestExternalAdapter
         let request = ExternalRequest::Write {
             schema: Default::default(),
@@ -961,17 +1055,9 @@ mod tests {
             request,
         };
 
-        writeln!(in_writer, "{}", serde_json::to_string(&envelope).unwrap()).unwrap();
-        drop(in_writer);
-
-        let mut response = String::new();
-        BufReader::new(out_reader).read_line(&mut response).unwrap();
-
-        let response: ExternalResponse<ProvisionReport> = serde_json::from_str(&response).unwrap();
+        let response: ExternalResponse<ProvisionReport> = send_to_test_adapter(&envelope);
         assert_eq!(response.error.as_deref(), Some("unsupported operation"));
         assert!(!response.ok);
-
-        t.join().unwrap();
     }
 
     #[test]
@@ -1001,15 +1087,6 @@ mod tests {
 
     #[test]
     fn external_adapter_rejects_invalid_setup() {
-        let adapter = TestExternalAdapter::default();
-
-        let (in_reader, mut in_writer) = std::io::pipe().unwrap();
-        let (out_reader, out_writer) = std::io::pipe().unwrap();
-
-        let t = std::thread::spawn(move || {
-            assert!(run_external_adapter(adapter, (in_reader, out_writer)).is_ok());
-        });
-
         let envelope = ExternalEnvelope {
             version: EXTERNAL_PROTOCOL_VERSION,
             setup: json!({ "fail_setup": true }),
@@ -1020,33 +1097,99 @@ mod tests {
             },
         };
 
-        writeln!(in_writer, "{}", serde_json::to_string(&envelope).unwrap()).unwrap();
-        drop(in_writer);
-
-        let mut response = String::new();
-        BufReader::new(out_reader).read_line(&mut response).unwrap();
-
-        let response: ExternalResponse<Vec<ExternalObject>> =
-            serde_json::from_str(&response).unwrap();
+        let response: ExternalResponse<Vec<ExternalObject>> = send_to_test_adapter(&envelope);
         assert!(!response.ok);
         let error = response.error.unwrap();
-        assert!(error.contains("invalid setup: parsing setup"));
-        assert!(error.contains("rejected by test adapter"));
+        assert!(error.contains("unknown field `fail_setup`"), "{error}");
+    }
 
-        t.join().unwrap();
+    #[test]
+    fn external_adapter_rejects_invalid_config_type() {
+        let envelope = ExternalEnvelope {
+            version: EXTERNAL_PROTOCOL_VERSION,
+            setup: json!({ "x": "I'm a string" }),
+            request: ExternalRequest::Read {
+                schema: Default::default(),
+                types: vec![],
+                state: Default::default(),
+            },
+        };
+
+        let response: ExternalResponse<Vec<ExternalObject>> = send_to_test_adapter(&envelope);
+        assert!(!response.ok);
+        let error = response.error.unwrap();
+        assert!(
+            error.contains("x: invalid type: string \"I'm a string\", expected i64"),
+            "{error}"
+        );
+    }
+
+    fn read_with_setup(setup: Value) -> ExternalResponse<Vec<ExternalObject>> {
+        send_to_test_adapter(&ExternalEnvelope {
+            version: EXTERNAL_PROTOCOL_VERSION,
+            setup,
+            request: ExternalRequest::Read {
+                schema: Default::default(),
+                types: vec![],
+                state: Default::default(),
+            },
+        })
+    }
+
+    #[test]
+    fn external_adapter_hints_at_yaml11_booleans() {
+        let response = read_with_setup(json!({ "yes_or_no": "Yes" }));
+        assert!(!response.ok);
+        let error = response.error.unwrap();
+        assert!(error.contains("yes_or_no: invalid type"), "{error}");
+        assert!(error.contains("`Yes` is a YAML 1.1 boolean"), "{error}");
+        assert!(error.contains("write `true` instead"), "{error}");
+    }
+
+    #[test]
+    fn external_adapter_gives_no_yaml11_hint_for_other_strings() {
+        let response = read_with_setup(json!({ "yes_or_no": "I'm a string" }));
+        assert!(!response.ok);
+        let error = response.error.unwrap();
+        assert!(error.contains("expected a boolean"), "{error}");
+        assert!(!error.contains("YAML 1.1"), "{error}");
+    }
+
+    #[test]
+    fn external_adapter_hints_only_at_the_failing_value() {
+        let response = read_with_setup(json!({ "yes_or_no": "maybe", "name": "no" }));
+        assert!(!response.ok);
+        let error = response.error.unwrap();
+        assert!(!error.contains("YAML 1.1"), "{error}");
+    }
+
+    #[test]
+    fn external_adapter_hints_at_nested_yaml11_booleans() {
+        let response = read_with_setup(json!({ "tls": { "verify": "off" } }));
+        assert!(!response.ok);
+        let error = response.error.unwrap();
+        assert!(error.contains("tls.verify: invalid type"), "{error}");
+        assert!(error.contains("write `false` instead"), "{error}");
+    }
+
+    #[test]
+    fn external_adapter_accepts_a_real_boolean() {
+        let response = read_with_setup(json!({ "yes_or_no": false }));
+        assert!(response.ok, "{:?}", response.error);
+    }
+
+    #[test]
+    fn external_adapter_rejects_a_setup_that_is_not_a_mapping() {
+        let response = read_with_setup(json!([5, true]));
+        assert!(!response.ok);
+        assert_eq!(
+            response.error.as_deref(),
+            Some("invalid setup: expected a mapping of configuration keys")
+        );
     }
 
     #[test]
     fn external_adapter_outdated() {
-        let adapter = TestExternalAdapter::default();
-
-        let (in_reader, mut in_writer) = std::io::pipe().unwrap();
-        let (out_reader, out_writer) = std::io::pipe().unwrap();
-
-        let t = std::thread::spawn(move || {
-            assert!(run_external_adapter(adapter, (in_reader, out_writer)).is_ok());
-        });
-
         let request = ExternalRequest::EnsureSchema {
             schema: Default::default(),
         };
@@ -1056,13 +1199,7 @@ mod tests {
             request,
         };
 
-        writeln!(in_writer, "{}", serde_json::to_string(&envelope).unwrap()).unwrap();
-        drop(in_writer);
-
-        let mut response = String::new();
-        BufReader::new(out_reader).read_line(&mut response).unwrap();
-
-        let response: ExternalResponse<ProvisionReport> = serde_json::from_str(&response).unwrap();
+        let response: ExternalResponse<ProvisionReport> = send_to_test_adapter(&envelope);
         assert_eq!(
             response.error,
             Some(format!(
@@ -1072,21 +1209,10 @@ mod tests {
             ))
         );
         assert!(!response.ok);
-
-        t.join().unwrap();
     }
 
     #[test]
     fn external_adapter_configuration() {
-        let adapter = TestExternalAdapter::default();
-
-        let (in_reader, mut in_writer) = std::io::pipe().unwrap();
-        let (out_reader, out_writer) = std::io::pipe().unwrap();
-
-        let t = std::thread::spawn(move || {
-            assert!(run_external_adapter(adapter, (in_reader, out_writer)).is_ok());
-        });
-
         let request = ExternalRequest::Read {
             schema: Default::default(),
             types: vec![],
@@ -1100,18 +1226,9 @@ mod tests {
             request,
         };
 
-        writeln!(in_writer, "{}", serde_json::to_string(&envelope).unwrap()).unwrap();
-        drop(in_writer);
-
-        let mut response = String::new();
-        BufReader::new(out_reader).read_line(&mut response).unwrap();
-
-        let response: ExternalResponse<Vec<ExternalObject>> =
-            serde_json::from_str(&response).unwrap();
+        let response: ExternalResponse<Vec<ExternalObject>> = send_to_test_adapter(&envelope);
         assert!(response.ok);
         assert_eq!(response.result.unwrap().len(), MAGIC_NUMBER,);
-
-        t.join().unwrap();
     }
 
     #[test]
@@ -1174,8 +1291,9 @@ mod tests {
         struct EmitOnly;
         impl ExternalAdapter for EmitOnly {
             type Error = anyhow::Error;
+            type Config = Value;
 
-            fn setup(&mut self, _configuration: &Value) -> anyhow::Result<()> {
+            fn setup(&mut self, _configuration: Value) -> anyhow::Result<()> {
                 Ok(())
             }
             fn read(
