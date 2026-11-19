@@ -3617,9 +3617,8 @@ fn apply_plan_refuses_a_report_naming_ops_outside_the_plan() {
             assert_eq!(
                 state.all_mappings(),
                 &before,
-                "a report naming {} {} changed state (resumed: {resumed})",
-                stray.type_name,
-                stray.uid
+                "a stray {} report changed state (resumed: {resumed})",
+                stray.type_name
             );
             let msg = format!("{:#}", result.expect_err("stray report accepted"));
             assert!(
