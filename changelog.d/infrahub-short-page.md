@@ -1,0 +1,1 @@
+- infrahub: a read ends on a page shorter than the page size, so a response that omits or zeroes `count` no longer pages forever

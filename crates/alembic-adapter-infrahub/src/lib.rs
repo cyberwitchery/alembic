@@ -190,9 +190,8 @@ impl InfrahubAdapter {
                 .cloned()
                 .unwrap_or_default();
 
-            if edges.is_empty() {
-                break;
-            }
+            // a short page is the last one, whatever `count` says.
+            let last_page = edges.len() < limit;
 
             for edge in edges {
                 let node = edge
@@ -210,7 +209,7 @@ impl InfrahubAdapter {
 
             let count = connection.get("count").and_then(Value::as_u64).unwrap_or(0) as usize;
             offset += limit;
-            if count > 0 && offset >= count {
+            if last_page || (count > 0 && offset >= count) {
                 break;
             }
         }
@@ -3514,6 +3513,79 @@ schema { query: Query }
             assert!(chain.contains("`attrs:`"), "{chain}");
             assert!(chain.contains("missing key field name"), "{chain}");
         }
+    }
+
+    #[tokio::test]
+    async fn read_ends_on_a_short_page_without_a_usable_count() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/schema.graphql");
+            then.status(200).body(GRAPHQL_SCHEMA);
+        });
+        // a response that omits or zeroes `count` still ends on its short page.
+        let pages = server.mock(|when, then| {
+            when.method(POST).path("/graphql").body_includes("DcimSite");
+            then.status(200).json_body(json!({
+                "data": { "DcimSite": { "count": 0, "edges": [
+                    { "node": { "id": "site-1", "hfid": "site-1", "name": { "value": "Site A" } } }
+                ] } },
+                "errors": []
+            }));
+        });
+
+        let adapter = InfrahubAdapter::new(&server.base_url(), "token", None).unwrap();
+        let state = StateStore::new(None, StateData::default());
+        let read = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            adapter.read(&name_keyed_site_schema(), &[], &state),
+        )
+        .await;
+
+        assert!(read.is_ok(), "still paging after {} pages", pages.calls());
+        assert_eq!(read.unwrap().unwrap().len(), 1);
+        assert_eq!(pages.calls(), 1);
+    }
+
+    #[tokio::test]
+    async fn read_follows_a_full_page_without_a_usable_count() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/schema.graphql");
+            then.status(200).body(GRAPHQL_SCHEMA);
+        });
+        let full: Vec<Value> = (0..200)
+            .map(|i| json!({ "node": { "id": format!("site-{i}"), "hfid": format!("site-{i}"), "name": { "value": format!("Site {i}") } } }))
+            .collect();
+        let first = server.mock(|when, then| {
+            when.method(POST)
+                .path("/graphql")
+                .body_includes("\"offset\":0");
+            then.status(200).json_body(json!({
+                "data": { "DcimSite": { "edges": full } },
+                "errors": []
+            }));
+        });
+        let second = server.mock(|when, then| {
+            when.method(POST)
+                .path("/graphql")
+                .body_includes("\"offset\":200");
+            then.status(200).json_body(json!({
+                "data": { "DcimSite": { "edges": [
+                    { "node": { "id": "site-200", "hfid": "site-200", "name": { "value": "Site 200" } } }
+                ] } },
+                "errors": []
+            }));
+        });
+
+        let adapter = InfrahubAdapter::new(&server.base_url(), "token", None).unwrap();
+        let state = StateStore::new(None, StateData::default());
+        let observed = adapter
+            .read(&name_keyed_site_schema(), &[], &state)
+            .await
+            .unwrap();
+
+        assert_eq!(observed.len(), 201);
+        assert_eq!((first.calls(), second.calls()), (1, 1));
     }
 
     #[tokio::test]
