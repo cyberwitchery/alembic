@@ -3,7 +3,7 @@ use crate::sort_ops_for_apply;
 use crate::types::{Backend, Effects, ObservedState, Observer, Plan, CANNOT_OBSERVE};
 use crate::StateStore;
 use alembic_adapter_sdk::{ApplyReport, Op, ProvisionReport};
-use alembic_core::{Inventory, TypeName};
+use alembic_core::{Inventory, TypeName, Uid};
 use anyhow::{anyhow, Result};
 use std::collections::BTreeSet;
 
@@ -188,6 +188,27 @@ pub fn guard_drift_report(backend: &Backend) -> Result<()> {
     }
 }
 
+/// refuse a write report naming an op the write was not handed. every entry goes
+/// into state, so one outside the plan would rebind an object nothing planned.
+fn guard_report_ops(ops: &[Op], report: &ApplyReport) -> Result<()> {
+    let planned: BTreeSet<(&TypeName, Uid)> =
+        ops.iter().map(|op| (op.type_name(), op.uid())).collect();
+    let stray: Vec<String> = report
+        .resumed
+        .iter()
+        .chain(&report.applied)
+        .filter(|applied| !planned.contains(&(&applied.type_name, applied.uid)))
+        .map(|applied| format!("{} {}", applied.type_name, applied.uid))
+        .collect();
+    if stray.is_empty() {
+        return Ok(());
+    }
+    Err(anyhow!(
+        "the backend reported ops this plan does not hold, so state is left as it was:\n{}",
+        bullet_list(&stray)
+    ))
+}
+
 pub(crate) async fn apply(
     backend: &Backend,
     plan: &Plan,
@@ -229,6 +250,7 @@ pub(crate) async fn apply(
     // write provisions too: tags come from the plan's ops, so only the write pass
     // knows them. merging keeps both passes instead of the schema pass winning.
     report.provision.merge(provision);
+    guard_report_ops(&ordered, &report)?;
 
     // ops an interrupted run applied: their mappings exist nowhere else, since it
     // never reached a state save. only ever set one, never clear on a `None` -- a

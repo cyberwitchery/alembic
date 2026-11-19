@@ -232,6 +232,10 @@ an update without a `backend_id` targets an object a create earlier in the same
 `ops` made: the plan breaks a reference cycle that way (`docs/engine.md`, apply
 ordering), so resolve its id the way a later create resolves a ref to it.
 
+every `applied` and `resumed` entry names an op from the request by its `uid` and
+`type_name`. the host refuses a result naming any other, and saves no state for
+that apply.
+
 the result's keys are optional the same way, so a write that applied nothing
 answers `{}`. apply sends the method on every run, including a converged one whose
 plan carries no ops.

@@ -2094,7 +2094,13 @@ fn apply_plan_updates_state() {
     ];
     for backend in backends {
         let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
-        futures::executor::block_on(apply_plan(&backend, &empty_plan(), &mut state, true)).unwrap();
+        futures::executor::block_on(apply_plan(
+            &backend,
+            &plan_of(vec![create_site(uid(1))]),
+            &mut state,
+            true,
+        ))
+        .unwrap();
         assert_eq!(
             state.backend_id(t("dcim.site"), uid(1)),
             Some(BackendId::Int(55))
@@ -2170,16 +2176,7 @@ fn apply_plan_clears_state_for_deleted_op() {
     };
     let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
     state.set_backend_id(t("dcim.site"), uid(1), BackendId::Int(55));
-    let plan = Plan {
-        schema: Schema {
-            types: BTreeMap::new(),
-        },
-        ops: vec![],
-        summary: None,
-        schema_preview: None,
-        effects: None,
-        adopt_by_key: None,
-    };
+    let plan = plan_of(vec![delete_site(uid(1))]);
     let backend = Backend::Adapter(Box::new(adapter));
     futures::executor::block_on(apply_plan(&backend, &plan, &mut state, true)).unwrap();
     assert_eq!(state.backend_id(t("dcim.site"), uid(1)), None);
@@ -2203,16 +2200,7 @@ fn apply_plan_recovers_state_mappings_for_resumed_ops() {
         },
     };
     let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
-    let plan = Plan {
-        schema: Schema {
-            types: BTreeMap::new(),
-        },
-        ops: vec![],
-        summary: None,
-        schema_preview: None,
-        effects: None,
-        adopt_by_key: None,
-    };
+    let plan = plan_of(vec![create_site(uid(1))]);
     let backend = Backend::Adapter(Box::new(adapter));
     futures::executor::block_on(apply_plan(&backend, &plan, &mut state, true)).unwrap();
     assert_eq!(
@@ -2239,16 +2227,7 @@ fn apply_plan_keeps_the_mapping_a_resumed_op_has_no_id_for() {
     };
     let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
     state.set_backend_id(t("dcim.site"), uid(1), BackendId::Int(55));
-    let plan = Plan {
-        schema: Schema {
-            types: BTreeMap::new(),
-        },
-        ops: vec![],
-        summary: None,
-        schema_preview: None,
-        effects: None,
-        adopt_by_key: None,
-    };
+    let plan = plan_of(vec![create_site(uid(1))]);
     let backend = Backend::Adapter(Box::new(adapter));
     futures::executor::block_on(apply_plan(&backend, &plan, &mut state, true)).unwrap();
     assert_eq!(
@@ -2313,6 +2292,31 @@ fn empty_plan() -> Plan {
         schema_preview: None,
         effects: None,
         adopt_by_key: None,
+    }
+}
+
+fn plan_of(ops: Vec<Op>) -> Plan {
+    Plan {
+        ops,
+        ..empty_plan()
+    }
+}
+
+fn create_site(uid: Uid) -> Op {
+    Op::Create {
+        uid,
+        type_name: t("dcim.site"),
+        desired: obj(uid, "dcim.site", "site=fra1", json!({})),
+    }
+}
+
+fn delete_site(uid: Uid) -> Op {
+    Op::Delete {
+        uid,
+        type_name: t("dcim.site"),
+        key: key_str("site=fra1"),
+        backend_id: None,
+        refs: Default::default(),
     }
 }
 
@@ -3555,4 +3559,73 @@ fn guard_stale_plan_re_diffs_a_bound_object_under_a_no_adopt_plan() {
         msg.contains(r#"dcim.site {"slug":"fra1"}: `name` is "C", planned against "A""#),
         "{msg}"
     );
+}
+
+#[test]
+fn apply_plan_refuses_a_report_naming_ops_outside_the_plan() {
+    // the plan updates fra1 alone. a report that also names ber1, or a type the
+    // plan never touched, would rebind identity for objects nothing planned.
+    let update_fra1 = Op::Update {
+        uid: uid(1),
+        type_name: t("dcim.site"),
+        desired: obj(uid(1), "dcim.site", "site=fra1", json!({})),
+        changes: vec![],
+        backend_id: Some(BackendId::Int(2)),
+    };
+    let plan = plan_of(vec![update_fra1]);
+    let reports = [
+        AppliedOp {
+            uid: uid(2),
+            type_name: t("dcim.site"),
+            backend_id: Some(BackendId::Int(2)),
+        },
+        AppliedOp {
+            uid: uid(1),
+            type_name: t("not.in.schema"),
+            backend_id: Some(BackendId::Int(42)),
+        },
+    ];
+    for stray in reports {
+        for resumed in [false, true] {
+            let honest = AppliedOp {
+                uid: uid(1),
+                type_name: t("dcim.site"),
+                backend_id: Some(BackendId::Int(2)),
+            };
+            let entries = vec![honest, stray.clone()];
+            let report = if resumed {
+                ApplyReport {
+                    resumed: entries,
+                    ..Default::default()
+                }
+            } else {
+                ApplyReport {
+                    applied: entries,
+                    ..Default::default()
+                }
+            };
+            let backend = Backend::Adapter(Box::new(TestAdapter {
+                observed: ObservedState::default(),
+                report,
+            }));
+            let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
+            state.set_backend_id(t("dcim.site"), uid(1), BackendId::Int(2));
+            state.set_backend_id(t("dcim.site"), uid(2), BackendId::Int(1));
+            let before = state.all_mappings().clone();
+            let result =
+                futures::executor::block_on(apply_plan(&backend, &plan, &mut state, false));
+            assert_eq!(
+                state.all_mappings(),
+                &before,
+                "a report naming {} {} changed state (resumed: {resumed})",
+                stray.type_name,
+                stray.uid
+            );
+            let msg = format!("{:#}", result.expect_err("stray report accepted"));
+            assert!(
+                msg.contains(&format!("{} {}", stray.type_name, stray.uid)),
+                "{msg}"
+            );
+        }
+    }
 }

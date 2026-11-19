@@ -1,0 +1,1 @@
+- apply: a write report naming an op the plan does not hold (another uid, or the same uid under another type) is refused and leaves state unchanged, instead of rebinding objects outside the plan or the `--only` selection
