@@ -8,7 +8,8 @@
 
 use crate::types::Plan;
 use alembic_adapter_sdk::Op;
-use alembic_core::key_string;
+use alembic_core::{key_string, Key, TypeName, Uid};
+use std::collections::BTreeMap;
 use std::fmt::Write;
 
 /// how many operations to list per category before truncating the tail.
@@ -18,8 +19,8 @@ const MAX_LISTED: usize = 50;
 /// header, then each op grouped under create / update / delete with its type and
 /// human key (and per-field `from -> to` for updates). a uid planned as one
 /// create and one delete under different types is one logical object changing
-/// its materialization, so the pair is rendered as a retype rather than as two
-/// unrelated operations. long categories are truncated with an `... and N more`
+/// its materialization, so the pair is rendered as one retype line naming both
+/// the old and the new type and key. long categories are truncated with an `... and N more`
 /// line so a large plan stays readable.
 pub fn render_plan(plan: &Plan) -> String {
     let retyped = retype_pairs(&plan.ops);
@@ -39,9 +40,10 @@ pub fn render_plan(plan: &Plan) -> String {
             } => {
                 create_count += 1;
                 match retyped.get(uid) {
-                    Some(old_type) => retype.push(format!(
-                        "  {} -> {} {}",
+                    Some((old_type, old_key)) => retype.push(format!(
+                        "  {} {} -> {} {}",
                         old_type,
+                        key_string(old_key),
                         type_name,
                         key_string(&desired.key)
                     )),
@@ -113,18 +115,20 @@ pub fn render_plan(plan: &Plan) -> String {
 }
 
 /// the uids planned as exactly one create and one delete under two different
-/// types, mapped to the type being left behind. identity is the uid alone, so
-/// such a pair is one logical object re-materialized, not two objects.
-fn retype_pairs(
-    ops: &[Op],
-) -> std::collections::BTreeMap<alembic_core::Uid, alembic_core::TypeName> {
-    use std::collections::BTreeMap;
-    let mut creates: BTreeMap<alembic_core::Uid, Vec<&alembic_core::TypeName>> = BTreeMap::new();
-    let mut deletes: BTreeMap<alembic_core::Uid, Vec<&alembic_core::TypeName>> = BTreeMap::new();
+/// types, mapped to the type and key being left behind. identity is the uid
+/// alone, so such a pair is one logical object re-materialized, not two objects.
+fn retype_pairs(ops: &[Op]) -> BTreeMap<Uid, (&TypeName, &Key)> {
+    let mut creates: BTreeMap<Uid, Vec<&TypeName>> = BTreeMap::new();
+    let mut deletes: BTreeMap<Uid, Vec<(&TypeName, &Key)>> = BTreeMap::new();
     for op in ops {
         match op {
             Op::Create { uid, type_name, .. } => creates.entry(*uid).or_default().push(type_name),
-            Op::Delete { uid, type_name, .. } => deletes.entry(*uid).or_default().push(type_name),
+            Op::Delete {
+                uid,
+                type_name,
+                key,
+                ..
+            } => deletes.entry(*uid).or_default().push((type_name, key)),
             Op::Update { .. } => {}
         }
     }
@@ -133,7 +137,7 @@ fn retype_pairs(
         .filter_map(
             |(uid, created)| match (created.as_slice(), deletes.get(&uid)) {
                 ([created], Some(deleted)) => match deleted.as_slice() {
-                    [deleted] if **deleted != **created => Some((uid, (*deleted).clone())),
+                    [deleted] if deleted.0 != *created => Some((uid, *deleted)),
                     _ => None,
                 },
                 _ => None,
@@ -147,8 +151,7 @@ mod tests {
     use super::*;
     use crate::types::Plan;
     use alembic_adapter_sdk::FieldChange;
-    use alembic_core::{Key, Object, Schema, TypeName, Uid};
-    use std::collections::BTreeMap;
+    use alembic_core::{Object, Schema};
 
     fn key(v: &str) -> Key {
         Key::from(BTreeMap::from([(
@@ -250,10 +253,39 @@ mod tests {
             "{out}"
         );
         assert!(out.contains("retype"), "{out}");
-        assert!(out.contains("dcim.site -> location.site"), "{out}");
+        assert!(
+            out.contains("dcim.site {\"name\":\"fra1\"} -> location.site {\"name\":\"fra1\"}"),
+            "{out}"
+        );
         // the pair is one event: it does not repeat under create:/delete:.
         assert!(!out.contains("\ncreate:"), "{out}");
         assert!(!out.contains("\ndelete:"), "{out}");
+    }
+
+    /// the retype line names the object apply deletes, so a retype that also
+    /// changes the key cannot hide which object goes.
+    #[test]
+    fn a_retype_names_the_deleted_objects_key() {
+        let plan = plan_of(vec![
+            Op::Delete {
+                uid: Uid::from_u128(1),
+                type_name: TypeName::new("dcim.device"),
+                key: key("core-router-1"),
+                backend_id: None,
+                refs: Default::default(),
+            },
+            Op::Create {
+                uid: Uid::from_u128(1),
+                type_name: TypeName::new("dcim.site"),
+                desired: object(1, "dcim.site", "lab-spare"),
+            },
+        ]);
+        assert_eq!(
+            render_plan(&plan),
+            "plan: 1 to create, 0 to update, 1 to delete\n\n\
+             retype (create the new materialization, then delete the old):\n  \
+             dcim.device {\"name\":\"core-router-1\"} -> dcim.site {\"name\":\"lab-spare\"}"
+        );
     }
 
     /// a delete and a create sharing a uid under the *same* type is not a

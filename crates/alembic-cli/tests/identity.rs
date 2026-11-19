@@ -323,7 +323,10 @@ fn a_same_uid_type_change_renders_as_a_retype() {
     assert!(output.status.success(), "{}", stderr(&output));
     let out = stdout(&output);
     assert!(out.contains("retype"), "{out}");
-    assert!(out.contains("dcim.site -> location.site"), "{out}");
+    assert!(
+        out.contains("dcim.site {\"slug\":\"fra1\"} -> location.site {\"slug\":\"fra1\"}"),
+        "{out}"
+    );
     assert!(
         out.contains("plan: 1 to create, 0 to update, 1 to delete"),
         "{out}"

@@ -121,11 +121,11 @@ id.
 
 declaring an object under a new type with the same uid re-materializes it: the
 logical object survives, the backend copy cannot (a type is a table). the plan
-renders the pair as a retype:
+renders the pair as a retype, naming the object deleted and the one created:
 
 ```
 retype (create the new materialization, then delete the old):
-  dcim.site -> location.site {"slug":"fra1"}
+  dcim.site {"slug":"fra1"} -> location.site {"slug":"fra1"}
 ```
 
 apply is not atomic: the create lands first, then the delete, and both

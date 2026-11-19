@@ -1,0 +1,1 @@
+- plan: a retype line names the deleted object's key as well as its type, so a retype that also changes the key shows which object apply deletes
