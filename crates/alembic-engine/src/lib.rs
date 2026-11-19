@@ -35,9 +35,10 @@ mod tests;
 
 pub use adapter_ops::{
     backend_id_from_value, build_key_from_schema, build_request_body, collect_tag_names,
-    normalize_attrs_refs, query_filters_from_key, resolve_nested_ref_uid,
+    describe_missing_refs, normalize_attrs_refs, query_filters_from_key, resolve_nested_ref_uid,
     resolve_ref_keyed_identity, resolve_value_for_type, resolved_ids_from_state,
     resolved_ids_identity, state_mappings_by_id, state_mappings_from_state, RawNode, RefMappings,
+    ResolvedIds,
 };
 pub use alembic_adapter_sdk::journal::Journal;
 pub use apply_retry::apply_non_delete_journaled;

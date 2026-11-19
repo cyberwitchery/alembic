@@ -4,11 +4,12 @@ use alembic_adapter_sdk::apply_retry::{is_missing_ref_error, RetryApplyDriver};
 use alembic_adapter_sdk::{
     http_unavailable, AppliedOp, ApplyReport, BackendId, Op, ProvisionReport,
 };
-use alembic_core::{key_string, FieldType, JsonMap, Key, Schema, TypeName, Uid};
+use alembic_core::{key_string, FieldType, JsonMap, Key, Schema, TypeName};
 use alembic_engine::{
-    apply_non_delete_journaled, build_key_from_schema, normalize_attrs_refs,
+    apply_non_delete_journaled, build_key_from_schema, describe_missing_refs, normalize_attrs_refs,
     resolve_ref_keyed_identity, resolve_value_for_type, resolved_ids_identity,
-    state_mappings_from_state, Adapter, Emitter, ObservedState, Observer, RawNode, StateStore,
+    state_mappings_from_state, Adapter, Emitter, ObservedState, Observer, RawNode, ResolvedIds,
+    StateStore,
 };
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
@@ -222,7 +223,7 @@ impl InfrahubAdapter {
         &self,
         op: &Op,
         schema: &Schema,
-        resolved: &mut BTreeMap<Uid, BackendId>,
+        resolved: &mut ResolvedIds<BackendId>,
     ) -> Result<AppliedOp> {
         let (uid, type_name, desired) = match op {
             Op::Create {
@@ -266,7 +267,7 @@ impl InfrahubAdapter {
                             "create already exists; using existing object"
                         );
                         let backend_id = BackendId::String(existing);
-                        resolved.insert(uid, backend_id.clone());
+                        resolved.insert(type_name.as_str(), uid, backend_id.clone());
                         return Ok(AppliedOp {
                             uid,
                             type_name: type_name.clone(),
@@ -300,7 +301,7 @@ impl InfrahubAdapter {
             .to_string();
 
         let backend_id = BackendId::String(backend_id);
-        resolved.insert(uid, backend_id.clone());
+        resolved.insert(type_name.as_str(), uid, backend_id.clone());
 
         Ok(AppliedOp {
             uid,
@@ -313,7 +314,7 @@ impl InfrahubAdapter {
         &self,
         op: &Op,
         schema: &Schema,
-        resolved: &BTreeMap<Uid, BackendId>,
+        resolved: &ResolvedIds<BackendId>,
     ) -> Result<AppliedOp> {
         let (uid, type_name, desired, backend_id) = match op {
             Op::Update {
@@ -333,7 +334,7 @@ impl InfrahubAdapter {
 
         let id = if let Some(BackendId::String(id)) = backend_id {
             id.clone()
-        } else if let Some(BackendId::String(id)) = resolved.get(&uid) {
+        } else if let Some(BackendId::String(id)) = resolved.get(type_name.as_str(), &uid) {
             id.clone()
         } else {
             let key = key_from_inventory(type_schema, desired, type_name)?;
@@ -367,7 +368,7 @@ impl InfrahubAdapter {
         &self,
         op: &Op,
         schema: &Schema,
-        resolved: &BTreeMap<Uid, BackendId>,
+        resolved: &ResolvedIds<BackendId>,
     ) -> Result<AppliedOp> {
         let (uid, type_name, backend_id, key) = match op {
             Op::Delete {
@@ -387,7 +388,7 @@ impl InfrahubAdapter {
 
         let id = if let Some(BackendId::String(id)) = backend_id {
             Some(id.clone())
-        } else if let Some(BackendId::String(id)) = resolved.get(&uid) {
+        } else if let Some(BackendId::String(id)) = resolved.get(type_name.as_str(), &uid) {
             Some(id.clone())
         } else {
             self.find_backend_id(type_name, type_schema, key, resolved)
@@ -450,7 +451,7 @@ impl InfrahubAdapter {
         type_name: &TypeName,
         type_schema: &alembic_core::TypeSchema,
         key: &Key,
-        resolved: &BTreeMap<Uid, BackendId>,
+        resolved: &ResolvedIds<BackendId>,
     ) -> Result<Option<String>> {
         let target_key = key_in_backend_id_space(type_schema, key, resolved)?;
         let schema_info = self.load_schema_info().await?;
@@ -489,7 +490,7 @@ impl InfrahubAdapter {
         type_name: &TypeName,
         type_schema: &alembic_core::TypeSchema,
         key: &Key,
-        resolved: &BTreeMap<Uid, BackendId>,
+        resolved: &ResolvedIds<BackendId>,
     ) -> Result<String> {
         self.find_backend_id(type_name, type_schema, key, resolved)
             .await?
@@ -716,8 +717,8 @@ impl Emitter for InfrahubAdapter {
         let mut applied = Vec::new();
         let mut resolved = resolved_ids_identity(state);
         for op in ops {
-            if let Op::Create { uid, .. } = op {
-                resolved.remove(uid);
+            if let Op::Create { uid, type_name, .. } = op {
+                resolved.remove(type_name.as_str(), uid);
             }
         }
         let mut creates_updates = Vec::new();
@@ -732,7 +733,7 @@ impl Emitter for InfrahubAdapter {
         struct ApplyDriver<'a> {
             adapter: &'a InfrahubAdapter,
             schema: &'a Schema,
-            resolved: &'a mut BTreeMap<Uid, BackendId>,
+            resolved: &'a mut ResolvedIds<BackendId>,
         }
 
         #[async_trait]
@@ -762,7 +763,8 @@ impl Emitter for InfrahubAdapter {
             fn resume(&mut self, resumed: &[AppliedOp]) {
                 for op in resumed {
                     if let Some(backend_id) = &op.backend_id {
-                        self.resolved.insert(op.uid, backend_id.clone());
+                        self.resolved
+                            .insert(op.type_name.as_str(), op.uid, backend_id.clone());
                     }
                 }
             }
@@ -776,14 +778,18 @@ impl Emitter for InfrahubAdapter {
         let (retry_result, previously_applied_count, journal) =
             apply_non_delete_journaled(state, "infrahub", &creates_updates, &mut driver).await?;
         if !retry_result.pending.is_empty() {
-            let missing = describe_missing_refs(&retry_result.pending, &resolved);
+            let missing = describe_missing_refs(&retry_result.pending, schema, &resolved);
             return Err(anyhow!("unresolved references: {missing}"));
         }
 
         let resumed = retry_result.resumed;
         for applied_op in retry_result.applied {
             if let Some(backend_id) = &applied_op.backend_id {
-                resolved.insert(applied_op.uid, backend_id.clone());
+                resolved.insert(
+                    applied_op.type_name.as_str(),
+                    applied_op.uid,
+                    backend_id.clone(),
+                );
             }
             applied.push(applied_op);
         }
@@ -2078,7 +2084,7 @@ fn field_schema_for<'a>(
 fn build_input(
     attrs: &JsonMap,
     type_schema: &alembic_core::TypeSchema,
-    resolved: &BTreeMap<Uid, BackendId>,
+    resolved: &ResolvedIds<BackendId>,
 ) -> Result<Value> {
     let mut map = Map::new();
     for (field, value) in attrs.iter() {
@@ -2141,7 +2147,7 @@ fn key_from_inventory(
 fn key_in_backend_id_space(
     type_schema: &alembic_core::TypeSchema,
     key: &Key,
-    resolved: &BTreeMap<Uid, BackendId>,
+    resolved: &ResolvedIds<BackendId>,
 ) -> Result<Key> {
     let mut map = BTreeMap::new();
     for (field, value) in key.iter() {
@@ -2224,45 +2230,6 @@ fn validate_value(field: &str, field_type: &FieldType, value: &Value) -> Result<
     Ok(())
 }
 
-// kept local, not the engine's deep collector: infrahub graphql refs are flat
-// uid strings/arrays, so this stays shallow (see #174).
-fn describe_missing_refs(ops: &[Op], resolved: &BTreeMap<Uid, BackendId>) -> String {
-    let mut missing = BTreeSet::new();
-    for op in ops {
-        if let Op::Create { desired, .. } | Op::Update { desired, .. } = op {
-            for value in desired.attrs.values() {
-                for uid in extract_ref_uids(value) {
-                    if !resolved.contains_key(&uid) {
-                        missing.insert(uid);
-                    }
-                }
-            }
-            // ref-typed key fields dangle here too (infrahub keys by relationships,
-            // e.g. an interface keyed by (device, name)); scan them like the engine.
-            for value in desired.key.values() {
-                for uid in extract_ref_uids(value) {
-                    if !resolved.contains_key(&uid) {
-                        missing.insert(uid);
-                    }
-                }
-            }
-        }
-    }
-    missing
-        .into_iter()
-        .map(|uid| uid.to_string())
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
-fn extract_ref_uids(value: &Value) -> Vec<Uid> {
-    match value {
-        Value::String(raw) => Uid::parse_str(raw).ok().into_iter().collect(),
-        Value::Array(items) => items.iter().flat_map(extract_ref_uids).collect(),
-        _ => Vec::new(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::{bound_ids, node_query};
@@ -2314,9 +2281,9 @@ mod tests {
     }
 
     use super::*;
-    use alembic_adapter_sdk::{AdapterApplyError, StateData};
+    use alembic_adapter_sdk::StateData;
     use alembic_core::{
-        key_string, FieldSchema, FieldType, JsonMap, Key, Object, Schema, TypeName, TypeSchema,
+        key_string, FieldSchema, FieldType, JsonMap, Key, Object, Schema, TypeName, TypeSchema, Uid,
     };
     use alembic_engine::StateStore;
     use httpmock::prelude::*;
@@ -2880,10 +2847,10 @@ schema { query: Query }
             ),
         ]));
 
-        let mut resolved = BTreeMap::new();
-        resolved.insert(uid_parent, BackendId::String("p1".to_string()));
-        resolved.insert(uid_tag_a, BackendId::String("t1".to_string()));
-        resolved.insert(uid_tag_b, BackendId::String("t2".to_string()));
+        let mut resolved = ResolvedIds::default();
+        resolved.insert("dcim.site", uid_parent, BackendId::String("p1".to_string()));
+        resolved.insert("dcim.tag", uid_tag_a, BackendId::String("t1".to_string()));
+        resolved.insert("dcim.tag", uid_tag_b, BackendId::String("t2".to_string()));
 
         let input = build_input(&attrs, &type_schema, &resolved).unwrap();
         assert_eq!(
@@ -2923,7 +2890,7 @@ schema { query: Query }
             ("parent".to_string(), Value::Null),
         ]));
 
-        let resolved: BTreeMap<Uid, BackendId> = BTreeMap::new();
+        let resolved: ResolvedIds<BackendId> = ResolvedIds::default();
         let input = build_input(&attrs, &type_schema, &resolved).unwrap();
         assert_eq!(
             input,
@@ -2931,79 +2898,6 @@ schema { query: Query }
                 "description": {"value": null},
                 "parent": null,
             })
-        );
-    }
-
-    #[test]
-    fn describe_missing_refs_reports_unresolved() {
-        let uid_present = Uid::parse_str("00000000-0000-0000-0000-000000000020").unwrap();
-        let uid_missing = Uid::parse_str("00000000-0000-0000-0000-000000000021").unwrap();
-
-        // the dangling uid is reachable only through the array, and not as its first element.
-        let attrs = JsonMap::from(BTreeMap::from([(
-            "refs".to_string(),
-            json!([uid_present.to_string(), uid_missing.to_string()]),
-        )]));
-
-        let key = Key::from(BTreeMap::from([("name".to_string(), json!("site"))]));
-        let obj = Object {
-            uid: uid_present,
-            type_name: TypeName::new("dcim.site"),
-            key,
-            attrs,
-            source: None,
-        };
-
-        let op = Op::Create {
-            uid: uid_present,
-            type_name: TypeName::new("dcim.site"),
-            desired: obj,
-        };
-
-        let mut resolved = BTreeMap::new();
-        resolved.insert(uid_present, BackendId::String("ok".to_string()));
-
-        let missing = describe_missing_refs(&[op], &resolved);
-        assert!(
-            missing.contains(&uid_missing.to_string()),
-            "every unresolved uid in a list ref should be named in the diagnostic, got {missing:?}"
-        );
-
-        let err = anyhow::Error::new(AdapterApplyError::MissingRef { uid: uid_missing });
-        assert!(is_missing_ref_error(err.as_ref()));
-    }
-
-    #[test]
-    fn describe_missing_refs_reports_unresolved_key_ref() {
-        // an object keyed by a relationship field (e.g. an interface keyed by
-        // (device, name)) whose only dangling ref lives in the key: the diagnostic
-        // must still name it, mirroring the engine's key-values scan.
-        let uid_interface = Uid::parse_str("00000000-0000-0000-0000-000000000022").unwrap();
-        let uid_device = Uid::parse_str("00000000-0000-0000-0000-000000000023").unwrap();
-
-        let key = Key::from(BTreeMap::from([
-            ("device".to_string(), json!(uid_device.to_string())),
-            ("name".to_string(), json!("eth0")),
-        ]));
-        let obj = Object {
-            uid: uid_interface,
-            type_name: TypeName::new("dcim.interface"),
-            key,
-            attrs: JsonMap::default(),
-            source: None,
-        };
-
-        let op = Op::Create {
-            uid: uid_interface,
-            type_name: TypeName::new("dcim.interface"),
-            desired: obj,
-        };
-
-        let resolved: BTreeMap<Uid, BackendId> = BTreeMap::new();
-        let missing = describe_missing_refs(&[op], &resolved);
-        assert!(
-            missing.contains(&uid_device.to_string()),
-            "unresolved key ref should be named in the diagnostic, got {missing:?}"
         );
     }
 
@@ -3740,7 +3634,7 @@ schema { query: Query }
                 &TypeName::new("dcim.site"),
                 &type_schema,
                 &key,
-                &BTreeMap::new(),
+                &ResolvedIds::default(),
             )
             .await
             .unwrap();
@@ -3769,8 +3663,12 @@ schema { query: Query }
         );
 
         let uid_device = Uid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
-        let mut resolved = BTreeMap::new();
-        resolved.insert(uid_device, BackendId::String("dev-1".to_string()));
+        let mut resolved = ResolvedIds::default();
+        resolved.insert(
+            "dcim.device",
+            uid_device,
+            BackendId::String("dev-1".to_string()),
+        );
 
         let key = Key::from(BTreeMap::from([
             ("device".to_string(), json!(uid_device.to_string())),
@@ -3847,8 +3745,12 @@ schema { query: Query }
             ("name".to_string(), json!("Site Z")),
             ("parent".to_string(), json!(uid_parent.to_string())),
         ]));
-        let mut resolved = BTreeMap::new();
-        resolved.insert(uid_parent, BackendId::String("parent-7".to_string()));
+        let mut resolved = ResolvedIds::default();
+        resolved.insert(
+            "dcim.site",
+            uid_parent,
+            BackendId::String("parent-7".to_string()),
+        );
 
         let id = adapter
             .find_backend_id(&TypeName::new("dcim.site"), &type_schema, &key, &resolved)

@@ -56,7 +56,7 @@ pub fn collect_tag_names(
 pub fn build_request_body<Id, F>(
     type_schema: &TypeSchema,
     attrs: &JsonMap,
-    resolved: &BTreeMap<Uid, Id>,
+    resolved: &ResolvedIds<Id>,
     encode_ref: F,
 ) -> Result<Value>
 where
@@ -83,15 +83,17 @@ where
 pub fn resolve_value_for_type<Id, F>(
     field_type: &FieldType,
     value: Value,
-    resolved: &BTreeMap<Uid, Id>,
+    resolved: &ResolvedIds<Id>,
     encode_ref: F,
 ) -> Result<Value>
 where
     F: Fn(&Id) -> Value + Copy,
 {
     match field_type {
-        FieldType::Ref { .. } => resolve_ref_value(value, resolved, encode_ref),
-        FieldType::ListRef { .. } => resolve_list_ref_value(value, resolved, encode_ref),
+        FieldType::Ref { target } => resolve_ref_value(target, value, resolved, encode_ref),
+        FieldType::ListRef { target } => {
+            resolve_list_ref_value(target, value, resolved, encode_ref)
+        }
         FieldType::List { item } => resolve_list_value(item, value, resolved, encode_ref),
         FieldType::Map { value: inner } => resolve_map_value(inner, value, resolved, encode_ref),
         // scalar leaves pass through unchanged; enumerated explicitly so a new
@@ -118,7 +120,7 @@ where
 pub fn query_filters_from_key<Id>(
     type_schema: &TypeSchema,
     key: &Key,
-    resolved: &BTreeMap<Uid, Id>,
+    resolved: &ResolvedIds<Id>,
 ) -> Result<Vec<(String, String)>>
 where
     Id: ToString,
@@ -134,32 +136,38 @@ where
     Ok(filters)
 }
 
-/// resolve a ref value (a uuid string) to its backend id in `resolved`, shared by
-/// `resolve_ref_value` and `resolve_query_ref`; a missing mapping yields `MissingRef`.
-fn resolve_ref_id<'a, Id>(value: &Value, resolved: &'a BTreeMap<Uid, Id>) -> Result<&'a Id> {
+/// resolve a ref value (a uuid string) to its backend id under `target`, shared
+/// by `resolve_ref_value` and `resolve_query_ref`; a missing mapping yields `MissingRef`.
+fn resolve_ref_id<'a, Id>(
+    target: &str,
+    value: &Value,
+    resolved: &'a ResolvedIds<Id>,
+) -> Result<&'a Id> {
     let Value::String(raw) = value else {
         return Err(anyhow!("ref value must be a uuid string"));
     };
     let uid = Uid::parse_str(raw).map_err(|_| anyhow!("ref value is not a uuid: {raw}"))?;
     resolved
-        .get(&uid)
+        .get(target, &uid)
         .ok_or_else(|| AdapterApplyError::MissingRef { uid }.into())
 }
 
 fn resolve_ref_value<Id, F>(
+    target: &str,
     value: Value,
-    resolved: &BTreeMap<Uid, Id>,
+    resolved: &ResolvedIds<Id>,
     encode_ref: F,
 ) -> Result<Value>
 where
     F: Fn(&Id) -> Value + Copy,
 {
-    Ok(encode_ref(resolve_ref_id(&value, resolved)?))
+    Ok(encode_ref(resolve_ref_id(target, &value, resolved)?))
 }
 
 fn resolve_list_ref_value<Id, F>(
+    target: &str,
     value: Value,
-    resolved: &BTreeMap<Uid, Id>,
+    resolved: &ResolvedIds<Id>,
     encode_ref: F,
 ) -> Result<Value>
 where
@@ -170,7 +178,7 @@ where
     };
     let mut out = Vec::with_capacity(items.len());
     for item in items {
-        out.push(resolve_ref_value(item, resolved, encode_ref)?);
+        out.push(resolve_ref_value(target, item, resolved, encode_ref)?);
     }
     Ok(Value::Array(out))
 }
@@ -178,7 +186,7 @@ where
 fn resolve_list_value<Id, F>(
     item_type: &FieldType,
     value: Value,
-    resolved: &BTreeMap<Uid, Id>,
+    resolved: &ResolvedIds<Id>,
     encode_ref: F,
 ) -> Result<Value>
 where
@@ -199,7 +207,7 @@ where
 fn resolve_map_value<Id, F>(
     value_type: &FieldType,
     value: Value,
-    resolved: &BTreeMap<Uid, Id>,
+    resolved: &ResolvedIds<Id>,
     encode_ref: F,
 ) -> Result<Value>
 where
@@ -223,23 +231,23 @@ fn add_query_filters<Id>(
     field: &str,
     field_type: &FieldType,
     value: &Value,
-    resolved: &BTreeMap<Uid, Id>,
+    resolved: &ResolvedIds<Id>,
 ) -> Result<()>
 where
     Id: ToString,
 {
     match field_type {
-        FieldType::Ref { .. } => {
-            let id = resolve_query_ref(value, resolved)?;
+        FieldType::Ref { target } => {
+            let id = resolve_query_ref(target, value, resolved)?;
             filters.push((field.to_string(), id));
             Ok(())
         }
-        FieldType::ListRef { .. } => {
+        FieldType::ListRef { target } => {
             let Value::Array(items) = value else {
                 return Err(anyhow!("key field {field} must be an array"));
             };
             for item in items {
-                let id = resolve_query_ref(item, resolved)?;
+                let id = resolve_query_ref(target, item, resolved)?;
                 filters.push((field.to_string(), id));
             }
             Ok(())
@@ -274,11 +282,11 @@ where
     }
 }
 
-fn resolve_query_ref<Id>(value: &Value, resolved: &BTreeMap<Uid, Id>) -> Result<String>
+fn resolve_query_ref<Id>(target: &str, value: &Value, resolved: &ResolvedIds<Id>) -> Result<String>
 where
     Id: ToString,
 {
-    Ok(resolve_ref_id(value, resolved)?.to_string())
+    Ok(resolve_ref_id(target, value, resolved)?.to_string())
 }
 
 fn value_to_query_value(value: &Value) -> Result<String> {
@@ -311,18 +319,142 @@ pub fn state_mappings_by_id<I: Ord>(
     by_type
 }
 
-/// project the state store into a flat `uid -> backend-id` map, keeping only the
-/// backend ids `extract` accepts. companion to [`state_mappings_by_id`]. this
-/// direction is single-valued in state itself, so it reads the forward map.
+/// the backend ids an apply writes refs with, per type and uid. a uid is bound
+/// per type in state, and a retype leaves it bound under its old and new type.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedIds<Id> {
+    by_type: BTreeMap<String, BTreeMap<Uid, Id>>,
+}
+
+impl<Id> Default for ResolvedIds<Id> {
+    fn default() -> Self {
+        Self {
+            by_type: BTreeMap::new(),
+        }
+    }
+}
+
+impl<Id> ResolvedIds<Id> {
+    /// the backend id `uid` is bound to under `type_name`, if known.
+    pub fn get(&self, type_name: &str, uid: &Uid) -> Option<&Id> {
+        self.by_type.get(type_name).and_then(|ids| ids.get(uid))
+    }
+
+    /// bind `uid` to `id` under `type_name`.
+    pub fn insert(&mut self, type_name: &str, uid: Uid, id: Id) {
+        self.by_type
+            .entry(type_name.to_string())
+            .or_default()
+            .insert(uid, id);
+    }
+
+    /// drop the binding of `uid` under `type_name`.
+    pub fn remove(&mut self, type_name: &str, uid: &Uid) -> Option<Id> {
+        self.by_type
+            .get_mut(type_name)
+            .and_then(|ids| ids.remove(uid))
+    }
+}
+
+/// comma-joined uids the ref fields of `ops` point at that `resolved` does not
+/// bind under the field's target type.
+pub fn describe_missing_refs<Id>(
+    ops: &[Op],
+    schema: &Schema,
+    resolved: &ResolvedIds<Id>,
+) -> String {
+    let mut missing = BTreeSet::new();
+    for op in ops {
+        let (Op::Create {
+            type_name, desired, ..
+        }
+        | Op::Update {
+            type_name, desired, ..
+        }) = op
+        else {
+            continue;
+        };
+        let Some(type_schema) = schema.types.get(type_name.as_str()) else {
+            continue;
+        };
+        for (field, field_schema) in &type_schema.key {
+            if let Some(value) = desired.key.get(field) {
+                collect_missing_refs(&field_schema.r#type, value, resolved, &mut missing);
+            }
+        }
+        for (field, field_schema) in &type_schema.fields {
+            if let Some(value) = desired.attrs.get(field) {
+                collect_missing_refs(&field_schema.r#type, value, resolved, &mut missing);
+            }
+        }
+    }
+    missing
+        .into_iter()
+        .map(|uid| uid.to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn collect_missing_refs<Id>(
+    field_type: &FieldType,
+    value: &Value,
+    resolved: &ResolvedIds<Id>,
+    missing: &mut BTreeSet<Uid>,
+) {
+    let mut check = |target: &str, item: &Value| {
+        if let Some(uid) = item.as_str().and_then(|raw| Uid::parse_str(raw).ok()) {
+            if resolved.get(target, &uid).is_none() {
+                missing.insert(uid);
+            }
+        }
+    };
+    match field_type {
+        FieldType::Ref { target } => check(target, value),
+        FieldType::ListRef { target } => {
+            for item in value.as_array().into_iter().flatten() {
+                check(target, item);
+            }
+        }
+        FieldType::List { item } => {
+            for value in value.as_array().into_iter().flatten() {
+                collect_missing_refs(item, value, resolved, missing);
+            }
+        }
+        FieldType::Map { value: inner } => {
+            for value in value.as_object().into_iter().flat_map(|map| map.values()) {
+                collect_missing_refs(inner, value, resolved, missing);
+            }
+        }
+        FieldType::String
+        | FieldType::Text
+        | FieldType::Int
+        | FieldType::Float
+        | FieldType::Bool
+        | FieldType::Uuid
+        | FieldType::Date
+        | FieldType::Datetime
+        | FieldType::Time
+        | FieldType::Json
+        | FieldType::IpAddress
+        | FieldType::Cidr
+        | FieldType::Prefix
+        | FieldType::Mac
+        | FieldType::Slug
+        | FieldType::Enum { .. } => {}
+    }
+}
+
+/// project the state store into per-type `uid -> backend-id` bindings, keeping
+/// only the backend ids `extract` accepts. companion to [`state_mappings_by_id`].
 pub fn resolved_ids_from_state<I>(
     state: &StateStore,
     extract: impl Fn(&BackendId) -> Option<I>,
-) -> BTreeMap<Uid, I> {
-    let mut resolved = BTreeMap::new();
-    for mapping in state.all_mappings().values() {
+) -> ResolvedIds<I> {
+    let mut resolved = ResolvedIds::default();
+    for (type_name, mapping) in state.all_mappings() {
         for (uid, backend_id) in mapping {
             if let Some(id) = extract(backend_id) {
-                resolved.insert(*uid, id);
+                resolved.insert(type_name.as_str(), *uid, id);
             }
         }
     }
@@ -473,9 +605,9 @@ fn key_refs_resolved<M: RefMappings>(
     true
 }
 
-/// project the state store into a flat `uid -> backend-id` map, keeping every
-/// mapping. identity companion to [`resolved_ids_from_state`].
-pub fn resolved_ids_identity(state: &StateStore) -> BTreeMap<Uid, BackendId> {
+/// project the state store into per-type `uid -> backend-id` bindings, keeping
+/// every mapping. identity companion to [`resolved_ids_from_state`].
+pub fn resolved_ids_identity(state: &StateStore) -> ResolvedIds<BackendId> {
     resolved_ids_from_state(state, |b| Some(b.clone()))
 }
 
@@ -688,8 +820,16 @@ mod tests {
         )
     }
 
-    fn empty_resolved() -> BTreeMap<Uid, i64> {
-        BTreeMap::new()
+    fn empty_resolved() -> ResolvedIds<i64> {
+        ResolvedIds::default()
+    }
+
+    fn ids<Id: Copy>(entries: &[(&str, u128, Id)]) -> ResolvedIds<Id> {
+        let mut resolved = ResolvedIds::default();
+        for &(type_name, n, id) in entries {
+            resolved.insert(type_name, Uuid::from_u128(n), id);
+        }
+        resolved
     }
 
     fn encode_ref(id: &i64) -> Value {
@@ -764,8 +904,8 @@ mod tests {
             )]),
         };
         let a = attrs(vec![("site", json!(uid.to_string()))]);
-        let mut resolved = BTreeMap::new();
-        resolved.insert(uid, 99_i64);
+        let mut resolved = ResolvedIds::default();
+        resolved.insert("dcim.site", uid, 99_i64);
         let body = build_request_body(&schema, &a, &resolved, encode_ref).unwrap();
         assert_eq!(body.as_object().unwrap().get("site"), Some(&json!(99)));
     }
@@ -801,12 +941,7 @@ mod tests {
     #[test]
     fn resolve_value_resolves_refs_at_any_depth() {
         let uid = |n| Uuid::from_u128(n).to_string();
-        let resolved: BTreeMap<Uid, i64> = BTreeMap::from([
-            (Uuid::from_u128(1), 10),
-            (Uuid::from_u128(2), 20),
-            (Uuid::from_u128(3), 7),
-            (Uuid::from_u128(4), 50),
-        ]);
+        let resolved = ids(&[("t", 1, 10_i64), ("t", 2, 20), ("t", 3, 7), ("t", 4, 50)]);
         let cases = [
             (list_ref_type("t"), json!([uid(1), uid(2)]), json!([10, 20])),
             (
@@ -878,10 +1013,10 @@ mod tests {
     #[test]
     fn query_filters_follow_the_key_field_type() {
         let filter = |field: &str, value: &str| (field.to_string(), value.to_string());
-        let resolved: BTreeMap<Uid, i64> = BTreeMap::from([
-            (Uuid::from_u128(1), 100),
-            (Uuid::from_u128(2), 200),
-            (Uuid::from_u128(10), 77),
+        let resolved = ids(&[
+            ("extras.tag", 1, 100_i64),
+            ("extras.tag", 2, 200),
+            ("dcim.site", 10, 77),
         ]);
         let uid = |n| Uuid::from_u128(n).to_string();
         type Filters = Result<Vec<(String, String)>, &'static str>;
@@ -1004,12 +1139,89 @@ mod tests {
         let store = store_with_mixed_ids("t");
 
         let ints = resolved_ids_from_state(&store, keep_int);
-        assert_eq!(ints, BTreeMap::from([(Uid::from_u128(1), 5u64)]));
+        assert_eq!(ints, ids(&[("t", 1, 5u64)]));
 
         let strings = resolved_ids_from_state(&store, keep_string);
+        let mut expected = ResolvedIds::default();
+        expected.insert("t", Uid::from_u128(2), "uuid-2".to_string());
+        assert_eq!(strings, expected);
+    }
+
+    #[test]
+    fn ref_resolves_through_the_binding_of_its_target_type() {
+        use alembic_core::TypeName;
+
+        // a retype that has not deleted its old row leaves the uid bound under
+        // both types, with the stale binding sorting after the live one.
+        let uid = Uid::from_u128(1);
+        let mut data = StateData::default();
+        for (type_name, id) in [("aa.site", 4), ("zz.site", 1)] {
+            data.mappings
+                .entry(TypeName::new(type_name))
+                .or_default()
+                .insert(uid, BackendId::Int(id));
+        }
+        let store = StateStore::new(None, data);
+        let resolved = resolved_ids_from_state(&store, keep_int);
+
+        let value = json!(uid.to_string());
+        let encode = |id: &u64| json!(id);
+        for (target, expected) in [("aa.site", 4), ("zz.site", 1)] {
+            let out = resolve_value_for_type(&ref_type(target), value.clone(), &resolved, encode)
+                .unwrap();
+            assert_eq!(out, json!(expected), "ref to {target}");
+        }
+    }
+
+    #[test]
+    fn describe_missing_refs_names_refs_unbound_under_their_target() {
+        use alembic_core::TypeName;
+
+        let uid = |n| Uuid::from_u128(n);
+        let schema = Schema {
+            types: BTreeMap::from([(
+                "dcim.interface".to_string(),
+                TypeSchema {
+                    key: BTreeMap::from([(
+                        "device".to_string(),
+                        field_schema(ref_type("dcim.device")),
+                    )]),
+                    fields: BTreeMap::from([
+                        (
+                            "tags".to_string(),
+                            field_schema(list_ref_type("extras.tag")),
+                        ),
+                        ("peer".to_string(), field_schema(ref_type("dcim.interface"))),
+                    ]),
+                },
+            )]),
+        };
+        let desired = Object {
+            uid: uid(1),
+            type_name: TypeName::new("dcim.interface"),
+            key: Key::from(BTreeMap::from([(
+                "device".to_string(),
+                json!(uid(2).to_string()),
+            )])),
+            attrs: attrs(vec![
+                ("tags", json!([uid(3).to_string(), uid(4).to_string()])),
+                ("peer", json!(uid(5).to_string())),
+            ]),
+            source: None,
+        };
+        let op = Op::Create {
+            uid: uid(1),
+            type_name: TypeName::new("dcim.interface"),
+            desired,
+        };
+        // 5 is bound, but under another type than the ref targets.
+        let resolved = ids(&[("extras.tag", 3, 1_i64), ("dcim.site", 5, 9)]);
+        let missing = describe_missing_refs(&[op], &schema, &resolved);
         assert_eq!(
-            strings,
-            BTreeMap::from([(Uid::from_u128(2), "uuid-2".to_string())])
+            missing,
+            [uid(2), uid(4), uid(5)]
+                .map(|uid| uid.to_string())
+                .join(", ")
         );
     }
 
@@ -1107,9 +1319,12 @@ mod tests {
             Some(Uid::from_u128(1))
         );
         let resolved = resolved_ids_identity(&store);
-        assert_eq!(resolved.get(&Uid::from_u128(1)), Some(&BackendId::Int(5)));
         assert_eq!(
-            resolved.get(&Uid::from_u128(2)),
+            resolved.get("dcim.site", &Uid::from_u128(1)),
+            Some(&BackendId::Int(5))
+        );
+        assert_eq!(
+            resolved.get("dcim.site", &Uid::from_u128(2)),
             Some(&BackendId::String("uuid-2".to_string()))
         );
     }

@@ -201,13 +201,20 @@ fn test_resolve_attrs() {
     let ref_to = |target: &str| FieldType::Ref {
         target: target.to_string(),
     };
+    let ids = |entries: Vec<(&str, Uid, BackendId)>| {
+        let mut resolved = ResolvedIds::default();
+        for (target, uid, id) in entries {
+            resolved.insert(target, uid, id);
+        }
+        resolved
+    };
     let cases = vec![
         (
             "f",
             ref_to("site"),
             false,
             serde_json::json!({"f": uid(0).to_string()}),
-            BTreeMap::from([(uid(0), BackendId::Int(123))]),
+            ids(vec![("site", uid(0), BackendId::Int(123))]),
             Body::Ok(serde_json::json!({"f": 123})),
         ),
         (
@@ -217,9 +224,9 @@ fn test_resolve_attrs() {
             },
             false,
             serde_json::json!({"f": [uid(1).to_string(), uid(2).to_string()]}),
-            BTreeMap::from([
-                (uid(1), BackendId::Int(1)),
-                (uid(2), BackendId::String("abc".to_string())),
+            ids(vec![
+                ("tag", uid(1), BackendId::Int(1)),
+                ("tag", uid(2), BackendId::String("abc".to_string())),
             ]),
             Body::Ok(serde_json::json!({"f": [1, "abc"]})),
         ),
@@ -229,7 +236,11 @@ fn test_resolve_attrs() {
             ref_to("site"),
             false,
             serde_json::json!({"f": uid(0).to_string()}),
-            BTreeMap::from([(uid(0), BackendId::String("abc-123".to_string()))]),
+            ids(vec![(
+                "site",
+                uid(0),
+                BackendId::String("abc-123".to_string()),
+            )]),
             Body::Ok(serde_json::json!({"f": "abc-123"})),
         ),
         // an unresolved ref uid still surfaces the shared MissingRef error.
@@ -238,7 +249,7 @@ fn test_resolve_attrs() {
             ref_to("site"),
             false,
             serde_json::json!({"f": uid(0).to_string()}),
-            BTreeMap::new(),
+            ResolvedIds::default(),
             Body::Err("missing referenced uid"),
         ),
         // a null value for a nullable ref must pass straight through as json null
@@ -249,7 +260,7 @@ fn test_resolve_attrs() {
             ref_to("site"),
             true,
             serde_json::json!({"f": null}),
-            BTreeMap::new(),
+            ResolvedIds::default(),
             Body::Ok(serde_json::json!({"f": null})),
         ),
         (
@@ -257,7 +268,7 @@ fn test_resolve_attrs() {
             FieldType::String,
             false,
             serde_json::json!({"name": "site1"}),
-            BTreeMap::new(),
+            ResolvedIds::default(),
             Body::Ok(serde_json::json!({"name": "site1"})),
         ),
         (
@@ -265,7 +276,7 @@ fn test_resolve_attrs() {
             FieldType::String,
             false,
             serde_json::json!({"unknown_field": "value"}),
-            BTreeMap::new(),
+            ResolvedIds::default(),
             Body::Err("missing schema for field"),
         ),
         (
@@ -275,7 +286,7 @@ fn test_resolve_attrs() {
             },
             false,
             serde_json::json!({"members": [uid(0).to_string()]}),
-            BTreeMap::from([(uid(0), BackendId::Int(123))]),
+            ids(vec![("site", uid(0), BackendId::Int(123))]),
             Body::Ok(serde_json::json!({"members": [123]})),
         ),
         (
@@ -285,7 +296,11 @@ fn test_resolve_attrs() {
             },
             false,
             serde_json::json!({"links": {"primary": uid(0).to_string()}}),
-            BTreeMap::from([(uid(0), BackendId::String("dev-9".to_string()))]),
+            ids(vec![(
+                "site",
+                uid(0),
+                BackendId::String("dev-9".to_string()),
+            )]),
             Body::Ok(serde_json::json!({"links": {"primary": "dev-9"}})),
         ),
         // the nested uid cannot be resolved, and the retry loop needs MissingRef.
@@ -296,7 +311,7 @@ fn test_resolve_attrs() {
             },
             false,
             serde_json::json!({"members": [uid(0).to_string()]}),
-            BTreeMap::new(),
+            ResolvedIds::default(),
             Body::MissingRef,
         ),
     ];

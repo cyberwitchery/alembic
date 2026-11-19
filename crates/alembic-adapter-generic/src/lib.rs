@@ -1,14 +1,12 @@
 //! generic rest adapter for alembic.
 
-use alembic_adapter_sdk::apply_retry::{
-    describe_missing_refs, is_missing_ref_error, RetryApplyDriver,
-};
+use alembic_adapter_sdk::apply_retry::{is_missing_ref_error, RetryApplyDriver};
 use alembic_adapter_sdk::{http_unavailable, AppliedOp, ApplyReport, BackendId, Op, StateMappings};
 use alembic_core::{key_string, JsonMap, Key, Schema, TypeName, TypeSchema, Uid};
 use alembic_engine::{
-    apply_non_delete_journaled, build_key_from_schema, bullet_list, normalize_attrs_refs,
-    resolve_ref_keyed_identity, resolved_ids_identity, state_mappings_from_state, Adapter, Emitter,
-    ObservedState, Observer, RawNode,
+    apply_non_delete_journaled, build_key_from_schema, bullet_list, describe_missing_refs,
+    normalize_attrs_refs, resolve_ref_keyed_identity, resolved_ids_identity,
+    state_mappings_from_state, Adapter, Emitter, ObservedState, Observer, RawNode, ResolvedIds,
 };
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
@@ -136,7 +134,7 @@ impl GenericAdapter {
         desired: &alembic_core::Object,
         schema: &Schema,
         mappings: &StateMappings,
-        resolved: &mut BTreeMap<Uid, BackendId>,
+        resolved: &mut ResolvedIds<BackendId>,
     ) -> Result<AppliedOp> {
         let endpoint = self
             .config
@@ -170,7 +168,7 @@ impl GenericAdapter {
                         type_name = %type_name,
                         "create already exists; using existing object"
                     );
-                    resolved.insert(uid, existing.clone());
+                    resolved.insert(type_name.as_str(), uid, existing.clone());
                     return Ok(AppliedOp {
                         uid,
                         type_name: type_name.clone(),
@@ -185,7 +183,7 @@ impl GenericAdapter {
 
         let id_val = resolve_path(&body, &endpoint.id_path)?;
         let backend_id = parse_backend_id(id_val)?;
-        resolved.insert(uid, backend_id.clone());
+        resolved.insert(type_name.as_str(), uid, backend_id.clone());
 
         Ok(AppliedOp {
             uid,
@@ -257,7 +255,7 @@ impl GenericAdapter {
         desired: &alembic_core::Object,
         backend_id: Option<&BackendId>,
         schema: &Schema,
-        resolved: &BTreeMap<Uid, BackendId>,
+        resolved: &ResolvedIds<BackendId>,
     ) -> Result<AppliedOp> {
         let endpoint = self
             .config
@@ -272,7 +270,7 @@ impl GenericAdapter {
         // an update without a backend id follows a create of the same object in this
         // write (a ref deferred to break a cycle), so the id is the one it just got
         let id = backend_id
-            .or_else(|| resolved.get(&uid))
+            .or_else(|| resolved.get(type_name.as_str(), &uid))
             .ok_or_else(|| anyhow!("update requires backend id"))?;
         let url = self.backend_id_to_url(endpoint, id);
         let body = resolve_attrs(&desired.attrs, type_schema, resolved)?;
@@ -502,8 +500,8 @@ impl Emitter for GenericAdapter {
         let mut applied = Vec::new();
         let mut resolved = resolved_ids_identity(state);
         for op in ops {
-            if let Op::Create { uid, .. } = op {
-                resolved.remove(uid);
+            if let Op::Create { uid, type_name, .. } = op {
+                resolved.remove(type_name.as_str(), uid);
             }
         }
         let mappings = state_mappings_from_state(state);
@@ -519,7 +517,7 @@ impl Emitter for GenericAdapter {
 
         struct ApplyDriver<'a> {
             adapter: &'a GenericAdapter,
-            resolved: &'a mut BTreeMap<Uid, BackendId>,
+            resolved: &'a mut ResolvedIds<BackendId>,
             schema: &'a Schema,
             mappings: &'a StateMappings,
         }
@@ -575,7 +573,8 @@ impl Emitter for GenericAdapter {
             fn resume(&mut self, resumed: &[AppliedOp]) {
                 for op in resumed {
                     if let Some(backend_id) = &op.backend_id {
-                        self.resolved.insert(op.uid, backend_id.clone());
+                        self.resolved
+                            .insert(op.type_name.as_str(), op.uid, backend_id.clone());
                     }
                 }
             }
@@ -590,14 +589,18 @@ impl Emitter for GenericAdapter {
         let (retry_result, previously_applied_count, journal) =
             apply_non_delete_journaled(state, "generic", &creates_updates, &mut driver).await?;
         if !retry_result.pending.is_empty() {
-            let missing = describe_missing_refs(&retry_result.pending, &resolved);
+            let missing = describe_missing_refs(&retry_result.pending, schema, &resolved);
             return Err(anyhow!("unresolved references: {missing}"));
         }
 
         let resumed = retry_result.resumed;
         for applied_op in retry_result.applied {
             if let Some(backend_id) = &applied_op.backend_id {
-                resolved.insert(applied_op.uid, backend_id.clone());
+                resolved.insert(
+                    applied_op.type_name.as_str(),
+                    applied_op.uid,
+                    backend_id.clone(),
+                );
             }
             applied.push(applied_op);
         }
@@ -894,7 +897,7 @@ fn key_from_inventory(
 fn resolve_attrs(
     attrs: &JsonMap,
     type_schema: &alembic_core::TypeSchema,
-    resolved: &BTreeMap<Uid, BackendId>,
+    resolved: &ResolvedIds<BackendId>,
 ) -> Result<serde_json::Value> {
     alembic_engine::build_request_body(type_schema, attrs, resolved, |id| match id {
         BackendId::Int(n) => serde_json::Value::Number((*n).into()),

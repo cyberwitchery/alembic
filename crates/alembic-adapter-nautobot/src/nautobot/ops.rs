@@ -6,17 +6,15 @@ use super::mapping::{
 use super::registry::ObjectTypeRegistry;
 use super::state::{resolved_from_state, state_mappings};
 use super::NautobotAdapter;
-use alembic_adapter_sdk::apply_retry::{
-    describe_missing_refs, is_missing_ref_error, RetryApplyDriver,
-};
+use alembic_adapter_sdk::apply_retry::{is_missing_ref_error, RetryApplyDriver};
 use alembic_adapter_sdk::{AppliedOp, ApplyReport, BackendId, Op, ProvisionReport};
 use alembic_core::{
     key_string, FieldSchema, FieldType, JsonMap, Key, Schema, TypeName, TypeSchema, Uid,
 };
 use alembic_engine::{
-    apply_non_delete_journaled, build_key_from_schema, collect_tag_names, query_filters_from_key,
-    resolve_nested_ref_uid, resolve_ref_keyed_identity, Adapter, Emitter, ObservedState, Observer,
-    RawNode,
+    apply_non_delete_journaled, build_key_from_schema, collect_tag_names, describe_missing_refs,
+    query_filters_from_key, resolve_nested_ref_uid, resolve_ref_keyed_identity, Adapter, Emitter,
+    ObservedState, Observer, RawNode, ResolvedIds,
 };
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
@@ -190,8 +188,8 @@ impl Emitter for NautobotAdapter {
         let mut resolved = resolved_from_state(state);
 
         for op in ops {
-            if let Op::Create { uid, .. } = op {
-                resolved.remove(uid);
+            if let Op::Create { uid, type_name, .. } = op {
+                resolved.remove(type_name.as_str(), uid);
             }
         }
 
@@ -223,7 +221,7 @@ impl Emitter for NautobotAdapter {
 
         struct ApplyDriver<'a> {
             adapter: &'a NautobotAdapter,
-            resolved: &'a mut BTreeMap<Uid, String>,
+            resolved: &'a mut ResolvedIds<String>,
             registry: &'a ObjectTypeRegistry,
             schema: &'a Schema,
             custom_fields_by_type: &'a BTreeMap<String, BTreeSet<String>>,
@@ -276,7 +274,8 @@ impl Emitter for NautobotAdapter {
             fn resume(&mut self, resumed: &[AppliedOp]) {
                 for op in resumed {
                     if let Some(BackendId::String(id)) = &op.backend_id {
-                        self.resolved.insert(op.uid, id.clone());
+                        self.resolved
+                            .insert(op.type_name.as_str(), op.uid, id.clone());
                     }
                 }
             }
@@ -293,14 +292,18 @@ impl Emitter for NautobotAdapter {
             apply_non_delete_journaled(state, "nautobot", &creates_updates, &mut driver).await?;
 
         if !retry_result.pending.is_empty() {
-            let missing = describe_missing_refs(&retry_result.pending, &resolved);
+            let missing = describe_missing_refs(&retry_result.pending, schema, &resolved);
             return Err(anyhow!("unresolved references: {missing}"));
         }
 
         let resumed = retry_result.resumed;
         for applied_op in retry_result.applied {
             if let Some(BackendId::String(backend_id)) = &applied_op.backend_id {
-                resolved.insert(applied_op.uid, backend_id.clone());
+                resolved.insert(
+                    applied_op.type_name.as_str(),
+                    applied_op.uid,
+                    backend_id.clone(),
+                );
             }
             applied.push(applied_op);
         }
@@ -316,7 +319,7 @@ impl Emitter for NautobotAdapter {
             {
                 let id = if let Some(BackendId::String(id)) = backend_id {
                     id.clone()
-                } else if let Some(id) = resolved.get(&uid) {
+                } else if let Some(id) = resolved.get(type_name.as_str(), &uid) {
                     id.clone()
                 } else {
                     let info = registry
@@ -638,7 +641,7 @@ impl NautobotAdapter {
     async fn apply_create(
         &self,
         op: &Op,
-        resolved: &mut BTreeMap<Uid, String>,
+        resolved: &mut ResolvedIds<String>,
         registry: &ObjectTypeRegistry,
         schema: &Schema,
         custom_fields_by_type: &BTreeMap<String, BTreeSet<String>>,
@@ -676,7 +679,7 @@ impl NautobotAdapter {
                         key = %key_string(&desired.key),
                         "create already exists; using existing object"
                     );
-                    resolved.insert(uid, existing.clone());
+                    resolved.insert(type_name.as_str(), uid, existing.clone());
                     return Ok(existing);
                 }
                 return Err(err.into());
@@ -688,14 +691,14 @@ impl NautobotAdapter {
             .and_then(Value::as_str)
             .ok_or_else(|| anyhow!("create {} returned no id", type_name))?
             .to_string();
-        resolved.insert(uid, backend_id.clone());
+        resolved.insert(type_name.as_str(), uid, backend_id.clone());
         Ok(backend_id)
     }
 
     async fn apply_update(
         &self,
         op: &Op,
-        resolved: &BTreeMap<Uid, String>,
+        resolved: &ResolvedIds<String>,
         registry: &ObjectTypeRegistry,
         schema: &Schema,
         custom_fields_by_type: &BTreeMap<String, BTreeSet<String>>,
@@ -726,7 +729,7 @@ impl NautobotAdapter {
             .ok_or_else(|| anyhow!("missing schema for {}", type_name))?;
         let id = if let Some(id) = backend_id {
             id
-        } else if let Some(id) = resolved.get(&uid).cloned() {
+        } else if let Some(id) = resolved.get(type_name.as_str(), &uid).cloned() {
             id
         } else {
             self.lookup_backend_id(type_name, &info, type_schema, &desired.key, resolved)
@@ -762,7 +765,7 @@ impl NautobotAdapter {
         info: &super::registry::ObjectTypeInfo,
         type_schema: &TypeSchema,
         key: &Key,
-        resolved: &BTreeMap<Uid, String>,
+        resolved: &ResolvedIds<String>,
     ) -> Result<Option<String>> {
         let query = query_from_key(type_schema, key, resolved)?;
         let resource: Resource<Value> = self.client.resource(info.endpoint.clone());
@@ -1111,7 +1114,7 @@ fn resolve_ref_uid(
 fn build_request_body(
     type_schema: &TypeSchema,
     attrs: &JsonMap,
-    resolved: &BTreeMap<Uid, String>,
+    resolved: &ResolvedIds<String>,
     custom_fields: &BTreeSet<String>,
 ) -> Result<Value> {
     let mut body = Map::new();
@@ -1153,7 +1156,7 @@ fn build_request_body(
 fn resolve_value_for_type(
     field_type: &alembic_core::FieldType,
     value: Value,
-    resolved: &BTreeMap<Uid, String>,
+    resolved: &ResolvedIds<String>,
 ) -> Result<Value> {
     alembic_engine::resolve_value_for_type(field_type, value, resolved, |id| {
         Value::String(id.clone())
@@ -1163,7 +1166,7 @@ fn resolve_value_for_type(
 fn query_from_key(
     type_schema: &TypeSchema,
     key: &Key,
-    resolved: &BTreeMap<Uid, String>,
+    resolved: &ResolvedIds<String>,
 ) -> Result<QueryBuilder> {
     let mut query = QueryBuilder::new();
     for (field, value) in query_filters_from_key(type_schema, key, resolved)? {
@@ -1594,8 +1597,8 @@ mod tests {
         let site_uid = Uid::from_u128(1);
         attrs.insert("site".to_string(), json!(site_uid.to_string()));
 
-        let mut resolved = BTreeMap::new();
-        resolved.insert(site_uid, "site-uuid".to_string());
+        let mut resolved = ResolvedIds::default();
+        resolved.insert("dcim.site", site_uid, "site-uuid".to_string());
 
         let body = build_request_body(&type_schema, &attrs, &resolved, &BTreeSet::new()).unwrap();
         assert_eq!(body.get("site").unwrap(), &json!("site-uuid"));
@@ -1624,8 +1627,13 @@ mod tests {
         let mut attrs = JsonMap::default();
         attrs.insert("rack".to_string(), json!(null));
 
-        let body =
-            build_request_body(&type_schema, &attrs, &BTreeMap::new(), &BTreeSet::new()).unwrap();
+        let body = build_request_body(
+            &type_schema,
+            &attrs,
+            &ResolvedIds::default(),
+            &BTreeSet::new(),
+        )
+        .unwrap();
         assert_eq!(body.get("rack").unwrap(), &json!(null));
     }
 
@@ -1655,7 +1663,7 @@ mod tests {
         let body = build_request_body(
             &type_schema,
             &attrs,
-            &BTreeMap::new(),
+            &ResolvedIds::default(),
             &BTreeSet::from(["owner".to_string()]),
         )
         .unwrap();
@@ -1699,8 +1707,13 @@ mod tests {
         assert!(!attrs.contains_key("if_type"));
 
         // write: it goes back out under its own name, with no `if_type` remap.
-        let body =
-            build_request_body(&type_schema, &attrs, &BTreeMap::new(), &BTreeSet::new()).unwrap();
+        let body = build_request_body(
+            &type_schema,
+            &attrs,
+            &ResolvedIds::default(),
+            &BTreeSet::new(),
+        )
+        .unwrap();
         assert_eq!(body.get("type").unwrap(), &json!("1000base-t"));
         assert!(body.get("if_type").is_none());
     }
@@ -1743,8 +1756,8 @@ mod tests {
         key_map.insert("site".to_string(), json!(site_uid.to_string()));
         let key = Key::from(key_map);
 
-        let mut resolved = BTreeMap::new();
-        resolved.insert(site_uid, "site-uuid".to_string());
+        let mut resolved = ResolvedIds::default();
+        resolved.insert("dcim.site", site_uid, "site-uuid".to_string());
 
         let query = query_from_key(&type_schema, &key, &resolved).unwrap();
         let json = serde_json::to_value(&query).unwrap();

@@ -1,6 +1,8 @@
 use alembic_adapter_sdk::BackendId;
 use alembic_core::Uid;
-use alembic_engine::{resolved_ids_from_state, state_mappings_by_id, RefMappings, StateStore};
+use alembic_engine::{
+    resolved_ids_from_state, state_mappings_by_id, RefMappings, ResolvedIds, StateStore,
+};
 use std::collections::BTreeMap;
 
 #[derive(Debug, Default, Clone)]
@@ -43,7 +45,7 @@ pub(super) fn state_mappings(state: &StateStore) -> StateMappings {
     }
 }
 
-pub(super) fn resolved_from_state(state: &StateStore) -> BTreeMap<Uid, String> {
+pub(super) fn resolved_from_state(state: &StateStore) -> ResolvedIds<String> {
     resolved_ids_from_state(state, |b| match b {
         BackendId::String(id) => Some(id.clone()),
         _ => None,
@@ -87,6 +89,6 @@ mod tests {
         );
 
         let resolved = resolved_from_state(&store);
-        assert_eq!(resolved.get(&uid).unwrap(), "uuid-1");
+        assert_eq!(resolved.get("t", &uid).unwrap(), "uuid-1");
     }
 }

@@ -9,9 +9,7 @@ use super::mapping::{
 use super::registry::ObjectTypeRegistry;
 use super::state::{resolved_from_state, state_mappings};
 use super::NetBoxAdapter;
-use alembic_adapter_sdk::apply_retry::{
-    describe_missing_refs, is_missing_ref_error, RetryApplyDriver,
-};
+use alembic_adapter_sdk::apply_retry::{is_missing_ref_error, RetryApplyDriver};
 use alembic_adapter_sdk::{
     AdapterApplyError, AppliedOp, ApplyReport, BackendId, Op, ProvisionReport,
 };
@@ -19,9 +17,9 @@ use alembic_core::{
     key_string, FieldSchema, FieldType, JsonMap, Key, Schema, TypeName, TypeSchema, Uid,
 };
 use alembic_engine::{
-    apply_non_delete_journaled, build_key_from_schema, collect_tag_names, query_filters_from_key,
-    resolve_nested_ref_uid, resolve_ref_keyed_identity, Adapter, Emitter, ObservedState, Observer,
-    RawNode,
+    apply_non_delete_journaled, build_key_from_schema, collect_tag_names, describe_missing_refs,
+    query_filters_from_key, resolve_nested_ref_uid, resolve_ref_keyed_identity, Adapter, Emitter,
+    ObservedState, Observer, RawNode, ResolvedIds,
 };
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
@@ -270,8 +268,8 @@ impl Emitter for NetBoxAdapter {
         let mut resolved = resolved_from_state(state);
 
         for op in ops {
-            if let Op::Create { uid, .. } = op {
-                resolved.remove(uid);
+            if let Op::Create { uid, type_name, .. } = op {
+                resolved.remove(type_name.as_str(), uid);
             }
         }
 
@@ -299,7 +297,7 @@ impl Emitter for NetBoxAdapter {
 
         struct ApplyDriver<'a> {
             adapter: &'a NetBoxAdapter,
-            resolved: &'a mut BTreeMap<Uid, u64>,
+            resolved: &'a mut ResolvedIds<u64>,
             registry: &'a ObjectTypeRegistry,
             schema: &'a Schema,
             custom_fields_by_type: &'a BTreeMap<String, BTreeSet<String>>,
@@ -393,7 +391,7 @@ impl Emitter for NetBoxAdapter {
             fn resume(&mut self, resumed: &[AppliedOp]) {
                 for op in resumed {
                     if let Some(BackendId::Int(id)) = &op.backend_id {
-                        self.resolved.insert(op.uid, *id);
+                        self.resolved.insert(op.type_name.as_str(), op.uid, *id);
                     }
                 }
             }
@@ -410,14 +408,14 @@ impl Emitter for NetBoxAdapter {
             apply_non_delete_journaled(state, "netbox", &creates_updates, &mut driver).await?;
 
         if !retry_result.pending.is_empty() {
-            let missing = describe_missing_refs(&retry_result.pending, &resolved);
+            let missing = describe_missing_refs(&retry_result.pending, schema, &resolved);
             return Err(anyhow!("unresolved references: {missing}"));
         }
 
         let resumed = retry_result.resumed;
         for applied_op in retry_result.applied {
             if let Some(BackendId::Int(backend_id)) = &applied_op.backend_id {
-                resolved.insert(applied_op.uid, *backend_id);
+                resolved.insert(applied_op.type_name.as_str(), applied_op.uid, *backend_id);
             }
             applied.push(applied_op);
         }
@@ -808,7 +806,7 @@ impl NetBoxAdapter {
     async fn apply_create(
         &self,
         op: &Op,
-        resolved: &mut BTreeMap<Uid, u64>,
+        resolved: &mut ResolvedIds<u64>,
         registry: &ObjectTypeRegistry,
         schema: &Schema,
         custom_fields_by_type: &BTreeMap<String, BTreeSet<String>>,
@@ -836,7 +834,7 @@ impl NetBoxAdapter {
                         key = %key_string(&desired.key),
                         "create already exists; using existing object"
                     );
-                    resolved.insert(uid, existing);
+                    resolved.insert(type_name.as_str(), uid, existing);
                     return Ok(existing);
                 }
                 return Err(err.into());
@@ -847,14 +845,14 @@ impl NetBoxAdapter {
             .get("id")
             .and_then(Value::as_u64)
             .ok_or_else(|| anyhow!("create {} returned no id", type_name))?;
-        resolved.insert(uid, backend_id);
+        resolved.insert(type_name.as_str(), uid, backend_id);
         Ok(backend_id)
     }
 
     async fn apply_update(
         &self,
         op: &Op,
-        resolved: &BTreeMap<Uid, u64>,
+        resolved: &ResolvedIds<u64>,
         registry: &ObjectTypeRegistry,
         schema: &Schema,
         custom_fields_by_type: &BTreeMap<String, BTreeSet<String>>,
@@ -880,7 +878,7 @@ impl NetBoxAdapter {
             write_body(op, resolved, registry, schema, custom_fields_by_type)?;
         let id = if let Some(id) = backend_id {
             id
-        } else if let Some(id) = resolved.get(&uid).copied() {
+        } else if let Some(id) = resolved.get(type_name.as_str(), &uid).copied() {
             id
         } else {
             self.lookup_backend_id(type_name, &info, &type_schema, &desired.key, resolved)
@@ -906,7 +904,7 @@ impl NetBoxAdapter {
         &self,
         ops: &[Op],
         registry: &ObjectTypeRegistry,
-        resolved: &BTreeMap<Uid, u64>,
+        resolved: &ResolvedIds<u64>,
     ) -> Result<()> {
         let ids = ops
             .iter()
@@ -915,7 +913,10 @@ impl NetBoxAdapter {
                     backend_id: Some(BackendId::Int(id)),
                     ..
                 } => Some(BulkDelete::new(*id)),
-                Op::Delete { uid, .. } => resolved.get(uid).copied().map(BulkDelete::new),
+                Op::Delete { uid, type_name, .. } => resolved
+                    .get(type_name.as_str(), uid)
+                    .copied()
+                    .map(BulkDelete::new),
                 _ => None,
             })
             .collect::<Option<Vec<_>>>()
@@ -934,7 +935,7 @@ impl NetBoxAdapter {
         op: &Op,
         registry: &ObjectTypeRegistry,
         schema: &Schema,
-        resolved: &BTreeMap<Uid, u64>,
+        resolved: &ResolvedIds<u64>,
     ) -> Result<()> {
         let Op::Delete {
             uid,
@@ -948,7 +949,7 @@ impl NetBoxAdapter {
         };
         let id = if let Some(BackendId::Int(id)) = backend_id {
             *id
-        } else if let Some(id) = resolved.get(uid).copied() {
+        } else if let Some(id) = resolved.get(type_name.as_str(), uid).copied() {
             id
         } else {
             let info = registry
@@ -986,7 +987,7 @@ impl NetBoxAdapter {
     async fn apply_create_batch(
         &self,
         ops: &[Op],
-        resolved: &mut BTreeMap<Uid, u64>,
+        resolved: &mut ResolvedIds<u64>,
         registry: &ObjectTypeRegistry,
         schema: &Schema,
         custom_fields_by_type: &BTreeMap<String, BTreeSet<String>>,
@@ -1019,7 +1020,7 @@ impl NetBoxAdapter {
             })
             .collect::<Result<Vec<_>>>()?;
         for (op, id) in ops.iter().zip(&ids) {
-            resolved.insert(op.uid(), *id);
+            resolved.insert(op.type_name().as_str(), op.uid(), *id);
         }
         Ok(ids)
     }
@@ -1029,7 +1030,7 @@ impl NetBoxAdapter {
     async fn apply_update_batch(
         &self,
         ops: &[Op],
-        resolved: &BTreeMap<Uid, u64>,
+        resolved: &ResolvedIds<u64>,
         registry: &ObjectTypeRegistry,
         schema: &Schema,
         custom_fields_by_type: &BTreeMap<String, BTreeSet<String>>,
@@ -1043,8 +1044,8 @@ impl NetBoxAdapter {
                     backend_id: Some(BackendId::Int(id)),
                     ..
                 } => *id,
-                Op::Update { uid, .. } => resolved
-                    .get(uid)
+                Op::Update { uid, type_name, .. } => resolved
+                    .get(type_name.as_str(), uid)
                     .copied()
                     .ok_or_else(|| anyhow!("{} has no known backend id", op.type_name()))?,
                 _ => return Err(anyhow!("expected update operation")),
@@ -1074,7 +1075,7 @@ impl NetBoxAdapter {
         info: &super::registry::ObjectTypeInfo,
         type_schema: &TypeSchema,
         key: &Key,
-        resolved: &BTreeMap<Uid, u64>,
+        resolved: &ResolvedIds<u64>,
     ) -> Result<Option<u64>> {
         let query = query_from_key(type_schema, key, resolved)?;
         let resource: Resource<Value> = self.client.resource(info.endpoint.clone());
@@ -1812,7 +1813,7 @@ fn deleted(op: &Op) -> AppliedOp {
 /// the type's registry entry and schema, and the request body for a create or update.
 fn write_body(
     op: &Op,
-    resolved: &BTreeMap<Uid, u64>,
+    resolved: &ResolvedIds<u64>,
     registry: &ObjectTypeRegistry,
     schema: &Schema,
     custom_fields_by_type: &BTreeMap<String, BTreeSet<String>>,
@@ -1853,7 +1854,7 @@ fn build_request_body(
     type_name: &TypeName,
     type_schema: &TypeSchema,
     attrs: &JsonMap,
-    resolved: &BTreeMap<Uid, u64>,
+    resolved: &ResolvedIds<u64>,
     custom_fields: &BTreeSet<String>,
     features: &BTreeSet<String>,
     registry: &ObjectTypeRegistry,
@@ -1939,7 +1940,7 @@ fn encode_generic_fk(
     encoding: netbox::GenericFkEncoding,
     field_type: &FieldType,
     value: Value,
-    resolved: &BTreeMap<Uid, u64>,
+    resolved: &ResolvedIds<u64>,
     registry: &ObjectTypeRegistry,
 ) -> Result<()> {
     if value.is_null() {
@@ -1996,7 +1997,7 @@ fn encode_generic_fk(
 fn resolve_value_for_type(
     field_type: &alembic_core::FieldType,
     value: Value,
-    resolved: &BTreeMap<Uid, u64>,
+    resolved: &ResolvedIds<u64>,
 ) -> Result<Value> {
     alembic_engine::resolve_value_for_type(field_type, value, resolved, |id| {
         Value::Number((*id).into())
@@ -2006,7 +2007,7 @@ fn resolve_value_for_type(
 fn query_from_key(
     type_schema: &TypeSchema,
     key: &Key,
-    resolved: &BTreeMap<Uid, u64>,
+    resolved: &ResolvedIds<u64>,
 ) -> Result<QueryBuilder> {
     let mut query = QueryBuilder::new();
     for (field, value) in query_filters_from_key(type_schema, key, resolved)? {
@@ -2775,7 +2776,7 @@ mod test_normalization {
             &TypeName::new("dcim.interface"),
             &type_schema,
             &attrs,
-            &BTreeMap::new(),
+            &ResolvedIds::default(),
             &BTreeSet::new(),
             &BTreeSet::new(),
             &ObjectTypeRegistry::default(),
@@ -2877,7 +2878,7 @@ mod test_normalization {
             &TypeName::new("dcim.device"),
             &type_schema,
             &attrs,
-            &BTreeMap::new(),
+            &ResolvedIds::default(),
             &BTreeSet::new(),
             &BTreeSet::new(),
             &ObjectTypeRegistry::default(),
@@ -2913,7 +2914,7 @@ mod test_normalization {
             &TypeName::new("dcim.device"),
             &type_schema,
             &attrs,
-            &BTreeMap::new(),
+            &ResolvedIds::default(),
             &BTreeSet::from(["owner".to_string()]),
             &BTreeSet::from(["custom-fields".to_string()]),
             &ObjectTypeRegistry::default(),
@@ -2938,7 +2939,8 @@ mod test_normalization {
         // an ip address's `assigned_object` is written as a split
         // `assigned_object_type` / `assigned_object_id` pair.
         let registry = ObjectTypeRegistry::default();
-        let resolved = BTreeMap::from([(Uid::from_u128(1), 42u64)]);
+        let mut resolved = ResolvedIds::default();
+        resolved.insert("dcim.interface", Uid::from_u128(1), 42u64);
         let mut body = Map::new();
         encode_generic_fk(
             &mut body,
@@ -2964,7 +2966,7 @@ mod test_normalization {
         // a null generic fk clears: both split components null, the nested field
         // null, or an empty array for a nested list.
         let registry = ObjectTypeRegistry::default();
-        let resolved: BTreeMap<Uid, u64> = BTreeMap::new();
+        let resolved: ResolvedIds<u64> = ResolvedIds::default();
         let ref_type = FieldType::Ref {
             target: "dcim.interface".to_string(),
         };
@@ -3017,7 +3019,9 @@ mod test_normalization {
         // a cable's terminations are written as an array of nested
         // `{ object_type, object_id }`.
         let registry = ObjectTypeRegistry::default();
-        let resolved = BTreeMap::from([(Uid::from_u128(1), 42u64), (Uid::from_u128(2), 1000u64)]);
+        let mut resolved = ResolvedIds::default();
+        resolved.insert("dcim.interface", Uid::from_u128(1), 42u64);
+        resolved.insert("dcim.interface", Uid::from_u128(2), 1000u64);
         let mut body = Map::new();
         encode_generic_fk(
             &mut body,
@@ -3130,8 +3134,8 @@ mod test_normalization {
         key_map.insert("site".to_string(), json!(site_uid.to_string()));
         let key = Key::from(key_map);
 
-        let mut resolved = BTreeMap::new();
-        resolved.insert(site_uid, 5u64);
+        let mut resolved = ResolvedIds::default();
+        resolved.insert("dcim.site", site_uid, 5u64);
 
         let query = query_from_key(&type_schema, &key, &resolved).unwrap();
         let json = serde_json::to_value(&query).unwrap();

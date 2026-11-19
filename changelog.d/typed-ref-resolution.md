@@ -1,0 +1,1 @@
+- apply: a ref resolves to the backend id its uid is bound to under the type the field targets, so a uid still bound under its old type after a retype without `--allow-delete` no longer writes the old type's id into refs to it
