@@ -97,7 +97,6 @@ impl InfrahubAdapter {
         // empty is unset, as the client's own `resolve_branch` has it.
         let branch = branch.filter(|b| !b.is_empty());
         let mut config = ClientConfig::new(url, token);
-        config = config.with_http_client_builder(|builder| builder.no_proxy());
         if let Some(branch) = branch {
             config = config.with_default_branch(branch);
         }

@@ -33,3 +33,24 @@ the same setting as an environment variable:
 ```bash
 export ALEMBIC_PLUGINS_DIR="/home/user/alembic_plugins"
 ```
+
+## proxies
+
+the http adapters (netbox, nautobot, infrahub, generic, peeringdb) reach their
+backend through the proxy the environment names. for each scheme the first of
+these that is set wins:
+
+1. `HTTP_PROXY` for `http://` urls, `HTTPS_PROXY` for `https://` ones
+2. on macos and windows, the system proxy settings
+3. `ALL_PROXY`
+
+`NO_PROXY` lists what is reached directly, comma-separated: hosts, domains (a
+domain covers its subdomains), ip addresses and cidr ranges; `*` covers every
+host name, but not an ip address. each variable is also read in lowercase when
+the uppercase one is unset. external adapters inherit the environment and
+decide for themselves.
+
+```bash
+export HTTPS_PROXY="http://proxy.example.com:3128"
+export NO_PROXY="localhost,127.0.0.1,.corp.example.com"
+```

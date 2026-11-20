@@ -1,0 +1,1 @@
+- http adapters: netbox and infrahub requests go through the proxy `HTTP_PROXY`, `HTTPS_PROXY` or `ALL_PROXY` names unless `NO_PROXY` covers the host, as nautobot, generic and peeringdb already did, and on macos a run that cannot read the system proxy settings (as in a sandbox) goes on without them instead of panicking (#564)
