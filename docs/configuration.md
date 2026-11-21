@@ -50,6 +50,12 @@ simple hostnames" are not read, so a host listed only there goes through the
 proxy and belongs in `NO_PROXY`. windows also gives its bypass list
 (`ProxyOverride`), which is used when `NO_PROXY` is unset.
 
+a proxy url must be `http://` or `https://`. the adapters are built without
+socks support, so if `HTTP_PROXY`, `HTTPS_PROXY` or `ALL_PROXY` gives a backend
+a `socks4://`, `socks4a://`, `socks5://` or `socks5h://` proxy, the run fails
+before anything is sent: exit `69` with `unsupported scheme`, or exit `1` from
+peeringdb. to keep such a url set, add the backend to `NO_PROXY`.
+
 `NO_PROXY` lists what is reached directly, comma-separated: hosts, domains (a
 domain covers its subdomains), ip addresses and cidr ranges; `*` covers every
 host name, but not an ip address. each variable is also read in lowercase when
