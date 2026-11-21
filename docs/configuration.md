@@ -44,6 +44,12 @@ these that is set wins:
 2. on macos and windows, the system proxy settings
 3. `ALL_PROXY`
 
+of the system settings, macos gives only the http and https proxy host and
+port: its "bypass proxy settings for these hosts & domains" list and "exclude
+simple hostnames" are not read, so a host listed only there goes through the
+proxy and belongs in `NO_PROXY`. windows also gives its bypass list
+(`ProxyOverride`), which is used when `NO_PROXY` is unset.
+
 `NO_PROXY` lists what is reached directly, comma-separated: hosts, domains (a
 domain covers its subdomains), ip addresses and cidr ranges; `*` covers every
 host name, but not an ip address. each variable is also read in lowercase when
