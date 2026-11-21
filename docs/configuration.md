@@ -48,7 +48,10 @@ of the system settings, macos gives only the http and https proxy host and
 port: its "bypass proxy settings for these hosts & domains" list and "exclude
 simple hostnames" are not read, so a host listed only there goes through the
 proxy and belongs in `NO_PROXY`. windows also gives its bypass list
-(`ProxyOverride`), which is used when `NO_PROXY` is unset.
+(`ProxyOverride`), which is used when `NO_PROXY` is unset, and its proxy
+(`ProxyServer`) only as one `host:port` for every protocol: a per-protocol
+list (`http=...;https=...`) is ignored, and a single `http=`, `https=` or
+`socks=` entry fails the run. set `HTTP_PROXY` and `HTTPS_PROXY` instead.
 
 a proxy url must be `http://` or `https://`. the adapters are built without
 socks support, so if `HTTP_PROXY`, `HTTPS_PROXY` or `ALL_PROXY` gives a backend
