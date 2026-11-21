@@ -185,7 +185,8 @@ fn merge_schema(current: &mut Option<Schema>, incoming: Option<Schema>) -> Resul
 #[cfg(test)]
 mod tests {
     use super::{index_uid_lines, load_inventory, merge_schema};
-    use alembic_core::{Schema, TypeSchema, Uid};
+    use alembic_core::{Inventory, Schema, TypeSchema, Uid};
+    use anyhow::Result;
     use std::collections::BTreeMap;
     use tempfile::tempdir;
 
@@ -231,6 +232,129 @@ mod tests {
         std::fs::write(&path, "includes: [other.yaml]\nschema: { types: {} }\n").unwrap();
         let err = format!("{:#}", load_inventory(&path).unwrap_err());
         assert!(err.contains("unknown field `includes`"), "{}", err);
+    }
+
+    /// write `schema: { types }` once as a yaml and once as a json inventory and load each.
+    fn load_types_both_ways(types: serde_json::Value) -> Vec<(&'static str, Result<Inventory>)> {
+        let doc = serde_json::json!({ "schema": { "types": types } });
+        ["yaml", "json"]
+            .into_iter()
+            .map(|ext| {
+                let dir = tempdir().unwrap();
+                let path = dir.path().join(format!("inv.{ext}"));
+                let content = match ext {
+                    "json" => serde_json::to_string(&doc).unwrap(),
+                    _ => crate::yaml::to_string(&doc).unwrap(),
+                };
+                std::fs::write(&path, content).unwrap();
+                (ext, load_inventory(&path))
+            })
+            .collect()
+    }
+
+    fn load_error_both_ways(types: serde_json::Value) -> Vec<(&'static str, String)> {
+        load_types_both_ways(types)
+            .into_iter()
+            .map(|(ext, loaded)| (ext, format!("{:#}", loaded.unwrap_err())))
+            .collect()
+    }
+
+    #[test]
+    fn a_key_list_takes_each_schema_from_fields() {
+        let interface_fields = serde_json::json!({
+            "device": { "type": "ref", "target": "dcim.device" },
+            "name": { "type": "string" },
+            "mac": { "type": "mac" },
+        });
+        let types = serde_json::json!({
+            "dcim.device": { "key": ["name"], "fields": { "name": { "type": "string" } } },
+            "dcim.interface": { "key": ["device", "name"], "fields": interface_fields },
+        });
+        for (ext, loaded) in load_types_both_ways(types) {
+            let inventory = loaded.unwrap_or_else(|err| panic!("{ext}: {err:#}"));
+            let interface = &inventory.schema.types["dcim.interface"];
+            let fields = &interface.fields;
+            let expected: BTreeMap<_, _> = ["device", "name"]
+                .into_iter()
+                .map(|name| (name.to_string(), fields[name].clone()))
+                .collect();
+            assert_eq!(interface.key, expected, "{ext}");
+            assert_eq!(fields.len(), 3, "{ext}");
+        }
+    }
+
+    #[test]
+    fn a_key_list_refuses_a_name_not_declared_in_fields() {
+        let types = serde_json::json!({
+            "dcim.interface": { "key": ["name", "mac"], "fields": { "name": { "type": "string" } } },
+        });
+        for (ext, err) in load_error_both_ways(types) {
+            assert!(
+                err.contains(
+                    "key list of dcim.interface names `mac`, which is not declared in fields"
+                ),
+                "{ext}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_key_list_refuses_a_repeated_name() {
+        let types = serde_json::json!({
+            "dcim.interface": { "key": ["name", "name"], "fields": { "name": { "type": "string" } } },
+        });
+        for (ext, err) in load_error_both_ways(types) {
+            assert!(
+                err.contains("key list of dcim.interface names `name` twice"),
+                "{ext}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_key_list_refuses_a_non_string_entry() {
+        let types = serde_json::json!({
+            "dcim.interface": { "key": ["name", 3], "fields": { "name": { "type": "string" } } },
+        });
+        for (ext, err) in load_error_both_ways(types) {
+            assert!(
+                err.contains("key list of dcim.interface holds `3`, which is not a field name"),
+                "{ext}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_key_list_still_obeys_the_key_field_rules() {
+        let nullable = serde_json::json!({
+            "dcim.site": { "key": ["slug"], "fields": { "slug": { "type": "slug", "nullable": true } } },
+        });
+        for (ext, err) in load_error_both_ways(nullable) {
+            assert!(
+                err.contains("nullable key field dcim.site.key.slug"),
+                "{ext}: {err}"
+            );
+        }
+        let composite = serde_json::json!({
+            "dcim.site": { "key": ["tags"], "fields": { "tags": { "type": "list", "item": "string" } } },
+        });
+        for (ext, err) in load_error_both_ways(composite) {
+            assert!(
+                err.contains("non-scalar key field dcim.site.key.tags"),
+                "{ext}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_malformed_key_map_keeps_its_precise_error() {
+        let types = serde_json::json!({
+            "dcim.site": { "key": { "slug": { "type": "slug", "requried": true } } },
+        });
+        for (ext, err) in load_error_both_ways(types) {
+            assert!(err.contains("unknown field `requried`"), "{ext}: {err}");
+            assert!(!err.contains("did not match any variant"), "{ext}: {err}");
+        }
     }
 
     #[test]

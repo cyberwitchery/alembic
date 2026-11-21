@@ -1,0 +1,1 @@
+- schema: a type block's `key` can list field names, `key: [device, name]`, each taking its schema from the same-named `fields` entry (#574)
