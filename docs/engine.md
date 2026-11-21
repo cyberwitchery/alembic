@@ -58,7 +58,8 @@ diffs are computed at the `attrs` field level.
 diffing is **additive-only**: only fields declared in your desired inventory are compared. fields present on the backend but absent from your inventory are left untouched. this means:
 
 - alembic only manages what you declare; unmanaged fields are not cleared.
-- to stop managing a field, set it to `null` in your `attrs` (sends a null patch to the backend). simply removing it from your inventory has no effect on the backend.
+- to stop managing a field, remove it from your `attrs`: the backend keeps its current value.
+- to clear a field, set it to `null` (sends a null patch to the backend). the field must be declared `nullable: true`; without it a null fails validation.
 - this is intentional: you can layer alembic alongside manual backend edits on fields you do not declare.
 
 comparison is type-aware: for a field declared `int` or `float`, values are compared by numeric value (and `list`/`map` fields elementwise), so a backend that returns `1.0` or `"1"` for an int you wrote as `1` does not produce a perpetual update. every other type compares exactly.

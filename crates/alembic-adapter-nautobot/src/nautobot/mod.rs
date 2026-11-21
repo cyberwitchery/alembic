@@ -1174,6 +1174,60 @@ mod tests {
         );
     }
 
+    /// a nautobot whose page size is capped below the 200 a read asks for
+    /// still hands over every object: the read follows each page's `next` link.
+    #[tokio::test]
+    async fn observe_follows_next_links_past_a_capped_page_size() {
+        let server = MockServer::start();
+        let dir = tempdir().unwrap();
+        mock_content_types(&server);
+        let id = |n: u64| format!("11111111-1111-1111-1111-{n:012}");
+        let site = |n: u64| json!({ "id": id(n), "name": format!("site-{n}"), "slug": format!("site-{n}") });
+        let next = |offset: u64| {
+            json!(format!(
+                "{}/api/dcim/sites/?limit=2&offset={offset}",
+                server.base_url()
+            ))
+        };
+        // MAX_PAGE_SIZE = 2: two rows a page, each linking the next at the size served.
+        for (limit, offset, results, next) in [
+            ("200", "0", json!([site(1), site(2)]), next(2)),
+            ("2", "2", json!([site(3), site(4)]), next(4)),
+            ("2", "4", json!([site(5)]), json!(null)),
+            // past the end, where stepping by the size asked for lands.
+            ("200", "200", json!([]), json!(null)),
+        ] {
+            server.mock(|when, then| {
+                when.method(GET)
+                    .path("/api/dcim/sites/")
+                    .query_param("limit", limit)
+                    .query_param("offset", offset);
+                then.status(200).json_body(json!({
+                    "count": 5,
+                    "next": next,
+                    "previous": null,
+                    "results": results,
+                }));
+            });
+        }
+
+        let adapter = NautobotAdapter::new(&server.base_url(), "token").unwrap();
+        let observed = adapter
+            .read(
+                &site_schema(),
+                &[TypeName::new("dcim.site")],
+                &state(dir.path()),
+            )
+            .await
+            .unwrap();
+
+        let ids: std::collections::BTreeSet<BackendId> = observed
+            .objects()
+            .filter_map(|object| object.backend_id.clone())
+            .collect();
+        assert_eq!(ids, (1..=5).map(|n| BackendId::String(id(n))).collect());
+    }
+
     /// the route is the one nautobot serves the model at; nothing derives it.
     #[tokio::test]
     async fn observe_reads_the_route_nautobot_serves() {

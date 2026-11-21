@@ -1,8 +1,8 @@
 # plan format
 
-plans are json files that can be re-applied. the plan is deterministic for a given desired state and observed backend snapshot.
+plans are json files, or yaml when the path ends in `.yaml` or `.yml`, and can be re-applied: `plan -o` writes and `apply -p` reads the format the extension names. the plan is deterministic for a given desired state and observed backend snapshot.
 
-## schema (mvp)
+## schema
 
 ```json
 {
@@ -45,7 +45,19 @@ plans are json files that can be re-applied. the plan is deterministic for a giv
       "refs": ["..."]
     }
   ],
-  "summary": { "create": 1, "update": 1, "delete": 1 },
+  "summary": {
+    "create": 1,
+    "update": 1,
+    "delete": 1,
+    "state": {
+      "storage": "local",
+      "location": "...",
+      "present": true,
+      "backend": { "adapter": "netbox", "instance": "..." },
+      "bindings_loaded": 2
+    },
+    "matching": { "by_state": 1, "by_key": 0, "adopted": 0, "to_create": 1 }
+  },
   "schema_preview": { "...": "..." },
   "effects": "drive",
   "adopt_by_key": true
@@ -62,7 +74,9 @@ plans are json files that can be re-applied. the plan is deterministic for a giv
 - a delete's `refs` are the uids the deleted object references outside its key. apply
   deletes it before them; a plan without `refs` orders deletes by their keys alone.
 - the plan embeds the schema used during planning to drive apply-time reference resolution; see `docs/ir.md` for the field schema.
-- `summary` is optional, counts of each op kind.
+- `summary` is optional. `create`, `update` and `delete` count each op kind; `state` and `matching` are optional too.
+- `summary.state` is the state the run loaded, before any adoption: `storage` (`local` or `postgres`), `location` (the state file, or the postgres row key), `present` (whether anything was saved there), `backend` (`adapter` and `instance`) and `bindings_loaded`.
+- `summary.matching` is how declared objects matched the observation, not op counts: `by_state`, `by_key`, `adopted` (the part of `by_key` the run bound by key) and `to_create` (`docs/cli.md`, plan). a write-only plan leaves it out.
 - `schema_preview` is optional, the read-only schema preview plan records (shape in `docs/external-adapters.md`, when it is populated in `docs/cli.md`).
 - `effects` is optional: `emit` when planned against a write-only backend (every op a create), `drive` against a read+write one. an external adapter that does not answer `capabilities` counts as read+write (see `docs/external-adapters.md`), so `drive` can also mean its role is unknown. apply refuses a plan whose `effects` does not match the backend it is given, and applies a plan without the field as before.
 - `adopt_by_key` is optional: whether planning adopted unbound backend objects by key, `false` under `plan --no-adopt`. apply's stale check (`docs/cli.md`, apply) re-diffs the same way, so a `--no-adopt` plan's create of a same-key twin is not read as a collision. a write-only plan, which observes nothing, leaves it out, and a plan without it is re-diffed adopting by key.

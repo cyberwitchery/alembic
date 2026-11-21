@@ -23,6 +23,10 @@ use std::time::{Duration, Instant};
 use tokio::process::Command;
 use tokio::time::sleep;
 
+/// the page size a read asks for. a server that returns shorter pages is read
+/// on from where each page ended.
+const PAGE_SIZE: usize = 200;
+
 /// schema provisioning mode for infrahub.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SchemaApplyMode {
@@ -160,66 +164,49 @@ impl InfrahubAdapter {
 
         let query = node_query(&gql_type, &selection, ids.is_some());
 
-        let mut observed = Vec::new();
-        let mut offset = 0usize;
-        let limit = 200usize;
-
-        loop {
+        // the cursor is the offset of the next page. a fetch hands its offset on
+        // with the response, so the next page starts after the rows this one held.
+        let fetch = |cursor: Option<usize>| {
+            let offset = cursor.unwrap_or(0);
             let mut vars = json!({
                 "offset": offset,
-                "limit": limit,
+                "limit": PAGE_SIZE,
             });
             if let Some(ids) = ids {
                 vars["ids"] = json!(ids);
             }
-            let response = self
-                .client
-                .execute_raw(&query, Some(vars), None)
-                .await
-                .context("execute infrahub query")?;
-            let data = response
-                .data
-                .ok_or_else(|| anyhow!("missing data in infrahub response"))?;
-            let connection = data
-                .get(&gql_type)
-                .ok_or_else(|| anyhow!("missing {} in infrahub response", gql_type))?;
-            let edges = connection
-                .get("edges")
-                .and_then(Value::as_array)
-                .ok_or_else(|| {
-                    anyhow!("expected edges array in infrahub response for {gql_type}")
-                })?;
-            let count = connection
-                .get("count")
-                .and_then(Value::as_u64)
-                .ok_or_else(|| anyhow!("expected count in infrahub response for {gql_type}"))?
-                as usize;
-
-            if edges.is_empty() {
-                break;
+            let query = &query;
+            async move {
+                self.client
+                    .execute_raw(query, Some(vars), None)
+                    .await
+                    .map(|response| (offset, response))
             }
+        };
+        // a page that cannot be read ends the walk and carries its error out.
+        let extract = |(offset, response): (usize, infrahub::GraphQlResponse<Value>)| {
+            let page = connection_page(response, &gql_type, &field_kinds);
+            let next_cursor = match &page {
+                Ok((nodes, count)) if !nodes.is_empty() => {
+                    let next = offset + nodes.len();
+                    (*count == 0 || next < *count).then_some(next)
+                }
+                _ => None,
+            };
+            Ok(infrahub::EdgePage {
+                nodes: vec![page.map(|(nodes, _)| nodes)],
+                next_cursor,
+            })
+        };
+        let pages = infrahub::Paginator::new(fetch, extract)
+            .collect_all()
+            .await
+            .context("execute infrahub query")?;
 
-            for edge in edges {
-                let node = edge
-                    .get("node")
-                    .ok_or_else(|| anyhow!("missing node in infrahub response for {gql_type}"))?;
-                let backend_id = node
-                    .get("id")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| anyhow!("missing id in infrahub response for {gql_type}"))?
-                    .to_string();
-
-                let attrs = extract_attrs(node, &field_kinds)
-                    .with_context(|| format!("read {gql_type} node {backend_id}"))?;
-                observed.push((BackendId::String(backend_id), attrs));
-            }
-
-            offset += limit;
-            if count > 0 && offset >= count {
-                break;
-            }
+        let mut observed = Vec::new();
+        for page in pages {
+            observed.extend(page?);
         }
-
         Ok(observed)
     }
 
@@ -1122,6 +1109,47 @@ fn build_selection(field_kinds: &BTreeMap<String, FieldKind>) -> String {
         parts.push(selection);
     }
     parts.join("\n")
+}
+
+/// the nodes one page of a `gql_type` connection holds, with the connection's
+/// total `count`.
+fn connection_page(
+    response: infrahub::GraphQlResponse<Value>,
+    gql_type: &str,
+    field_kinds: &BTreeMap<String, FieldKind>,
+) -> Result<(Vec<(BackendId, JsonMap)>, usize)> {
+    let data = response
+        .data
+        .ok_or_else(|| anyhow!("missing data in infrahub response"))?;
+    let connection = data
+        .get(gql_type)
+        .ok_or_else(|| anyhow!("missing {} in infrahub response", gql_type))?;
+    let edges = connection
+        .get("edges")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow!("expected edges array in infrahub response for {gql_type}"))?;
+    let count = connection
+        .get("count")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| anyhow!("expected count in infrahub response for {gql_type}"))?
+        as usize;
+
+    let mut nodes = Vec::with_capacity(edges.len());
+    for edge in edges {
+        let node = edge
+            .get("node")
+            .ok_or_else(|| anyhow!("missing node in infrahub response for {gql_type}"))?;
+        let backend_id = node
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow!("missing id in infrahub response for {gql_type}"))?
+            .to_string();
+
+        let attrs = extract_attrs(node, field_kinds)
+            .with_context(|| format!("read {gql_type} node {backend_id}"))?;
+        nodes.push((BackendId::String(backend_id), attrs));
+    }
+    Ok((nodes, count))
 }
 
 fn extract_attrs(node: &Value, field_kinds: &BTreeMap<String, FieldKind>) -> Result<JsonMap> {
@@ -4237,6 +4265,60 @@ schema { query: Query }
             assert!(chain.contains(expected), "{chain}");
             assert!(chain.contains("DcimSite"), "{chain}");
         }
+    }
+
+    /// an infrahub that returns pages shorter than the 200 a read asks for is
+    /// read on from where each page ended, until `count` is reached.
+    #[tokio::test]
+    async fn read_continues_after_a_short_page() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/schema.graphql");
+            then.status(200).body(GRAPHQL_SCHEMA);
+        });
+        let site = |n: u64| {
+            json!({ "node": {
+                "id": format!("site-{n}"),
+                "hfid": format!("site-{n}"),
+                "name": { "value": format!("Site {n}") }
+            } })
+        };
+        for (offset, edges) in [
+            (0, json!([site(1), site(2)])),
+            (2, json!([site(3), site(4)])),
+            (4, json!([site(5)])),
+        ] {
+            server.mock(|when, then| {
+                when.method(POST)
+                    .path("/graphql")
+                    .body_includes("DcimSite")
+                    .json_body_includes(
+                        json!({ "variables": { "offset": offset, "limit": 200 } }).to_string(),
+                    );
+                then.status(200).json_body(json!({
+                    "data": { "DcimSite": { "count": 5, "edges": edges } },
+                    "errors": []
+                }));
+            });
+        }
+
+        let adapter = InfrahubAdapter::new(&server.base_url(), "token", None).unwrap();
+        let state = StateStore::new(None, StateData::default());
+        let observed = adapter
+            .read(&site_only_schema(), &[], &state)
+            .await
+            .unwrap();
+
+        let ids: BTreeSet<BackendId> = observed
+            .objects()
+            .filter_map(|object| object.backend_id.clone())
+            .collect();
+        assert_eq!(
+            ids,
+            (1..=5)
+                .map(|n| BackendId::String(format!("site-{n}")))
+                .collect()
+        );
     }
 
     fn site_only_schema() -> Schema {
