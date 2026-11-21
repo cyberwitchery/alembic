@@ -1,0 +1,1 @@
+- **breaking** http adapters: netbox and infrahub requests go through the http proxy that `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` or the macos and windows system settings name, unless `NO_PROXY` covers the host, as nautobot, generic and peeringdb already did; add a backend reached directly to `NO_PROXY` (#564)
