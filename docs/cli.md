@@ -1,7 +1,7 @@
 # cli
 
-alembic ships a single cli binary with validate, import, map, plan, apply and
-skill subcommands.
+alembic ships a single cli binary with validate, import, map, plan, apply,
+skill, completion and version subcommands.
 
 ## validate
 
@@ -14,9 +14,10 @@ alembic validate -f examples/inventory.yaml -o validation.json
 
 - loads and validates an inventory file (plus includes)
 - exits `65` on validation errors (see [exit codes](#exit-codes))
-- `-o`/`--output` writes the same errors as json, the machine-readable half of
-  what the run prints. it is optional: the human report goes to stderr either
-  way, unchanged, and the exit code is unchanged
+- `-o`/`--output` writes the same errors as json (yaml for a `.yaml`/`.yml`
+  path), the machine-readable half of what the run prints. it is optional: the
+  human report goes to stderr either way, unchanged, and the exit code is
+  unchanged
 
 the file is written on both outcomes: a run that validates leaves an empty
 `errors` list rather than no file, so a ci gate can tell "nothing to report"
@@ -146,7 +147,7 @@ NETBOX_URL=https://netbox.example.com NETBOX_TOKEN=$NETBOX_TOKEN \
 
 - creates a deterministic plan
 - against a write-only (emitter) backend such as `django`, which cannot report existing state, plain `plan` produces an all-creates plan against an empty observation, while `--report` is rejected up front (see below)
-- writes json plan to the `-o`/`--output` path (required only for this default write path), and prints a human-readable per-op summary of that plan (create/update/delete, with per-field `from -> to` for updates; long categories are truncated) so you can read what apply would do before applying
+- writes the plan to the `-o`/`--output` path, as yaml when it ends in `.yaml` or `.yml` and as json otherwise (required only for this default write path), and prints a human-readable per-op summary of that plan (create/update/delete, with per-field `from -> to` for updates; long categories are truncated) so you can read what apply would do before applying
 - honors `--allow-delete` if you want delete ops; delete candidates are the observed objects the inventory asserts completeness over — bounded by its `scope:` block when one is declared (`docs/inventory.md`), the whole backend per declared type otherwise
 - says first, on stderr, which state it loaded: `state: <path or row key> for <backend>, N bindings`, or `state: none at <path> for <backend>, 0 bindings` when nothing was saved there yet. the plan's `summary.state` records the same, as loaded before any adoption (`storage`, `location`, `present`, `backend`, `bindings_loaded`); postgres state names the row key, never the url
 - prints how declared objects matched, under the operation counts: `matching: 12 by state, 3 by key (3 adopted), 2 to create`, also in `summary.matching` (`by_state`, `by_key`, `adopted`, `to_create`). `adopted` is the part of `by_key` the run bound by key; a state binding that no longer resolves can still match by key without one. a write-only backend matches nothing and omits `matching`
@@ -155,7 +156,7 @@ NETBOX_URL=https://netbox.example.com NETBOX_TOKEN=$NETBOX_TOKEN \
 - without `--provision`, plan asks the backend for a read-only schema preview (what `apply`'s `ensure_schema` would create/delete, writing nothing) and prints it to stderr as `schema preview: ...`; the machine-readable copy rides in the plan's `schema_preview`, and under `--report` (which writes no plan) in the drift report's. backends that cannot preview report `schema preview: unavailable for this backend`, and a preview that fails is reported as `schema preview failed: ...` while the plan goes on. a preview that finds a schema the backend will reject (a netbox custom object field name outside `[A-Za-z0-9_]`) fails the plan instead, since apply would refuse it
 - `--provision` runs adapter provisioning (`ensure_schema`) before observing backend state; provisioning that would delete custom object types/fields the inventory no longer declares is blocked unless `--allow-delete` is also given (such deletes cascade to their objects on the backend)
 - `--dry-run` prints the raw plan json instead of writing it; it writes no file, so `-o`/`--output` is rejected with it at parse time rather than accepted and ignored
-- `--report` prints a read-only drift report and exits without writing a plan file or saving state; `-o`/`--output` writes that report as json (optional: without it the report is the printed summary only). it exits `2` when the report finds drift and `0` when it finds none; an error exits with one of the other [exit codes](#exit-codes)
+- `--report` prints a read-only drift report and exits without writing a plan file or saving state; `-o`/`--output` writes that report as json, or yaml for a `.yaml`/`.yml` path (optional: without it the report is the printed summary only). it exits `2` when the report finds drift and `0` when it finds none; an error exits with one of the other [exit codes](#exit-codes)
 - saving nothing, `--report` and `--dry-run` take the state lock shared (see [state](state.md)), so two of them can run at once in the same directory; adding `--provision` makes the run exclusive again, since it writes backend schema
 - `--report` and `--dry-run` are mutually exclusive (both exit without applying); passing both is rejected at parse time
 - `--provision` cannot be combined with `--dry-run` (rejected at parse time): a `--dry-run` preview promises not to write, but `--provision` still writes backend schema (`ensure_schema`). combining `--provision` with `--report` stays allowed as the documented "provision schema, then preview drift" workflow (see below)
@@ -197,20 +198,20 @@ much had already been emitted, and never populate `extra`. plain `plan` is
 unaffected: against an emitter it still plans every declared object as a create,
 which is what `apply` emits.
 
-`-o`/`--output` writes the same report as json, the machine-readable half of the
-document the summary prints. it is optional: the summary prints either way, and
-without it the report leaves no file. the file is the drift report, never a plan
-(`--report` still writes no plan and saves no state), and the path is checked
-before the backend is observed, so a bad `-o` costs no backend requests. the
-check is a real write probe, not just a `mkdir -p`: a path that is a directory,
-an existing file that rejects writes, or a new one under a parent that rejects
-writes, is rejected up front. an existing target answers for itself, so
-`-o /dev/null` is accepted whatever `/dev` allows; a fifo cannot be opened
-without blocking, so it is judged by its parent instead, which is why
-`-o /dev/stdout` is refused when stdout is a pipe. the probe writes a real file
-to answer, but leaves nothing behind: that file and every directory it had to
-create are removed again, and an existing target is opened without being
-truncated. the json shape:
+`-o`/`--output` writes the same report as json (yaml for a `.yaml`/`.yml` path),
+the machine-readable half of the document the summary prints. it is optional:
+the summary prints either way, and without it the report leaves no file. the
+file is the drift report, never a plan (`--report` still writes no plan and
+saves no state), and the path is checked before the backend is observed, so a
+bad `-o` costs no backend requests. the check is a real write probe, not just a
+`mkdir -p`: a path that is a directory, an existing file that rejects writes, or
+a new one under a parent that rejects writes, is rejected up front. an existing
+target answers for itself, so `-o /dev/null` is accepted whatever `/dev` allows;
+a fifo cannot be opened without blocking, so it is judged by its parent instead,
+which is why `-o /dev/stdout` is refused when stdout is a pipe. the probe writes
+a real file to answer, but leaves nothing behind: that file and every directory
+it had to create are removed again, and an existing target is opened without
+being truncated. the json shape:
 
 ```json
 {
@@ -267,7 +268,7 @@ alembic plan -f examples/inventory.yaml --dry-run \
   alembic apply -p - --backend-config examples/backend-netbox.yaml
 ```
 
-- applies a plan file; `-p -` reads a json plan from stdin, matching the json emitted by `plan --dry-run`
+- applies a plan file, read as yaml when its path ends in `.yaml` or `.yml` and as json otherwise; `-p -` reads a json plan from stdin, matching the json emitted by `plan --dry-run`
 - says on stderr which state it loaded, in `plan`'s `state:` line
 - before writing, checks that the backend still holds what the plan was diffed against: the plan's objects are diffed again against the backend as it is now, adopting by key only if the plan did (`adopt_by_key` in `docs/plan.md`), and every operation that diff needs has to be one the plan holds, with the same `from` values. otherwise apply refuses, naming each object and what moved (`dcim.site {"slug":"fra1"}: \`name\` is "C", planned against "A"`, or a create whose object now exists), and writes nothing, exiting `65`; re-plan and review again. an operation the diff no longer needs was applied already (an interrupted run, or the same edit by hand) and is not a conflict, so resuming works unchanged. deletes are not checked, since an object already gone is the delete applied, and a write-only backend observes nothing to check. the check reads what `plan` reads for the plan's types, so it costs about one observation; `--no-stale-check` skips it
 - an applied update re-asserts every declared field of its object, not only the changes the plan listed: a backend edit to a declared field between plan and apply is converged back under `--no-stale-check`, and approving an update under `--interactive` approves that full write. undeclared fields stay untouched (`docs/engine.md`, diff rules)
@@ -298,7 +299,7 @@ alembic plan -f examples/inventory.yaml --dry-run \
   backend that provisions nothing (django) reports nothing
 - infrahub provisioning can generate and load a schema file when
   configured in the backend config
-- `-o`/`--output` writes the apply report as json (optional; without it apply writes no artifact, as before)
+- `-o`/`--output` writes the apply report as json, or yaml for a `.yaml`/`.yml` path (optional; without it apply writes no artifact, as before)
 
 note that apply has no transaction semantics. writes land on the backend one at a time and there is no rollback, so a crash partway through leaves backend objects behind with no corresponding cleanup. state is saved once, after the whole apply returns, not per write; the journal is what carries a crashed run's progress until then (see below).
 
@@ -354,9 +355,9 @@ or review process consumes to see what a given run did.
 
 apply journals the create/update operations it has completed, so an apply that stops
 partway can be continued instead of redone. the journal is a file under `.alembic/`,
-or under `ALEMBIC_JOURNAL_DIR` when set, named for the backend and a hash of the plan's
-operations. pointing `ALEMBIC_JOURNAL_DIR` at a directory several workers share lets
-any of them resume an apply another one started.
+or under `ALEMBIC_JOURNAL_DIR` when set, named for the backend instance, as its state
+file is, and a hash of the plan's operations. pointing `ALEMBIC_JOURNAL_DIR` at a
+directory several workers share lets any of them resume an apply another one started.
 
 with the postgres state backend, the built-in adapters keep the journal in the same
 database instead, in `alembic_journal` under the state row key (see [state](state.md)),
@@ -390,7 +391,7 @@ means an apply is unfinished.
   when the object is already gone. it reports that case in its own words:
 
   ```
-  WARN apply stopped during the delete phase; the journal at ./.alembic/netbox_journal_16459615207231411390.yaml records all 12 create/update operations as applied, and re-running the same plan skips them and re-issues the deletes
+  WARN apply stopped during the delete phase; the journal at ./.alembic/generic-9a693ad9_journal_3040352107055570206.yaml records all 2 create/update operations as applied, and re-running the same plan skips them and re-issues the deletes
   ```
 - the journal is removed at the end of the adapter's write, and state is saved just
   after, so a crash in that window leaves the created objects on the backend with
@@ -514,11 +515,30 @@ of parsing the version string:
 
 ```json
 {
-  "version": "0.12.0",
-  "backends": ["netbox", "nautobot", "infrahub", "generic", "peeringdb", "django", "external"],
+  "version": "0.13.0",
+  "backends": [
+    "netbox",
+    "nautobot",
+    "infrahub",
+    "generic",
+    "peeringdb",
+    "django",
+    "external"
+  ],
   "external_protocol": 1,
-  "state_backends": ["file", "postgres"],
-  "features": ["apply-only", "apply-stdin", "exit-codes", "map-objects", "map-starlark", "plan-effects", "stale-check"]
+  "state_backends": [
+    "file",
+    "postgres"
+  ],
+  "features": [
+    "apply-only",
+    "apply-stdin",
+    "exit-codes",
+    "map-objects",
+    "map-starlark",
+    "plan-effects",
+    "stale-check"
+  ]
 }
 ```
 

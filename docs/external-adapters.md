@@ -514,6 +514,16 @@ without touching anything that matters.
 alembic-adapter-test --setup tests/setup.json -- ./alembic-adapter-mybackend
 ```
 
+every check starts the adapter afresh and gives it `--timeout` seconds, 10 by
+default, from spawn to exit, startup included. one still running at the
+deadline is killed and the check fails with `did not terminate within the
+timeout`, so an adapter slower than that to start (an interpreter, a container)
+fails every check. raise it:
+
+```console
+alembic-adapter-test --timeout 60 -- ./alembic-adapter-mybackend
+```
+
 to exercise `read`, `write`, and `ensure_schema` with requests of your own,
 pass `--cases` a file or directory of cases. a case is a complete request and
 an expectation:

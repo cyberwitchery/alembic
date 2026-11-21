@@ -6,7 +6,6 @@ unreleased changes live in `changelog.d/` until a release collects them.
 
 ## [0.13.0] - 2026-11-05
 
-- `alembic-file-generator`: `--topology` cables the devices as a `chain`, `ring`, `star`, full `mesh` or `leaf-spine` (with `--spines`), each link with its own interface on both ends; `pairs` stays the default (#514)
 - apply: the stale-plan check re-diffs with key adoption as the plan was made, recorded as `adopt_by_key`, so a `plan --no-adopt` create of a same-key twin is no longer refused as stale; a plan without the field is checked as before (#528)
 - alembic-adapter-test: `--setup <file>` sends a json object as the `setup` of every built-in request, for an adapter that cannot answer without configuration
 - apply deletes an object before what it references outside its key, so deleting devices together with their role, type or site no longer fails with netbox's `409`: a planned delete records those uids as `refs`. a plan written before this has none and orders deletes by key as before
@@ -30,7 +29,6 @@ unreleased changes live in `changelog.d/` until a release collects them.
 - apply: a journal file that exists but cannot be read is an error, rather than overwritten by a fresh journal
 - apply: `ALEMBIC_JOURNAL_DIR` sets where apply journals are kept, so a worker other than the one that started an apply can resume it (#469)
 - cli: `completion` command prints a shell completion script for bash, elvish, zsh, fish and powershell (#507)
-- `alembic-file-generator` emits interfaces spread over the devices (`-i`, one per device by default) and pairs neighbouring interfaces with cables
 
 ## [0.11.0] - 2026-10-13
 
@@ -102,7 +100,6 @@ unreleased changes live in `changelog.d/` until a release collects them.
 - generic: a plan holding a delete the backend cannot perform is refused before anything is written
 - generic: the shipped example inventory declares its key fields in `fields:`, and `missing key field` names what to declare
 - `plan --report` and `plan --dry-run` take the state lock shared; `--provision` keeps the run exclusive
-- `alembic-file-generator` generates an inventory as well as a plan (`--kind plan|inventory`), and its devices key on their name
 - `alembic-adapter-test` fails an adapter whose response carries a key the protocol does not define, envelope and payload both
 - **breaking** a `format:` disagreeing with the check its field type already applies fails validation
 - a provisioning run names what it deprecated and deleted, under `provision:`, `schema preview:` and the `--allow-delete` refusal
@@ -191,7 +188,6 @@ unreleased changes live in `changelog.d/` until a release collects them.
 - cli: `plan --provision` now fails closed when the schema preview errors, aborting instead of provisioning blind; a preview error previously slipped past the `--allow-delete` gate and let `ensure_schema` delete unmanaged schema, unlike apply which already failed closed
 - infrahub adapter: name an unresolved ref-typed *key* field in the `unresolved references` apply error. the adapter's local, shallow `describe_missing_refs` (forked in #174 because infrahub refs are flat) scanned only `desired.attrs`, so an apply left pending on a dangling key ref (an interface keyed by `(device, name)` whose device is unresolved) reported an empty message; it now scans `desired.key` too, matching the key-values scan the engine's shared copy gained in #221
 - engine: mark journal ops done in O(1) via an index, so applying an N-op plan is O(N) not O(N²) (a 50k-op plan spent ~0.9s, growing quadratically, in journal bookkeeping alone)
-- add `alembic-file-generator`, an internal tool that emits a synthetic `plan.json` of N create ops over a fixed dcim schema for scale/perf testing (#118)
 - external adapters: write the request to a child adapter's stdin concurrently with draining its output, all under the run timeout, so a child that floods its output or never reads its stdin can no longer deadlock the write outside the timeout guard and hang the cli forever
 - django adapter: error when urls.py has no `urlpatterns = [` list to wire the api route into, instead of writing the file and reporting success while the generated app's routes are silently never mounted; the closing bracket was already strict, so the opening landmark now matches every sibling scaffolding step
 - **breaking** django adapter: rename the `cast_django` module to `emit` and `run_cast_django` to `run_emit`, retiring the last code references to the `cast` command removed in 0.4.0; the test-only `ALEMBIC_CAST_PYTHON` env var becomes `ALEMBIC_DJANGO_PYTHON`
