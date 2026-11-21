@@ -67,12 +67,16 @@ rules:
     emit: passthrough
 ```
 
+run from a checkout of this repo (or point `-f`/`--spec` at your own copies):
+
 <!-- ci: netbox -->
 ```bash
+BACKEND_CONFIG=/path/to/backend-netbox.yaml
+
 alembic map -f examples/walkthroughs/eval-fabric.yaml \
   --spec examples/walkthroughs/eval-fabric-netbox.yaml -o /tmp/netbox.json
-alembic plan  -f /tmp/netbox.json -o /tmp/plan.json --backend-config backend-netbox.yaml
-alembic apply -p /tmp/plan.json --backend-config backend-netbox.yaml
+alembic plan  -f /tmp/netbox.json -o /tmp/plan.json --backend-config "$BACKEND_CONFIG"
+alembic apply -p /tmp/plan.json --backend-config "$BACKEND_CONFIG"
 ```
 
 ## stand up nautobot
@@ -155,10 +159,12 @@ prefix as its `parent`, reached through the prefix's `v5` uid.
 
 <!-- ci: skip needs a live nautobot -->
 ```bash
+BACKEND_CONFIG=/path/to/backend-nautobot.yaml
+
 alembic map -f examples/walkthroughs/eval-fabric.yaml \
   --spec examples/walkthroughs/eval-fabric-nautobot.yaml -o /tmp/nautobot.json
-alembic plan  -f /tmp/nautobot.json -o /tmp/plan.json --backend-config backend-nautobot.yaml
-alembic apply -p /tmp/plan.json --backend-config backend-nautobot.yaml
+alembic plan  -f /tmp/nautobot.json -o /tmp/plan.json --backend-config "$BACKEND_CONFIG"
+alembic apply -p /tmp/plan.json --backend-config "$BACKEND_CONFIG"
 ```
 
 ## notes

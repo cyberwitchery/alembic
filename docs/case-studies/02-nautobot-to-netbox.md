@@ -14,14 +14,19 @@ the flow is `import` (nautobot to ir), `map` (ir to ir), `plan` + `apply`
 
 ## 1) import from nautobot
 
+run from a checkout of this repo (or point `-f`/`--spec` at your own copies):
+
 <!-- ci: skip needs a live nautobot -->
 ```bash
+BACKEND_CONFIG=/path/to/backend-nautobot.yaml
+
 alembic import -o nautobot-ir.json \
-  --backend-config backend-nautobot.yaml \
-  -f schema-nautobot.yaml
+  --backend-config "$BACKEND_CONFIG" \
+  -f examples/walkthroughs/nautobot-ir.yaml
 ```
 
-`-f` is an inventory whose `schema` declares the nautobot-shaped types to observe;
+`-f` is an inventory whose `schema` declares the nautobot-shaped types to observe.
+import reads nothing else from it, so the committed ir shown below does the job.
 import writes the observed objects to `nautobot-ir.json`. the same ir, trimmed and
 shown as yaml for readability
 ([`examples/walkthroughs/nautobot-ir.yaml`](../../examples/walkthroughs/nautobot-ir.yaml)):
@@ -129,7 +134,8 @@ run it:
 
 <!-- ci: skip maps the ir the nautobot import writes; documented_walkthroughs.rs maps the committed copy -->
 ```bash
-alembic map -f nautobot-ir.json --spec map-nautobot-to-netbox.yaml -o netbox-ir.json
+alembic map -f nautobot-ir.json \
+  --spec examples/walkthroughs/map-nautobot-to-netbox.yaml -o netbox-ir.json
 ```
 
 the result is in netbox's vocabulary. the location's name `Frankfurt DC1` becomes
@@ -153,11 +159,13 @@ site:
 
 <!-- ci: skip applies the ir the nautobot import writes -->
 ```bash
+BACKEND_CONFIG=/path/to/backend-netbox.yaml
+
 alembic plan -f netbox-ir.json -o /tmp/plan.json \
-  --backend-config backend-netbox.yaml
+  --backend-config "$BACKEND_CONFIG"
 
 alembic apply -p /tmp/plan.json \
-  --backend-config backend-netbox.yaml
+  --backend-config "$BACKEND_CONFIG"
 ```
 
 ## notes

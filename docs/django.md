@@ -18,12 +18,18 @@ app: dcim_app
 
 | key | default | meaning |
 | --- | --- | --- |
-| `output` | *required* | directory the app is written to |
+| `output` | `./out` | directory the app is written to; a backend config file must set it |
 | `project` | `alembic_project` | django project name |
 | `app` | `alembic_app` | django app name |
 | `python` | `python3` | interpreter used for `manage.py` and to detect optional packages |
 | `no_migrate` | `false` | skip `migrate` and `loaddata`, so the app is generated but no database is written |
 | `no_admin` | `false` | skip admin registration |
+
+`--backend django` without a config file takes every default, so it writes to
+`./out`. the backend's state identity is `output` as written (`docs/state.md`),
+and both a relative `output` and the state file under `.alembic/state/` resolve
+against the working directory: with the default, each directory you run from is
+its own app with its own state.
 
 unknown keys are rejected (see `docs/cli.md`), so a typo is an error rather than
 a silently ignored key. that matters most for the two booleans: a discarded
