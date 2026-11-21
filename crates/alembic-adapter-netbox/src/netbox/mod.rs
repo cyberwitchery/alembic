@@ -1302,7 +1302,7 @@ mod tests {
                 .query_param("offset", "0");
             then.status(200).json_body(json!({
                 "count": total,
-                "next": null,
+                "next": format!("{}/api/extras/tags/?limit=200&offset=200", server.base_url()),
                 "previous": null,
                 "results": first,
             }));
@@ -1351,7 +1351,7 @@ mod tests {
                 .query_param("offset", "0");
             then.status(200).json_body(json!({
                 "count": total,
-                "next": null,
+                "next": format!("{}/api/extras/custom-fields/?limit=200&offset=200", server.base_url()),
                 "previous": null,
                 "results": first,
             }));
@@ -1381,6 +1381,90 @@ mod tests {
         assert!(fields.contains("cf-0199"));
         assert!(fields.contains("cf-0200"));
         assert!(fields.contains("cf-0249"));
+    }
+
+    /// a netbox whose page size is capped below the 200 a read asks for still
+    /// hands over every object: the read follows each page's `next` link.
+    #[tokio::test]
+    async fn a_read_follows_next_links_past_a_capped_page_size() {
+        let server = MockServer::start();
+        let dir = tempdir().unwrap();
+        let state = StateStore::load(dir.path().join("state.json")).unwrap();
+        let adapter = NetBoxAdapter::new(&server.base_url(), "token").unwrap();
+
+        let _object_types = mock_list(
+            &server,
+            "/api/core/object-types/",
+            json!([{
+                "app_label": "dcim",
+                "model": "site",
+                "rest_api_endpoint": "/api/dcim/sites/",
+                "features": ["custom-fields", "tags"]
+            }]),
+        );
+        let _custom_fields = server.mock(|when, then| {
+            when.method(GET).path("/api/extras/custom-fields/");
+            then.status(200).json_body(page(json!([])));
+        });
+        // MAX_PAGE_SIZE = 2: two rows a page, each linking the next at the size served.
+        let site = |id: u64| json!({ "id": id, "name": format!("site-{id}"), "slug": format!("site-{id}") });
+        let next = |offset: u64| {
+            json!(format!(
+                "{}/api/dcim/sites/?limit=2&offset={offset}",
+                server.base_url()
+            ))
+        };
+        for (limit, offset, results, next) in [
+            ("200", "0", json!([site(1), site(2)]), next(2)),
+            ("2", "2", json!([site(3), site(4)]), next(4)),
+            ("2", "4", json!([site(5)]), json!(null)),
+            // past the end, where stepping by the size asked for lands.
+            ("200", "200", json!([]), json!(null)),
+        ] {
+            server.mock(|when, then| {
+                when.method(GET)
+                    .path("/api/dcim/sites/")
+                    .query_param("limit", limit)
+                    .query_param("offset", offset);
+                then.status(200).json_body(json!({
+                    "count": 5,
+                    "next": next,
+                    "previous": null,
+                    "results": results,
+                }));
+            });
+        }
+
+        let schema = alembic_core::Schema {
+            types: std::collections::BTreeMap::from([(
+                "dcim.site".to_string(),
+                alembic_core::TypeSchema {
+                    key: std::collections::BTreeMap::from([(
+                        "name".to_string(),
+                        alembic_core::FieldSchema {
+                            r#type: alembic_core::FieldType::String,
+                            required: true,
+                            nullable: false,
+                            description: None,
+                            format: None,
+                            pattern: None,
+                        },
+                    )]),
+                    fields: std::collections::BTreeMap::new(),
+                },
+            )]),
+        };
+
+        let observed = adapter
+            .read(&schema, &[TypeName::new("dcim.site")], &state)
+            .await
+            .unwrap();
+
+        let ids: std::collections::BTreeSet<BackendId> = observed
+            .objects()
+            .filter_map(|object| object.backend_id.clone())
+            .collect();
+        assert_eq!(ids, (1..=5).map(BackendId::Int).collect());
     }
 
     #[tokio::test]
