@@ -36,6 +36,13 @@ pub enum ValidationError {
     MissingAttrField { type_name: String, field: String },
     #[error("extra attr field {type_name}.{field}")]
     ExtraAttrField { type_name: String, field: String },
+    #[error("key field {type_name}.{field} is {attr_value} in attrs but {key_value} in key")]
+    KeyAttrMismatch {
+        type_name: String,
+        field: String,
+        key_value: String,
+        attr_value: String,
+    },
     #[error("invalid value for {field}: expected {expected}, got {actual}")]
     InvalidValue {
         field: String,
@@ -126,6 +133,7 @@ impl ValidationError {
             | ValidationError::ExtraKeyField { .. }
             | ValidationError::MissingAttrField { .. }
             | ValidationError::ExtraAttrField { .. }
+            | ValidationError::KeyAttrMismatch { .. }
             | ValidationError::InvalidValue { .. }
             | ValidationError::UnknownType(_)
             | ValidationError::UnknownRefTarget { .. }
@@ -159,6 +167,7 @@ impl ValidationError {
             | ValidationError::ExtraKeyField { .. }
             | ValidationError::MissingAttrField { .. }
             | ValidationError::ExtraAttrField { .. }
+            | ValidationError::KeyAttrMismatch { .. }
             | ValidationError::InvalidValue { .. }
             | ValidationError::UnknownType(_)
             | ValidationError::MissingReference { .. }
@@ -184,6 +193,7 @@ impl ValidationError {
             | ValidationError::ExtraKeyField { type_name, .. }
             | ValidationError::MissingAttrField { type_name, .. }
             | ValidationError::ExtraAttrField { type_name, .. }
+            | ValidationError::KeyAttrMismatch { type_name, .. }
             | ValidationError::UnknownRefTarget { type_name, .. }
             | ValidationError::InvalidSchemaPattern { type_name, .. }
             | ValidationError::ConstraintOnNonStringField { type_name, .. }
@@ -224,6 +234,7 @@ impl ValidationError {
             | ValidationError::ExtraKeyField { .. }
             | ValidationError::MissingAttrField { .. }
             | ValidationError::ExtraAttrField { .. }
+            | ValidationError::KeyAttrMismatch { .. }
             | ValidationError::UnknownType(_)
             | ValidationError::UnknownRefTarget { .. }
             | ValidationError::InvalidSchemaPattern { .. }
@@ -886,6 +897,17 @@ fn validate_key_fields(
             pattern_cache,
             report,
         );
+        // a backend is sent `attrs`, so a copy there that disagrees is not the key the plan names
+        if let Some(attr) = object.attrs.get(field) {
+            if !same_key_value(&field_schema.r#type, value, attr) {
+                report.errors.push(ValidationError::KeyAttrMismatch {
+                    type_name: object.type_name.to_string(),
+                    field: field.to_string(),
+                    key_value: value.to_string(),
+                    attr_value: attr.to_string(),
+                });
+            }
+        }
     }
 
     for field in object.key.keys() {
@@ -898,6 +920,14 @@ fn validate_key_fields(
     }
 }
 
+/// a float compares by value, so `1` and `1.0` agree; anything else compares as json.
+fn same_key_value(field_type: &FieldType, key: &Value, attr: &Value) -> bool {
+    match (field_type, key.as_f64(), attr.as_f64()) {
+        (FieldType::Float, Some(key), Some(attr)) => key == attr,
+        _ => key == attr,
+    }
+}
+
 fn validate_attr_fields(
     object: &Object,
     type_schema: &crate::ir::TypeSchema,
@@ -907,8 +937,7 @@ fn validate_attr_fields(
 ) {
     for (field, field_schema) in &type_schema.fields {
         let Some(value) = object.attrs.get(field) else {
-            // a key field's value is in the object's key, which `validate_key_fields` requires
-            if field_schema.required && !type_schema.is_key(field) {
+            if field_schema.required {
                 report.errors.push(ValidationError::MissingAttrField {
                     type_name: object.type_name.to_string(),
                     field: field.to_string(),
@@ -1645,7 +1674,7 @@ mod tests {
                 "slug".to_string(),
                 FieldSchema {
                     r#type: FieldType::Slug,
-                    required: true,
+                    required: false,
                     nullable: false,
                     description: None,
                     format: None,
@@ -1735,33 +1764,72 @@ mod tests {
             .any(|err| matches!(err, ValidationError::ExtraKeyField { .. })));
     }
 
+    fn site_with(type_schema: TypeSchema, key: Value, attrs: Value) -> ValidationReport {
+        let object = Object::new(
+            uid(54),
+            TypeName::new("site"),
+            serde_json::from_value(key).unwrap(),
+            serde_json::from_value(attrs).unwrap(),
+        )
+        .unwrap();
+        validate_inventory(&Inventory {
+            scope: None,
+            schema: Schema {
+                types: BTreeMap::from([("site".to_string(), type_schema)]),
+            },
+            objects: vec![object],
+        })
+    }
+
     #[test]
-    fn a_required_key_field_is_not_required_in_attrs() {
-        // `slug` is declared `required: true`; the object's key holds it, so its
-        // absence from attrs is fine, and a value present in attrs is still checked.
-        let object = |attrs: serde_json::Value| {
-            Object::new(
-                uid(54),
-                TypeName::new("site"),
-                Key::from(BTreeMap::from([("slug".to_string(), json!("fra1"))])),
-                serde_json::from_value(attrs).unwrap(),
-            )
-            .unwrap()
-        };
-        let report = |object: Object| {
-            validate_inventory(&Inventory {
-                scope: None,
-                schema: Schema {
-                    types: BTreeMap::from([("site".to_string(), slug_key_schema())]),
-                },
-                objects: vec![object],
-            })
-        };
-        assert!(report(object(json!({}))).errors.is_empty());
-        assert!(report(object(json!({ "slug": "Not A Slug" })))
-            .errors
-            .iter()
-            .any(|err| matches!(err, ValidationError::InvalidValue { .. })));
+    fn a_required_key_field_is_required_in_attrs() {
+        let mut type_schema = slug_key_schema();
+        type_schema.fields.get_mut("slug").unwrap().required = true;
+        let report = site_with(type_schema, json!({ "slug": "fra1" }), json!({}));
+        assert_eq!(
+            report.errors,
+            vec![ValidationError::MissingAttrField {
+                type_name: "site".into(),
+                field: "slug".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_key_field_in_attrs_must_equal_the_key() {
+        let key = json!({ "slug": "fra1" });
+        assert!(
+            site_with(slug_key_schema(), key.clone(), json!({ "slug": "fra1" }))
+                .errors
+                .is_empty()
+        );
+        assert_eq!(
+            site_with(slug_key_schema(), key, json!({ "slug": "fra2" })).errors,
+            vec![ValidationError::KeyAttrMismatch {
+                type_name: "site".into(),
+                field: "slug".into(),
+                key_value: r#""fra1""#.into(),
+                attr_value: r#""fra2""#.into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_float_key_field_in_attrs_compares_by_value() {
+        let mut type_schema = slug_key_schema();
+        type_schema.fields.get_mut("slug").unwrap().r#type = FieldType::Float;
+        let key = json!({ "slug": 1 });
+        assert!(
+            site_with(type_schema.clone(), key.clone(), json!({ "slug": 1.0 }))
+                .errors
+                .is_empty()
+        );
+        assert!(matches!(
+            site_with(type_schema, key, json!({ "slug": 1.5 }))
+                .errors
+                .as_slice(),
+            [ValidationError::KeyAttrMismatch { .. }]
+        ));
     }
 
     #[test]
@@ -3783,6 +3851,7 @@ mod tests {
             ValidationError::ExtraKeyField { .. } => "extra_key_field",
             ValidationError::MissingAttrField { .. } => "missing_attr_field",
             ValidationError::ExtraAttrField { .. } => "extra_attr_field",
+            ValidationError::KeyAttrMismatch { .. } => "key_attr_mismatch",
             ValidationError::InvalidValue { .. } => "invalid_value",
             ValidationError::UnknownType(_) => "unknown_type",
             ValidationError::MissingReference { .. } => "missing_reference",
@@ -3806,7 +3875,7 @@ mod tests {
         // a breaking change to the wire format rather than a refactor. the table
         // is hand-maintained: a twentieth variant gets its wire_kind arm from the
         // compiler, but is neither serialized nor compared until it is added here.
-        let all: [ValidationError; 22] = [
+        let all: [ValidationError; 23] = [
             ValidationError::DuplicateUid(uid(1)),
             ValidationError::DuplicateKey("dcim.site::fra1".into()),
             ValidationError::MissingType,
@@ -3826,6 +3895,12 @@ mod tests {
             ValidationError::ExtraAttrField {
                 type_name: "dcim.site".into(),
                 field: "bogus".into(),
+            },
+            ValidationError::KeyAttrMismatch {
+                type_name: "dcim.site".into(),
+                field: "slug".into(),
+                key_value: r#""fra1""#.into(),
+                attr_value: r#""fra2""#.into(),
             },
             ValidationError::InvalidValue {
                 field: "dcim.site.name".into(),

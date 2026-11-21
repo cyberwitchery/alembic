@@ -282,4 +282,24 @@ mod tests {
             assert!(msg.contains("unknown field `objects`"), "{file}: {msg}");
         }
     }
+
+    #[test]
+    fn read_plan_says_to_plan_again_for_a_plan_from_an_earlier_alembic() {
+        let json = r#"{"schema":{"types":{"dcim.site":{"key":{"slug":{"type":"slug"}},"fields":{}}}},"ops":[]}"#;
+        let yaml = "schema:\n  types:\n    dcim.site:\n      key:\n        slug: { type: slug }\n      fields: {}\nops: []\n";
+        for (file, contents) in [("plan.json", json), ("plan.yaml", yaml)] {
+            let dir = tempdir().unwrap();
+            let path = dir.path().join(file);
+            std::fs::write(&path, contents).unwrap();
+            let msg = format!("{:#}", read_plan(&path).unwrap_err());
+            assert!(
+                msg.ends_with(
+                    "this plan was written by an earlier alembic (the key of dcim.site is a map); \
+                     make it again with `alembic plan`"
+                ),
+                "{file}: {msg}"
+            );
+            assert!(!msg.contains("write `key:"), "{file}: {msg}");
+        }
+    }
 }

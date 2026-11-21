@@ -953,7 +953,7 @@ uid:
                     "slug".to_string(),
                     FieldSchema {
                         r#type: FieldType::String,
-                        required: true,
+                        required: false,
                         nullable: false,
                         description: None,
                         format: Some(FieldFormat::Slug),

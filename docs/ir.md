@@ -107,9 +107,10 @@ a key field feeds uid derivation (see `docs/map.md`, uid), which constrains its 
 
 - it may not be `nullable`: a null has no identity form.
 - it may not be a composite type (`list`, `list_ref`, `map`): there is no scalar identity form.
-- `required` is not consulted: a key field is mandatory in the object's `key`, and optional in `attrs`, where a value is checked against the same schema.
 
-all but the `required` rule are schema-load errors, raised before any object is read.
+both are schema-load errors, raised before any object is read.
+
+a key field's value in `attrs`, when an object has one, must equal the one in its `key`: the plan names the key, and a backend is sent `attrs`. a float compares by value, so `1` and `1.0` agree.
 
 ## relationships
 

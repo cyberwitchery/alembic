@@ -63,11 +63,15 @@ const MARKERS: &[(&str, DocumentKind)] = &[
     ("mappings", DocumentKind::State),
 ];
 
-/// the kind `raw` looks like, with the key that gave it away. json or yaml.
-fn sniff(raw: &str) -> Option<(DocumentKind, &'static str)> {
-    let doc: JsonValue = serde_json::from_str(raw)
+/// `raw` as json or yaml.
+fn parse(raw: &str) -> Option<JsonValue> {
+    serde_json::from_str(raw)
         .ok()
-        .or_else(|| crate::yaml::from_str(raw).ok())?;
+        .or_else(|| crate::yaml::from_str(raw).ok())
+}
+
+/// the kind `doc` looks like, with the key that gave it away.
+fn sniff(doc: &JsonValue) -> Option<(DocumentKind, &'static str)> {
     let map = doc.as_object()?;
     MARKERS
         .iter()
@@ -75,16 +79,39 @@ fn sniff(raw: &str) -> Option<(DocumentKind, &'static str)> {
         .map(|&(key, kind)| (kind, key))
 }
 
+/// the first type in `doc`'s schema whose `key` is a map, the form an earlier
+/// alembic wrote.
+fn map_form_key(doc: &JsonValue) -> Option<&str> {
+    doc.get("schema")?
+        .get("types")?
+        .as_object()?
+        .iter()
+        .find(|(_, block)| block.get("key").is_some_and(JsonValue::is_object))
+        .map(|(name, _)| name.as_str())
+}
+
 /// `err`, a failure to parse `raw` as `expected`, with a hint in front when
-/// `raw` is another kind of document. the parse error stays underneath.
+/// `raw` is another kind of document; the parse error stays underneath. a plan
+/// with a map-form key was written by an earlier alembic, and gets an error that
+/// says to plan again instead.
 pub fn explain_parse_error(expected: DocumentKind, raw: &str, err: anyhow::Error) -> anyhow::Error {
-    match sniff(raw) {
+    let Some(doc) = parse(raw) else {
+        return err;
+    };
+    match sniff(&doc) {
         Some((found, key)) if found != expected => err.context(anyhow!(
             "expected {}, but this looks like {} (it has a top-level `{key}`); {}",
             expected.noun(),
             found.noun(),
             found.usage()
         )),
+        Some((DocumentKind::Plan, _)) => match map_form_key(&doc) {
+            Some(type_name) => anyhow!(
+                "this plan was written by an earlier alembic (the key of {type_name} is a map); \
+                 make it again with `alembic plan`"
+            ),
+            None => err,
+        },
         _ => err,
     }
 }
@@ -111,10 +138,11 @@ mod tests {
             (r#"{"errors": []}"#, DocumentKind::ValidationReport),
             (r#"{"backend": null, "mappings": {}}"#, DocumentKind::State),
         ] {
-            assert_eq!(sniff(raw).map(|(kind, _)| kind), Some(kind), "{raw}");
+            let found = parse(raw).as_ref().and_then(sniff).map(|(kind, _)| kind);
+            assert_eq!(found, Some(kind), "{raw}");
         }
         for raw in ["", "- a\n- b\n", "not: alembic\n", "{not json"] {
-            assert_eq!(sniff(raw), None, "{raw}");
+            assert_eq!(parse(raw).as_ref().and_then(sniff), None, "{raw}");
         }
     }
 
@@ -126,6 +154,32 @@ mod tests {
             anyhow!("invalid op"),
         );
         assert_eq!(format!("{err:#}"), "invalid op");
+    }
+
+    #[test]
+    fn explain_parse_error_says_to_plan_again_for_a_plan_with_a_map_form_key() {
+        let raw = "schema:\n  types:\n    dcim.site:\n      key: {slug: {type: slug}}\nops: []\n";
+        let err = explain_parse_error(
+            DocumentKind::Plan,
+            raw,
+            anyhow!("key is a list of field names, not a map"),
+        );
+        assert_eq!(
+            format!("{err:#}"),
+            "this plan was written by an earlier alembic (the key of dcim.site is a map); \
+             make it again with `alembic plan`"
+        );
+        // an inventory keeps the parse error, which says how to write the list.
+        let raw = raw.replace("ops: []", "objects: []");
+        let err = explain_parse_error(
+            DocumentKind::Inventory,
+            &raw,
+            anyhow!("key is a list of field names, not a map"),
+        );
+        assert_eq!(
+            format!("{err:#}"),
+            "key is a list of field names, not a map"
+        );
     }
 
     #[test]

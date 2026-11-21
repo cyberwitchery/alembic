@@ -1734,7 +1734,13 @@ mod tests {
             schema: schema_of(vec![(
                 "dcim.interface",
                 type_schema(
-                    vec![("name", field(FieldType::Slug))],
+                    vec![(
+                        "name",
+                        FieldSchema {
+                            required: false,
+                            ..field(FieldType::Slug)
+                        },
+                    )],
                     vec![("members", schema)],
                 ),
             )]),

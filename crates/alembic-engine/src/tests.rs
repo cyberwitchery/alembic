@@ -90,7 +90,7 @@ fn schema_for(objects: &[Object]) -> Schema {
             }
             entry.fields.entry(field.clone()).or_insert(FieldSchema {
                 r#type: FieldType::Json,
-                required: true,
+                required: false,
                 nullable: false,
                 description: None,
                 format: None,
@@ -2557,12 +2557,16 @@ fn ref_backend_schema() -> Schema {
         format: None,
         pattern: None,
     };
+    let key_field = |r#type: FieldType| FieldSchema {
+        required: false,
+        ..field(r#type, true)
+    };
     let mut types = BTreeMap::new();
     types.insert(
         "dcim.site".to_string(),
         TypeSchema {
             key: vec!["slug".to_string()],
-            fields: BTreeMap::from([("slug".to_string(), field(FieldType::String, true))]),
+            fields: BTreeMap::from([("slug".to_string(), key_field(FieldType::String))]),
         },
     );
     types.insert(
@@ -2570,7 +2574,7 @@ fn ref_backend_schema() -> Schema {
         TypeSchema {
             key: vec!["name".to_string()],
             fields: BTreeMap::from([
-                ("name".to_string(), field(FieldType::String, true)),
+                ("name".to_string(), key_field(FieldType::String)),
                 (
                     "site".to_string(),
                     field(
@@ -2758,13 +2762,17 @@ fn rename_schema() -> Schema {
         format: None,
         pattern: None,
     };
+    let key_field = |r#type: FieldType| FieldSchema {
+        required: false,
+        ..field(r#type, true)
+    };
     let mut types = BTreeMap::new();
     types.insert(
         "dcim.site".to_string(),
         TypeSchema {
             key: vec!["slug".to_string()],
             fields: BTreeMap::from([
-                ("slug".to_string(), field(FieldType::String, true)),
+                ("slug".to_string(), key_field(FieldType::String)),
                 ("status".to_string(), field(FieldType::String, false)),
             ]),
         },
@@ -2774,7 +2782,7 @@ fn rename_schema() -> Schema {
         TypeSchema {
             key: vec!["name".to_string()],
             fields: BTreeMap::from([
-                ("name".to_string(), field(FieldType::String, true)),
+                ("name".to_string(), key_field(FieldType::String)),
                 (
                     "site".to_string(),
                     field(

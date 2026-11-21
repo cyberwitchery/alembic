@@ -617,7 +617,7 @@ mod tests {
                 }
                 entry.fields.entry(field.clone()).or_insert(FieldSchema {
                     r#type: FieldType::Json,
-                    required: true,
+                    required: false,
                     nullable: false,
                     description: None,
                     format: None,
@@ -736,7 +736,7 @@ mod tests {
             fields.insert((*field).to_string(), field_schema(false, true));
         }
         for field in key_fields {
-            fields.insert((*field).to_string(), field_schema(true, false));
+            fields.insert((*field).to_string(), field_schema(false, false));
         }
         TypeSchema {
             key: key_fields

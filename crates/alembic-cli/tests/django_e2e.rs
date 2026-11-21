@@ -300,7 +300,7 @@ fn member_corpus() -> String {
         for member in &members {
             let mut object = template.clone();
             object.attrs = BTreeMap::from([
-                ("name".to_string(), json!("eth1")),
+                ("name".to_string(), json!("eth0")),
                 (name.clone(), json!([member])),
             ])
             .into();
