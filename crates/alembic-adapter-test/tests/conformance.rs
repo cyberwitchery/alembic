@@ -695,20 +695,8 @@ fn case_result_mismatch_reported() {
 fn fixtures_match_the_protocol_types() {
     use serde_json::Value;
 
-    let dir = PathBuf::from(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../fixtures/external_protocol"
-    ));
     let mut checked = 0;
-    for entry in std::fs::read_dir(&dir).expect("read fixtures dir") {
-        let path = entry.expect("dir entry").path();
-        if path.extension().and_then(|e| e.to_str()) != Some("json") {
-            continue;
-        }
-        let name = path.file_stem().unwrap().to_string_lossy().into_owned();
-        let fixture: Value =
-            serde_json::from_str(&std::fs::read_to_string(&path).expect("read fixture"))
-                .unwrap_or_else(|e| panic!("{name}: invalid json: {e}"));
+    for (name, fixture) in protocol_fixtures() {
         let method = fixture["request"]["method"]
             .as_str()
             .unwrap_or_else(|| panic!("{name}: request has no method"));
@@ -750,7 +738,103 @@ fn fixtures_match_the_protocol_types() {
         }
         checked += 1;
     }
-    assert_eq!(checked, 9, "expected 9 fixtures, checked {checked}");
+    assert_eq!(checked, 11, "expected 11 fixtures, checked {checked}");
+}
+
+fn protocol_fixtures() -> Vec<(String, serde_json::Value)> {
+    let dir = PathBuf::from(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../fixtures/external_protocol"
+    ));
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(&dir).expect("read fixtures dir") {
+        let path = entry.expect("dir entry").path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let name = path.file_stem().unwrap().to_string_lossy().into_owned();
+        let fixture = serde_json::from_str(&std::fs::read_to_string(&path).expect("read fixture"))
+            .unwrap_or_else(|e| panic!("{name}: invalid json: {e}"));
+        out.push((name, fixture));
+    }
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
+/// each fixture request is exactly what the host sends: parsed as the adapter
+/// sees it and re-serialized through the host's `ExternalEnvelopeRef`, it comes
+/// out unchanged, so a change to the host's request leaves no fixture stale.
+#[test]
+fn fixture_requests_match_what_the_host_sends() {
+    use alembic_adapter_sdk::external::{
+        ExternalEnvelope, ExternalEnvelopeRef, ExternalRequest, ExternalRequestRef,
+    };
+
+    for (name, fixture) in protocol_fixtures() {
+        let sent = &fixture["request"];
+        let envelope: ExternalEnvelope = serde_json::from_value(sent.clone())
+            .unwrap_or_else(|e| panic!("{name}: request does not parse: {e}"));
+        let request = match &envelope.request {
+            ExternalRequest::Read {
+                schema,
+                types,
+                state,
+            } => ExternalRequestRef::Read {
+                schema,
+                types,
+                state: state.clone(),
+            },
+            ExternalRequest::Write {
+                schema,
+                ops,
+                state,
+                journal,
+            } => ExternalRequestRef::Write {
+                schema,
+                ops,
+                state: state.clone(),
+                journal: journal.clone(),
+            },
+            ExternalRequest::EnsureSchema { schema } => ExternalRequestRef::EnsureSchema { schema },
+            ExternalRequest::PreviewSchema { schema } => {
+                ExternalRequestRef::PreviewSchema { schema }
+            }
+            ExternalRequest::Capabilities => ExternalRequestRef::Capabilities,
+        };
+        let host = serde_json::to_value(ExternalEnvelopeRef {
+            version: envelope.version,
+            setup: envelope.setup.clone(),
+            request,
+        })
+        .expect("serialize request");
+        assert_eq!(
+            &host, sent,
+            "{name}: request differs from what the host sends"
+        );
+    }
+}
+
+/// the fixtures show an adapter every op it must parse: a create, an update and
+/// a delete that carries `refs`.
+#[test]
+fn fixtures_cover_every_op() {
+    let ops: Vec<serde_json::Value> = protocol_fixtures()
+        .into_iter()
+        .filter(|(_, f)| f["request"]["method"] == "write")
+        .flat_map(|(_, f)| f["request"]["ops"].as_array().cloned().unwrap_or_default())
+        .collect();
+    for kind in ["create", "update", "delete"] {
+        assert!(
+            ops.iter().any(|op| op["op"] == kind),
+            "no write fixture carries a {kind} op"
+        );
+    }
+    assert!(
+        ops.iter()
+            .any(|op| op["op"] == "delete"
+                && op["refs"].as_array().is_some_and(|refs| !refs.is_empty())),
+        "no write fixture carries a delete with refs"
+    );
 }
 
 /// opt-in: `run_builtin`, what a caller passing no `Builtins` gets, sends neither

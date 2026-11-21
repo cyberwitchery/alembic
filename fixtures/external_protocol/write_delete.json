@@ -1,0 +1,57 @@
+{
+  "description": "write with a delete: the key, the backend id, and refs naming the uids the object references outside its key",
+  "request": {
+    "version": 1,
+    "setup": {},
+    "method": "write",
+    "schema": {
+      "types": {
+        "dcim.site": {
+          "key": {
+            "site": { "type": "slug", "required": false, "nullable": false }
+          },
+          "fields": {}
+        },
+        "dcim.device": {
+          "key": {
+            "name": { "type": "string", "required": false, "nullable": false }
+          },
+          "fields": {
+            "site": {
+              "type": { "type": "ref", "target": "dcim.site" },
+              "required": false,
+              "nullable": false
+            }
+          }
+        }
+      }
+    },
+    "ops": [
+      {
+        "op": "delete",
+        "uid": "22222222-2222-2222-2222-222222222222",
+        "type_name": "dcim.device",
+        "key": { "name": "fra1-leaf1" },
+        "backend_id": 7,
+        "refs": ["11111111-1111-1111-1111-111111111111"]
+      }
+    ],
+    "state": {
+      "mappings": {
+        "dcim.device": { "22222222-2222-2222-2222-222222222222": 7 },
+        "dcim.site": { "11111111-1111-1111-1111-111111111111": 1 }
+      }
+    }
+  },
+  "response": {
+    "ok": true,
+    "result": {
+      "applied": [
+        {
+          "uid": "22222222-2222-2222-2222-222222222222",
+          "type_name": "dcim.device"
+        }
+      ]
+    }
+  }
+}
