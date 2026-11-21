@@ -33,8 +33,7 @@ schema:
         name: { type: string, required: true }
         slug: { type: slug, required: true }
     dcim.device:
-      key:
-        name: { type: string, required: true }
+      key: [name]
       fields:
         name: { type: string, required: true }
         site: { type: ref, target: dcim.site, required: true }
@@ -44,7 +43,7 @@ schema:
 
 a type block takes `key` and `fields` only; anything else is a parse error.
 
-`key` is either a list of field names or a map from each key field to its schema. a list is shorthand: each name takes the schema of the same-named `fields` entry, so `key: [slug]` above means `key: { slug: { type: slug, required: true } }`. a name not declared in `fields`, a name listed twice, or an entry that is not a string is a parse error. the schema is always written back out as the map, so plans, map output and the external adapter protocol only ever carry the map.
+`key` lists the fields that make up an object's identity. each name is declared under `fields`, and that entry is the key field's schema. a name not declared in `fields`, a name listed twice, an entry that is not a string, or a `key` written as a map is a parse error. plans, map output and the external adapter protocol carry the list too.
 
 supported field types include scalar types (string, text, int, float, bool, uuid, date, datetime, time), network types (ip_address, cidr, prefix, mac, slug), structured types (list, map, json, enum), and typed references (`ref`, `list_ref`).
 
@@ -108,10 +107,9 @@ a key field feeds uid derivation (see `docs/map.md`, uid), which constrains its 
 
 - it may not be `nullable`: a null has no identity form.
 - it may not be a composite type (`list`, `list_ref`, `map`): there is no scalar identity form.
-- `required` is not consulted; key fields are mandatory.
-- declared again in `fields:`, it must carry the same schema: every consumer of the type would otherwise have to pick a winner, and each would pick its own. an identical duplicate is fine, and a `key` list declares exactly that.
+- `required` is not consulted: a key field is mandatory in the object's `key`, and optional in `attrs`, where a value is checked against the same schema.
 
-all but the `required` rule are schema-load errors, raised before any object is read. they hold for a key field named in a `key` list as for one written out in a map: `key: [tags]` over a `list` field is refused like the spelled-out form.
+all but the `required` rule are schema-load errors, raised before any object is read.
 
 ## relationships
 

@@ -5,17 +5,18 @@
 schema:
   types:
     extras.status:
-      key:
+      key: [name]
+      fields:
         name: { type: string }
     dcim.location:
-      key:
-        name: { type: string }
+      key: [name]
       fields:
+        name: { type: string }
         status: { type: ref, target: extras.status }
     dcim.device:
-      key:
-        name: { type: slug }
+      key: [name]
       fields:
+        name: { type: slug }
         status: { type: ref, target: extras.status }
         role: { type: string }
         location: { type: ref, target: dcim.location }

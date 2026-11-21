@@ -1,9 +1,7 @@
 schema:
   types:
     extras.tag:
-      key:
-        name:
-          type: string
+      key: [name]
       fields:
         name:
           type: string
@@ -12,19 +10,16 @@ schema:
         content_types:
           type: json
     extras.status:
-      key:
+      key: [name]
+      fields:
         name: { type: string }
     dcim.locationtype:
-      key:
-        name:
-          type: string
+      key: [name]
       fields:
         name:
           type: string
     dcim.location:
-      key:
-        name:
-          type: string
+      key: [name]
       fields:
         name:
           type: string

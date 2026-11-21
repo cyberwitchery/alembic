@@ -19,8 +19,8 @@ def main():
         respond({"ok": False, "error": f"invalid request: {e}"})
 
     version = request.get("version")
-    if version != 1:
-        respond({"ok": False, "error": f"unsupported protocol version {version} (expected 1)"})
+    if version != 2:
+        respond({"ok": False, "error": f"unsupported protocol version {version} (expected 2)"})
 
     method = request.get("method")
     if method == "read":

@@ -12,33 +12,35 @@
 schema:
   types:
     extras.status:
-      key: {name: {type: string}}
+      key: [name]
+      fields:
+        name: {type: string}
     dcim.locationtype:
-      key: {name: {type: string}}
+      key: [name]
       fields:
         name: {type: string}
         content_types: {type: json}
     dcim.location:
-      key: {name: {type: string}}
+      key: [name]
       fields:
         name: {type: string}
         location_type: {type: ref, target: dcim.locationtype}
         status: {type: ref, target: extras.status}
     extras.role:
-      key: {name: {type: string}}
+      key: [name]
       fields:
         name: {type: string}
         content_types: {type: json}
     dcim.manufacturer:
-      key: {name: {type: string}}
+      key: [name]
       fields: {name: {type: string}}
     dcim.devicetype:
-      key: {model: {type: string}}
+      key: [model]
       fields:
         model: {type: string}
         manufacturer: {type: ref, target: dcim.manufacturer}
     dcim.device:
-      key: {name: {type: slug}}
+      key: [name]
       fields:
         name: {type: slug}
         location: {type: ref, target: dcim.location}
@@ -46,29 +48,25 @@ schema:
         device_type: {type: ref, target: dcim.devicetype}
         status: {type: ref, target: extras.status}
     dcim.interface:
-      key:
-        device: {type: ref, target: dcim.device}
-        name: {type: slug}
+      key: [device, name]
       fields:
         name: {type: slug}
         device: {type: ref, target: dcim.device}
         type: {type: string}
         status: {type: ref, target: extras.status}
     ipam.prefix:
-      key: {prefix: {type: prefix}}
+      key: [prefix]
       fields:
         prefix: {type: prefix}
         status: {type: ref, target: extras.status}
     ipam.ipaddress:
-      key: {address: {type: ip_address}}
+      key: [address]
       fields:
         address: {type: ip_address}
         status: {type: ref, target: extras.status}
         parent: {type: ref, target: ipam.prefix}
     ipam.ipaddresstointerface:
-      key:
-        ip_address: {type: ref, target: ipam.ipaddress}
-        interface: {type: ref, target: dcim.interface}
+      key: [ip_address, interface]
       fields:
         ip_address: {type: ref, target: ipam.ipaddress}
         interface: {type: ref, target: dcim.interface}

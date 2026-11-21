@@ -23,9 +23,7 @@ interface assignment:
 
 ```yaml
     ipam.ipaddress:
-      key:
-        address:
-          type: ip_address
+      key: [address]
       fields:
         address:
           type: ip_address
@@ -62,7 +60,7 @@ points at its interface under the uids you authored. the spec is
 schema:
   types:
     ipam.ipaddress:
-      key: {address: {type: ip_address}}
+      key: [address]
       fields:
         address: {type: ip_address}
         assigned_object: {type: ref, target: dcim.interface}

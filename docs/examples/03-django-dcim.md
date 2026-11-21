@@ -16,7 +16,7 @@ a site and a device
 
 ```yaml
     dcim.device:
-      key: {name: {type: slug}}
+      key: [name]
       fields:
         name: {type: slug}
         site: {type: ref, target: dcim.site}   # a foreign key in the generated model

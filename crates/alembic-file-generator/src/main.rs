@@ -332,7 +332,7 @@ fn site(i: usize) -> Result<Object> {
 /// build a single `dcim.device`, pointing at one member of each support pool.
 fn device(i: usize) -> Result<Object> {
     let name = device_name(i);
-    // `name` is declared in both `key` and `fields`, so it is carried in both.
+    // the key field `name` is carried in attrs too.
     object(
         DEVICE,
         device_key(i),
@@ -360,7 +360,7 @@ fn device_key(i: usize) -> Key {
 /// build a single `dcim.interface` on device `device`.
 fn interface(i: usize, device: usize) -> Result<Object> {
     let key = interface_key(i, device);
-    // `device` and `name` are declared in both `key` and `fields`, so they are carried in both.
+    // the key fields `device` and `name` are carried in attrs too.
     let mut attrs = BTreeMap::clone(&key);
     attrs.extend([
         ("type".to_string(), json!("25gbase-x-sfp28")),
@@ -458,27 +458,21 @@ fn schema() -> Result<Schema> {
     let schema_yaml = r"
 types:
     dcim.manufacturer:
-      key:
-        slug:
-          type: slug
+      key: [slug]
       fields:
         name:
           type: string
         slug:
           type: slug
     dcim.devicerole:
-      key:
-        slug:
-          type: slug
+      key: [slug]
       fields:
         name:
           type: string
         slug:
           type: slug
     dcim.devicetype:
-      key:
-        slug:
-          type: slug
+      key: [slug]
       fields:
         manufacturer:
           type: ref
@@ -488,9 +482,7 @@ types:
         slug:
           type: slug
     dcim.site:
-      key:
-        slug:
-          type: slug
+      key: [slug]
       fields:
         name:
           type: string
@@ -499,9 +491,7 @@ types:
         status:
           type: string
     dcim.device:
-      key:
-        name:
-          type: slug
+      key: [name]
       fields:
         name:
           type: slug
@@ -517,12 +507,7 @@ types:
         status:
           type: string
     dcim.interface:
-      key:
-        device:
-          type: ref
-          target: dcim.device
-        name:
-          type: slug
+      key: [device, name]
       fields:
         name:
           type: slug
@@ -534,7 +519,7 @@ types:
         enabled:
           type: bool
     dcim.cable:
-      key: { label: { type: string } }
+      key: [label]
       fields:
         label: { type: string }
         a_terminations: { type: list_ref, target: dcim.interface }

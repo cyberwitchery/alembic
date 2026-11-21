@@ -333,7 +333,7 @@ case "$req" in
   *) printf '{"ok":false,"error":"invalid setup: missing url"}'; exit 0 ;;
 esac
 case "$req" in
-  *'"version":1'*) ;;
+  *'"version":2'*) ;;
   *) printf '{"ok":false,"error":"unsupported protocol version"}'; exit 0 ;;
 esac
 case "$req" in

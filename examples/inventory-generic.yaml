@@ -4,9 +4,7 @@
 schema:
   types:
     services.vpn:
-      key:
-        vpn:
-          type: slug
+      key: [vpn]
       fields:
         vpn:
           type: slug
@@ -15,9 +13,7 @@ schema:
         pre_shared_key:
           type: string
     dcim.site:
-      key:
-        slug:
-          type: slug
+      key: [slug]
       fields:
         name:
           type: string

@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub fn build_key_from_schema(type_schema: &TypeSchema, attrs: &JsonMap) -> Result<Key> {
     let mut map = BTreeMap::new();
-    for field in type_schema.key.keys() {
+    for field in type_schema.key.iter() {
         let Some(value) = attrs.get(field) else {
             return Err(anyhow!("missing key field {field}"));
         };
@@ -126,8 +126,7 @@ where
     let mut filters = Vec::new();
     for (field, value) in key.iter() {
         let field_schema = type_schema
-            .key
-            .get(field)
+            .key_field(field)
             .ok_or_else(|| anyhow!("missing schema for key field {field}"))?;
         add_query_filters(&mut filters, field, &field_schema.r#type, value, resolved)?;
     }
@@ -450,7 +449,7 @@ fn key_refs_resolved<M: RefMappings>(
     attrs: &JsonMap,
     mappings: &M,
 ) -> bool {
-    for (field, schema) in &type_schema.key {
+    for (field, schema) in type_schema.key_fields() {
         let target = match &schema.r#type {
             FieldType::Ref { target } | FieldType::ListRef { target } => target,
             _ => continue,
@@ -487,11 +486,9 @@ pub fn normalize_attrs_refs(
     mappings: &StateMappings,
 ) -> JsonMap {
     let mut normalized = attrs.clone();
-    // key fields can be ref-typed too (validated as first-class refs, and read
-    // back out by `build_key_from_schema`), so normalize them alongside `fields`.
-    // a field declared in both is normalized idempotently (the `fields` pass wins
-    // with the same result).
-    for (field, schema) in type_schema.key.iter().chain(&type_schema.fields) {
+    // key fields are declared under `fields` too, so a ref-typed key field read back
+    // out by `build_key_from_schema` is normalized here like any other.
+    for (field, schema) in &type_schema.fields {
         if let Some(value) = attrs.get(field) {
             normalized.insert(
                 field.clone(),
@@ -625,7 +622,7 @@ where
     let target = target_hint?;
     let target_schema = schema.types.get(target)?;
     let mut key_map = BTreeMap::new();
-    for (key_field, field_schema) in &target_schema.key {
+    for (key_field, field_schema) in target_schema.key_fields() {
         let value = map.get(key_field)?;
         let resolved = match &field_schema.r#type {
             FieldType::Ref { target: ref_target } | FieldType::ListRef { target: ref_target } => {
@@ -644,7 +641,7 @@ where
             }
             _ => value.clone(),
         };
-        key_map.insert(key_field.clone(), resolved);
+        key_map.insert(key_field.to_string(), resolved);
     }
     let key = Key::from(key_map);
     Some(uid_v5(target, &key_string(&key)))
@@ -671,8 +668,9 @@ mod tests {
 
     fn simple_type_schema() -> TypeSchema {
         TypeSchema {
-            key: BTreeMap::from([("slug".to_string(), field_schema(FieldType::Slug))]),
+            key: vec!["slug".to_string()],
             fields: BTreeMap::from([
+                ("slug".to_string(), field_schema(FieldType::Slug)),
                 ("name".to_string(), field_schema(FieldType::String)),
                 ("count".to_string(), field_schema(FieldType::Int)),
             ]),
@@ -710,11 +708,11 @@ mod tests {
     #[test]
     fn build_key_from_schema_composite_key() {
         let schema = TypeSchema {
-            key: BTreeMap::from([
+            key: vec!["site".to_string(), "name".to_string()],
+            fields: BTreeMap::from([
                 ("site".to_string(), field_schema(FieldType::String)),
                 ("name".to_string(), field_schema(FieldType::String)),
             ]),
-            fields: BTreeMap::new(),
         };
         let a = attrs(vec![("site", json!("fra1")), ("name", json!("eth0"))]);
         let key = build_key_from_schema(&schema, &a).unwrap();
@@ -755,7 +753,7 @@ mod tests {
     fn build_request_body_resolves_ref() {
         let uid = Uuid::from_u128(1);
         let schema = TypeSchema {
-            key: BTreeMap::new(),
+            key: Vec::new(),
             fields: BTreeMap::from([(
                 "site".to_string(),
                 field_schema(FieldType::Ref {
@@ -931,8 +929,8 @@ mod tests {
         ];
         for (field, field_type, value, expected) in cases {
             let schema = TypeSchema {
-                key: BTreeMap::from([(field.to_string(), field_schema(field_type))]),
-                fields: BTreeMap::new(),
+                key: vec![field.to_string()],
+                fields: BTreeMap::from([(field.to_string(), field_schema(field_type))]),
             };
             let key = Key::from(BTreeMap::from([(field.to_string(), value.clone())]));
             match expected {
@@ -1077,7 +1075,7 @@ mod tests {
         let uid = Uuid::from_u128(6);
         let m = mappings_with("dcim.site", BackendId::Int(12), uid);
         let schema = TypeSchema {
-            key: BTreeMap::new(),
+            key: Vec::new(),
             fields: BTreeMap::from([("site".to_string(), field_schema(ref_type("dcim.site")))]),
         };
         let a = attrs(vec![("site", json!(12))]);
@@ -1090,8 +1088,8 @@ mod tests {
         let uid = Uuid::from_u128(7);
         let m = mappings_with("dcim.device", BackendId::Int(42), uid);
         let schema = TypeSchema {
-            key: BTreeMap::from([("device".to_string(), field_schema(ref_type("dcim.device")))]),
-            fields: BTreeMap::new(),
+            key: vec!["device".to_string()],
+            fields: BTreeMap::from([("device".to_string(), field_schema(ref_type("dcim.device")))]),
         };
         let a = attrs(vec![("device", json!(42))]);
         let out = normalize_attrs_refs(&a, &schema, &m);
@@ -1206,11 +1204,12 @@ mod tests {
         // nested brief and must resolve to the device's uid before the interface
         // uid is derived from it.
         let device = TypeSchema {
-            key: BTreeMap::from([("slug".to_string(), field_schema(FieldType::Slug))]),
-            fields: BTreeMap::new(),
+            key: vec!["slug".to_string()],
+            fields: BTreeMap::from([("slug".to_string(), field_schema(FieldType::Slug))]),
         };
         let interface = TypeSchema {
-            key: BTreeMap::from([
+            key: vec!["device".to_string(), "name".to_string()],
+            fields: BTreeMap::from([
                 (
                     "device".to_string(),
                     field_schema(FieldType::Ref {
@@ -1219,7 +1218,6 @@ mod tests {
                 ),
                 ("name".to_string(), field_schema(FieldType::String)),
             ]),
-            fields: BTreeMap::new(),
         };
         let schema = schema_with(vec![("dcim.device", device), ("dcim.interface", interface)]);
         let iface = brief(json!({ "device": { "slug": "sw1" }, "name": "eth0" }));

@@ -5,42 +5,40 @@
 schema:
   types:
     dcim.site:
-      key: {slug: {type: slug}}
+      key: [slug]
       fields: {name: {type: string}, slug: {type: slug}}
     dcim.device:
-      key: {name: {type: slug}}
+      key: [name]
       fields:
         name: {type: slug}
         site: {type: ref, target: dcim.site}
         role: {type: ref, target: dcim.devicerole}
         device_type: {type: ref, target: dcim.devicetype}
     dcim.devicerole:
-      key: {slug: {type: slug}}
+      key: [slug]
       fields:
         name: {type: string}
         slug: {type: slug}
     dcim.devicetype:
-      key: {slug: {type: slug}}
+      key: [slug]
       fields:
         slug: {type: slug}
         model: {type: string}
         manufacturer: {type: ref, target: dcim.manufacturer}
     dcim.manufacturer:
-      key: {slug: {type: slug}}
+      key: [slug]
       fields:
         name: {type: string}
         slug: {type: slug}
     dcim.interface:
       # unique per device, so the key is (device, name).
-      key:
-        device: {type: ref, target: dcim.device}
-        name: {type: slug}
+      key: [device, name]
       fields:
         name: {type: slug}
         device: {type: ref, target: dcim.device}
         type: {type: string}
     ipam.ipaddress:
-      key: {address: {type: ip_address}}
+      key: [address]
       fields:
         address: {type: ip_address}
         assigned_interface: {type: ref, target: dcim.interface}

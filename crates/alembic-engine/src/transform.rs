@@ -829,7 +829,7 @@ fn render_spec_object_key(
     };
     // a key field is a scalar, so a plain ref is the only reference it can hold.
     let mut resolved = key.clone();
-    for (field, field_schema) in &type_schema.key {
+    for (field, field_schema) in type_schema.key_fields() {
         if !matches!(field_schema.r#type, FieldType::Ref { .. }) {
             continue;
         }
@@ -859,11 +859,7 @@ fn resolve_spec_object_refs(
     // only ref-typed fields are read this way: a json attr holding a `v5` key
     // stays json.
     for (field, value) in attrs {
-        let Some(field_schema) = type_schema
-            .fields
-            .get(field)
-            .or_else(|| type_schema.key.get(field))
-        else {
+        let Some(field_schema) = type_schema.fields.get(field) else {
             // output validation reports undeclared attrs.
             continue;
         };
@@ -967,10 +963,9 @@ fn rewrite_key_refs(
         .iter()
         .map(|e| match schema.types.get(e.object.type_name.as_str()) {
             Some(type_schema) => type_schema
-                .key
-                .iter()
+                .key_fields()
                 .filter(|(_, field_schema)| matches!(field_schema.r#type, FieldType::Ref { .. }))
-                .map(|(field, _)| field.clone())
+                .map(|(field, _)| field.to_string())
                 .collect(),
             None => Vec::new(),
         })
@@ -1368,9 +1363,9 @@ rules:
 schema:
   types:
     location.site:
-      key:
-        slug: { type: slug }
+      key: [slug]
       fields:
+        slug: { type: slug }
         label: { type: string }
 rules:
   - name: sites
@@ -1409,9 +1404,9 @@ rules:
 schema:
   types:
     location.site:
-      key:
-        slug: { type: slug }
+      key: [slug]
       fields:
+        slug: { type: slug }
         name: { type: string }
 rules:
   - name: sites
@@ -1448,14 +1443,14 @@ rules:
 schema:
   types:
     location.site:
-      key:
-        slug: { type: slug }
+      key: [slug]
       fields:
+        slug: { type: slug }
         name: { type: string }
     dcim.device:
-      key:
-        device: { type: slug }
+      key: [device]
       fields:
+        device: { type: slug }
         name: { type: string }
         site: { type: ref, target: location.site }
 rules:
@@ -1539,8 +1534,7 @@ rules:
 schema:
   types:
     net.node:
-      key:
-        name: {{ type: slug }}
+      key: [name]
       fields:
         name: {{ type: slug }}
         peers: {field}
@@ -1606,10 +1600,12 @@ rules:
 schema:
   types:
     net.node:
-      key:
+      key: [name]
+      fields:
         name: { type: slug }
     net.port:
-      key:
+      key: [device, name]
+      fields:
         device: { type: ref, target: net.node }
         name: { type: slug }
 rules:
@@ -1699,14 +1695,17 @@ rules:
 schema:
   types:
     net.node:
-      key:
+      key: [name]
+      fields:
         name: {{ type: slug }}
     net.port:
-      key:
+      key: [device, name]
+      fields:
         device: {{ type: ref, target: net.node }}
         name: {{ type: slug }}
     net.iface:
-      key:
+      key: [port, name]
+      fields:
         port: {{ type: ref, target: net.port }}
         name: {{ type: slug }}
 rules:{}{}{}"#,
@@ -1775,10 +1774,12 @@ rules:{}{}{}"#,
 schema:
   types:
     net.node:
-      key:
+      key: [name]
+      fields:
         name: {{ type: slug }}
     net.port:
-      key:
+      key: [device, name]
+      fields:
         device: {{ type: ref, target: net.node }}
         name: {{ type: slug }}
 rules:
@@ -1840,16 +1841,18 @@ rules:
 schema:
   types:
     net.node:
-      key:
+      key: [name]
+      fields:
         name: { type: slug }
     net.port:
-      key:
+      key: [device, name]
+      fields:
         device: { type: ref, target: net.node }
         name: { type: slug }
     net.link:
-      key:
-        name: { type: slug }
+      key: [name]
       fields:
+        name: { type: slug }
         port: { type: ref, target: net.port }
 rules:
   - name: nodes
@@ -1911,10 +1914,12 @@ rules:
 schema:
   types:
     net.node:
-      key:
+      key: [name]
+      fields:
         name: { type: slug }
     net.port:
-      key:
+      key: [device, name]
+      fields:
         device: { type: ref, target: net.node }
         name: { type: slug }
 rules:
@@ -1938,10 +1943,12 @@ rules:
 schema:
   types:
     net.node:
-      key:
+      key: [name]
+      fields:
         name: { type: slug }
     net.port:
-      key:
+      key: [device, name]
+      fields:
         device: { type: ref, target: net.node }
         name: { type: slug }
 rules:
@@ -1982,7 +1989,8 @@ rules:
 schema:
   types:
     net.thing:
-      key:
+      key: [peer, name]
+      fields:
         peer: { type: ref, target: net.thing }
         name: { type: slug }
 rules:
@@ -2014,9 +2022,9 @@ rules:
 schema:
   types:
     location.site:
-      key:
-        slug: { type: slug }
+      key: [slug]
       fields:
+        slug: { type: slug }
         name: { type: string }
 rules:
   - name: sites
@@ -2057,7 +2065,8 @@ rules:
 schema:
   types:
     thing:
-      key:
+      key: [k]
+      fields:
         k: { type: string }
 rules:
   - name: dcim-only
@@ -2085,9 +2094,9 @@ rules:
     fn passthrough_preserves_identity_and_carries_unmatched_types() {
         let input: Inventory = serde_json::from_value(json!({
             "schema": { "types": {
-                "dcim.interface": { "key": { "name": {"type":"slug"} },
+                "dcim.interface": { "key": ["name"],
                                     "fields": { "name": {"type":"slug"} } },
-                "ipam.ip_address": { "key": { "address": {"type":"string"} },
+                "ipam.ip_address": { "key": ["address"],
                                      "fields": { "address": {"type":"string"},
                                                  "assigned_interface": {"type":"ref","target":"dcim.interface"} } }
             }},
@@ -2107,7 +2116,7 @@ rules:
 schema:
   types:
     ipam.ip_address:
-      key: { address: { type: string } }
+      key: [address]
       fields:
         address: { type: string }
         assigned_object: { type: ref, target: dcim.interface }
@@ -2150,8 +2159,9 @@ rules:
     #[test]
     fn passthrough_skips_objects_another_rule_claimed() {
         let input: Inventory = serde_json::from_value(json!({
-            "schema": { "types": { "dcim.site": { "key": {"slug":{"type":"slug"}},
-                                                  "fields": {"name":{"type":"string"}} } } },
+            "schema": { "types": { "dcim.site": { "key": ["slug"],
+                                                  "fields": {"slug":{"type":"slug"},
+                                                             "name":{"type":"string"}} } } },
             "objects": [
                 { "uid": Uuid::from_u128(1).to_string(), "type": "dcim.site",
                   "key": {"slug":"fra1"}, "attrs": {"name":"fra1"} }
@@ -2165,8 +2175,8 @@ rules:
 schema:
   types:
     dcim.site:
-      key: { slug: { type: slug } }
-      fields: { name: { type: string } }
+      key: [slug]
+      fields: { slug: { type: slug }, name: { type: string } }
 rules:
   - name: sites
     match: dcim.site
@@ -2242,7 +2252,8 @@ rules:
 schema:
   types:
     fabric.node:
-      key:
+      key: [name]
+      fields:
         name: { type: slug }
 rules:
   - name: nodes
@@ -2317,12 +2328,13 @@ rules:
 schema:
   types:
     location.site:
-      key:
+      key: [slug]
+      fields:
         slug: { type: slug }
     net.vrf:
-      key:
-        name: { type: slug }
+      key: [name]
       fields:
+        name: { type: slug }
         site: { type: ref, target: location.site }
 rules:
   - name: fabric
@@ -2387,9 +2399,9 @@ rules:
 schema:
   types:
     ipam.vrf:
-      key:
-        name: { type: slug }
+      key: [name]
       fields:
+        name: { type: slug }
         vlans:
           type: list
           item: { type: int }
@@ -2442,9 +2454,9 @@ rules:
 schema:
   types:
     ipam.vrf:
-      key:
-        name: { type: slug }
+      key: [name]
       fields:
+        name: { type: slug }
         names: { type: json }
 rules:
   - name: vrfs
@@ -2483,9 +2495,9 @@ rules:
 schema:
   types:
     dcim.device:
-      key:
-        name: { type: slug }
+      key: [name]
       fields:
+        name: { type: slug }
         status: { type: string }
 rules:
   - name: devices
@@ -2518,9 +2530,9 @@ rules:
 schema:
   types:
     dcim.device:
-      key:
-        name: { type: slug }
+      key: [name]
       fields:
+        name: { type: slug }
         status: { type: string }
 rules:
   - name: devices
@@ -2581,10 +2593,12 @@ rules:
 schema:
   types:
     a.node:
-      key:
+      key: [name]
+      fields:
         name: { type: slug }
     b.node:
-      key:
+      key: [name]
+      fields:
         name: { type: slug }
 rules:
   - name: as
@@ -2623,7 +2637,8 @@ rules:
 schema:
   types:
     lab.node:
-      key:
+      key: [name]
+      fields:
         name: { type: slug }
 rules:
   - name: nodes
@@ -2658,7 +2673,8 @@ rules:
 schema:
   types:
     lab.node:
-      key:
+      key: [name]
+      fields:
         name: { type: slug }
 rules:
   - name: nodes
@@ -2749,9 +2765,9 @@ transforms:
 schema:
   types:
     ansible.host:
-      key:
-        name: { type: string }
+      key: [name]
       fields:
+        name: { type: string }
         ansible_host: { type: string }
         ansible_network_os: { type: string }
 rules:
@@ -2796,9 +2812,9 @@ transforms:
 schema:
   types:
     lab.node:
-      key:
-        name: { type: string }
+      key: [name]
       fields:
+        name: { type: string }
         profile: { type: json }
 rules:
   - name: nodes
@@ -2835,7 +2851,8 @@ transforms:
 schema:
   types:
     lab.node:
-      key:
+      key: [name]
+      fields:
         name: { type: string }
 rules:
   - name: nodes
@@ -2894,7 +2911,8 @@ transforms:
 schema:
   types:
     lab.node:
-      key:
+      key: [name]
+      fields:
         name: { type: string }
 rules:
   - name: nodes
@@ -2970,8 +2988,7 @@ transforms:
 schema:
   types:
     dcim.site:
-      key:
-        slug: { type: slug }
+      key: [slug]
       fields:
         slug: { type: slug }
 rules:
@@ -3005,10 +3022,12 @@ rules:
 schema:
   types:
     net.node:
-      key:
+      key: [name]
+      fields:
         name: { type: slug }
     net.port:
-      key:
+      key: [device, name]
+      fields:
         device: { type: ref, target: net.node }
         name: { type: slug }
 rules:
@@ -3066,7 +3085,8 @@ rules:
 schema:
   types:
     dcim.site:
-      key:
+      key: [slug]
+      fields:
         slug: { type: slug }
 rules:
   - name: sites
@@ -3097,10 +3117,12 @@ rules:
 schema:
   types:
     dcim.site:
-      key:
+      key: [slug]
+      fields:
         slug: { type: slug }
     net.zone:
-      key:
+      key: [name]
+      fields:
         name: { type: slug }
 rules:
   - name: sites
@@ -3126,7 +3148,8 @@ rules:
 schema:
   types:
     dcim.site:
-      key:
+      key: [slug]
+      fields:
         slug: { type: slug }
 rules:
   - name: sites
@@ -3152,13 +3175,16 @@ rules:
 schema:
   types:
     net.fabric:
-      key:
+      key: [name]
+      fields:
         name: { type: slug }
     location.site:
-      key:
+      key: [slug]
+      fields:
         slug: { type: slug }
     net.zone:
-      key:
+      key: [name]
+      fields:
         name: { type: slug }
 "#;
         let fabric = r#"      - type: net.fabric
@@ -3221,7 +3247,8 @@ schema:
 schema:
   types:
     {to}:
-      key:
+      key: [slug]
+      fields:
         slug: {{ type: slug }}
 rules:
   - name: s
@@ -3248,9 +3275,9 @@ rules:
 schema:
   types:
     ipam.vrf:
-      key:
-        name: { type: slug }
+      key: [name]
       fields:
+        name: { type: slug }
         vlans: { type: int }
 rules:
   - name: vrfs
@@ -3293,12 +3320,13 @@ rules:
 schema:
   types:
     src.vrf:
-      key:
+      key: [name]
+      fields:
         name: { type: slug }
     ipam.vrf:
-      key:
-        anchor: { type: string }
+      key: [anchor]
       fields:
+        anchor: { type: string }
         vlans: { type: int }
 rules:
   - name: vrfs-through
@@ -3352,7 +3380,8 @@ rules:
 schema:
   types:
     dcim.site:
-      key:
+      key: [slug]
+      fields:
         slug: { type: slug }
 rules:
   - name: sites
@@ -3378,12 +3407,13 @@ rules:
 schema:
   types:
     extras.status:
-      key:
+      key: [name]
+      fields:
         name: { type: string }
     dcim.location:
-      key:
-        name: { type: string }
+      key: [name]
       fields:
+        name: { type: string }
         status: { type: ref, target: extras.status }
 objects:
   - type: extras.status
@@ -3452,14 +3482,14 @@ rules:
 schema:
   types:
     dcim.manufacturer:
-      key:
-        slug: { type: slug }
+      key: [slug]
       fields:
+        slug: { type: slug }
         name: { type: string }
     dcim.device_type:
-      key:
-        slug: { type: slug }
+      key: [slug]
       fields:
+        slug: { type: slug }
         model: { type: string }
         manufacturer: { type: ref, target: dcim.manufacturer }
 objects:
@@ -3503,10 +3533,12 @@ objects:
 schema:
   types:
     dcim.device:
-      key:
+      key: [name]
+      fields:
         name: { type: slug }
     dcim.interface:
-      key:
+      key: [device, name]
+      fields:
         device: { type: ref, target: dcim.device }
         name: { type: string }
 objects:
@@ -3548,12 +3580,13 @@ objects:
 schema:
   types:
     extras.status:
-      key:
+      key: [name]
+      fields:
         name: { type: string }
     catalog.bundle:
-      key:
-        name: { type: string }
+      key: [name]
       fields:
+        name: { type: string }
         statuses: { type: list_ref, target: extras.status }
         ordered:
           type: list
@@ -3608,12 +3641,13 @@ objects:
 schema:
   types:
     dcim.manufacturer:
-      key:
+      key: [slug]
+      fields:
         slug: { type: slug }
     dcim.device_type:
-      key:
-        slug: { type: slug }
+      key: [slug]
       fields:
+        slug: { type: slug }
         manufacturer: { type: ref, target: dcim.manufacturer }
 objects:
   - type: dcim.manufacturer
@@ -3645,9 +3679,9 @@ objects:
 schema:
   types:
     catalog.item:
-      key:
-        slug: { type: slug }
+      key: [slug]
       fields:
+        slug: { type: slug }
         metadata: { type: json }
 objects:
   - type: catalog.item
@@ -3674,7 +3708,8 @@ objects:
 schema:
   types:
     extras.status:
-      key:
+      key: [name]
+      fields:
         name: { type: string }
 objects:
   - type: extras.status
@@ -3699,7 +3734,8 @@ objects:
 schema:
   types:
     extras.status:
-      key:
+      key: [name]
+      fields:
         name: { type: string }
 objects:
   - type: extras.status
@@ -3721,7 +3757,8 @@ objects:
 schema:
   types:
     dcim.location:
-      key:
+      key: [name]
+      fields:
         name: { type: string }
 objects:
   - type: dcim.location

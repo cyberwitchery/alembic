@@ -1,16 +1,15 @@
 {
   "description": "a request with an unsupported protocol version is rejected before the adapter runs",
   "request": {
-    "version": 2,
+    "version": 3,
     "setup": {},
     "method": "ensure_schema",
     "schema": {
       "types": {
         "dcim.site": {
-          "key": {
-            "site": { "type": "slug", "required": false, "nullable": false }
-          },
+          "key": ["site"],
           "fields": {
+            "site": { "type": "slug", "required": false, "nullable": false },
             "name": { "type": "string", "required": false, "nullable": false },
             "slug": { "type": "slug", "required": false, "nullable": false }
           }
@@ -20,6 +19,6 @@
   },
   "response": {
     "ok": false,
-    "error": "unsupported protocol version 2 (expected 1)"
+    "error": "unsupported protocol version 3 (expected 2)"
   }
 }

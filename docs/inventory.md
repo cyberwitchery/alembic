@@ -43,15 +43,15 @@ inventory files must define schema metadata alongside objects.
 schema:
   types:
     services.vpn:
-      key:
-        vpn: { type: slug }
+      key: [vpn]
       fields:
+        vpn: { type: slug }
         name: { type: string, required: true }
         peers: { type: list, item: { type: json } }
 ```
 
-`key` maps each key field to its schema, or lists field names (`key: [slug]`)
-that take their schema from `fields`; `docs/ir.md` has the rules.
+`key` lists the key fields by name, each declared under `fields`; `docs/ir.md`
+has the rules.
 
 string fields can optionally use `format` and/or `pattern`:
 

@@ -97,10 +97,6 @@ pub enum ValidationError {
         "nullable key field {type_name}.{field}: a null identity component has no stable identity (docs/ir.md)"
     )]
     NullableKeyField { type_name: String, field: String },
-    #[error(
-        "key field {type_name}.{field} is declared again in fields with a different schema; one name carries one schema (docs/ir.md)"
-    )]
-    KeyFieldDisagreement { type_name: String, field: String },
     #[error("scope names undeclared type {type_name} (docs/inventory.md)")]
     ScopeUnknownType { type_name: String },
     #[error("scope field {type_name}.{field} is not a key field of the type (docs/inventory.md)")]
@@ -139,7 +135,6 @@ impl ValidationError {
             | ValidationError::EmptyEnum { .. }
             | ValidationError::NonScalarKeyField { .. }
             | ValidationError::NullableKeyField { .. }
-            | ValidationError::KeyFieldDisagreement { .. }
             | ValidationError::ScopeUnknownType { .. }
             | ValidationError::ScopeNonKeyField { .. }
             | ValidationError::ScopeInvalidValue { .. } => None,
@@ -175,7 +170,6 @@ impl ValidationError {
             | ValidationError::EmptyEnum { .. }
             | ValidationError::NonScalarKeyField { .. }
             | ValidationError::NullableKeyField { .. }
-            | ValidationError::KeyFieldDisagreement { .. }
             | ValidationError::ScopeUnknownType { .. }
             | ValidationError::ScopeNonKeyField { .. }
             | ValidationError::ScopeInvalidValue { .. } => None,
@@ -197,7 +191,6 @@ impl ValidationError {
             | ValidationError::EmptyEnum { type_name, .. }
             | ValidationError::NonScalarKeyField { type_name, .. }
             | ValidationError::NullableKeyField { type_name, .. }
-            | ValidationError::KeyFieldDisagreement { type_name, .. }
             | ValidationError::ScopeUnknownType { type_name }
             | ValidationError::ScopeNonKeyField { type_name, .. }
             | ValidationError::ScopeInvalidValue { type_name, .. } => Some(type_name.clone()),
@@ -239,7 +232,6 @@ impl ValidationError {
             | ValidationError::EmptyEnum { .. }
             | ValidationError::NonScalarKeyField { .. }
             | ValidationError::NullableKeyField { .. }
-            | ValidationError::KeyFieldDisagreement { .. }
             | ValidationError::ScopeUnknownType { .. }
             | ValidationError::ScopeNonKeyField { .. }
             | ValidationError::ScopeInvalidValue { .. } => None,
@@ -408,7 +400,6 @@ pub fn validate_inventory(inventory: &Inventory) -> ValidationReport {
     validate_schema_enums(&inventory.schema, &mut report);
     validate_schema_key_scalar(&inventory.schema, &mut report);
     validate_schema_key_nullable(&inventory.schema, &mut report);
-    validate_schema_key_field_agreement(&inventory.schema, &mut report);
     if let Some(scope) = &inventory.scope {
         validate_scope(scope, &inventory.schema, &pattern_cache, &mut report);
     }
@@ -426,18 +417,13 @@ pub fn validate_inventory(inventory: &Inventory) -> ValidationReport {
     report
 }
 
-/// walk every declared field in the schema, visiting each type's key fields
-/// (labeled `key.<field>`) then its attribute fields. the schema-level
-/// validators share this traversal; centralizing it keeps the key-field
-/// labeling convention in one place.
+/// walk every declared field in the schema. key fields are declared under
+/// `fields` like any other, so each field is visited once.
 fn for_each_schema_field(
     schema: &Schema,
     mut visit: impl FnMut(&str, &str, &crate::ir::FieldSchema),
 ) {
     for (type_name, type_schema) in &schema.types {
-        for (field, field_schema) in &type_schema.key {
-            visit(type_name, &format!("key.{field}"), field_schema);
-        }
         for (field, field_schema) in &type_schema.fields {
             visit(type_name, field, field_schema);
         }
@@ -696,11 +682,11 @@ fn validate_field_enum(
 /// `ref` (a ref key renders to a scalar uid string) and every scalar built-in.
 fn validate_schema_key_scalar(schema: &Schema, report: &mut ValidationReport) {
     for (type_name, type_schema) in &schema.types {
-        for (field, field_schema) in &type_schema.key {
+        for (field, field_schema) in type_schema.key_fields() {
             if is_composite_type(&field_schema.r#type) {
                 report.errors.push(ValidationError::NonScalarKeyField {
                     type_name: type_name.to_string(),
-                    field: format!("key.{field}"),
+                    field: field.to_string(),
                     field_type: field_type_label(&field_schema.r#type),
                 });
             }
@@ -741,33 +727,12 @@ fn is_composite_type(field_type: &FieldType) -> bool {
 /// state unrepresentable before any object is authored.
 fn validate_schema_key_nullable(schema: &Schema, report: &mut ValidationReport) {
     for (type_name, type_schema) in &schema.types {
-        for (field, field_schema) in &type_schema.key {
+        for (field, field_schema) in type_schema.key_fields() {
             if field_schema.nullable {
                 report.errors.push(ValidationError::NullableKeyField {
                     type_name: type_name.to_string(),
-                    field: format!("key.{field}"),
+                    field: field.to_string(),
                 });
-            }
-        }
-    }
-}
-
-/// reject a field declared in both `key:` and `fields:` with a different
-/// schema. every consumer of such a type has to pick a winner, and each picks
-/// its own — the django generator reads the key entry, adapter normalization
-/// reads the fields entry — so the disagreement is a schema bug, not a
-/// precedence question. an identical duplicate declares one schema twice and
-/// stays legal.
-fn validate_schema_key_field_agreement(schema: &Schema, report: &mut ValidationReport) {
-    for (type_name, type_schema) in &schema.types {
-        for (field, key_schema) in &type_schema.key {
-            if let Some(field_schema) = type_schema.fields.get(field) {
-                if key_schema != field_schema {
-                    report.errors.push(ValidationError::KeyFieldDisagreement {
-                        type_name: type_name.to_string(),
-                        field: field.to_string(),
-                    });
-                }
             }
         }
     }
@@ -791,7 +756,10 @@ fn validate_scope(
             continue;
         };
         for (field, values) in entry {
-            let Some(field_schema) = type_schema.key.get(field) else {
+            let key_field = type_schema
+                .key_fields()
+                .find_map(|(name, schema)| (name == field).then_some(schema));
+            let Some(field_schema) = key_field else {
                 report.errors.push(ValidationError::ScopeNonKeyField {
                     type_name: type_name.clone(),
                     field: field.clone(),
@@ -901,7 +869,7 @@ fn validate_key_fields(
     pattern_cache: &BTreeMap<String, Regex>,
     report: &mut ValidationReport,
 ) {
-    for (field, field_schema) in &type_schema.key {
+    for (field, field_schema) in type_schema.key_fields() {
         let Some(value) = object.key.get(field) else {
             report.errors.push(ValidationError::MissingKeyField {
                 type_name: object.type_name.to_string(),
@@ -921,7 +889,7 @@ fn validate_key_fields(
     }
 
     for field in object.key.keys() {
-        if !type_schema.key.contains_key(field) {
+        if !type_schema.is_key(field) {
             report.errors.push(ValidationError::ExtraKeyField {
                 type_name: object.type_name.to_string(),
                 field: field.to_string(),
@@ -939,7 +907,8 @@ fn validate_attr_fields(
 ) {
     for (field, field_schema) in &type_schema.fields {
         let Some(value) = object.attrs.get(field) else {
-            if field_schema.required {
+            // a key field's value is in the object's key, which `validate_key_fields` requires
+            if field_schema.required && !type_schema.is_key(field) {
                 report.errors.push(ValidationError::MissingAttrField {
                     type_name: object.type_name.to_string(),
                     field: field.to_string(),
@@ -1556,7 +1525,8 @@ mod tests {
         key.insert("slug".to_string(), serde_json::json!("fra1"));
         let key = Key::from(key);
         let type_schema = TypeSchema {
-            key: BTreeMap::from([(
+            key: vec!["slug".to_string()],
+            fields: BTreeMap::from([(
                 "slug".to_string(),
                 FieldSchema {
                     r#type: FieldType::Slug,
@@ -1567,7 +1537,6 @@ mod tests {
                     pattern: None,
                 },
             )]),
-            fields: BTreeMap::new(),
         };
         let objects = vec![
             Object::new(
@@ -1607,7 +1576,7 @@ mod tests {
                 types: BTreeMap::from([(
                     "site".to_string(),
                     TypeSchema {
-                        key: BTreeMap::new(),
+                        key: Vec::new(),
                         fields: BTreeMap::new(),
                     },
                 )]),
@@ -1671,7 +1640,8 @@ mod tests {
 
     fn slug_key_schema() -> TypeSchema {
         TypeSchema {
-            key: BTreeMap::from([(
+            key: vec!["slug".to_string()],
+            fields: BTreeMap::from([(
                 "slug".to_string(),
                 FieldSchema {
                     r#type: FieldType::Slug,
@@ -1682,7 +1652,6 @@ mod tests {
                     pattern: None,
                 },
             )]),
-            fields: BTreeMap::new(),
         }
     }
 
@@ -1753,7 +1722,7 @@ mod tests {
                 types: BTreeMap::from([(
                     "site".to_string(),
                     TypeSchema {
-                        key: BTreeMap::new(),
+                        key: Vec::new(),
                         fields: BTreeMap::new(),
                     },
                 )]),
@@ -1767,21 +1736,53 @@ mod tests {
     }
 
     #[test]
+    fn a_required_key_field_is_not_required_in_attrs() {
+        // `slug` is declared `required: true`; the object's key holds it, so its
+        // absence from attrs is fine, and a value present in attrs is still checked.
+        let object = |attrs: serde_json::Value| {
+            Object::new(
+                uid(54),
+                TypeName::new("site"),
+                Key::from(BTreeMap::from([("slug".to_string(), json!("fra1"))])),
+                serde_json::from_value(attrs).unwrap(),
+            )
+            .unwrap()
+        };
+        let report = |object: Object| {
+            validate_inventory(&Inventory {
+                scope: None,
+                schema: Schema {
+                    types: BTreeMap::from([("site".to_string(), slug_key_schema())]),
+                },
+                objects: vec![object],
+            })
+        };
+        assert!(report(object(json!({}))).errors.is_empty());
+        assert!(report(object(json!({ "slug": "Not A Slug" })))
+            .errors
+            .iter()
+            .any(|err| matches!(err, ValidationError::InvalidValue { .. })));
+    }
+
+    #[test]
     fn detects_missing_attr_field() {
         // required attr `name` declared, absent from attrs -> MissingAttrField
         let type_schema = TypeSchema {
             key: slug_key_schema().key,
-            fields: BTreeMap::from([(
-                "name".to_string(),
-                FieldSchema {
-                    r#type: FieldType::String,
-                    required: true,
-                    nullable: false,
-                    description: None,
-                    format: None,
-                    pattern: None,
-                },
-            )]),
+            fields: BTreeMap::from([
+                slug_key_schema().fields.pop_first().unwrap(),
+                (
+                    "name".to_string(),
+                    FieldSchema {
+                        r#type: FieldType::String,
+                        required: true,
+                        nullable: false,
+                        description: None,
+                        format: None,
+                        pattern: None,
+                    },
+                ),
+            ]),
         };
         let mut k = BTreeMap::new();
         k.insert("slug".to_string(), json!("fra1"));
@@ -1834,8 +1835,8 @@ mod tests {
 
     #[test]
     fn detects_missing_references_with_schema() {
-        let mut key_fields = BTreeMap::new();
-        key_fields.insert(
+        let mut fields = BTreeMap::new();
+        fields.insert(
             "slug".to_string(),
             FieldSchema {
                 r#type: FieldType::Slug,
@@ -1846,7 +1847,6 @@ mod tests {
                 pattern: None,
             },
         );
-        let mut fields = BTreeMap::new();
         fields.insert(
             "owner".to_string(),
             FieldSchema {
@@ -1864,7 +1864,7 @@ mod tests {
         types.insert(
             "device".to_string(),
             TypeSchema {
-                key: key_fields,
+                key: vec!["slug".to_string()],
                 fields,
             },
         );
@@ -1926,8 +1926,8 @@ mod tests {
     /// a `dcim.site` keyed on a `slug` field, with the given scope, no objects.
     fn validate_scoped(scope: crate::ir::Scope) -> ValidationReport {
         let site = TypeSchema {
-            key: BTreeMap::from([("slug".to_string(), schema_field(FieldType::Slug))]),
-            fields: BTreeMap::new(),
+            key: vec!["slug".to_string()],
+            fields: BTreeMap::from([("slug".to_string(), schema_field(FieldType::Slug))]),
         };
         validate_inventory(&Inventory {
             schema: Schema {
@@ -2011,8 +2011,8 @@ mod tests {
         // inside one is rejected rather than silently matching the scalars it
         // contains and widening delete authority.
         let window = TypeSchema {
-            key: BTreeMap::from([("identity".to_string(), schema_field(FieldType::Json))]),
-            fields: BTreeMap::new(),
+            key: vec!["identity".to_string()],
+            fields: BTreeMap::from([("identity".to_string(), schema_field(FieldType::Json))]),
         };
         let schema = Schema {
             types: BTreeMap::from([("ops.window".to_string(), window)]),
@@ -2064,17 +2064,17 @@ mod tests {
         // the target may be an object the inventory does not manage, so the uid
         // is not required to resolve; a non-uid still fails.
         let device = TypeSchema {
-            key: BTreeMap::from([(
+            key: vec!["site".to_string()],
+            fields: BTreeMap::from([(
                 "site".to_string(),
                 schema_field(FieldType::Ref {
                     target: "dcim.site".to_string(),
                 }),
             )]),
-            fields: BTreeMap::new(),
         };
         let site = TypeSchema {
-            key: BTreeMap::from([("slug".to_string(), schema_field(FieldType::Slug))]),
-            fields: BTreeMap::new(),
+            key: vec!["slug".to_string()],
+            fields: BTreeMap::from([("slug".to_string(), schema_field(FieldType::Slug))]),
         };
         let schema = Schema {
             types: BTreeMap::from([
@@ -2108,7 +2108,7 @@ mod tests {
     #[test]
     fn detects_unknown_ref_target_in_attr_field() {
         let device = TypeSchema {
-            key: BTreeMap::new(),
+            key: Vec::new(),
             fields: BTreeMap::from([(
                 "owner".to_string(),
                 schema_field(FieldType::Ref {
@@ -2127,26 +2127,26 @@ mod tests {
     #[test]
     fn detects_unknown_ref_target_in_key_field() {
         let device = TypeSchema {
-            key: BTreeMap::from([(
+            key: vec!["site".to_string()],
+            fields: BTreeMap::from([(
                 "site".to_string(),
                 schema_field(FieldType::Ref {
                     target: "place".to_string(),
                 }),
             )]),
-            fields: BTreeMap::new(),
         };
         let report = validate_schema(BTreeMap::from([("device".to_string(), device)]));
         assert!(report.errors.iter().any(|e| matches!(
             e,
             ValidationError::UnknownRefTarget { field, target, .. }
-                if field == "key.site" && target == "place"
+                if field == "site" && target == "place"
         )));
     }
 
     #[test]
     fn detects_unknown_ref_target_nested_in_list_and_map() {
         let group = TypeSchema {
-            key: BTreeMap::new(),
+            key: Vec::new(),
             fields: BTreeMap::from([
                 (
                     "members".to_string(),
@@ -2180,7 +2180,7 @@ mod tests {
     #[test]
     fn valid_ref_targets_pass_schema_validation() {
         let device = TypeSchema {
-            key: BTreeMap::new(),
+            key: Vec::new(),
             fields: BTreeMap::from([
                 (
                     "owner".to_string(),
@@ -2199,7 +2199,7 @@ mod tests {
             ]),
         };
         let person = TypeSchema {
-            key: BTreeMap::new(),
+            key: Vec::new(),
             fields: BTreeMap::new(),
         };
         let report = validate_schema(BTreeMap::from([
@@ -2217,31 +2217,31 @@ mod tests {
         // schema-load rejects all three composite key types (see
         // validate_schema_key_scalar)
         let group = TypeSchema {
-            key: BTreeMap::from([(
+            key: vec!["members".to_string()],
+            fields: BTreeMap::from([(
                 "members".to_string(),
                 schema_field(FieldType::List {
                     item: Box::new(FieldType::String),
                 }),
             )]),
-            fields: BTreeMap::new(),
         };
         let dict = TypeSchema {
-            key: BTreeMap::from([(
+            key: vec!["labels".to_string()],
+            fields: BTreeMap::from([(
                 "labels".to_string(),
                 schema_field(FieldType::Map {
                     value: Box::new(FieldType::String),
                 }),
             )]),
-            fields: BTreeMap::new(),
         };
         let device = TypeSchema {
-            key: BTreeMap::from([(
+            key: vec!["peers".to_string()],
+            fields: BTreeMap::from([(
                 "peers".to_string(),
                 schema_field(FieldType::ListRef {
                     target: "device".to_string(),
                 }),
             )]),
-            fields: BTreeMap::new(),
         };
         let report = validate_schema(BTreeMap::from([
             ("group".to_string(), group),
@@ -2251,18 +2251,18 @@ mod tests {
         assert!(report.errors.iter().any(|e| matches!(
             e,
             ValidationError::NonScalarKeyField { type_name, field, field_type }
-                if type_name == "group" && field == "key.members" && field_type == "list"
+                if type_name == "group" && field == "members" && field_type == "list"
         )));
         assert!(report.errors.iter().any(|e| matches!(
             e,
             ValidationError::NonScalarKeyField { type_name, field, field_type }
-                if type_name == "dict" && field == "key.labels" && field_type == "map"
+                if type_name == "dict" && field == "labels" && field_type == "map"
         )));
         assert!(report.errors.iter().any(|e| matches!(
             e,
             ValidationError::NonScalarKeyField { type_name, field, field_type }
                 if type_name == "device"
-                    && field == "key.peers"
+                    && field == "peers"
                     && field_type == "list_ref(device)"
         )));
     }
@@ -2271,11 +2271,12 @@ mod tests {
     fn accepts_ref_key_field_type() {
         // a `ref` key renders to a scalar uid string and stays legal
         let device = TypeSchema {
-            key: BTreeMap::from([("name".to_string(), schema_field(FieldType::String))]),
-            fields: BTreeMap::new(),
+            key: vec!["name".to_string()],
+            fields: BTreeMap::from([("name".to_string(), schema_field(FieldType::String))]),
         };
         let interface = TypeSchema {
-            key: BTreeMap::from([
+            key: vec!["device".to_string(), "name".to_string()],
+            fields: BTreeMap::from([
                 (
                     "device".to_string(),
                     schema_field(FieldType::Ref {
@@ -2284,7 +2285,6 @@ mod tests {
                 ),
                 ("name".to_string(), schema_field(FieldType::String)),
             ]),
-            fields: BTreeMap::new(),
         };
         let report = validate_schema(BTreeMap::from([
             ("device".to_string(), device),
@@ -2300,7 +2300,14 @@ mod tests {
     fn accepts_scalar_key_field_types() {
         // every scalar-producing built-in stays legal as a key field type.
         let widget = TypeSchema {
-            key: BTreeMap::from([
+            key: vec![
+                "s".to_string(),
+                "i".to_string(),
+                "g".to_string(),
+                "u".to_string(),
+                "e".to_string(),
+            ],
+            fields: BTreeMap::from([
                 ("s".to_string(), schema_field(FieldType::String)),
                 ("i".to_string(), schema_field(FieldType::Int)),
                 ("g".to_string(), schema_field(FieldType::Slug)),
@@ -2312,7 +2319,6 @@ mod tests {
                     }),
                 ),
             ]),
-            fields: BTreeMap::new(),
         };
         let report = validate_schema(BTreeMap::from([("widget".to_string(), widget)]));
         assert!(!report
@@ -2329,8 +2335,8 @@ mod tests {
         // derivation either. the schema is scalar-keyed, so no type-level error
         // fires here -- only the per-object value error.
         let device = TypeSchema {
-            key: BTreeMap::from([("name".to_string(), schema_field(FieldType::String))]),
-            fields: BTreeMap::new(),
+            key: vec!["name".to_string()],
+            fields: BTreeMap::from([("name".to_string(), schema_field(FieldType::String))]),
         };
         let mut key = BTreeMap::new();
         key.insert("name".to_string(), serde_json::json!(["a", "b"]));
@@ -2364,46 +2370,15 @@ mod tests {
         // schema-load rejects a nullable key field (see
         // validate_schema_key_nullable)
         let device = TypeSchema {
-            key: BTreeMap::from([("slug".to_string(), nullable_field(FieldType::String))]),
-            fields: BTreeMap::new(),
+            key: vec!["slug".to_string()],
+            fields: BTreeMap::from([("slug".to_string(), nullable_field(FieldType::String))]),
         };
         let report = validate_schema(BTreeMap::from([("device".to_string(), device)]));
         assert!(report.errors.iter().any(|e| matches!(
             e,
             ValidationError::NullableKeyField { type_name, field }
-                if type_name == "device" && field == "key.slug"
+                if type_name == "device" && field == "slug"
         )));
-    }
-
-    #[test]
-    fn detects_key_field_redeclared_with_a_different_schema() {
-        // a field in both `key:` and `fields:` must carry one schema (see
-        // validate_schema_key_field_agreement)
-        let device = TypeSchema {
-            key: BTreeMap::from([("name".to_string(), schema_field(FieldType::Slug))]),
-            fields: BTreeMap::from([("name".to_string(), schema_field(FieldType::String))]),
-        };
-        let report = validate_schema(BTreeMap::from([("device".to_string(), device)]));
-        assert!(report.errors.iter().any(|e| matches!(
-            e,
-            ValidationError::KeyFieldDisagreement { type_name, field }
-                if type_name == "device" && field == "name"
-        )));
-    }
-
-    #[test]
-    fn accepts_a_key_field_redeclared_identically() {
-        // an identical duplicate declares one schema twice; only a disagreement
-        // is a bug.
-        let device = TypeSchema {
-            key: BTreeMap::from([("slug".to_string(), schema_field(FieldType::Slug))]),
-            fields: BTreeMap::from([("slug".to_string(), schema_field(FieldType::Slug))]),
-        };
-        let report = validate_schema(BTreeMap::from([("device".to_string(), device)]));
-        assert!(!report
-            .errors
-            .iter()
-            .any(|e| matches!(e, ValidationError::KeyFieldDisagreement { .. })));
     }
 
     #[test]
@@ -2411,8 +2386,11 @@ mod tests {
         // `nullable: true` stays legal on a regular (non-key) field: only a key
         // component must render to a scalar identity, so a nullable attr is fine.
         let device = TypeSchema {
-            key: BTreeMap::from([("name".to_string(), schema_field(FieldType::String))]),
-            fields: BTreeMap::from([("label".to_string(), nullable_field(FieldType::String))]),
+            key: vec!["name".to_string()],
+            fields: BTreeMap::from([
+                ("name".to_string(), schema_field(FieldType::String)),
+                ("label".to_string(), nullable_field(FieldType::String)),
+            ]),
         };
         let report = validate_schema(BTreeMap::from([("device".to_string(), device)]));
         assert!(!report
@@ -2425,11 +2403,16 @@ mod tests {
     fn accepts_non_nullable_key_fields() {
         // non-nullable `ref` and scalar keys must not fire a nullable-key error
         let device = TypeSchema {
-            key: BTreeMap::from([("name".to_string(), schema_field(FieldType::String))]),
-            fields: BTreeMap::new(),
+            key: vec!["name".to_string()],
+            fields: BTreeMap::from([("name".to_string(), schema_field(FieldType::String))]),
         };
         let interface = TypeSchema {
-            key: BTreeMap::from([
+            key: vec![
+                "device".to_string(),
+                "name".to_string(),
+                "index".to_string(),
+            ],
+            fields: BTreeMap::from([
                 (
                     "device".to_string(),
                     schema_field(FieldType::Ref {
@@ -2439,7 +2422,6 @@ mod tests {
                 ("name".to_string(), schema_field(FieldType::String)),
                 ("index".to_string(), schema_field(FieldType::Int)),
             ]),
-            fields: BTreeMap::new(),
         };
         let report = validate_schema(BTreeMap::from([
             ("device".to_string(), device),
@@ -2454,7 +2436,7 @@ mod tests {
     #[test]
     fn detects_invalid_pattern_in_attr_field() {
         let device = TypeSchema {
-            key: BTreeMap::new(),
+            key: Vec::new(),
             fields: BTreeMap::from([("name".to_string(), pattern_field("[unclosed"))]),
         };
         let report = validate_schema(BTreeMap::from([("device".to_string(), device)]));
@@ -2475,25 +2457,28 @@ mod tests {
     #[test]
     fn detects_invalid_pattern_in_key_field() {
         let device = TypeSchema {
-            key: BTreeMap::from([("slug".to_string(), pattern_field("(unbalanced"))]),
-            fields: BTreeMap::new(),
+            key: vec!["slug".to_string()],
+            fields: BTreeMap::from([("slug".to_string(), pattern_field("(unbalanced"))]),
         };
         let report = validate_schema(BTreeMap::from([("device".to_string(), device)]));
         assert!(report.errors.iter().any(|e| matches!(
             e,
             ValidationError::InvalidSchemaPattern { type_name, field, .. }
-                if type_name == "device" && field == "key.slug"
+                if type_name == "device" && field == "slug"
         )));
     }
 
     #[test]
     fn accumulates_invalid_patterns_across_fields_and_types() {
         let device = TypeSchema {
-            key: BTreeMap::from([("slug".to_string(), pattern_field("(bad"))]),
-            fields: BTreeMap::from([("name".to_string(), pattern_field("[bad"))]),
+            key: vec!["slug".to_string()],
+            fields: BTreeMap::from([
+                ("slug".to_string(), pattern_field("(bad")),
+                ("name".to_string(), pattern_field("[bad")),
+            ]),
         };
         let site = TypeSchema {
-            key: BTreeMap::new(),
+            key: Vec::new(),
             fields: BTreeMap::from([("code".to_string(), pattern_field("*bad"))]),
         };
         let report = validate_schema(BTreeMap::from([
@@ -2511,8 +2496,9 @@ mod tests {
     #[test]
     fn valid_and_absent_patterns_pass_schema_validation() {
         let device = TypeSchema {
-            key: BTreeMap::from([("slug".to_string(), pattern_field("^[a-z0-9-]+$"))]),
+            key: vec!["slug".to_string()],
             fields: BTreeMap::from([
+                ("slug".to_string(), pattern_field("^[a-z0-9-]+$")),
                 ("name".to_string(), pattern_field("^[A-Za-z ]+$")),
                 ("count".to_string(), schema_field(FieldType::Int)),
             ]),
@@ -2529,7 +2515,7 @@ mod tests {
         let mut count = schema_field(FieldType::Int);
         count.format = Some(FieldFormat::Slug);
         let device = TypeSchema {
-            key: BTreeMap::new(),
+            key: Vec::new(),
             fields: BTreeMap::from([("count".to_string(), count)]),
         };
         let report = validate_schema(BTreeMap::from([("device".to_string(), device)]));
@@ -2550,7 +2536,7 @@ mod tests {
         });
         tags.pattern = Some("^x$".to_string());
         let device = TypeSchema {
-            key: BTreeMap::new(),
+            key: Vec::new(),
             fields: BTreeMap::from([("tags".to_string(), tags)]),
         };
         let report = validate_schema(BTreeMap::from([("device".to_string(), device)]));
@@ -2570,7 +2556,7 @@ mod tests {
         flag.format = Some(FieldFormat::Slug);
         flag.pattern = Some("^x$".to_string());
         let device = TypeSchema {
-            key: BTreeMap::new(),
+            key: Vec::new(),
             fields: BTreeMap::from([("flag".to_string(), flag)]),
         };
         let report = validate_schema(BTreeMap::from([("device".to_string(), device)]));
@@ -2599,7 +2585,7 @@ mod tests {
         });
         owner.format = Some(FieldFormat::Uuid);
         let device = TypeSchema {
-            key: BTreeMap::new(),
+            key: Vec::new(),
             fields: BTreeMap::from([
                 ("name".to_string(), name),
                 ("handle".to_string(), handle),
@@ -2608,7 +2594,7 @@ mod tests {
             ]),
         };
         let person = TypeSchema {
-            key: BTreeMap::new(),
+            key: Vec::new(),
             fields: BTreeMap::new(),
         };
         let report = validate_schema(BTreeMap::from([
@@ -2631,7 +2617,7 @@ mod tests {
         BTreeMap::from([(
             "device".to_string(),
             TypeSchema {
-                key: BTreeMap::new(),
+                key: Vec::new(),
                 fields: BTreeMap::from([("value".to_string(), value)]),
             },
         )])
@@ -2670,11 +2656,11 @@ mod tests {
             let mut field = schema_field(field_type);
             field.format = Some(FieldFormat::Uuid);
             let device = TypeSchema {
-                key: BTreeMap::from([(name.to_string(), field)]),
-                fields: BTreeMap::new(),
+                key: vec![name.to_string()],
+                fields: BTreeMap::from([(name.to_string(), field)]),
             };
             let report = validate_schema(BTreeMap::from([("device".to_string(), device)]));
-            let expected = format!("key.{name}");
+            let expected = name.to_string();
             assert!(
                 report.errors.iter().any(|e| matches!(
                     e,
@@ -2737,7 +2723,7 @@ mod tests {
         let mut value = schema_field(FieldType::Mac);
         value.pattern = Some("^00:".to_string());
         let device = TypeSchema {
-            key: BTreeMap::new(),
+            key: Vec::new(),
             fields: BTreeMap::from([("value".to_string(), value)]),
         };
         let report = validate_schema(BTreeMap::from([("device".to_string(), device)]));
@@ -2806,7 +2792,7 @@ mod tests {
     #[test]
     fn detects_empty_enum_in_attr_field() {
         let device = TypeSchema {
-            key: BTreeMap::new(),
+            key: Vec::new(),
             fields: BTreeMap::from([(
                 "role".to_string(),
                 schema_field(FieldType::Enum { values: vec![] }),
@@ -2823,7 +2809,7 @@ mod tests {
     #[test]
     fn detects_empty_enum_nested_in_list_field() {
         let device = TypeSchema {
-            key: BTreeMap::new(),
+            key: Vec::new(),
             fields: BTreeMap::from([(
                 "roles".to_string(),
                 schema_field(FieldType::List {
@@ -2842,7 +2828,7 @@ mod tests {
     #[test]
     fn non_empty_enum_passes_schema_validation() {
         let device = TypeSchema {
-            key: BTreeMap::new(),
+            key: Vec::new(),
             fields: BTreeMap::from([
                 (
                     "role".to_string(),
@@ -2872,11 +2858,11 @@ mod tests {
         // see detects_invalid_pattern_for_type_with_no_objects; here for an
         // empty enum. the key field also exercises the `key.{field}` label path.
         let ghost = TypeSchema {
-            key: BTreeMap::from([(
+            key: vec!["role".to_string()],
+            fields: BTreeMap::from([(
                 "role".to_string(),
                 schema_field(FieldType::Enum { values: vec![] }),
             )]),
-            fields: BTreeMap::new(),
         };
         let report = validate_inventory(&Inventory {
             scope: None,
@@ -2888,7 +2874,7 @@ mod tests {
         assert!(report.errors.iter().any(|e| matches!(
             e,
             ValidationError::EmptyEnum { type_name, field }
-                if type_name == "ghost" && field == "key.role"
+                if type_name == "ghost" && field == "role"
         )));
     }
 
@@ -2903,8 +2889,9 @@ mod tests {
             pattern: None,
         };
         let type_schema = TypeSchema {
-            key: BTreeMap::from([("slug".to_string(), field(FieldType::Slug))]),
+            key: vec!["slug".to_string()],
             fields: BTreeMap::from([
+                ("slug".to_string(), field(FieldType::Slug)),
                 ("count".to_string(), field(FieldType::Int)),
                 ("enabled".to_string(), field(FieldType::Bool)),
             ]),
@@ -3010,18 +2997,21 @@ mod tests {
     fn with_sources_attaches_the_declaring_type_location_to_schema_errors() {
         // schema-load errors carry a `type_name`; with_sources must resolve each
         // variant to the source line of an object of the declaring type.
-        let name_key = || BTreeMap::from([("name".to_string(), schema_field(FieldType::String))]);
+        let name_field = || ("name".to_string(), schema_field(FieldType::String));
         let mut asset = schema_field(FieldType::Mac);
         asset.format = Some(FieldFormat::Uuid);
         type Matcher = fn(&ValidationError) -> bool;
         let cases: Vec<(TypeSchema, &str, serde_json::Value, JsonMap, Matcher, usize)> = vec![
             (
                 TypeSchema {
-                    key: name_key(),
-                    fields: BTreeMap::from([(
-                        "role".to_string(),
-                        schema_field(FieldType::Enum { values: vec![] }),
-                    )]),
+                    key: vec!["name".to_string()],
+                    fields: BTreeMap::from([
+                        name_field(),
+                        (
+                            "role".to_string(),
+                            schema_field(FieldType::Enum { values: vec![] }),
+                        ),
+                    ]),
                 },
                 "name",
                 json!("leaf1"),
@@ -3031,8 +3021,8 @@ mod tests {
             ),
             (
                 TypeSchema {
-                    key: name_key(),
-                    fields: BTreeMap::from([("asset".to_string(), asset)]),
+                    key: vec!["name".to_string()],
+                    fields: BTreeMap::from([name_field(), ("asset".to_string(), asset)]),
                 },
                 "name",
                 json!("leaf1"),
@@ -3045,13 +3035,16 @@ mod tests {
             ),
             (
                 TypeSchema {
-                    key: name_key(),
-                    fields: BTreeMap::from([(
-                        "site".to_string(),
-                        schema_field(FieldType::Ref {
-                            target: "dcim.site".to_string(),
-                        }),
-                    )]),
+                    key: vec!["name".to_string()],
+                    fields: BTreeMap::from([
+                        name_field(),
+                        (
+                            "site".to_string(),
+                            schema_field(FieldType::Ref {
+                                target: "dcim.site".to_string(),
+                            }),
+                        ),
+                    ]),
                 },
                 "name",
                 json!("leaf1"),
@@ -3061,13 +3054,13 @@ mod tests {
             ),
             (
                 TypeSchema {
-                    key: BTreeMap::from([(
+                    key: vec!["members".to_string()],
+                    fields: BTreeMap::from([(
                         "members".to_string(),
                         schema_field(FieldType::List {
                             item: Box::new(FieldType::String),
                         }),
                     )]),
-                    fields: BTreeMap::new(),
                 },
                 "members",
                 json!(["leaf1"]),
@@ -3077,8 +3070,11 @@ mod tests {
             ),
             (
                 TypeSchema {
-                    key: BTreeMap::from([("slug".to_string(), nullable_field(FieldType::String))]),
-                    fields: BTreeMap::new(),
+                    key: vec!["slug".to_string()],
+                    fields: BTreeMap::from([(
+                        "slug".to_string(),
+                        nullable_field(FieldType::String),
+                    )]),
                 },
                 "slug",
                 json!("leaf1"),
@@ -3703,8 +3699,11 @@ mod tests {
     fn malformed_pattern_reported_once_across_many_objects() {
         // reported once at the schema level, not once per object.
         let device = TypeSchema {
-            key: BTreeMap::from([("name".to_string(), schema_field(FieldType::String))]),
-            fields: BTreeMap::from([("code".to_string(), pattern_field("["))]),
+            key: vec!["name".to_string()],
+            fields: BTreeMap::from([
+                ("name".to_string(), schema_field(FieldType::String)),
+                ("code".to_string(), pattern_field("[")),
+            ]),
         };
         let objects: Vec<Object> = (0..3u128)
             .map(|i| {
@@ -3795,7 +3794,6 @@ mod tests {
             ValidationError::EmptyEnum { .. } => "empty_enum",
             ValidationError::NonScalarKeyField { .. } => "non_scalar_key_field",
             ValidationError::NullableKeyField { .. } => "nullable_key_field",
-            ValidationError::KeyFieldDisagreement { .. } => "key_field_disagreement",
             ValidationError::ScopeUnknownType { .. } => "scope_unknown_type",
             ValidationError::ScopeNonKeyField { .. } => "scope_non_key_field",
             ValidationError::ScopeInvalidValue { .. } => "scope_invalid_value",
@@ -3808,7 +3806,7 @@ mod tests {
         // a breaking change to the wire format rather than a refactor. the table
         // is hand-maintained: a twentieth variant gets its wire_kind arm from the
         // compiler, but is neither serialized nor compared until it is added here.
-        let all: [ValidationError; 23] = [
+        let all: [ValidationError; 22] = [
             ValidationError::DuplicateUid(uid(1)),
             ValidationError::DuplicateKey("dcim.site::fra1".into()),
             ValidationError::MissingType,
@@ -3881,10 +3879,6 @@ mod tests {
             ValidationError::NullableKeyField {
                 type_name: "dcim.site".into(),
                 field: "site".into(),
-            },
-            ValidationError::KeyFieldDisagreement {
-                type_name: "dcim.site".into(),
-                field: "name".into(),
             },
             ValidationError::ScopeUnknownType {
                 type_name: "dcim.site".into(),

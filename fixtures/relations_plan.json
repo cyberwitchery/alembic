@@ -2,19 +2,13 @@
   "schema": {
     "types": {
       "dcim.device": {
-        "key": {
+        "key": ["device", "site"],
+        "fields": {
           "device": {
             "type": "slug",
             "required": false,
             "nullable": false
           },
-          "site": {
-            "type": "slug",
-            "required": false,
-            "nullable": false
-          }
-        },
-        "fields": {
           "device_type": {
             "type": "string",
             "required": false,
@@ -41,19 +35,13 @@
         }
       },
       "dcim.interface": {
-        "key": {
-          "device": {
-            "type": "slug",
-            "required": false,
-            "nullable": false
-          },
+        "key": ["device", "interface"],
+        "fields": {
           "interface": {
             "type": "slug",
             "required": false,
             "nullable": false
-          }
-        },
-        "fields": {
+          },
           "device": {
             "type": {
               "type": "ref",
@@ -75,14 +63,13 @@
         }
       },
       "dcim.site": {
-        "key": {
+        "key": ["site"],
+        "fields": {
           "site": {
             "type": "slug",
             "required": false,
             "nullable": false
-          }
-        },
-        "fields": {
+          },
           "name": {
             "type": "string",
             "required": false,
@@ -96,14 +83,13 @@
         }
       },
       "ipam.ip_address": {
-        "key": {
+        "key": ["ip"],
+        "fields": {
           "ip": {
             "type": "ip_address",
             "required": false,
             "nullable": false
-          }
-        },
-        "fields": {
+          },
           "address": {
             "type": "ip_address",
             "required": false,
@@ -125,13 +111,7 @@
         }
       },
       "ipam.prefix": {
-        "key": {
-          "prefix": {
-            "type": "prefix",
-            "required": false,
-            "nullable": false
-          }
-        },
+        "key": ["prefix"],
         "fields": {
           "description": {
             "type": "string",
@@ -165,7 +145,7 @@
         "type": "dcim.device",
         "key": {
           "device": "spine01",
-          "site": "ams1"
+          "site": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
         },
         "attrs": {
           "device_type": "spine-switch",
@@ -183,7 +163,7 @@
         "uid": "cccccccc-cccc-cccc-cccc-cccccccccccc",
         "type": "dcim.interface",
         "key": {
-          "device": "spine01",
+          "device": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
           "interface": "eth0"
         },
         "attrs": {

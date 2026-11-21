@@ -1073,7 +1073,7 @@ fn unwrap_type(field_type: &GqlType<String>) -> (String, bool) {
 
 fn field_names_for_schema(type_schema: &alembic_core::TypeSchema) -> Vec<String> {
     let mut fields = BTreeSet::new();
-    for field in type_schema.key.keys() {
+    for field in type_schema.key.iter() {
         fields.insert(field.clone());
     }
     for field in type_schema.fields.keys() {
@@ -1871,7 +1871,7 @@ fn collect_field_defs(
             Ok(())
         };
 
-    for (field, schema) in &type_schema.key {
+    for (field, schema) in type_schema.key_fields() {
         handle_field(field, schema, true)?;
     }
     for (field, schema) in &type_schema.fields {
@@ -1920,10 +1920,9 @@ fn peer_key_attr(schema: &Schema, target: &str) -> Option<String> {
     schema
         .types
         .get(target)?
-        .key
-        .iter()
+        .key_fields()
         .find(|(_, fs)| !matches!(fs.r#type, FieldType::Ref { .. } | FieldType::ListRef { .. }))
-        .map(|(name, _)| name.clone())
+        .map(|(name, _)| name.to_string())
 }
 
 fn attribute_def(
@@ -2185,10 +2184,7 @@ fn field_schema_for<'a>(
     type_schema: &'a alembic_core::TypeSchema,
     field: &str,
 ) -> Option<&'a alembic_core::FieldSchema> {
-    type_schema
-        .fields
-        .get(field)
-        .or_else(|| type_schema.key.get(field))
+    type_schema.fields.get(field)
 }
 
 fn build_input(
@@ -2262,8 +2258,7 @@ fn key_in_backend_id_space(
     let mut map = BTreeMap::new();
     for (field, value) in key.iter() {
         let field_schema = type_schema
-            .key
-            .get(field)
+            .key_field(field)
             .ok_or_else(|| anyhow!("missing schema for key field {field}"))?;
         let resolved_value = resolve_value_for_type(
             &field_schema.r#type,
@@ -2492,12 +2487,13 @@ schema { query: Query }
         key_fields: Vec<(&str, FieldSchema)>,
         fields: Vec<(&str, FieldSchema)>,
     ) -> TypeSchema {
-        let mut key = BTreeMap::new();
-        for (name, schema) in key_fields {
-            key.insert(name.to_string(), schema);
-        }
+        let mut key = Vec::new();
         let mut field_map = BTreeMap::new();
         for (name, schema) in fields {
+            field_map.insert(name.to_string(), schema);
+        }
+        for (name, schema) in key_fields {
+            key.push(name.to_string());
             field_map.insert(name.to_string(), schema);
         }
         TypeSchema {

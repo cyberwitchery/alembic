@@ -614,10 +614,10 @@ async fn run_validate_inventory() {
         r#"schema:
   types:
     dcim.site:
-      key:
+      key: [site]
+      fields:
         site:
           type: slug
-      fields:
         name:
           type: string
         slug:
@@ -655,10 +655,10 @@ fn validate_fixture(dir: &Path, extra: &str) -> PathBuf {
             r#"schema:
   types:
     dcim.site:
-      key:
+      key: [site]
+      fields:
         site:
           type: slug
-      fields:
         name:
           type: string
 objects:
@@ -747,8 +747,8 @@ async fn run_map_ir() {
   "schema": {
     "types": {
       "dcim.site": {
-        "key": { "site": { "type": "slug" } },
-        "fields": { "name": { "type": "string" } }
+        "key": ["site"],
+        "fields": { "site": { "type": "slug" }, "name": { "type": "string" } }
       }
     }
   },
@@ -764,10 +764,10 @@ async fn run_map_ir() {
         r#"schema:
   types:
     location.site:
-      key:
+      key: [slug]
+      fields:
         slug:
           type: slug
-      fields:
         label:
           type: string
 rules:
@@ -922,10 +922,10 @@ async fn run_plan_and_apply_missing_credentials_errors() {
         r#"schema:
   types:
     dcim.site:
-      key:
+      key: [site]
+      fields:
         site:
           type: slug
-      fields:
         name:
           type: string
         slug:
@@ -1075,9 +1075,7 @@ fn generic_apply_fixture(dir: &Path, base_url: &str) -> (PathBuf, PathBuf) {
         r#"
 types:
   dcim.site:
-    key:
-      name:
-        type: string
+    key: [name]
     fields:
       name:
         type: string
@@ -1142,7 +1140,7 @@ async fn run_apply_refuses_a_plan_the_backend_moved_away_from() {
         then.status(201).json_body(serde_json::json!({"id": 7}));
     });
     let schema: alembic_core::Schema = alembic_engine::yaml::from_str(
-        "types:\n  dcim.site:\n    key:\n      name: {type: string}\n    fields:\n      description: {type: string}\n",
+        "types:\n  dcim.site:\n    key: [name]\n    fields:\n      name: {type: string}\n      description: {type: string}\n",
     )
     .unwrap();
     let mut attrs = BTreeMap::new();
@@ -1324,16 +1322,12 @@ fn generic_resume_fixture(dir: &Path, base_url: &str) -> (PathBuf, PathBuf) {
         r#"
 types:
   dcim.site:
-    key:
-      name:
-        type: string
+    key: [name]
     fields:
       name:
         type: string
   dcim.device:
-    key:
-      name:
-        type: string
+    key: [name]
     fields:
       name:
         type: string
@@ -1796,9 +1790,7 @@ async fn run_plan_nautobot_backend() {
 schema:
   types:
     dcim.device:
-      key:
-        name:
-          type: string
+      key: [name]
       fields:
         name:
           type: string
@@ -1981,9 +1973,7 @@ fn write_device_inventory(path: &Path) {
 schema:
   types:
     dcim.device:
-      key:
-        name:
-          type: string
+      key: [name]
       fields:
         name:
           type: string
@@ -2038,9 +2028,7 @@ async fn run_plan_report_writes_the_drift_report_to_output() {
 schema:
   types:
     dcim.device:
-      key:
-        name:
-          type: string
+      key: [name]
       fields:
         name:
           type: string
@@ -2138,9 +2126,7 @@ async fn run_plan_report_carries_the_schema_preview_into_the_drift_report() {
 schema:
   types:
     dcim.device:
-      key:
-        name:
-          type: string
+      key: [name]
       fields:
         name:
           type: string
@@ -2814,21 +2800,14 @@ fn write_ref_chain_inventory(dir: &Path) -> PathBuf {
 schema:
   types:
     dcim.site:
-      key:
-        slug:
-          type: slug
+      key: [slug]
       fields:
         slug:
           type: slug
         name:
           type: string
     dcim.device:
-      key:
-        site:
-          type: ref
-          target: dcim.site
-        name:
-          type: string
+      key: [site, name]
       fields:
         site:
           type: ref
@@ -2836,12 +2815,7 @@ schema:
         name:
           type: string
     dcim.interface:
-      key:
-        device:
-          type: ref
-          target: dcim.device
-        name:
-          type: string
+      key: [device, name]
       fields:
         device:
           type: ref
@@ -3345,9 +3319,7 @@ async fn run_plan_report_surfaces_extra() {
 schema:
   types:
     dcim.device:
-      key:
-        name:
-          type: string
+      key: [name]
       fields:
         name:
           type: string

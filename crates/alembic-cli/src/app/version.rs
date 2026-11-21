@@ -58,7 +58,7 @@ mod tests {
     fn json_names_the_version_backends_and_protocol() {
         let value = serde_json::to_value(info()).unwrap();
         assert_eq!(value["version"], env!("CARGO_PKG_VERSION"));
-        assert_eq!(value["external_protocol"], 1);
+        assert_eq!(value["external_protocol"], 2);
         let backends = value["backends"].as_array().unwrap();
         assert!(backends.contains(&"netbox".into()), "{backends:?}");
         assert!(backends.contains(&"external".into()), "{backends:?}");

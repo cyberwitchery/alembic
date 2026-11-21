@@ -15,7 +15,7 @@ netbox requires of a device) and one type netbox does not ship:
 
 ```yaml
     ops.maintenance_window:
-      key: {name: {type: slug}}
+      key: [name]
       fields:
         name: {type: slug}
         starts_at: {type: datetime}

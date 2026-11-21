@@ -53,7 +53,7 @@ fn write_site_inventory(dir: &Path, slug: &str) -> std::path::PathBuf {
             r#"schema:
   types:
     dcim.site:
-      key: {{slug: {{type: slug}}}}
+      key: [slug]
       fields:
         name: {{type: string}}
         slug: {{type: slug}}

@@ -122,10 +122,10 @@ pub(crate) fn write_site_inventory(dir: &Path) -> PathBuf {
 schema:
   types:
     dcim.site:
-      key:
+      key: [site]
+      fields:
         site:
           type: slug
-      fields:
         name:
           type: string
         slug:

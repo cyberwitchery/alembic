@@ -81,7 +81,7 @@ mod tests {
             types: BTreeMap::from([(
                 "dcim.site".to_string(),
                 TypeSchema {
-                    key: BTreeMap::from([("name".to_string(), field(FieldType::String))]),
+                    key: vec!["name".to_string()],
                     fields: BTreeMap::from([
                         ("name".to_string(), field(FieldType::String)),
                         ("slug".to_string(), field(FieldType::String)),
@@ -233,8 +233,11 @@ mod tests {
             pattern: Some(pattern.to_string()),
         };
         let type_schema = |pattern: &str| TypeSchema {
-            key: BTreeMap::from([("name".to_string(), field(FieldType::String))]),
-            fields: BTreeMap::from([("asset_tag".to_string(), asset_tag(pattern))]),
+            key: vec!["name".to_string()],
+            fields: BTreeMap::from([
+                ("name".to_string(), field(FieldType::String)),
+                ("asset_tag".to_string(), asset_tag(pattern)),
+            ]),
         };
         Schema {
             types: BTreeMap::from([
@@ -966,18 +969,21 @@ mod tests {
             types: BTreeMap::from([(
                 "dcim.site".to_string(),
                 TypeSchema {
-                    key: BTreeMap::from([("name".to_string(), field(FieldType::String))]),
-                    fields: BTreeMap::from([(
-                        "asset_tag".to_string(),
-                        FieldSchema {
-                            r#type: FieldType::String,
-                            required,
-                            nullable: !required,
-                            description: description.map(str::to_string),
-                            format: None,
-                            pattern: pattern.map(str::to_string),
-                        },
-                    )]),
+                    key: vec!["name".to_string()],
+                    fields: BTreeMap::from([
+                        ("name".to_string(), field(FieldType::String)),
+                        (
+                            "asset_tag".to_string(),
+                            FieldSchema {
+                                r#type: FieldType::String,
+                                required,
+                                nullable: !required,
+                                description: description.map(str::to_string),
+                                format: None,
+                                pattern: pattern.map(str::to_string),
+                            },
+                        ),
+                    ]),
                 },
             )]),
         }
@@ -1252,7 +1258,7 @@ mod tests {
             types: BTreeMap::from([(
                 "dcim.locationtype".to_string(),
                 TypeSchema {
-                    key: BTreeMap::from([("name".to_string(), field(FieldType::String))]),
+                    key: vec!["name".to_string()],
                     fields: BTreeMap::from([("name".to_string(), field(FieldType::String))]),
                 },
             )]),
@@ -1593,8 +1599,11 @@ mod tests {
             types: BTreeMap::from([(
                 "dcim.site".to_string(),
                 TypeSchema {
-                    key: BTreeMap::from([("name".to_string(), field(FieldType::String))]),
-                    fields: BTreeMap::from([("assetTag".to_string(), field(FieldType::String))]),
+                    key: vec!["name".to_string()],
+                    fields: BTreeMap::from([
+                        ("name".to_string(), field(FieldType::String)),
+                        ("assetTag".to_string(), field(FieldType::String)),
+                    ]),
                 },
             )]),
         };
@@ -1690,11 +1699,7 @@ mod tests {
         let values = vec!["core".to_string(), "agg".to_string(), "edge".to_string()];
         let mut schema = site_schema();
         let site = schema.types.get_mut("dcim.site").unwrap();
-        // the shared `field()` helper is nullable; a key field may not be, and
-        // its `fields:` twin must carry the same schema.
-        let name_key = site.key.get_mut("name").unwrap();
-        name_key.nullable = false;
-        name_key.required = true;
+        // the shared `field()` helper is nullable; a key field may not be.
         let name_field = site.fields.get_mut("name").unwrap();
         name_field.nullable = false;
         name_field.required = true;
@@ -1759,8 +1764,11 @@ mod tests {
             types: BTreeMap::from([(
                 "dcim.site".to_string(),
                 TypeSchema {
-                    key: BTreeMap::from([("name".to_string(), field(FieldType::String))]),
-                    fields: BTreeMap::from([("asset_tag".to_string(), field(FieldType::String))]),
+                    key: vec!["name".to_string()],
+                    fields: BTreeMap::from([
+                        ("name".to_string(), field(FieldType::String)),
+                        ("asset_tag".to_string(), field(FieldType::String)),
+                    ]),
                 },
             )]),
         };

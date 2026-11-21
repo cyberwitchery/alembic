@@ -4,15 +4,13 @@
 schema:
   types:
     dcim.site:
-      key:
-        slug: { type: slug }
+      key: [slug]
       fields:
         name: { type: string }
         slug: { type: slug }
         description: { type: text, nullable: true }
     dcim.device:
-      key:
-        name: { type: string }
+      key: [name]
       fields:
         name: { type: string }
         site: { type: ref, target: dcim.site }

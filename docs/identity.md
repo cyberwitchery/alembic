@@ -143,7 +143,8 @@ as soon as a second device appears; the identity-relevant locator is
 
 ```yaml
 dcim.interface:
-  key:
+  key: [device, name]
+  fields:
     device: {type: ref, target: dcim.device}
     name: {type: string}
 ```

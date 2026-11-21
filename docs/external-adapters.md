@@ -28,9 +28,10 @@ alembic's environment, so secrets don't belong in the config file: export them
 
 ## protocol
 
-all requests include a `version` field (the current protocol version is `1`) and a
+all requests include a `version` field (the current protocol version is `2`) and a
 `setup` object: the adapter's `setup:` config block, or `null` when there is none
-(`{}` is also accepted).
+(`{}` is also accepted). a `schema` is written as in an inventory (`docs/ir.md`):
+each type's `key` lists field names declared under its `fields`.
 
 apart from the `capabilities` probe, whose failures all fall back to the default
 role, a response carries only the keys the protocol defines, at every level: an
@@ -164,7 +165,7 @@ request:
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "setup": {},
   "method": "read",
   "schema": { "types": { /* alembic schema */ } },
@@ -202,7 +203,7 @@ request:
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "setup": {},
   "method": "write",
   "schema": { "types": { /* alembic schema */ } },
@@ -275,7 +276,7 @@ request:
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "setup": {},
   "method": "ensure_schema",
   "schema": { "types": { /* alembic schema */ } }
@@ -347,7 +348,7 @@ request:
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "setup": {},
   "method": "preview_schema",
   "schema": { "types": { /* alembic schema */ } }
@@ -400,7 +401,7 @@ request:
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "setup": {},
   "method": "capabilities"
 }
@@ -532,7 +533,7 @@ an expectation:
 {
   "name": "read empty inventory",
   "request": {
-    "version": 1,
+    "version": 2,
     "setup": {},
     "method": "read",
     "schema": { "types": {} },

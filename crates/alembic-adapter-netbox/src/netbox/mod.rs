@@ -133,7 +133,8 @@ mod tests {
             types: std::collections::BTreeMap::from([(
                 "dcim.site".to_string(),
                 alembic_core::TypeSchema {
-                    key: std::collections::BTreeMap::from([(
+                    key: vec!["name".to_string()],
+                    fields: std::collections::BTreeMap::from([(
                         "name".to_string(),
                         alembic_core::FieldSchema {
                             r#type: alembic_core::FieldType::String,
@@ -144,7 +145,6 @@ mod tests {
                             pattern: None,
                         },
                     )]),
-                    fields: std::collections::BTreeMap::new(),
                 },
             )]),
         };
@@ -190,7 +190,8 @@ mod tests {
             types: std::collections::BTreeMap::from([(
                 "dcim.site".to_string(),
                 alembic_core::TypeSchema {
-                    key: std::collections::BTreeMap::from([(
+                    key: vec!["name".to_string()],
+                    fields: std::collections::BTreeMap::from([(
                         "name".to_string(),
                         alembic_core::FieldSchema {
                             r#type: alembic_core::FieldType::String,
@@ -201,7 +202,6 @@ mod tests {
                             pattern: None,
                         },
                     )]),
-                    fields: std::collections::BTreeMap::new(),
                 },
             )]),
         };
@@ -304,7 +304,8 @@ mod tests {
                 (
                     "dcim.device".to_string(),
                     alembic_core::TypeSchema {
-                        key: std::collections::BTreeMap::from([(
+                        key: vec!["name".to_string()],
+                        fields: std::collections::BTreeMap::from([(
                             "name".to_string(),
                             alembic_core::FieldSchema {
                                 r#type: alembic_core::FieldType::String,
@@ -315,13 +316,13 @@ mod tests {
                                 pattern: None,
                             },
                         )]),
-                        fields: std::collections::BTreeMap::new(),
                     },
                 ),
                 (
                     "dcim.site".to_string(),
                     alembic_core::TypeSchema {
-                        key: std::collections::BTreeMap::from([(
+                        key: vec!["name".to_string()],
+                        fields: std::collections::BTreeMap::from([(
                             "name".to_string(),
                             alembic_core::FieldSchema {
                                 r#type: alembic_core::FieldType::String,
@@ -332,7 +333,6 @@ mod tests {
                                 pattern: None,
                             },
                         )]),
-                        fields: std::collections::BTreeMap::new(),
                     },
                 ),
             ]),
@@ -368,10 +368,7 @@ mod tests {
                 (
                     "dcim.device".to_string(),
                     alembic_core::TypeSchema {
-                        key: std::collections::BTreeMap::from([(
-                            "name".to_string(),
-                            string_field(true),
-                        )]),
+                        key: vec!["name".to_string()],
                         fields: std::collections::BTreeMap::from([
                             ("name".to_string(), string_field(true)),
                             (
@@ -393,13 +390,9 @@ mod tests {
                 (
                     "dcim.site".to_string(),
                     alembic_core::TypeSchema {
-                        key: std::collections::BTreeMap::from([(
-                            site_key.to_string(),
-                            string_field(true),
-                        )]),
+                        key: vec![site_key.to_string()],
                         fields: std::collections::BTreeMap::from([
                             ("name".to_string(), string_field(true)),
-                            // the key field's `fields:` twin must carry the same schema.
                             ("slug".to_string(), string_field(site_key == "slug")),
                         ]),
                     },
@@ -639,17 +632,7 @@ mod tests {
                 (
                     "dcim.device".to_string(),
                     alembic_core::TypeSchema {
-                        key: std::collections::BTreeMap::from([(
-                            "name".to_string(),
-                            alembic_core::FieldSchema {
-                                r#type: alembic_core::FieldType::String,
-                                required: true,
-                                nullable: false,
-                                description: None,
-                                format: None,
-                                pattern: None,
-                            },
-                        )]),
+                        key: vec!["name".to_string()],
                         fields: std::collections::BTreeMap::from([
                             (
                                 "name".to_string(),
@@ -681,17 +664,7 @@ mod tests {
                 (
                     "dcim.site".to_string(),
                     alembic_core::TypeSchema {
-                        key: std::collections::BTreeMap::from([(
-                            "name".to_string(),
-                            alembic_core::FieldSchema {
-                                r#type: alembic_core::FieldType::String,
-                                required: true,
-                                nullable: false,
-                                description: None,
-                                format: None,
-                                pattern: None,
-                            },
-                        )]),
+                        key: vec!["name".to_string()],
                         fields: std::collections::BTreeMap::from([
                             (
                                 "name".to_string(),
@@ -738,7 +711,7 @@ mod tests {
             types: std::collections::BTreeMap::from([(
                 "dcim.site".to_string(),
                 alembic_core::TypeSchema {
-                    key: std::collections::BTreeMap::from([("name".to_string(), field(true))]),
+                    key: vec!["name".to_string()],
                     fields: std::collections::BTreeMap::from([
                         ("name".to_string(), field(true)),
                         ("slug".to_string(), field(true)),
@@ -799,17 +772,7 @@ mod tests {
             types: std::collections::BTreeMap::from([(
                 "dcim.site".to_string(),
                 alembic_core::TypeSchema {
-                    key: std::collections::BTreeMap::from([(
-                        "name".to_string(),
-                        alembic_core::FieldSchema {
-                            r#type: alembic_core::FieldType::String,
-                            required: true,
-                            nullable: false,
-                            description: None,
-                            format: None,
-                            pattern: None,
-                        },
-                    )]),
+                    key: vec!["name".to_string()],
                     fields: std::collections::BTreeMap::from([
                         (
                             "name".to_string(),
@@ -1013,17 +976,7 @@ mod tests {
                 (
                     "dcim.cable".to_string(),
                     alembic_core::TypeSchema {
-                        key: std::collections::BTreeMap::from([(
-                            "label".to_string(),
-                            alembic_core::FieldSchema {
-                                r#type: alembic_core::FieldType::Slug,
-                                required: true,
-                                nullable: false,
-                                description: None,
-                                format: None,
-                                pattern: None,
-                            },
-                        )]),
+                        key: vec!["label".to_string()],
                         fields: std::collections::BTreeMap::from([
                             (
                                 "label".to_string(),
@@ -1068,17 +1021,7 @@ mod tests {
                 (
                     "dcim.interface".to_string(),
                     alembic_core::TypeSchema {
-                        key: std::collections::BTreeMap::from([(
-                            "name".to_string(),
-                            alembic_core::FieldSchema {
-                                r#type: alembic_core::FieldType::String,
-                                required: true,
-                                nullable: false,
-                                description: None,
-                                format: None,
-                                pattern: None,
-                            },
-                        )]),
+                        key: vec!["name".to_string()],
                         fields: std::collections::BTreeMap::from([(
                             "name".to_string(),
                             alembic_core::FieldSchema {
@@ -1111,7 +1054,7 @@ mod tests {
             types: std::collections::BTreeMap::from([(
                 "dcim.site".to_string(),
                 alembic_core::TypeSchema {
-                    key: std::collections::BTreeMap::new(),
+                    key: Vec::new(),
                     fields: std::collections::BTreeMap::from([
                         ("name".to_string(), string_field(true)),
                         ("slug".to_string(), string_field(true)),
@@ -1439,7 +1382,8 @@ mod tests {
             types: std::collections::BTreeMap::from([(
                 "dcim.site".to_string(),
                 alembic_core::TypeSchema {
-                    key: std::collections::BTreeMap::from([(
+                    key: vec!["name".to_string()],
+                    fields: std::collections::BTreeMap::from([(
                         "name".to_string(),
                         alembic_core::FieldSchema {
                             r#type: alembic_core::FieldType::String,
@@ -1450,7 +1394,6 @@ mod tests {
                             pattern: None,
                         },
                     )]),
-                    fields: std::collections::BTreeMap::new(),
                 },
             )]),
         };
@@ -1526,28 +1469,31 @@ mod tests {
             types: std::collections::BTreeMap::from([(
                 "dcim.site".to_string(),
                 alembic_core::TypeSchema {
-                    key: std::collections::BTreeMap::from([(
-                        "slug".to_string(),
-                        alembic_core::FieldSchema {
-                            r#type: alembic_core::FieldType::String,
-                            required: true,
-                            nullable: false,
-                            description: None,
-                            format: None,
-                            pattern: None,
-                        },
-                    )]),
-                    fields: std::collections::BTreeMap::from([(
-                        "name".to_string(),
-                        alembic_core::FieldSchema {
-                            r#type: alembic_core::FieldType::String,
-                            required: true,
-                            nullable: false,
-                            description: None,
-                            format: None,
-                            pattern: None,
-                        },
-                    )]),
+                    key: vec!["slug".to_string()],
+                    fields: std::collections::BTreeMap::from([
+                        (
+                            "slug".to_string(),
+                            alembic_core::FieldSchema {
+                                r#type: alembic_core::FieldType::String,
+                                required: true,
+                                nullable: false,
+                                description: None,
+                                format: None,
+                                pattern: None,
+                            },
+                        ),
+                        (
+                            "name".to_string(),
+                            alembic_core::FieldSchema {
+                                r#type: alembic_core::FieldType::String,
+                                required: true,
+                                nullable: false,
+                                description: None,
+                                format: None,
+                                pattern: None,
+                            },
+                        ),
+                    ]),
                 },
             )]),
         };
@@ -1839,7 +1785,8 @@ mod tests {
             types: std::collections::BTreeMap::from([(
                 "dcim.site".to_string(),
                 alembic_core::TypeSchema {
-                    key: std::collections::BTreeMap::from([(
+                    key: vec!["slug".to_string()],
+                    fields: std::collections::BTreeMap::from([(
                         "slug".to_string(),
                         alembic_core::FieldSchema {
                             r#type: alembic_core::FieldType::String,
@@ -1850,7 +1797,6 @@ mod tests {
                             pattern: None,
                         },
                     )]),
-                    fields: std::collections::BTreeMap::new(),
                 },
             )]),
         };
@@ -1876,28 +1822,31 @@ mod tests {
             types: std::collections::BTreeMap::from([(
                 "dcim.site".to_string(),
                 alembic_core::TypeSchema {
-                    key: std::collections::BTreeMap::from([(
-                        "slug".to_string(),
-                        alembic_core::FieldSchema {
-                            r#type: alembic_core::FieldType::String,
-                            required: true,
-                            nullable: false,
-                            description: None,
-                            format: None,
-                            pattern: None,
-                        },
-                    )]),
-                    fields: std::collections::BTreeMap::from([(
-                        "name".to_string(),
-                        alembic_core::FieldSchema {
-                            r#type: alembic_core::FieldType::String,
-                            required: true,
-                            nullable: false,
-                            description: None,
-                            format: None,
-                            pattern: None,
-                        },
-                    )]),
+                    key: vec!["slug".to_string()],
+                    fields: std::collections::BTreeMap::from([
+                        (
+                            "slug".to_string(),
+                            alembic_core::FieldSchema {
+                                r#type: alembic_core::FieldType::String,
+                                required: true,
+                                nullable: false,
+                                description: None,
+                                format: None,
+                                pattern: None,
+                            },
+                        ),
+                        (
+                            "name".to_string(),
+                            alembic_core::FieldSchema {
+                                r#type: alembic_core::FieldType::String,
+                                required: true,
+                                nullable: false,
+                                description: None,
+                                format: None,
+                                pattern: None,
+                            },
+                        ),
+                    ]),
                 },
             )]),
         };
@@ -2076,7 +2025,8 @@ mod tests {
             types: std::collections::BTreeMap::from([(
                 "dcim.site".to_string(),
                 alembic_core::TypeSchema {
-                    key: std::collections::BTreeMap::from([(
+                    key: vec!["slug".to_string()],
+                    fields: std::collections::BTreeMap::from([(
                         "slug".to_string(),
                         alembic_core::FieldSchema {
                             r#type: alembic_core::FieldType::String,
@@ -2087,7 +2037,6 @@ mod tests {
                             pattern: None,
                         },
                     )]),
-                    fields: std::collections::BTreeMap::new(),
                 },
             )]),
         };
@@ -2151,18 +2100,21 @@ mod tests {
             types: std::collections::BTreeMap::from([(
                 "dcim.site".to_string(),
                 alembic_core::TypeSchema {
-                    key: std::collections::BTreeMap::from([("slug".to_string(), key_field)]),
-                    fields: std::collections::BTreeMap::from([(
-                        "asset_tag".to_string(),
-                        alembic_core::FieldSchema {
-                            r#type: alembic_core::FieldType::String,
-                            required,
-                            nullable: !required,
-                            description: description.map(str::to_string),
-                            format: None,
-                            pattern: pattern.map(str::to_string),
-                        },
-                    )]),
+                    key: vec!["slug".to_string()],
+                    fields: std::collections::BTreeMap::from([
+                        ("slug".to_string(), key_field),
+                        (
+                            "asset_tag".to_string(),
+                            alembic_core::FieldSchema {
+                                r#type: alembic_core::FieldType::String,
+                                required,
+                                nullable: !required,
+                                description: description.map(str::to_string),
+                                format: None,
+                                pattern: pattern.map(str::to_string),
+                            },
+                        ),
+                    ]),
                 },
             )]),
         }
@@ -2370,8 +2322,11 @@ mod tests {
             pattern: None,
         };
         let type_schema = |pattern: &str| alembic_core::TypeSchema {
-            key: std::collections::BTreeMap::from([("slug".to_string(), key_field.clone())]),
-            fields: std::collections::BTreeMap::from([("asset_tag".to_string(), field(pattern))]),
+            key: vec!["slug".to_string()],
+            fields: std::collections::BTreeMap::from([
+                ("slug".to_string(), key_field.clone()),
+                ("asset_tag".to_string(), field(pattern)),
+            ]),
         };
         alembic_core::Schema {
             types: std::collections::BTreeMap::from([
@@ -2634,18 +2589,16 @@ mod tests {
             format: None,
             pattern: None,
         };
-        let field_map: std::collections::BTreeMap<String, alembic_core::FieldSchema> = fields
+        let mut field_map: std::collections::BTreeMap<String, alembic_core::FieldSchema> = fields
             .iter()
             .map(|name| (name.to_string(), string_field()))
             .collect();
+        field_map.insert("address".to_string(), string_field());
         alembic_core::Schema {
             types: std::collections::BTreeMap::from([(
                 "ipam.ipaddress".to_string(),
                 alembic_core::TypeSchema {
-                    key: std::collections::BTreeMap::from([(
-                        "address".to_string(),
-                        string_field(),
-                    )]),
+                    key: vec!["address".to_string()],
                     fields: field_map,
                 },
             )]),
@@ -2817,28 +2770,31 @@ mod tests {
             types: std::collections::BTreeMap::from([(
                 "custom.asset".to_string(),
                 alembic_core::TypeSchema {
-                    key: std::collections::BTreeMap::from([(
-                        "name".to_string(),
-                        alembic_core::FieldSchema {
-                            r#type: alembic_core::FieldType::String,
-                            required: true,
-                            nullable: false,
-                            description: None,
-                            format: None,
-                            pattern: None,
-                        },
-                    )]),
-                    fields: std::collections::BTreeMap::from([(
-                        "owner".to_string(),
-                        alembic_core::FieldSchema {
-                            r#type: alembic_core::FieldType::String,
-                            required,
-                            nullable: !required,
-                            description: description.map(str::to_string),
-                            format: None,
-                            pattern: pattern.map(str::to_string),
-                        },
-                    )]),
+                    key: vec!["name".to_string()],
+                    fields: std::collections::BTreeMap::from([
+                        (
+                            "name".to_string(),
+                            alembic_core::FieldSchema {
+                                r#type: alembic_core::FieldType::String,
+                                required: true,
+                                nullable: false,
+                                description: None,
+                                format: None,
+                                pattern: None,
+                            },
+                        ),
+                        (
+                            "owner".to_string(),
+                            alembic_core::FieldSchema {
+                                r#type: alembic_core::FieldType::String,
+                                required,
+                                nullable: !required,
+                                description: description.map(str::to_string),
+                                format: None,
+                                pattern: pattern.map(str::to_string),
+                            },
+                        ),
+                    ]),
                 },
             )]),
         }
@@ -2892,28 +2848,31 @@ mod tests {
             types: std::collections::BTreeMap::from([(
                 type_name.to_string(),
                 alembic_core::TypeSchema {
-                    key: std::collections::BTreeMap::from([(
-                        "name".to_string(),
-                        alembic_core::FieldSchema {
-                            r#type: alembic_core::FieldType::String,
-                            required: true,
-                            nullable: false,
-                            description: None,
-                            format: None,
-                            pattern: None,
-                        },
-                    )]),
-                    fields: std::collections::BTreeMap::from([(
-                        "owner".to_string(),
-                        alembic_core::FieldSchema {
-                            r#type: alembic_core::FieldType::String,
-                            required: false,
-                            nullable: true,
-                            description: None,
-                            format: None,
-                            pattern: pattern.map(str::to_string),
-                        },
-                    )]),
+                    key: vec!["name".to_string()],
+                    fields: std::collections::BTreeMap::from([
+                        (
+                            "name".to_string(),
+                            alembic_core::FieldSchema {
+                                r#type: alembic_core::FieldType::String,
+                                required: true,
+                                nullable: false,
+                                description: None,
+                                format: None,
+                                pattern: None,
+                            },
+                        ),
+                        (
+                            "owner".to_string(),
+                            alembic_core::FieldSchema {
+                                r#type: alembic_core::FieldType::String,
+                                required: false,
+                                nullable: true,
+                                description: None,
+                                format: None,
+                                pattern: pattern.map(str::to_string),
+                            },
+                        ),
+                    ]),
                 },
             )]),
         }
@@ -3057,28 +3016,31 @@ mod tests {
     /// two custom types, each with a `name` key and an `owner` field carrying a `pattern:`.
     fn two_custom_types(a: &str, b: &str) -> alembic_core::Schema {
         let type_schema = |pattern: &str| alembic_core::TypeSchema {
-            key: std::collections::BTreeMap::from([(
-                "name".to_string(),
-                alembic_core::FieldSchema {
-                    r#type: alembic_core::FieldType::String,
-                    required: true,
-                    nullable: false,
-                    description: None,
-                    format: None,
-                    pattern: None,
-                },
-            )]),
-            fields: std::collections::BTreeMap::from([(
-                "owner".to_string(),
-                alembic_core::FieldSchema {
-                    r#type: alembic_core::FieldType::String,
-                    required: false,
-                    nullable: true,
-                    description: None,
-                    format: None,
-                    pattern: Some(pattern.to_string()),
-                },
-            )]),
+            key: vec!["name".to_string()],
+            fields: std::collections::BTreeMap::from([
+                (
+                    "name".to_string(),
+                    alembic_core::FieldSchema {
+                        r#type: alembic_core::FieldType::String,
+                        required: true,
+                        nullable: false,
+                        description: None,
+                        format: None,
+                        pattern: None,
+                    },
+                ),
+                (
+                    "owner".to_string(),
+                    alembic_core::FieldSchema {
+                        r#type: alembic_core::FieldType::String,
+                        required: false,
+                        nullable: true,
+                        description: None,
+                        format: None,
+                        pattern: Some(pattern.to_string()),
+                    },
+                ),
+            ]),
         };
         alembic_core::Schema {
             types: std::collections::BTreeMap::from([
@@ -3496,28 +3458,31 @@ mod tests {
             types: std::collections::BTreeMap::from([(
                 "custom.asset".to_string(),
                 alembic_core::TypeSchema {
-                    key: std::collections::BTreeMap::from([(
-                        "name".to_string(),
-                        alembic_core::FieldSchema {
-                            r#type: alembic_core::FieldType::String,
-                            required: true,
-                            nullable: false,
-                            description: None,
-                            format: None,
-                            pattern: None,
-                        },
-                    )]),
-                    fields: std::collections::BTreeMap::from([(
-                        "mgmt-vlan".to_string(),
-                        alembic_core::FieldSchema {
-                            r#type: alembic_core::FieldType::String,
-                            required: false,
-                            nullable: true,
-                            description: None,
-                            format: None,
-                            pattern: None,
-                        },
-                    )]),
+                    key: vec!["name".to_string()],
+                    fields: std::collections::BTreeMap::from([
+                        (
+                            "name".to_string(),
+                            alembic_core::FieldSchema {
+                                r#type: alembic_core::FieldType::String,
+                                required: true,
+                                nullable: false,
+                                description: None,
+                                format: None,
+                                pattern: None,
+                            },
+                        ),
+                        (
+                            "mgmt-vlan".to_string(),
+                            alembic_core::FieldSchema {
+                                r#type: alembic_core::FieldType::String,
+                                required: false,
+                                nullable: true,
+                                description: None,
+                                format: None,
+                                pattern: None,
+                            },
+                        ),
+                    ]),
                 },
             )]),
         };
@@ -3556,13 +3521,14 @@ mod tests {
 
     fn simple_type_schema(key: &[&str], fields: &[&str]) -> alembic_core::TypeSchema {
         alembic_core::TypeSchema {
-            key: key
-                .iter()
-                .map(|name| (name.to_string(), string_field(true)))
-                .collect(),
+            key: key.iter().map(|name| name.to_string()).collect(),
             fields: fields
                 .iter()
                 .map(|name| (name.to_string(), string_field(false)))
+                .chain(
+                    key.iter()
+                        .map(|name| (name.to_string(), string_field(true))),
+                )
                 .collect(),
         }
     }
@@ -3764,14 +3730,14 @@ mod tests {
         serde_json::from_value(json!({
             "types": {
                 "ipam.prefix": {
-                    "key": { "prefix": { "type": "prefix" } },
+                    "key": ["prefix"],
                     "fields": {
                         "prefix": { "type": "prefix" },
                         "site": { "type": "ref", "target": "dcim.site" }
                     }
                 },
                 "dcim.site": {
-                    "key": { "slug": { "type": "slug" } },
+                    "key": ["slug"],
                     "fields": { "slug": { "type": "slug" } }
                 }
             }
@@ -3912,7 +3878,7 @@ mod tests {
         let schema: alembic_core::Schema = serde_json::from_value(json!({
             "types": {
                 "ipam.prefix": {
-                    "key": { "prefix": { "type": "prefix" } },
+                    "key": ["prefix"],
                     "fields": {
                         "prefix": { "type": "prefix" },
                         "comments": { "type": "string" },
@@ -3936,7 +3902,7 @@ mod tests {
         serde_json::from_value(json!({
             "types": {
                 "ipam.prefix": {
-                    "key": { "prefix": { "type": "prefix" } },
+                    "key": ["prefix"],
                     "fields": {
                         "prefix": { "type": "prefix" },
                         "device": { "type": "string" }
@@ -4058,7 +4024,7 @@ mod tests {
         let schema: alembic_core::Schema = serde_json::from_value(json!({
             "types": {
                 "ipam.prefix": {
-                    "key": { "prefix": { "type": "prefix" } },
+                    "key": ["prefix"],
                     "fields": {
                         "prefix": { "type": "prefix" },
                         "tier": { "type": "string" }
@@ -4081,8 +4047,8 @@ mod tests {
                 (
                     type_name.to_string(),
                     json!({
-                        "key": { "slug": { "type": "string" } },
-                        "fields": { "tier": tier }
+                        "key": ["slug"],
+                        "fields": { "slug": { "type": "string" }, "tier": tier }
                     }),
                 )
             })
@@ -4384,8 +4350,9 @@ mod tests {
         let schema: alembic_core::Schema = serde_json::from_value(json!({
             "types": {
                 "dcim.site": {
-                    "key": { "slug": { "type": "string" } },
+                    "key": ["slug"],
                     "fields": {
+                        "slug": { "type": "string" },
                         "tier": tier_enum(&["core", "edge"]),
                         "plane": tier_enum(&["data", "control"]),
                     }

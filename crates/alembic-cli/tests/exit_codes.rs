@@ -52,7 +52,7 @@ fn an_input_that_does_not_parse_or_validate_is_invalid() {
     // a dangling ref: parses, does not validate
     fs::write(
         dir.path().join("invalid.yaml"),
-        "schema:\n  types:\n    dcim.device:\n      key: {name: {type: string}}\n      fields:\n        name: {type: string}\n        site: {type: ref, target: dcim.site}\nobjects:\n  - uid: 00000000-0000-0000-0000-000000000001\n    type: dcim.device\n    key: {name: leaf1}\n    attrs: {name: leaf1, site: 00000000-0000-0000-0000-000000000002}\n",
+        "schema:\n  types:\n    dcim.device:\n      key: [name]\n      fields:\n        name: {type: string}\n        site: {type: ref, target: dcim.site}\nobjects:\n  - uid: 00000000-0000-0000-0000-000000000001\n    type: dcim.device\n    key: {name: leaf1}\n    attrs: {name: leaf1, site: 00000000-0000-0000-0000-000000000002}\n",
     )
     .unwrap();
     assert_code(

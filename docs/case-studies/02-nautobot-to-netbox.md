@@ -35,17 +35,18 @@ shown as yaml for readability
 schema:
   types:
     extras.status:
-      key:
+      key: [name]
+      fields:
         name: { type: string }
     dcim.location:
-      key:
-        name: { type: string }
+      key: [name]
       fields:
+        name: { type: string }
         status: { type: ref, target: extras.status }
     dcim.device:
-      key:
-        name: { type: slug }
+      key: [name]
       fields:
+        name: { type: slug }
         status: { type: ref, target: extras.status }
         role: { type: string }
         location: { type: ref, target: dcim.location }
@@ -84,16 +85,15 @@ nautobot objects into it
 schema:
   types:
     dcim.site:
-      key:
-        slug: { type: slug }
+      key: [slug]
       fields:
         name: { type: string }
         slug: { type: slug }
         status: { type: string }
     dcim.device:
-      key:
-        name: { type: slug }
+      key: [name]
       fields:
+        name: { type: slug }
         status: { type: string }
         role: { type: string }
         site: { type: ref, target: dcim.site }

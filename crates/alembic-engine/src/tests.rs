@@ -81,11 +81,14 @@ fn schema_for(objects: &[Object]) -> Schema {
         let entry = types
             .entry(object.type_name.as_str().to_string())
             .or_insert_with(|| TypeSchema {
-                key: BTreeMap::new(),
+                key: Vec::new(),
                 fields: BTreeMap::new(),
             });
         for field in object.key.keys() {
-            entry.key.entry(field.clone()).or_insert(FieldSchema {
+            if !entry.is_key(field) {
+                entry.key.push(field.clone());
+            }
+            entry.fields.entry(field.clone()).or_insert(FieldSchema {
                 r#type: FieldType::Json,
                 required: true,
                 nullable: false,
@@ -138,10 +141,10 @@ fn load_includes_combines_objects() {
 schema:
   types:
     dcim.site:
-      key:
+      key: [site]
+      fields:
         site:
           type: slug
-      fields:
         name:
           type: string
         slug:
@@ -170,7 +173,7 @@ fn load_json_inventory() {
     let path = dir.path().join("inventory.json");
     std::fs::write(
         &path,
-        r#"{ "schema": { "types": { "dcim.site": { "key": { "site": { "type": "slug" } }, "fields": { "name": { "type": "string" }, "slug": { "type": "slug" } } } } }, "objects": [ { "uid": "00000000-0000-0000-0000-000000000010", "type": "dcim.site", "key": { "site": "fra1" }, "attrs": { "name": "FRA1", "slug": "fra1" } } ] }"#,
+        r#"{ "schema": { "types": { "dcim.site": { "key": ["site"], "fields": { "site": { "type": "slug" }, "name": { "type": "string" }, "slug": { "type": "slug" } } } } }, "objects": [ { "uid": "00000000-0000-0000-0000-000000000010", "type": "dcim.site", "key": { "site": "fra1" }, "attrs": { "name": "FRA1", "slug": "fra1" } } ] }"#,
     )
     .unwrap();
 
@@ -187,19 +190,19 @@ fn load_generic_kind_as_generic_attrs() {
         r#"schema:
   types:
     services.vpn:
-      key:
+      key: [vpn]
+      fields:
         vpn:
           type: slug
-      fields:
         peers:
           type: json
         pre_shared_key:
           type: string
     dcim.site:
-      key:
+      key: [site]
+      fields:
         site:
           type: slug
-      fields:
         name:
           type: string
         slug:
@@ -244,10 +247,10 @@ fn load_with_imports_merges_objects() {
         r#"schema:
   types:
     dcim.site:
-      key:
+      key: [site]
+      fields:
         site:
           type: slug
-      fields:
         name:
           type: string
         slug:
@@ -302,10 +305,10 @@ fn load_is_idempotent_with_cycles() {
 schema:
   types:
     dcim.site:
-      key:
+      key: [site]
+      fields:
         site:
           type: slug
-      fields:
         name:
           type: string
         slug:
@@ -967,7 +970,7 @@ fn ref_chain_inventory(depth: usize) -> Inventory {
     types.insert(
         "dcim.site".to_string(),
         TypeSchema {
-            key: BTreeMap::from([("slug".to_string(), field_of(FieldType::Slug))]),
+            key: vec!["slug".to_string()],
             fields: BTreeMap::from([
                 ("slug".to_string(), field_of(FieldType::Slug)),
                 ("name".to_string(), field_of(FieldType::String)),
@@ -977,10 +980,7 @@ fn ref_chain_inventory(depth: usize) -> Inventory {
     types.insert(
         "dcim.device".to_string(),
         TypeSchema {
-            key: BTreeMap::from([
-                ("site".to_string(), ref_to("dcim.site")),
-                ("name".to_string(), field_of(FieldType::String)),
-            ]),
+            key: vec!["site".to_string(), "name".to_string()],
             fields: BTreeMap::from([
                 ("site".to_string(), ref_to("dcim.site")),
                 ("name".to_string(), field_of(FieldType::String)),
@@ -990,10 +990,7 @@ fn ref_chain_inventory(depth: usize) -> Inventory {
     types.insert(
         "dcim.interface".to_string(),
         TypeSchema {
-            key: BTreeMap::from([
-                ("device".to_string(), ref_to("dcim.device")),
-                ("name".to_string(), field_of(FieldType::String)),
-            ]),
+            key: vec!["device".to_string(), "name".to_string()],
             fields: BTreeMap::from([
                 ("device".to_string(), ref_to("dcim.device")),
                 ("name".to_string(), field_of(FieldType::String)),
@@ -1279,14 +1276,14 @@ fn attr_ref_inventory() -> Inventory {
         (
             "dcim.site".to_string(),
             TypeSchema {
-                key: BTreeMap::from([("slug".to_string(), field_of(FieldType::Slug))]),
+                key: vec!["slug".to_string()],
                 fields: BTreeMap::from([("slug".to_string(), field_of(FieldType::Slug))]),
             },
         ),
         (
             "circuits.termination".to_string(),
             TypeSchema {
-                key: BTreeMap::from([("cid".to_string(), field_of(FieldType::String))]),
+                key: vec!["cid".to_string()],
                 fields: BTreeMap::from([
                     ("cid".to_string(), field_of(FieldType::String)),
                     ("site".to_string(), ref_to("dcim.site")),
@@ -1670,7 +1667,7 @@ fn build_plan_observes_all_schema_types() {
     inventory.schema.types.insert(
         "extra.type".to_string(),
         TypeSchema {
-            key: BTreeMap::new(),
+            key: Vec::new(),
             fields: BTreeMap::new(),
         },
     );
@@ -2374,10 +2371,7 @@ fn apply_plan_rejects_read_only_observer() {
 /// neither, so both come back keyed on backend ids.
 fn ref_cycle_inventory() -> Inventory {
     let cycle = |field: &str, target: &str| TypeSchema {
-        key: BTreeMap::from([
-            (field.to_string(), ref_to(target)),
-            ("name".to_string(), field_of(FieldType::String)),
-        ]),
+        key: vec![field.to_string(), "name".to_string()],
         fields: BTreeMap::from([
             (field.to_string(), ref_to(target)),
             ("name".to_string(), field_of(FieldType::String)),
@@ -2567,23 +2561,26 @@ fn ref_backend_schema() -> Schema {
     types.insert(
         "dcim.site".to_string(),
         TypeSchema {
-            key: BTreeMap::from([("slug".to_string(), field(FieldType::String, true))]),
-            fields: BTreeMap::new(),
+            key: vec!["slug".to_string()],
+            fields: BTreeMap::from([("slug".to_string(), field(FieldType::String, true))]),
         },
     );
     types.insert(
         "dcim.device".to_string(),
         TypeSchema {
-            key: BTreeMap::from([("name".to_string(), field(FieldType::String, true))]),
-            fields: BTreeMap::from([(
-                "site".to_string(),
-                field(
-                    FieldType::Ref {
-                        target: "dcim.site".to_string(),
-                    },
-                    false,
+            key: vec!["name".to_string()],
+            fields: BTreeMap::from([
+                ("name".to_string(), field(FieldType::String, true)),
+                (
+                    "site".to_string(),
+                    field(
+                        FieldType::Ref {
+                            target: "dcim.site".to_string(),
+                        },
+                        false,
+                    ),
                 ),
-            )]),
+            ]),
         },
     );
     Schema { types }
@@ -2765,23 +2762,29 @@ fn rename_schema() -> Schema {
     types.insert(
         "dcim.site".to_string(),
         TypeSchema {
-            key: BTreeMap::from([("slug".to_string(), field(FieldType::String, true))]),
-            fields: BTreeMap::from([("status".to_string(), field(FieldType::String, false))]),
+            key: vec!["slug".to_string()],
+            fields: BTreeMap::from([
+                ("slug".to_string(), field(FieldType::String, true)),
+                ("status".to_string(), field(FieldType::String, false)),
+            ]),
         },
     );
     types.insert(
         "dcim.device".to_string(),
         TypeSchema {
-            key: BTreeMap::from([("name".to_string(), field(FieldType::String, true))]),
-            fields: BTreeMap::from([(
-                "site".to_string(),
-                field(
-                    FieldType::Ref {
-                        target: "dcim.site".to_string(),
-                    },
-                    false,
+            key: vec!["name".to_string()],
+            fields: BTreeMap::from([
+                ("name".to_string(), field(FieldType::String, true)),
+                (
+                    "site".to_string(),
+                    field(
+                        FieldType::Ref {
+                            target: "dcim.site".to_string(),
+                        },
+                        false,
+                    ),
                 ),
-            )]),
+            ]),
         },
     );
     Schema { types }
@@ -3209,28 +3212,28 @@ fn device_interface_ip_schema() -> Schema {
             (
                 "dcim.device".to_string(),
                 TypeSchema {
-                    key: BTreeMap::from([("name".to_string(), string_field())]),
-                    fields: BTreeMap::new(),
+                    key: vec!["name".to_string()],
+                    fields: BTreeMap::from([("name".to_string(), string_field())]),
                 },
             ),
             (
                 "dcim.interface".to_string(),
                 TypeSchema {
-                    key: BTreeMap::from([
+                    key: vec!["device".to_string(), "name".to_string()],
+                    fields: BTreeMap::from([
                         ("device".to_string(), ref_field("dcim.device")),
                         ("name".to_string(), string_field()),
                     ]),
-                    fields: BTreeMap::new(),
                 },
             ),
             (
                 "ipam.ip_address".to_string(),
                 TypeSchema {
-                    key: BTreeMap::from([("address".to_string(), string_field())]),
-                    fields: BTreeMap::from([(
-                        "assigned_object".to_string(),
-                        ref_field("dcim.interface"),
-                    )]),
+                    key: vec!["address".to_string()],
+                    fields: BTreeMap::from([
+                        ("address".to_string(), string_field()),
+                        ("assigned_object".to_string(), ref_field("dcim.interface")),
+                    ]),
                 },
             ),
         ]),
@@ -3369,8 +3372,11 @@ impl Observer for StringIdBackend {
 async fn first_contact_adoption_rebinds_a_bare_string_backend_id_ref() {
     let (interface, ip) = (uid(2), uid(3));
     let mut schema = device_interface_ip_schema();
-    schema.types.get_mut("dcim.interface").unwrap().key =
-        BTreeMap::from([("name".to_string(), string_field())]);
+    let interface_schema = schema.types.get_mut("dcim.interface").unwrap();
+    interface_schema.key = vec!["name".to_string()];
+    interface_schema
+        .fields
+        .insert("name".to_string(), string_field());
     let inventory = Inventory {
         scope: None,
         schema,

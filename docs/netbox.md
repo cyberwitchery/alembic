@@ -113,7 +113,7 @@ for example, a site field declared as an enum:
 
 ```yaml
 dcim.site:
-  key: {slug: {type: slug}}
+  key: [slug]
   fields:
     name: {type: string}
     slug: {type: slug}

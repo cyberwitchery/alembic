@@ -6,22 +6,22 @@ schema:
   types:
     # native netbox types, applied to their normal endpoints.
     dcim.manufacturer:
-      key: {slug: {type: slug}}
+      key: [slug]
       fields: {name: {type: string}, slug: {type: slug}}
     dcim.devicerole:
-      key: {slug: {type: slug}}
+      key: [slug]
       fields: {name: {type: string}, slug: {type: slug}}
     dcim.devicetype:
-      key: {slug: {type: slug}}
+      key: [slug]
       fields:
         manufacturer: {type: ref, target: dcim.manufacturer}
         model: {type: string}
         slug: {type: slug}
     dcim.site:
-      key: {slug: {type: slug}}
+      key: [slug]
       fields: {name: {type: string}, slug: {type: slug}}
     dcim.device:
-      key: {name: {type: slug}}
+      key: [name]
       fields:
         name: {type: slug}
         site: {type: ref, target: dcim.site}
@@ -31,7 +31,7 @@ schema:
     # object type, with a field per key + field, and applies objects under
     # /api/plugins/custom-objects/. its `device` field references a native device.
     ops.maintenance_window:
-      key: {name: {type: slug}}
+      key: [name]
       fields:
         name: {type: slug}
         starts_at: {type: datetime}

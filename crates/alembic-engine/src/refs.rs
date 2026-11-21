@@ -50,7 +50,7 @@ fn visit_key_ref_leaves(
     key: &Key,
     visit: &mut impl FnMut(String, &str, &Value),
 ) {
-    for (field, schema) in &type_schema.key {
+    for (field, schema) in type_schema.key_fields() {
         if let Some(value) = key.get(field) {
             scan(&format!("key.{field}"), &schema.r#type, value, visit);
         }
@@ -279,12 +279,12 @@ fn rebind_object(
     rebound: &BTreeMap<(String, String), Uid>,
 ) -> bool {
     let mut key_changed = false;
-    for (field, schema) in &type_schema.key {
+    for (field, schema) in type_schema.key_fields() {
         if let Some(value) = object.key.get_mut(field) {
             key_changed |= rebind_value(&schema.r#type, value, rebound);
         }
     }
-    for (field, schema) in type_schema.key.iter().chain(&type_schema.fields) {
+    for (field, schema) in &type_schema.fields {
         if let Some(value) = object.attrs.get_mut(field) {
             rebind_value(&schema.r#type, value, rebound);
         }

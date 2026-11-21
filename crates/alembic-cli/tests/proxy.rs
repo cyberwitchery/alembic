@@ -12,7 +12,7 @@ use std::thread;
 use support::bin_path;
 use tempfile::tempdir;
 
-const INVENTORY: &str = "schema:\n  types:\n    dcim.site:\n      key: {slug: {type: string}}\n      fields:\n        name: {type: string}\n        slug: {type: string}\nobjects:\n  - uid: 00000000-0000-0000-0000-000000000001\n    type: dcim.site\n    key: {slug: fra1}\n    attrs: {name: fra1, slug: fra1}\n";
+const INVENTORY: &str = "schema:\n  types:\n    dcim.site:\n      key: [slug]\n      fields:\n        name: {type: string}\n        slug: {type: string}\nobjects:\n  - uid: 00000000-0000-0000-0000-000000000001\n    type: dcim.site\n    key: {slug: fra1}\n    attrs: {name: fra1, slug: fra1}\n";
 
 /// runs `plan` against `backend` at `http://<host>`, a name that does not
 /// resolve, with `HTTP_PROXY` naming a local listener that answers `401`.

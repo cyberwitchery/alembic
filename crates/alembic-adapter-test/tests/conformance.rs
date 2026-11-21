@@ -1,4 +1,6 @@
-use alembic_adapter_sdk::external::ExternalResponse;
+use alembic_adapter_sdk::external::{
+    ExternalEnvelope, ExternalResponse, EXTERNAL_PROTOCOL_VERSION,
+};
 use alembic_adapter_sdk::{ApplyReport, ExternalCapabilities, ExternalObject, ProvisionReport};
 use alembic_adapter_test::{
     load_cases, run_builtin, run_builtin_with, run_cases, Builtins, Case, Expect, Outcome,
@@ -91,18 +93,19 @@ fn shape_case(name: &str, request: serde_json::Value, result: Option<serde_json:
 
 #[test]
 fn a_case_answer_outside_the_protocol_fails_naming_why() {
-    let thing_with = |field: serde_json::Value| {
+    let thing_with = |mut field: serde_json::Value| {
+        field["name"] = json!({ "type": "string" });
         json!({
-            "version": 1, "setup": {}, "method": "read",
+            "version": 2, "setup": {}, "method": "read",
             "schema": { "types": { "a.thing": {
-                "key": { "name": { "type": "string" } },
+                "key": ["name"],
                 "fields": field
             }}},
             "types": ["a.thing"], "state": { "mappings": {} }
         })
     };
     let empty_write = json!({
-        "version": 1, "setup": {}, "method": "write",
+        "version": 2, "setup": {}, "method": "write",
         "schema": { "types": {} }, "ops": [], "state": {}
     });
     let rows = [
@@ -112,7 +115,7 @@ fn a_case_answer_outside_the_protocol_fails_naming_why() {
             shape_case(
                 "read-null",
                 json!({
-                    "version": 1, "setup": {}, "method": "read",
+                    "version": 2, "setup": {}, "method": "read",
                     "schema": { "types": {} }, "types": [], "state": {}
                 }),
                 None,
@@ -161,7 +164,7 @@ fn a_case_answer_outside_the_protocol_fails_naming_why() {
             shape_case(
                 "pinned vs null",
                 json!({
-                    "version": 1, "setup": {}, "method": "preview_schema",
+                    "version": 2, "setup": {}, "method": "preview_schema",
                     "schema": { "types": {} }
                 }),
                 Some(json!({
@@ -204,7 +207,7 @@ fn a_case_answer_inside_the_protocol_passes() {
             shape_case(
                 "preview-null",
                 json!({
-                    "version": 1, "setup": {}, "method": "preview_schema",
+                    "version": 2, "setup": {}, "method": "preview_schema",
                     "schema": { "types": {} }
                 }),
                 None,
@@ -215,10 +218,13 @@ fn a_case_answer_inside_the_protocol_passes() {
             shape_case(
                 "read-good",
                 json!({
-                    "version": 1, "setup": {}, "method": "read",
+                    "version": 2, "setup": {}, "method": "read",
                     "schema": { "types": { "a.thing": {
-                        "key": { "name": { "type": "string" } },
-                        "fields": { "peer": { "type": "ref", "target": "a.thing" } }
+                        "key": ["name"],
+                        "fields": {
+                            "name": { "type": "string" },
+                            "peer": { "type": "ref", "target": "a.thing" }
+                        }
                     }}},
                     "types": ["a.thing"], "state": { "mappings": {} }
                 }),
@@ -232,7 +238,7 @@ fn a_case_answer_inside_the_protocol_passes() {
             shape_case(
                 "empty-lists",
                 json!({
-                    "version": 1, "setup": {}, "method": "ensure_schema",
+                    "version": 2, "setup": {}, "method": "ensure_schema",
                     "schema": { "types": {} }
                 }),
                 None,
@@ -246,7 +252,7 @@ fn a_case_answer_inside_the_protocol_passes() {
             shape_case(
                 "free-form",
                 json!({
-                    "version": 1, "setup": {}, "method": "read",
+                    "version": 2, "setup": {}, "method": "read",
                     "schema": { "types": {} }, "types": [], "state": {}
                 }),
                 None,
@@ -305,7 +311,7 @@ fn oversized_request_does_not_outlast_the_timeout() {
     let case = Case {
         name: "oversized".into(),
         request: json!({
-            "version": 1,
+            "version": 2,
             "setup": {},
             "method": "read",
             "schema": {"types": {}},
@@ -367,7 +373,7 @@ fn declared_emitter_with_erroring_read_passes() {
     // would fail the version probe, which rides its `preview_schema`.
     let script = r#"req=$(cat)
     case "$req" in
-      *'"version":1'*) ;;
+      *'"version":2'*) ;;
       *) printf '{"ok":false,"error":"unsupported protocol version"}'; exit 0 ;;
     esac
     case "$req" in
@@ -397,7 +403,7 @@ fn a_full_adapter_with_a_broken_write_is_caught() {
     // checks; an adapter answering read and garbling write fails the write.
     let script = r#"req=$(cat)
     case "$req" in
-      *'"version":1'*) ;;
+      *'"version":2'*) ;;
       *) printf '{"ok":false,"error":"unsupported protocol version"}'; exit 0 ;;
     esac
     case "$req" in
@@ -433,7 +439,7 @@ fn an_emitter_that_leaves_ensure_schema_to_unknown_method_fails() {
     // every other method and dropping this one is certified into a failing run.
     let script = r#"req=$(cat)
     case "$req" in
-      *'"version":1'*) ;;
+      *'"version":2'*) ;;
       *) printf '{"ok":false,"error":"unsupported protocol version"}'; exit 0 ;;
     esac
     case "$req" in
@@ -464,7 +470,7 @@ fn ensure_schema_check_follows_the_declared_role() {
     // cost it the certification; the emitter arm keeps that absence meaningful.
     let script = r#"req=$(cat)
     case "$req" in
-      *'"version":1'*) ;;
+      *'"version":2'*) ;;
       *) printf '{"ok":false,"error":"unsupported protocol version"}'; exit 0 ;;
     esac
     case "$req" in
@@ -500,7 +506,7 @@ fn preview_schema_check_follows_the_declared_role() {
     // conformant: the host reaches preview_schema through the emitter only.
     let script = r#"req=$(cat)
     case "$req" in
-      *'"version":1'*) ;;
+      *'"version":2'*) ;;
       *) printf '{"ok":false,"error":"unsupported protocol version"}'; exit 0 ;;
     esac
     case "$req" in
@@ -610,7 +616,6 @@ fn version_mismatch_follows_the_declared_role() {
 
 #[test]
 fn version_mismatch_uses_the_next_protocol_version() {
-    use alembic_adapter_sdk::external::EXTERNAL_PROTOCOL_VERSION;
     // this adapter answers ok only to EXTERNAL_PROTOCOL_VERSION + 1, so the must-error
     // check fails iff the runner sent exactly that valid-but-unsupported version (and
     // not a hardcoded, u8-overflowing 999, which this adapter would have rejected).
@@ -671,7 +676,7 @@ fn case_result_mismatch_reported() {
     let case = Case {
         name: "wrong expectation".into(),
         request: json!({
-            "version": 1, "setup": {}, "method": "read",
+            "version": 2, "setup": {}, "method": "read",
             "schema": { "types": {} }, "types": [], "state": { "mappings": {} }
         }),
         expect: Expect {
@@ -712,6 +717,13 @@ fn fixtures_match_the_protocol_types() {
         let method = fixture["request"]["method"]
             .as_str()
             .unwrap_or_else(|| panic!("{name}: request has no method"));
+        let request: ExternalEnvelope = serde_json::from_value(fixture["request"].clone())
+            .unwrap_or_else(|e| panic!("{name}: request is not an envelope: {e}"));
+        let expected_version = match name.as_str() {
+            "version_mismatch" => EXTERNAL_PROTOCOL_VERSION + 1,
+            _ => EXTERNAL_PROTOCOL_VERSION,
+        };
+        assert_eq!(request.version, expected_version, "{name}: request version");
         let response: ExternalResponse<Value> = serde_json::from_value(fixture["response"].clone())
             .unwrap_or_else(|e| panic!("{name}: response is not an envelope: {e}"));
         match (response.ok, response.result, response.error) {
@@ -774,7 +786,7 @@ fn emitter_writing(path: &str) -> String {
     format!(
         r#"req=$(cat)
     case "$req" in
-      *'"version":1'*) ;;
+      *'"version":2'*) ;;
       *) printf '{{"ok":false,"error":"unsupported protocol version"}}'; exit 0 ;;
     esac
     case "$req" in
@@ -794,7 +806,7 @@ fn emitter_logging(log: &str) -> String {
     format!(
         r#"req=$(cat)
     case "$req" in
-      *'"version":1'*) ;;
+      *'"version":2'*) ;;
       *) printf '{{"ok":false,"error":"unsupported protocol version"}}'; exit 0 ;;
     esac
     case "$req" in
@@ -921,7 +933,7 @@ fn the_version_probe_catches_an_emitter_without_writing() {
 fn an_emitter_whose_write_errors_still_fails_with_the_gate_on() {
     let script = r#"req=$(cat)
     case "$req" in
-      *'"version":1'*) ;;
+      *'"version":2'*) ;;
       *) printf '{"ok":false,"error":"unsupported protocol version"}'; exit 0 ;;
     esac
     case "$req" in
@@ -945,7 +957,7 @@ fn an_emitter_whose_write_errors_still_fails_with_the_gate_on() {
 fn the_gate_leaves_a_non_writing_liveness_check_alone() {
     let script = r#"req=$(cat)
     case "$req" in
-      *'"version":1'*) ;;
+      *'"version":2'*) ;;
       *) printf '{"ok":false,"error":"unsupported protocol version"}'; exit 0 ;;
     esac
     case "$req" in
@@ -974,7 +986,7 @@ fn the_gate_leaves_a_non_writing_liveness_check_alone() {
 fn the_gate_turns_off_a_full_adapters_write_and_leaves_its_read() {
     let script = r#"req=$(cat)
     case "$req" in
-      *'"version":1'*) ;;
+      *'"version":2'*) ;;
       *) printf '{"ok":false,"error":"unsupported protocol version"}'; exit 0 ;;
     esac
     case "$req" in
@@ -1008,7 +1020,7 @@ fn emitter_reporting_deletes(envelope: &str, key: &str) -> String {
     format!(
         r#"req=$(cat)
     case "$req" in
-      *'"version":1'*) ;;
+      *'"version":2'*) ;;
       *) printf '{{"ok":false,"error":"unsupported protocol version"}}'; exit 0 ;;
     esac
     case "$req" in
@@ -1097,7 +1109,7 @@ case "$req" in
   *) printf '{"ok":false,"error":"invalid setup: missing url"}'; exit 0 ;;
 esac
 case "$req" in
-  *'"version":1'*) ;;
+  *'"version":2'*) ;;
   *) printf '{"ok":false,"error":"unsupported protocol version"}'; exit 0 ;;
 esac
 case "$req" in

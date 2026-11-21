@@ -13,19 +13,19 @@ transforms:
 schema:
   types:
     location.site:
-      key:
+      key: [slug]
+      fields:
         slug:
           type: slug
-      fields:
         label:
           type: string
         code:
           type: string
     infra.device:
-      key:
+      key: [hostname]
+      fields:
         hostname:
           type: slug
-      fields:
         role:
           type: string
         # a reference to the renamed site type. because the `sites` rule below is

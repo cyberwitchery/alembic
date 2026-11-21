@@ -1,27 +1,21 @@
 schema:
   types:
     dcim.manufacturer:
-      key:
-        slug:
-          type: slug
+      key: [slug]
       fields:
         name:
           type: string
         slug:
           type: slug
     dcim.devicerole:
-      key:
-        slug:
-          type: slug
+      key: [slug]
       fields:
         name:
           type: string
         slug:
           type: slug
     dcim.devicetype:
-      key:
-        slug:
-          type: slug
+      key: [slug]
       fields:
         manufacturer:
           type: ref
@@ -31,9 +25,7 @@ schema:
         slug:
           type: slug
     dcim.site:
-      key:
-        slug:
-          type: slug
+      key: [slug]
       fields:
         name:
           type: string
@@ -42,9 +34,7 @@ schema:
         status:
           type: string
     dcim.device:
-      key:
-        name:
-          type: slug
+      key: [name]
       fields:
         name:
           type: slug
@@ -66,9 +56,7 @@ schema:
           item:
             type: string
     dcim.interface:
-      key:
-        name:
-          type: slug
+      key: [name]
       fields:
         name:
           type: slug
@@ -80,18 +68,14 @@ schema:
         enabled:
           type: bool
     ipam.prefix:
-      key:
-        prefix:
-          type: prefix
+      key: [prefix]
       fields:
         prefix:
           type: prefix
         description:
           type: string
     ipam.ipaddress:
-      key:
-        address:
-          type: ip_address
+      key: [address]
       fields:
         address:
           type: ip_address
@@ -101,9 +85,7 @@ schema:
         description:
           type: string
     ops.service:
-      key:
-        name:
-          type: slug
+      key: [name]
       fields:
         name:
           type: slug
@@ -117,9 +99,7 @@ schema:
         description:
           type: string
     ops.service_instance:
-      key:
-        name:
-          type: slug
+      key: [name]
       fields:
         name:
           type: slug
@@ -143,9 +123,7 @@ schema:
         config:
           type: json
     ops.deployment:
-      key:
-        name:
-          type: slug
+      key: [name]
       fields:
         name:
           type: slug

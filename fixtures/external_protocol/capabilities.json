@@ -1,7 +1,7 @@
 {
   "description": "capabilities reports the adapter's role; this emit-only adapter answers emitter, so the host errors on observe instead of reading nothing. an adapter that answers with the unknown-method error instead defaults to the full read+write role",
   "request": {
-    "version": 1,
+    "version": 2,
     "setup": {},
     "method": "capabilities"
   },

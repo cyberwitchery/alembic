@@ -1022,7 +1022,6 @@ fn normalize_attrs(
             let target_hint = type_schema
                 .fields
                 .get(&key)
-                .or_else(|| type_schema.key.get(&key))
                 .map(|fs| &fs.r#type)
                 .and_then(|ft| match ft {
                     FieldType::Ref { target } => Some(target.as_str()),
@@ -1184,7 +1183,7 @@ async fn native_fields_for_type(
     info: &super::registry::ObjectTypeInfo,
     type_schema: &TypeSchema,
 ) -> Result<NativeFields> {
-    let mut native: BTreeSet<String> = type_schema.key.keys().cloned().collect();
+    let mut native: BTreeSet<String> = type_schema.key.iter().cloned().collect();
 
     // what a create accepts, from the endpoint's own metadata: this holds on
     // an endpoint with no objects yet, where a sample below has nothing to show.
@@ -1374,7 +1373,7 @@ mod tests {
             description: None,
         };
         let type_schema = TypeSchema {
-            key: BTreeMap::new(),
+            key: Vec::new(),
             fields: BTreeMap::from([
                 ("termination_a_id".to_string(), ref_field.clone()),
                 ("termination_b_id".to_string(), ref_field),
@@ -1417,10 +1416,11 @@ mod tests {
         };
 
         let mut device_schema = TypeSchema {
-            key: BTreeMap::new(),
+            key: Vec::new(),
             fields: BTreeMap::new(),
         };
-        device_schema.key.insert(
+        device_schema.key.push("name".to_string());
+        device_schema.fields.insert(
             "name".to_string(),
             FieldSchema {
                 r#type: FieldType::String,
@@ -1436,10 +1436,11 @@ mod tests {
             .insert("dcim.device".to_string(), device_schema);
 
         let mut interface_schema = TypeSchema {
-            key: BTreeMap::new(),
+            key: Vec::new(),
             fields: BTreeMap::new(),
         };
-        interface_schema.key.insert(
+        interface_schema.key.push("device".to_string());
+        interface_schema.fields.insert(
             "device".to_string(),
             FieldSchema {
                 r#type: FieldType::Ref {
@@ -1452,7 +1453,8 @@ mod tests {
                 pattern: None,
             },
         );
-        interface_schema.key.insert(
+        interface_schema.key.push("name".to_string());
+        interface_schema.fields.insert(
             "name".to_string(),
             FieldSchema {
                 r#type: FieldType::String,
@@ -1514,10 +1516,11 @@ mod tests {
 
         // target: dcim.device, keyed by `name`.
         let mut device_schema = TypeSchema {
-            key: BTreeMap::new(),
+            key: Vec::new(),
             fields: BTreeMap::new(),
         };
-        device_schema.key.insert(
+        device_schema.key.push("name".to_string());
+        device_schema.fields.insert(
             "name".to_string(),
             FieldSchema {
                 r#type: FieldType::String,
@@ -1538,10 +1541,11 @@ mod tests {
         // parent object: a ref-typed key field `device` -> dcim.device, not
         // duplicated into `.fields`.
         let mut parent_schema = TypeSchema {
-            key: BTreeMap::new(),
+            key: Vec::new(),
             fields: BTreeMap::new(),
         };
-        parent_schema.key.insert(
+        parent_schema.key.push("device".to_string());
+        parent_schema.fields.insert(
             "device".to_string(),
             FieldSchema {
                 r#type: FieldType::Ref {
@@ -1587,7 +1591,7 @@ mod tests {
             },
         );
         let type_schema = TypeSchema {
-            key: BTreeMap::new(),
+            key: Vec::new(),
             fields,
         };
         let mut attrs = JsonMap::default();
@@ -1618,7 +1622,7 @@ mod tests {
             },
         );
         let type_schema = TypeSchema {
-            key: BTreeMap::new(),
+            key: Vec::new(),
             fields,
         };
         let mut attrs = JsonMap::default();
@@ -1646,7 +1650,7 @@ mod tests {
             },
         );
         let type_schema = TypeSchema {
-            key: BTreeMap::new(),
+            key: Vec::new(),
             fields,
         };
         let mut attrs = JsonMap::default();
@@ -1684,7 +1688,7 @@ mod tests {
             },
         );
         let type_schema = TypeSchema {
-            key: BTreeMap::new(),
+            key: Vec::new(),
             fields,
         };
         let schema = Schema {
@@ -1733,8 +1737,8 @@ mod tests {
             },
         );
         let type_schema = TypeSchema {
-            key: key_fields,
-            fields: BTreeMap::new(),
+            key: key_fields.keys().cloned().collect(),
+            fields: key_fields,
         };
 
         let site_uid = Uid::from_u128(1);
@@ -1989,7 +1993,7 @@ mod tests {
             endpoint: "dcim/location-types/".to_string(),
         };
         let type_schema = TypeSchema {
-            key: BTreeMap::new(),
+            key: Vec::new(),
             fields: BTreeMap::new(),
         };
         let native = native_fields_for_type(&adapter, &info, &type_schema)
@@ -2022,7 +2026,7 @@ mod tests {
             endpoint: "dcim/location-types/".to_string(),
         };
         let type_schema = TypeSchema {
-            key: BTreeMap::new(),
+            key: Vec::new(),
             fields: BTreeMap::new(),
         };
         let native = native_fields_for_type(&adapter, &info, &type_schema)
@@ -2053,7 +2057,7 @@ mod tests {
             ..ref_field(TypeName::new("dcim.platform"))
         };
         let type_schema = TypeSchema {
-            key: BTreeMap::from([("name".to_string(), string.clone())]),
+            key: vec!["name".to_string()],
             fields: BTreeMap::from([
                 ("name".to_string(), string.clone()),
                 ("status".to_string(), string),
@@ -2118,7 +2122,7 @@ mod tests {
             endpoint: endpoint.to_string(),
         };
         let type_schema = TypeSchema {
-            key: BTreeMap::new(),
+            key: Vec::new(),
             fields: BTreeMap::from([(field.to_string(), ref_field(TypeName::new(type_name)))]),
         };
         (info, type_schema)

@@ -4,7 +4,7 @@
 schema:
   types:
     dcim.interface:
-      key: {name: {type: slug}}
+      key: [name]
       fields:
         name: {type: slug}
         modes: {type: list, item: {type: enum, values: [access, trunk]}}

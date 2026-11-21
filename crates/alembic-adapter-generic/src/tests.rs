@@ -69,8 +69,7 @@ fn test_schema() -> Schema {
         },
     );
 
-    let mut device_key = BTreeMap::new();
-    device_key.insert(
+    device_fields.insert(
         "name".to_string(),
         FieldSchema {
             r#type: FieldType::String,
@@ -84,7 +83,7 @@ fn test_schema() -> Schema {
     types.insert(
         "device".to_string(),
         TypeSchema {
-            key: device_key,
+            key: vec!["name".to_string()],
             fields: device_fields,
         },
     );
@@ -102,22 +101,10 @@ fn test_schema() -> Schema {
         },
     );
 
-    let mut site_key = BTreeMap::new();
-    site_key.insert(
-        "name".to_string(),
-        FieldSchema {
-            r#type: FieldType::String,
-            required: true,
-            nullable: false,
-            description: None,
-            format: None,
-            pattern: None,
-        },
-    );
     types.insert(
         "site".to_string(),
         TypeSchema {
-            key: site_key,
+            key: vec!["name".to_string()],
             fields: site_fields,
         },
     );
@@ -303,7 +290,7 @@ fn test_resolve_attrs() {
     for (field, field_type, nullable, attrs, resolved, expected) in cases {
         let label = format!("{field_type:?} {attrs}");
         let type_schema = TypeSchema {
-            key: BTreeMap::new(),
+            key: Vec::new(),
             fields: BTreeMap::from([(
                 field.to_string(),
                 FieldSchema {
@@ -569,8 +556,8 @@ fn slug_keyed_site_schema(declared: bool) -> Schema {
     if declared {
         fields.insert("slug".to_string(), field_schema(FieldType::Slug));
     }
-    let mut key = BTreeMap::new();
-    key.insert("slug".to_string(), field_schema(FieldType::Slug));
+    fields.insert("slug".to_string(), field_schema(FieldType::Slug));
+    let key = vec!["slug".to_string()];
 
     let mut types = BTreeMap::new();
     types.insert("site".to_string(), TypeSchema { key, fields });

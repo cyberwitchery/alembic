@@ -18,10 +18,10 @@ fn fixture(dir: &Path, extra: &str) -> std::path::PathBuf {
             r#"schema:
   types:
     dcim.site:
-      key:
+      key: [site]
+      fields:
         site:
           type: slug
-      fields:
         name:
           type: string
 objects:

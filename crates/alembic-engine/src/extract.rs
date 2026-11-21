@@ -168,7 +168,7 @@ fn key_refs_settled(
     mappings: &StateMappings,
     observed_ids: &BTreeMap<String, BTreeSet<BackendId>>,
 ) -> bool {
-    for (field, field_schema) in &type_schema.key {
+    for (field, field_schema) in type_schema.key_fields() {
         let target = match &field_schema.r#type {
             FieldType::Ref { target } | FieldType::ListRef { target } => target,
             _ => continue,
@@ -432,7 +432,7 @@ fn classify_ref(
 /// (validation.rs: `type_schema.fields.contains_key`) and drop the offending keys.
 /// types absent from the schema are left untouched, since import refuses the whole
 /// object as an undeclared type and projecting its attrs would say nothing more.
-/// key fields are never touched; they validate separately against `type_schema.key`.
+/// the object's key is never touched; it validates separately against the key fields.
 fn project_attrs(
     schema: &Schema,
     type_name: &TypeName,
@@ -608,11 +608,14 @@ mod tests {
             let entry = types
                 .entry(object.type_name.as_str().to_string())
                 .or_insert_with(|| TypeSchema {
-                    key: BTreeMap::new(),
+                    key: Vec::new(),
                     fields: BTreeMap::new(),
                 });
             for field in object.key.keys() {
-                entry.key.entry(field.clone()).or_insert(FieldSchema {
+                if !entry.is_key(field) {
+                    entry.key.push(field.clone());
+                }
+                entry.fields.entry(field.clone()).or_insert(FieldSchema {
                     r#type: FieldType::Json,
                     required: true,
                     nullable: false,
@@ -728,15 +731,20 @@ mod tests {
     }
 
     fn type_schema(key_fields: &[&str], attr_fields: &[&str]) -> TypeSchema {
-        let mut key = BTreeMap::new();
-        for field in key_fields {
-            key.insert((*field).to_string(), field_schema(true, false));
-        }
         let mut fields = BTreeMap::new();
         for field in attr_fields {
             fields.insert((*field).to_string(), field_schema(false, true));
         }
-        TypeSchema { key, fields }
+        for field in key_fields {
+            fields.insert((*field).to_string(), field_schema(true, false));
+        }
+        TypeSchema {
+            key: key_fields
+                .iter()
+                .map(|field| (*field).to_string())
+                .collect(),
+            fields,
+        }
     }
 
     /// build a schema declaring exactly the given key/attr fields per type.
@@ -799,15 +807,15 @@ mod tests {
 
     /// a type declaring exactly the given key and attr field schemas.
     fn typed_type(key: &[(&str, FieldSchema)], fields: &[(&str, FieldSchema)]) -> TypeSchema {
-        let owned = |entries: &[(&str, FieldSchema)]| {
+        let owned = |entries: &[(&str, FieldSchema)]| -> Vec<(String, FieldSchema)> {
             entries
                 .iter()
                 .map(|(name, schema)| ((*name).to_string(), schema.clone()))
                 .collect()
         };
         TypeSchema {
-            key: owned(key),
-            fields: owned(fields),
+            key: key.iter().map(|(name, _)| (*name).to_string()).collect(),
+            fields: owned(fields).into_iter().chain(owned(key)).collect(),
         }
     }
 
@@ -955,14 +963,17 @@ mod tests {
             .insert(observed_object("b.node", "peer=1", json!({ "peer": 1 }), 2))
             .unwrap();
 
+        // `peer` is declared under `fields`, so its copy in attrs is stuck too.
         let error = import_err(observed, &schema);
         assert!(
-            error.contains("2 reference(s) could not be resolved"),
+            error.contains("4 reference(s) could not be resolved"),
             "{error}"
         );
         for (field, target, id) in [
             ("a.node.key.peer", "b.node", "2"),
+            ("a.node.peer", "b.node", "2"),
             ("b.node.key.peer", "a.node", "1"),
+            ("b.node.peer", "a.node", "1"),
         ] {
             assert!(
                 error.contains(&format!(

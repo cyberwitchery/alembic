@@ -3,10 +3,10 @@
 schema:
   types:
     dcim.site:
-      key: {slug: {type: slug}}
+      key: [slug]
       fields: {name: {type: string}, slug: {type: slug}}
     dcim.device:
-      key: {name: {type: slug}}
+      key: [name]
       fields:
         name: {type: slug}
         site: {type: ref, target: dcim.site}

@@ -4,17 +4,17 @@
 schema:
   types:
     dcim.site:
-      key:
+      key: [slug]
+      fields:
         slug:
           type: slug
-      fields:
         name:
           type: string
     dcim.device:
-      key:
+      key: [name]
+      fields:
         name:
           type: slug
-      fields:
         role:
           type: string
         site:

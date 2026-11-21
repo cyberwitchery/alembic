@@ -9,7 +9,7 @@ use std::fmt;
 use std::io::{self, BufReader, Read, Write};
 
 /// current external adapter protocol version.
-pub const EXTERNAL_PROTOCOL_VERSION: u8 = 1;
+pub const EXTERNAL_PROTOCOL_VERSION: u8 = 2;
 
 /// request envelope sent to external adapters.
 #[derive(Debug, Serialize, Deserialize)]

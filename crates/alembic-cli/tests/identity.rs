@@ -64,12 +64,12 @@ fn write_site_inventory(dir: &Path, type_name: &str, slug: &str) -> std::path::P
             r#"schema:
   types:
     dcim.site:
-      key: {{slug: {{type: slug}}}}
+      key: [slug]
       fields:
         name: {{type: string}}
         slug: {{type: slug}}
     location.site:
-      key: {{slug: {{type: slug}}}}
+      key: [slug]
       fields:
         name: {{type: string}}
         slug: {{type: slug}}

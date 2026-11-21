@@ -196,12 +196,12 @@ mod tests {
         let root = dir.path().join("inv.yaml");
         std::fs::write(
             dir.path().join("other.yaml"),
-            "schema: { types: { dcim.device: { key: { name: { type: slug } }, fields: {} } } }\nscope: { dcim.device: {} }\n",
+            "schema: { types: { dcim.device: { key: [name], fields: { name: { type: slug } } } } }\nscope: { dcim.device: {} }\n",
         )
         .unwrap();
         std::fs::write(
             &root,
-            "include: [other.yaml]\nschema: { types: { dcim.site: { key: { slug: { type: slug } }, fields: {} } } }\nscope: { dcim.site: { slug: fra1 } }\n",
+            "include: [other.yaml]\nschema: { types: { dcim.site: { key: [slug], fields: { slug: { type: slug } } } } }\nscope: { dcim.site: { slug: fra1 } }\n",
         )
         .unwrap();
         let inventory = load_inventory(&root).unwrap();
@@ -217,7 +217,7 @@ mod tests {
         std::fs::write(dir.path().join("other.yaml"), "scope: { dcim.site: {} }\n").unwrap();
         std::fs::write(
             &root,
-            "include: [other.yaml]\nschema: { types: { dcim.site: { key: { slug: { type: slug } }, fields: {} } } }\nscope: { dcim.site: { slug: fra1 } }\n",
+            "include: [other.yaml]\nschema: { types: { dcim.site: { key: [slug], fields: { slug: { type: slug } } } } }\nscope: { dcim.site: { slug: fra1 } }\n",
         )
         .unwrap();
         let err = format!("{:#}", load_inventory(&root).unwrap_err());
@@ -260,7 +260,7 @@ mod tests {
     }
 
     #[test]
-    fn a_key_list_takes_each_schema_from_fields() {
+    fn a_key_lists_names_declared_in_fields() {
         let interface_fields = serde_json::json!({
             "device": { "type": "ref", "target": "dcim.device" },
             "name": { "type": "string" },
@@ -273,65 +273,80 @@ mod tests {
         for (ext, loaded) in load_types_both_ways(types) {
             let inventory = loaded.unwrap_or_else(|err| panic!("{ext}: {err:#}"));
             let interface = &inventory.schema.types["dcim.interface"];
-            let fields = &interface.fields;
-            let expected: BTreeMap<_, _> = ["device", "name"]
-                .into_iter()
-                .map(|name| (name.to_string(), fields[name].clone()))
-                .collect();
-            assert_eq!(interface.key, expected, "{ext}");
-            assert_eq!(fields.len(), 3, "{ext}");
+            assert_eq!(interface.key, ["device", "name"], "{ext}");
+            let key_fields: Vec<_> = interface.key_fields().map(|(name, _)| name).collect();
+            assert_eq!(key_fields, ["device", "name"], "{ext}");
+            assert_eq!(interface.fields.len(), 3, "{ext}");
         }
     }
 
     #[test]
-    fn a_key_list_refuses_a_name_not_declared_in_fields() {
+    fn a_key_map_is_refused_with_how_to_write_it() {
+        let types = serde_json::json!({
+            "dcim.site": {
+                "key": { "slug": { "type": "slug" }, "region": { "type": "string" } },
+                "fields": { "slug": { "type": "slug" }, "region": { "type": "string" } },
+            },
+        });
+        for (ext, err) in load_error_both_ways(types) {
+            assert!(
+                err.contains(
+                    "key is a list of field names, not a map: write `key: [region, slug]` and \
+                     declare their schemas under `fields`"
+                ),
+                "{ext}: {err}"
+            );
+            assert!(err.contains("line "), "{ext}: {err}");
+        }
+    }
+
+    #[test]
+    fn a_key_refuses_a_name_not_declared_in_fields() {
         let types = serde_json::json!({
             "dcim.interface": { "key": ["name", "mac"], "fields": { "name": { "type": "string" } } },
         });
         for (ext, err) in load_error_both_ways(types) {
             assert!(
-                err.contains(
-                    "key list of dcim.interface names `mac`, which is not declared in fields"
-                ),
+                err.contains("key of dcim.interface names `mac`, which is not declared in fields"),
                 "{ext}: {err}"
             );
         }
     }
 
     #[test]
-    fn a_key_list_refuses_a_repeated_name() {
+    fn a_key_refuses_a_repeated_name() {
         let types = serde_json::json!({
             "dcim.interface": { "key": ["name", "name"], "fields": { "name": { "type": "string" } } },
         });
         for (ext, err) in load_error_both_ways(types) {
             assert!(
-                err.contains("key list of dcim.interface names `name` twice"),
+                err.contains("key of dcim.interface names `name` twice"),
                 "{ext}: {err}"
             );
         }
     }
 
     #[test]
-    fn a_key_list_refuses_a_non_string_entry() {
+    fn a_key_refuses_a_non_string_entry() {
         let types = serde_json::json!({
             "dcim.interface": { "key": ["name", 3], "fields": { "name": { "type": "string" } } },
         });
         for (ext, err) in load_error_both_ways(types) {
             assert!(
-                err.contains("key list of dcim.interface holds `3`, which is not a field name"),
+                err.contains("key of dcim.interface holds `3`, which is not a field name"),
                 "{ext}: {err}"
             );
         }
     }
 
     #[test]
-    fn a_key_list_still_obeys_the_key_field_rules() {
+    fn a_key_field_obeys_the_key_field_rules() {
         let nullable = serde_json::json!({
             "dcim.site": { "key": ["slug"], "fields": { "slug": { "type": "slug", "nullable": true } } },
         });
         for (ext, err) in load_error_both_ways(nullable) {
             assert!(
-                err.contains("nullable key field dcim.site.key.slug"),
+                err.contains("nullable key field dcim.site.slug"),
                 "{ext}: {err}"
             );
         }
@@ -340,20 +355,9 @@ mod tests {
         });
         for (ext, err) in load_error_both_ways(composite) {
             assert!(
-                err.contains("non-scalar key field dcim.site.key.tags"),
+                err.contains("non-scalar key field dcim.site.tags"),
                 "{ext}: {err}"
             );
-        }
-    }
-
-    #[test]
-    fn a_malformed_key_map_keeps_its_precise_error() {
-        let types = serde_json::json!({
-            "dcim.site": { "key": { "slug": { "type": "slug", "requried": true } } },
-        });
-        for (ext, err) in load_error_both_ways(types) {
-            assert!(err.contains("unknown field `requried`"), "{ext}: {err}");
-            assert!(!err.contains("did not match any variant"), "{ext}: {err}");
         }
     }
 
@@ -410,17 +414,17 @@ mod tests {
         let content = r#"schema:
   types:
     dcim.site:
-      key:
+      key: [site]
+      fields:
         site:
           type: slug
-      fields:
         name:
           type: string
     dcim.rack:
-      key:
+      key: [rack]
+      fields:
         rack:
           type: slug
-      fields:
         name:
           type: string
 objects:
@@ -452,7 +456,7 @@ objects:
         schema.types.insert(
             name.to_string(),
             TypeSchema {
-                key: BTreeMap::new(),
+                key: Vec::new(),
                 fields: BTreeMap::new(),
             },
         );

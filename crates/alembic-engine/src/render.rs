@@ -948,7 +948,8 @@ uid:
         // validator, proving the transform emits something the schema accepts.
         fn is_valid_slug(candidate: &str) -> bool {
             let type_schema = TypeSchema {
-                key: BTreeMap::from([(
+                key: vec!["slug".to_string()],
+                fields: BTreeMap::from([(
                     "slug".to_string(),
                     FieldSchema {
                         r#type: FieldType::String,
@@ -959,7 +960,6 @@ uid:
                         pattern: None,
                     },
                 )]),
-                fields: BTreeMap::new(),
             };
             let mut key = BTreeMap::new();
             key.insert("slug".to_string(), serde_json::json!(candidate));

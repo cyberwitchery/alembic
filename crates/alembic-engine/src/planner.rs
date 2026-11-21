@@ -241,12 +241,7 @@ fn diff_attrs(
     let null = Value::Null; // borrowed for absent fields; no per-field allocation
     for (field, to) in desired.iter() {
         let from = existing.get(field).unwrap_or(&null);
-        let field_type = type_schema.and_then(|ts| {
-            ts.fields
-                .get(field)
-                .or_else(|| ts.key.get(field))
-                .map(|fs| &fs.r#type)
-        });
+        let field_type = type_schema.and_then(|ts| ts.fields.get(field).map(|fs| &fs.r#type));
         if !field_values_equal(field_type, from, to) {
             changes.push(FieldChange {
                 field: field.clone(),
@@ -435,23 +430,19 @@ fn create_deps(
         }
     };
     for (field, value) in desired.key.iter() {
-        if let Some(field_schema) = type_schema.key.get(field) {
+        if let Some(field_schema) = type_schema.key_field(field) {
             let mut uids = BTreeSet::new();
             collect_refs_in_value(&field_schema.r#type, value, &mut uids);
             add(uids, field, false);
         }
     }
     for (field, value) in desired.attrs.iter() {
-        let Some(field_schema) = type_schema
-            .fields
-            .get(field)
-            .or_else(|| type_schema.key.get(field))
-        else {
+        let Some(field_schema) = type_schema.fields.get(field) else {
             continue;
         };
         let mut uids = BTreeSet::new();
         collect_refs_in_value(&field_schema.r#type, value, &mut uids);
-        let deferrable = !type_schema.key.contains_key(field) && !field_schema.required;
+        let deferrable = !type_schema.is_key(field) && !field_schema.required;
         add(uids, field, deferrable);
     }
     deps
@@ -637,11 +628,7 @@ fn collect_referenced_uids(
 ) -> BTreeSet<Uid> {
     let mut uids = BTreeSet::new();
     for (field, value) in attrs {
-        if let Some(field_schema) = type_schema
-            .fields
-            .get(field)
-            .or_else(|| type_schema.key.get(field))
-        {
+        if let Some(field_schema) = type_schema.fields.get(field) {
             collect_refs_in_value(&field_schema.r#type, value, &mut uids);
         }
     }
@@ -985,7 +972,7 @@ mod tests {
         ];
         for (r#type, existing, desired, changed) in cases {
             let ts = r#type.clone().map(|r#type| TypeSchema {
-                key: BTreeMap::new(),
+                key: Vec::new(),
                 fields: BTreeMap::from([("f".to_string(), field(r#type))]),
             });
             let changes = diff_attrs(
@@ -1573,13 +1560,12 @@ mod tests {
         for (name, ty) in fields {
             field_map.insert(name.to_string(), field(ty.clone()));
         }
-        let mut key = BTreeMap::new();
-        key.insert("slug".to_string(), field(FieldType::Slug));
+        field_map.insert("slug".to_string(), field(FieldType::Slug));
         let mut types = BTreeMap::new();
         types.insert(
             "node".to_string(),
             TypeSchema {
-                key,
+                key: vec!["slug".to_string()],
                 fields: field_map,
             },
         );
@@ -1809,15 +1795,15 @@ mod tests {
         types.insert(
             "node".to_string(),
             TypeSchema {
-                key: node_key,
-                fields: BTreeMap::new(),
+                key: node_key.keys().cloned().collect(),
+                fields: node_key,
             },
         );
         types.insert(
             "child".to_string(),
             TypeSchema {
-                key: child_key,
-                fields: BTreeMap::new(),
+                key: child_key.keys().cloned().collect(),
+                fields: child_key,
             },
         );
         let schema = Schema { types };
@@ -1885,15 +1871,15 @@ mod tests {
     /// an interface keyed by its device.
     fn device_interface_schema() -> Schema {
         let device = TypeSchema {
-            key: BTreeMap::from([("name".to_string(), field(FieldType::String))]),
+            key: vec!["name".to_string()],
             fields: BTreeMap::from([("name".to_string(), field(FieldType::String))]),
         };
         let interface = TypeSchema {
-            key: BTreeMap::from([
+            key: vec!["device".to_string(), "name".to_string()],
+            fields: BTreeMap::from([
                 ("device".to_string(), field(ref_to("dcim.device"))),
                 ("name".to_string(), field(FieldType::String)),
             ]),
-            fields: BTreeMap::from([("name".to_string(), field(FieldType::String))]),
         };
         Schema {
             types: BTreeMap::from([
@@ -2010,24 +1996,21 @@ mod tests {
     /// assigned to an interface, and the interface is keyed by the device.
     fn device_ip_schema() -> Schema {
         let device = TypeSchema {
-            key: BTreeMap::from([("name".to_string(), field(FieldType::String))]),
+            key: vec!["name".to_string()],
             fields: BTreeMap::from([
                 ("name".to_string(), field(FieldType::String)),
                 ("primary_ip4".to_string(), field(ref_to("ipam.ip_address"))),
             ]),
         };
         let interface = TypeSchema {
-            key: BTreeMap::from([
-                ("device".to_string(), field(ref_to("dcim.device"))),
-                ("name".to_string(), field(FieldType::String)),
-            ]),
+            key: vec!["device".to_string(), "name".to_string()],
             fields: BTreeMap::from([
                 ("device".to_string(), field(ref_to("dcim.device"))),
                 ("name".to_string(), field(FieldType::String)),
             ]),
         };
         let ip = TypeSchema {
-            key: BTreeMap::from([("address".to_string(), field(FieldType::String))]),
+            key: vec!["address".to_string()],
             fields: BTreeMap::from([
                 ("address".to_string(), field(FieldType::String)),
                 (

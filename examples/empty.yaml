@@ -1,12 +1,12 @@
 schema:
   types:
     extras.tag:
-      key: { name: { type: string } }
-      fields: {}
+      key: [name]
+      fields: { name: { type: string } }
     dcim.locationtype:
-      key: { name: { type: string } }
-      fields: {}
+      key: [name]
+      fields: { name: { type: string } }
     dcim.location:
-      key: { name: { type: string } }
-      fields: {}
+      key: [name]
+      fields: { name: { type: string } }
 objects: []

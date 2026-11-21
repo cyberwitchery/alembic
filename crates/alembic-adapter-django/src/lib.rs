@@ -296,13 +296,7 @@ fn validate_schema_names(schema: &Schema) -> Result<()> {
                 "type '{type_name}' renders to class name '{class_name}', which is not a valid python identifier"
             ));
         }
-        let field_names = type_schema.key.keys().chain(
-            type_schema
-                .fields
-                .keys()
-                .filter(|field| !type_schema.key.contains_key(*field)),
-        );
-        for field in field_names {
+        for field in type_schema.fields.keys() {
             if RESERVED_FIELD_NAMES.contains(&field.as_str()) {
                 problems.push(format!(
                     "field '{field}' of type '{type_name}' is reserved: it would shadow the generated model attribute of the same name"
@@ -411,7 +405,7 @@ fn build_models(schema: &Schema) -> Result<Vec<ModelSpec>> {
     }
 
     for (type_name, type_schema) in schema.types.iter() {
-        for (field, field_schema) in type_schema.key.iter().chain(type_schema.fields.iter()) {
+        for (field, field_schema) in type_schema.fields.iter() {
             let target = match &field_schema.r#type {
                 FieldType::Ref { target } | FieldType::ListRef { target } => target,
                 _ => continue,
@@ -446,13 +440,13 @@ fn model_spec_from_schema(type_name: &str, schema: &TypeSchema) -> ModelSpec {
     let mut fields = Vec::new();
     let mut key_fields = Vec::new();
 
-    for (field, field_schema) in schema.key.iter() {
+    for (field, field_schema) in schema.key_fields() {
         key_fields.push(field.to_string());
         fields.push(field_spec_from_schema(field, field_schema, true));
     }
 
     for (field, field_schema) in schema.fields.iter() {
-        if schema.key.contains_key(field) {
+        if schema.is_key(field) {
             continue;
         }
         fields.push(field_spec_from_schema(field, field_schema, false));
@@ -1349,12 +1343,10 @@ mod tests {
 
     fn type_schema(key: Vec<(&str, FieldSchema)>, fields: Vec<(&str, FieldSchema)>) -> TypeSchema {
         TypeSchema {
-            key: key
-                .into_iter()
-                .map(|(name, schema)| (name.to_string(), schema))
-                .collect(),
+            key: key.iter().map(|(name, _)| name.to_string()).collect(),
             fields: fields
                 .into_iter()
+                .chain(key)
                 .map(|(name, schema)| (name.to_string(), schema))
                 .collect(),
         }
@@ -2389,8 +2381,11 @@ mod tests {
         types.insert(
             "dcim.site".to_string(),
             TypeSchema {
-                key: BTreeMap::from([("name".to_string(), plain_field(FieldType::Slug))]),
-                fields: BTreeMap::from([(field_name.to_string(), plain_field(FieldType::String))]),
+                key: vec!["name".to_string()],
+                fields: BTreeMap::from([
+                    ("name".to_string(), plain_field(FieldType::Slug)),
+                    (field_name.to_string(), plain_field(FieldType::String)),
+                ]),
             },
         );
         Inventory {
@@ -2446,8 +2441,8 @@ mod tests {
         types.insert(
             "dcim.site".to_string(),
             TypeSchema {
-                key: BTreeMap::from([("class".to_string(), plain_field(FieldType::Slug))]),
-                fields: BTreeMap::new(),
+                key: vec!["class".to_string()],
+                fields: BTreeMap::from([("class".to_string(), plain_field(FieldType::Slug))]),
             },
         );
         let inventory = Inventory {
@@ -2470,8 +2465,8 @@ mod tests {
         types.insert(
             "10g.port".to_string(),
             TypeSchema {
-                key: BTreeMap::from([("name".to_string(), plain_field(FieldType::Slug))]),
-                fields: BTreeMap::new(),
+                key: vec!["name".to_string()],
+                fields: BTreeMap::from([("name".to_string(), plain_field(FieldType::Slug))]),
             },
         );
         let inventory = Inventory {
@@ -2496,8 +2491,9 @@ mod tests {
         types.insert(
             "dcim.site".to_string(),
             TypeSchema {
-                key: BTreeMap::from([("name".to_string(), plain_field(FieldType::Slug))]),
+                key: vec!["name".to_string()],
                 fields: BTreeMap::from([
+                    ("name".to_string(), plain_field(FieldType::Slug)),
                     ("uid".to_string(), plain_field(FieldType::String)),
                     ("from".to_string(), plain_field(FieldType::String)),
                     ("2fa".to_string(), plain_field(FieldType::String)),
@@ -2523,8 +2519,9 @@ mod tests {
         types.insert(
             "dcim.site".to_string(),
             TypeSchema {
-                key: BTreeMap::from([("name".to_string(), plain_field(FieldType::Slug))]),
+                key: vec!["name".to_string()],
                 fields: BTreeMap::from([
+                    ("name".to_string(), plain_field(FieldType::Slug)),
                     ("match".to_string(), plain_field(FieldType::String)),
                     ("type".to_string(), plain_field(FieldType::String)),
                 ]),

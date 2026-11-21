@@ -525,7 +525,7 @@ of parsing the version string:
     "django",
     "external"
   ],
-  "external_protocol": 1,
+  "external_protocol": 2,
   "state_backends": [
     "file",
     "postgres"

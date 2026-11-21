@@ -5,16 +5,15 @@
 schema:
   types:
     dcim.site:
-      key:
-        slug: { type: slug }
+      key: [slug]
       fields:
         name: { type: string }
         slug: { type: slug }
         status: { type: string }
     dcim.device:
-      key:
-        name: { type: slug }
+      key: [name]
       fields:
+        name: { type: slug }
         status: { type: string }
         role: { type: string }
         site: { type: ref, target: dcim.site }

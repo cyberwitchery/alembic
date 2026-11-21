@@ -483,8 +483,11 @@ mod tests {
         types.insert(
             "dcim.site".to_string(),
             TypeSchema {
-                key: BTreeMap::from([("slug".to_string(), field(FieldType::Slug))]),
-                fields: BTreeMap::from([("name".to_string(), field(FieldType::String))]),
+                key: vec!["slug".to_string()],
+                fields: BTreeMap::from([
+                    ("slug".to_string(), field(FieldType::Slug)),
+                    ("name".to_string(), field(FieldType::String)),
+                ]),
             },
         );
         Inventory {

@@ -4,22 +4,19 @@
 schema:
   types:
     dcim.site:
-      key:
+      key: [site]
+      fields:
         site:
           type: slug
-      fields:
         name:
           type: string
         slug:
           type: slug
     dcim.device:
-      key:
-        site:
-          type: ref
-          target: dcim.site
+      key: [site, device]
+      fields:
         device:
           type: slug
-      fields:
         name:
           type: string
         site:

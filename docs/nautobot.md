@@ -46,7 +46,7 @@ uid on read:
 
 ```yaml
 dcim.cable:
-  key: {label: {type: string}}
+  key: [label]
   fields:
     label: {type: string}
     status: {type: ref, target: extras.status}

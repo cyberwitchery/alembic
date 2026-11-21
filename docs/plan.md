@@ -9,7 +9,7 @@ plans are json files, or yaml when the path ends in `.yaml` or `.yml`, and can b
   "schema": {
     "types": {
       "dcim.site": {
-        "key": { "...": "..." },
+        "key": ["..."],
         "fields": { "...": "..." }
       }
     }

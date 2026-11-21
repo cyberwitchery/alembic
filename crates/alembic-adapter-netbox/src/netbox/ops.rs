@@ -1466,12 +1466,8 @@ impl NetBoxAdapter {
                 .unwrap_or_default();
 
             let mut fields = Vec::new();
-            let mut seen = BTreeSet::new();
-            for (field_name, field_schema) in type_schema.key.iter().chain(&type_schema.fields) {
-                if !seen.insert(field_name.as_str()) {
-                    continue;
-                }
-                let is_key = type_schema.key.contains_key(field_name);
+            for (field_name, field_schema) in &type_schema.fields {
+                let is_key = type_schema.is_key(field_name);
                 match custom_object_field_action(
                     field_name,
                     existing_field_ids.contains_key(field_name),
@@ -1540,7 +1536,7 @@ impl NetBoxAdapter {
                     let desired: BTreeSet<String> = schema
                         .types
                         .get(type_name.as_str())
-                        .map(|ts| ts.key.keys().chain(ts.fields.keys()).cloned().collect())
+                        .map(|ts| ts.fields.keys().cloned().collect())
                         .unwrap_or_default();
                     if let Some(existing_fields) = existing_fields {
                         for (field_name, field) in existing_fields {
@@ -1703,7 +1699,6 @@ fn normalize_attrs(
             let target_hint = type_schema
                 .fields
                 .get(&key)
-                .or_else(|| type_schema.key.get(&key))
                 .map(|fs| &fs.r#type)
                 .and_then(|ft| match ft {
                     FieldType::Ref { target } => Some(target.as_str()),
@@ -2259,7 +2254,7 @@ async fn native_fields_for_type(
     info: &super::registry::ObjectTypeInfo,
     type_schema: &TypeSchema,
 ) -> Result<NativeFields> {
-    let mut native: BTreeSet<String> = type_schema.key.keys().cloned().collect();
+    let mut native: BTreeSet<String> = type_schema.key.iter().cloned().collect();
     let options = adapter.client.endpoint_fields(&info.endpoint).await;
     let answered_options = options.is_some();
     if let Some(fields) = options {
@@ -2752,7 +2747,7 @@ mod test_normalization {
             },
         );
         let type_schema = TypeSchema {
-            key: BTreeMap::new(),
+            key: Vec::new(),
             fields,
         };
         let schema = Schema {
@@ -2791,10 +2786,11 @@ mod test_normalization {
 
         // target: dcim.device, keyed by `name`.
         let mut device_schema = TypeSchema {
-            key: BTreeMap::new(),
+            key: Vec::new(),
             fields: BTreeMap::new(),
         };
-        device_schema.key.insert(
+        device_schema.key.push("name".to_string());
+        device_schema.fields.insert(
             "name".to_string(),
             FieldSchema {
                 r#type: FieldType::String,
@@ -2812,13 +2808,13 @@ mod test_normalization {
             .types
             .insert("dcim.device".to_string(), device_schema);
 
-        // parent object: a ref-typed key field `device` -> dcim.device, not
-        // duplicated into `.fields`.
+        // parent object: a ref-typed key field `device` -> dcim.device.
         let mut parent_schema = TypeSchema {
-            key: BTreeMap::new(),
+            key: Vec::new(),
             fields: BTreeMap::new(),
         };
-        parent_schema.key.insert(
+        parent_schema.key.push("device".to_string());
+        parent_schema.fields.insert(
             "device".to_string(),
             FieldSchema {
                 r#type: FieldType::Ref {
@@ -2863,7 +2859,7 @@ mod test_normalization {
             },
         );
         let type_schema = TypeSchema {
-            key: BTreeMap::new(),
+            key: Vec::new(),
             fields,
         };
         let mut attrs = JsonMap::default();
@@ -2899,7 +2895,7 @@ mod test_normalization {
             },
         );
         let type_schema = TypeSchema {
-            key: BTreeMap::new(),
+            key: Vec::new(),
             fields,
         };
         let mut attrs = JsonMap::default();
@@ -3116,8 +3112,8 @@ mod test_normalization {
             },
         );
         let type_schema = TypeSchema {
-            key: key_fields,
-            fields: BTreeMap::new(),
+            key: key_fields.keys().cloned().collect(),
+            fields: key_fields,
         };
 
         let site_uid = Uid::from_u128(1);

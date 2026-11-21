@@ -283,7 +283,8 @@ mod tests {
 
     fn ix_schema() -> TypeSchema {
         TypeSchema {
-            key: BTreeMap::from([(
+            key: vec!["name".to_string()],
+            fields: BTreeMap::from([(
                 "name".to_string(),
                 FieldSchema {
                     r#type: FieldType::String,
@@ -294,7 +295,6 @@ mod tests {
                     pattern: None,
                 },
             )]),
-            fields: BTreeMap::new(),
         }
     }
 
