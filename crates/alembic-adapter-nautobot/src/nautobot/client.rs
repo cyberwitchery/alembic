@@ -7,6 +7,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::mapping::{slugify, ExistingCustomField};
 use super::registry::ObjectTypeRegistry;
 
+/// the page size a listing asks for. a server that caps it lower answers with
+/// shorter pages, and the listing follows them.
+const PAGE_SIZE: usize = 200;
+
 /// an existing custom field, reduced to what a provision needs: its backend id,
 /// its type and the properties convergence compares.
 #[derive(Debug, Clone)]
@@ -44,6 +48,8 @@ impl NautobotClient {
         nautobot::Resource::new(self.client.clone(), endpoint)
     }
 
+    /// every object `resource` lists under `query`, following the `next` link
+    /// of each page the server returns.
     pub(super) async fn list_all<T>(
         &self,
         resource: &nautobot::Resource<T>,
@@ -52,24 +58,8 @@ impl NautobotClient {
     where
         T: DeserializeOwned,
     {
-        let base_query = query.unwrap_or_default();
-        let mut results = Vec::new();
-        let mut offset = 0usize;
-        let limit = 200usize;
-
-        loop {
-            let page = resource
-                .list(Some(base_query.clone().limit(limit).offset(offset)))
-                .await?;
-            let page_count = page.results.len();
-            results.extend(page.results);
-            if results.len() >= page.count || page_count == 0 {
-                break;
-            }
-            offset += limit;
-        }
-
-        Ok(results)
+        let query = query.unwrap_or_default().limit(PAGE_SIZE).offset(0);
+        Ok(resource.paginate(Some(query))?.collect_all().await?)
     }
 
     pub(super) async fn fetch_custom_fields(&self) -> Result<BTreeMap<String, BTreeSet<String>>> {

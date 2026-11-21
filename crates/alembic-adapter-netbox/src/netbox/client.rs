@@ -1,11 +1,15 @@
 use anyhow::{anyhow, Result};
-use netbox::{Client, ClientConfig, QueryBuilder};
+use netbox::{Client, ClientConfig};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::mapping::ExistingCustomField;
 use super::registry::ObjectTypeRegistry;
+
+/// the page size a listing asks for. a server that caps it lower answers with
+/// shorter pages, and the listing follows them.
+const PAGE_SIZE: usize = 200;
 
 #[derive(Debug, Clone)]
 pub(super) struct CustomObjectType {
@@ -68,32 +72,20 @@ impl NetBoxClient {
         Ok(Self { client })
     }
 
-    pub(super) async fn list_all<T>(
-        &self,
-        resource: &netbox::Resource<T>,
-        query: Option<QueryBuilder>,
-    ) -> Result<Vec<T>>
+    /// every object at `endpoint`, or only those with the primary keys in
+    /// `ids`, following the `next` link of each page the server returns.
+    pub(super) async fn list_all<T>(&self, endpoint: &str, ids: Option<&[u64]>) -> Result<Vec<T>>
     where
         T: DeserializeOwned,
     {
-        let base_query = query.unwrap_or_default();
-        let mut results = Vec::new();
-        let mut offset = 0usize;
-        let limit = 200usize;
-
-        loop {
-            let page = resource
-                .list(Some(base_query.clone().limit(limit).offset(offset)))
-                .await?;
-            let page_count = page.results.len();
-            results.extend(page.results);
-            if results.len() >= page.count || page_count == 0 {
-                break;
-            }
-            offset += limit;
+        // the query goes in the path: given one, `Resource::paginate` drops the
+        // endpoint's trailing slash, and netbox redirects the slashless path.
+        let mut path = format!("{endpoint}?limit={PAGE_SIZE}&offset=0");
+        for id in ids.unwrap_or_default() {
+            path.push_str(&format!("&id={id}"));
         }
-
-        Ok(results)
+        let resource = netbox::Resource::<T>::dynamic(self.client.clone(), path);
+        Ok(resource.paginate(None)?.collect_all().await?)
     }
 
     /// the fields an endpoint's create accepts, from its OPTIONS metadata. this
@@ -129,9 +121,8 @@ impl NetBoxClient {
     pub(super) async fn fetch_custom_field_defs(
         &self,
     ) -> Result<BTreeMap<String, BTreeMap<String, CustomFieldDef>>> {
-        let fields = self
-            .list_all(&self.client.extras().custom_fields(), None)
-            .await?;
+        let fields: Vec<netbox::models::CustomField> =
+            self.list_all("extras/custom-fields/", None).await?;
         let mut by_type: BTreeMap<String, BTreeMap<String, CustomFieldDef>> = BTreeMap::new();
         for field in fields {
             let def = CustomFieldDef {
@@ -166,9 +157,7 @@ impl NetBoxClient {
     /// `choice_colors` does not decode every server's shape, and only the id,
     /// name and choices are read.
     pub(super) async fn fetch_custom_field_choice_sets(&self) -> Result<Vec<ChoiceSet>> {
-        let resource: netbox::Resource<Value> =
-            self.client.resource("extras/custom-field-choice-sets/");
-        self.list_all(&resource, None)
+        self.list_all("extras/custom-field-choice-sets/", None)
             .await?
             .into_iter()
             .map(parse_choice_set)
@@ -176,22 +165,20 @@ impl NetBoxClient {
     }
 
     pub(super) async fn fetch_tags(&self) -> Result<BTreeSet<String>> {
-        let tags = self.list_all(&self.client.extras().tags(), None).await?;
+        let tags: Vec<netbox::models::Tag> = self.list_all("extras/tags/", None).await?;
         Ok(tags.into_iter().map(|t| t.name).collect())
     }
 
     pub(super) async fn fetch_object_types(&self) -> Result<ObjectTypeRegistry> {
-        let types = self
-            .list_all(&self.client.core().object_types(), None)
-            .await?;
+        let types = self.list_all("core/object-types/", None).await?;
         ObjectTypeRegistry::from_object_types(types)
     }
 
     pub(super) async fn fetch_custom_object_types(&self) -> Result<Option<Vec<CustomObjectType>>> {
-        let resource: netbox::Resource<Value> = self
-            .client
-            .resource("plugins/custom-objects/custom-object-types/");
-        let items = match self.list_all(&resource, None).await {
+        let items = match self
+            .list_all("plugins/custom-objects/custom-object-types/", None)
+            .await
+        {
             Ok(items) => items,
             Err(err) if is_404_anyhow(&err) => return Ok(None),
             Err(err) => return Err(err),
@@ -206,10 +193,10 @@ impl NetBoxClient {
     pub(super) async fn fetch_custom_object_type_fields(
         &self,
     ) -> Result<Option<Vec<CustomObjectField>>> {
-        let resource: netbox::Resource<Value> = self
-            .client
-            .resource("plugins/custom-objects/custom-object-type-fields/");
-        let items = match self.list_all(&resource, None).await {
+        let items = match self
+            .list_all("plugins/custom-objects/custom-object-type-fields/", None)
+            .await
+        {
             Ok(items) => items,
             Err(err) if is_404_anyhow(&err) => return Ok(None),
             Err(err) => return Err(err),
