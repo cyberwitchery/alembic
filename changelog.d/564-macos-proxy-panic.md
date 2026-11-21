@@ -1,0 +1,1 @@
+- http adapters: on macos, a run that cannot read the system proxy settings (as in a sandbox) goes on without them instead of panicking (#564)
