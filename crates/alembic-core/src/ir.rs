@@ -587,21 +587,171 @@ impl<'de> Deserialize<'de> for FieldSchema {
     }
 }
 
-/// schema metadata for a type.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+/// schema metadata for a type. `key` may be written as a list of names declared under
+/// `fields`; it always serializes as the full map.
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct TypeSchema {
     pub key: BTreeMap<String, FieldSchema>,
-    #[serde(default)]
     pub fields: BTreeMap<String, FieldSchema>,
+}
+
+impl<'de> Deserialize<'de> for TypeSchema {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        RawTypeSchema::deserialize(deserializer)?
+            .resolve(None)
+            .map_err(serde::de::Error::custom)
+    }
+}
+
+/// a type block as written, before a `key` list is resolved against `fields`.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawTypeSchema {
+    key: RawKey,
+    #[serde(default)]
+    fields: BTreeMap<String, FieldSchema>,
+}
+
+enum RawKey {
+    Map(BTreeMap<String, FieldSchema>),
+    Names(Vec<Value>),
+}
+
+// not `untagged`: the map form has to keep the precise field schema errors
+impl<'de> Deserialize<'de> for RawKey {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct RawKeyVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for RawKeyVisitor {
+            type Value = RawKey;
+
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                f.write_str("a map of key field schemas or a list of field names")
+            }
+
+            fn visit_map<A>(self, map: A) -> Result<RawKey, A::Error>
+            where
+                A: serde::de::MapAccess<'de>,
+            {
+                Deserialize::deserialize(serde::de::value::MapAccessDeserializer::new(map))
+                    .map(RawKey::Map)
+            }
+
+            fn visit_seq<A>(self, seq: A) -> Result<RawKey, A::Error>
+            where
+                A: serde::de::SeqAccess<'de>,
+            {
+                Deserialize::deserialize(serde::de::value::SeqAccessDeserializer::new(seq))
+                    .map(RawKey::Names)
+            }
+        }
+
+        deserializer.deserialize_any(RawKeyVisitor)
+    }
+}
+
+impl RawTypeSchema {
+    /// `type_name` is the type block's name in `schema.types`, when there is one, for
+    /// the errors.
+    fn resolve(self, type_name: Option<&str>) -> Result<TypeSchema, String> {
+        let key = match self.key {
+            RawKey::Map(key) => key,
+            RawKey::Names(names) => key_from_names(names, &self.fields, type_name)?,
+        };
+        Ok(TypeSchema {
+            key,
+            fields: self.fields,
+        })
+    }
+}
+
+/// resolve a `key` list to the same-named `fields` entries.
+fn key_from_names(
+    names: Vec<Value>,
+    fields: &BTreeMap<String, FieldSchema>,
+    type_name: Option<&str>,
+) -> Result<BTreeMap<String, FieldSchema>, String> {
+    let owner = type_name
+        .map(|name| format!(" of {name}"))
+        .unwrap_or_default();
+    let mut key = BTreeMap::new();
+    for entry in names {
+        let Value::String(name) = entry else {
+            return Err(format!(
+                "key list{owner} holds `{entry}`, which is not a field name"
+            ));
+        };
+        let Some(schema) = fields.get(&name) else {
+            return Err(format!(
+                "key list{owner} names `{name}`, which is not declared in fields"
+            ));
+        };
+        if key.insert(name.clone(), schema.clone()).is_some() {
+            return Err(format!("key list{owner} names `{name}` twice"));
+        }
+    }
+    Ok(key)
 }
 
 /// collection of schema definitions.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Schema {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_type_schemas")]
     pub types: BTreeMap<String, TypeSchema>,
+}
+
+// each type block resolves as it is read, so a key list error carries the block's location
+fn deserialize_type_schemas<'de, D>(
+    deserializer: D,
+) -> Result<BTreeMap<String, TypeSchema>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct TypesVisitor;
+
+    impl<'de> serde::de::Visitor<'de> for TypesVisitor {
+        type Value = BTreeMap<String, TypeSchema>;
+
+        fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            f.write_str("a map of type schemas")
+        }
+
+        fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+        where
+            A: serde::de::MapAccess<'de>,
+        {
+            let mut types = BTreeMap::new();
+            while let Some(name) = map.next_key::<String>()? {
+                let schema = map.next_value_seed(NamedTypeSchema(&name))?;
+                types.insert(name, schema);
+            }
+            Ok(types)
+        }
+    }
+
+    deserializer.deserialize_map(TypesVisitor)
+}
+
+struct NamedTypeSchema<'a>(&'a str);
+
+impl<'de> serde::de::DeserializeSeed<'de> for NamedTypeSchema<'_> {
+    type Value = TypeSchema;
+
+    fn deserialize<D>(self, deserializer: D) -> Result<TypeSchema, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        RawTypeSchema::deserialize(deserializer)?
+            .resolve(Some(self.0))
+            .map_err(serde::de::Error::custom)
+    }
 }
 
 /// object envelope for the ir.
@@ -841,6 +991,59 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(err.contains("unknown field `fieldz`"), "{}", err);
+    }
+
+    #[test]
+    fn a_key_list_resolves_to_the_fields_entries_and_serializes_as_a_map() {
+        let shorthand: TypeSchema = serde_json::from_value(serde_json::json!({
+            "key": ["name"],
+            "fields": { "name": { "type": "string", "required": true }, "mac": { "type": "mac" } },
+        }))
+        .unwrap();
+        let spelled_out: TypeSchema = serde_json::from_value(serde_json::json!({
+            "key": { "name": { "type": "string", "required": true } },
+            "fields": { "name": { "type": "string", "required": true }, "mac": { "type": "mac" } },
+        }))
+        .unwrap();
+        assert_eq!(shorthand, spelled_out);
+        assert_eq!(
+            serde_json::to_value(&shorthand).unwrap()["key"],
+            serde_json::json!({ "name": { "type": "string", "required": true, "nullable": false } })
+        );
+    }
+
+    #[test]
+    fn a_key_list_error_names_the_type_inside_a_schema() {
+        let err = serde_json::from_value::<Schema>(serde_json::json!({
+            "types": { "dcim.site": { "key": ["slug"], "fields": {} } },
+        }))
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("key list of dcim.site names `slug`, which is not declared in fields"),
+            "{}",
+            err
+        );
+    }
+
+    #[test]
+    fn a_malformed_key_map_keeps_its_precise_error() {
+        let err = serde_json::from_value::<TypeSchema>(serde_json::json!({
+            "key": { "slug": { "type": "slug", "patern": "^a" } },
+        }))
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("unknown field `patern`"), "{}", err);
+        assert!(!err.contains("did not match any variant"), "{}", err);
+
+        let err = serde_json::from_value::<TypeSchema>(serde_json::json!({ "key": "slug" }))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("expected a map of key field schemas or a list of field names"),
+            "{}",
+            err
+        );
     }
 
     #[test]

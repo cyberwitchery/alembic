@@ -45,8 +45,9 @@ rules:
         label: "${attrs.name|upper}"
 ```
 
-- `schema` is the target schema. the output inventory is validated against it,
-  including reference integrity, before it is written.
+- `schema` is the target schema, written as in an inventory, `key: [field, ...]`
+  shorthand included (`docs/ir.md`). the output inventory is validated against
+  it, including reference integrity, before it is written.
 - each rule has a `match` selector and either one or more `emit` blocks or
   `emit: passthrough` (see below).
 - a key a block does not define is a parse error, not a silent no-op, at every

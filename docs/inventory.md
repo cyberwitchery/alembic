@@ -14,8 +14,7 @@ imports:
 schema:
   types:
     dcim.site:
-      key:
-        slug: { type: slug }
+      key: [slug]
       fields:
         name: { type: string }
         slug: { type: slug }
@@ -50,6 +49,9 @@ schema:
         name: { type: string, required: true }
         peers: { type: list, item: { type: json } }
 ```
+
+`key` maps each key field to its schema, or lists field names (`key: [slug]`)
+that take their schema from `fields`; `docs/ir.md` has the rules.
 
 string fields can optionally use `format` and/or `pattern`:
 
