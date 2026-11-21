@@ -575,8 +575,8 @@ fn check_read_values(request: &Value, result: &Value) -> Result<(), String> {
     Ok(())
 }
 
-/// serialize a payload into the template [`reject_unknown_keys`] walks. strict
-/// here only: the host takes an extra key as forward compatibility.
+/// serialize a payload into the template [`reject_unknown_keys`] walks. the host
+/// rejects an unknown key too; the walk names where it is.
 fn as_template<T: Serialize>(populated: T) -> Result<Value, String> {
     serde_json::to_value(populated).map_err(|e| format!("building the template: {e}"))
 }

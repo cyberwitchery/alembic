@@ -228,12 +228,18 @@ response:
 }
 ```
 
+each op is a plan op, in the shapes `docs/plan.md` gives for create, update and
+delete; `fixtures/external_protocol/` has a write of each. an update carries the
+whole `desired` object, and a delete its `key` and the `refs` that must outlive it.
+
 an update without a `backend_id` targets an object a create earlier in the same
 `ops` made: the plan breaks a reference cycle that way (`docs/engine.md`, apply
 ordering), so resolve its id the way a later create resolves a ref to it.
 
-the result's keys are optional the same way, so a write that applied nothing
-answers `{}`. apply sends the method on every run, including a converged one whose
+the result holds `applied`, one entry per op applied, with its backend id where
+there is one (a delete may leave it out); `resumed` and `previously_applied_count`
+for a journaled write; and `provision`, both below. every key is optional, so a
+write that applied nothing answers `{}`. apply sends the method on every run, including a converged one whose
 plan carries no ops.
 
 the result may also carry a `provision` key, in the same shape `ensure_schema`
