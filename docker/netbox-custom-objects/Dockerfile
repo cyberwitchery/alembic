@@ -1,4 +1,4 @@
-ARG NETBOX_IMAGE=netboxcommunity/netbox:v4.6.2
+ARG NETBOX_IMAGE=netboxcommunity/netbox:v4.7.4
 FROM ${NETBOX_IMAGE}
 
 USER root

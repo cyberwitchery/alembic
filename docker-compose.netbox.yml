@@ -50,7 +50,7 @@ services:
       context: .
       dockerfile: docker/netbox-custom-objects/Dockerfile
       args:
-        NETBOX_IMAGE: ${NETBOX_IMAGE:-docker.io/netboxcommunity/netbox:v4.6.2}
+        NETBOX_IMAGE: ${NETBOX_IMAGE:-docker.io/netboxcommunity/netbox:v4.7.4}
     image: alembic-netbox-custom-objects
     depends_on:
       postgres:
@@ -95,14 +95,14 @@ services:
       interval: 10s
       timeout: 5s
       retries: 30
-      start_period: 30s
+      start_period: 10m
 
   netbox-worker:
     build:
       context: .
       dockerfile: docker/netbox-custom-objects/Dockerfile
       args:
-        NETBOX_IMAGE: ${NETBOX_IMAGE:-docker.io/netboxcommunity/netbox:v4.6.2}
+        NETBOX_IMAGE: ${NETBOX_IMAGE:-docker.io/netboxcommunity/netbox:v4.7.4}
     image: alembic-netbox-custom-objects
     depends_on:
       netbox:

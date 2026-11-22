@@ -1,0 +1,1 @@
+- netbox adapter: validated against netbox 4.7.4 instead of 4.6.2 (#563)
