@@ -1,0 +1,308 @@
+schema:
+  types:
+    extras.status:
+      key:
+        name:
+          type: string
+    extras.tag:
+      key:
+        name:
+          type: string
+      fields:
+        name:
+          type: string
+        color:
+          type: string
+        content_types:
+          type: json
+    extras.role:
+      key:
+        name:
+          type: string
+      fields:
+        name:
+          type: string
+        content_types:
+          type: json
+    dcim.locationtype:
+      key:
+        name:
+          type: string
+      fields:
+        name:
+          type: string
+        content_types:
+          type: json
+    dcim.location:
+      key:
+        name:
+          type: string
+      fields:
+        name:
+          type: string
+        status:
+          type: ref
+          target: extras.status
+        location_type:
+          type: ref
+          target: dcim.locationtype
+        tier:
+          type: enum
+          values:
+            - gold
+            - silver
+    dcim.manufacturer:
+      key:
+        name:
+          type: string
+      fields:
+        name:
+          type: string
+    dcim.devicetype:
+      key:
+        model:
+          type: string
+      fields:
+        manufacturer:
+          type: ref
+          target: dcim.manufacturer
+        model:
+          type: string
+    dcim.device:
+      key:
+        name:
+          type: string
+      fields:
+        name:
+          type: string
+        location:
+          type: ref
+          target: dcim.location
+        role:
+          type: ref
+          target: extras.role
+        device_type:
+          type: ref
+          target: dcim.devicetype
+        status:
+          type: ref
+          target: extras.status
+        firmware_version:
+          type: string
+        tags:
+          type: list
+          item:
+            type: string
+    dcim.interface:
+      key:
+        device:
+          type: ref
+          target: dcim.device
+        name:
+          type: string
+      fields:
+        device:
+          type: ref
+          target: dcim.device
+        name:
+          type: string
+        type:
+          type: string
+        status:
+          type: ref
+          target: extras.status
+        enabled:
+          type: bool
+    dcim.cable:
+      key:
+        label:
+          type: string
+      fields:
+        label:
+          type: string
+        status:
+          type: ref
+          target: extras.status
+        termination_a_type:
+          type: string
+        termination_a_id:
+          type: ref
+          target: dcim.interface
+        termination_b_type:
+          type: string
+        termination_b_id:
+          type: ref
+          target: dcim.interface
+    ipam.prefix:
+      key:
+        prefix:
+          type: prefix
+      fields:
+        prefix:
+          type: prefix
+        status:
+          type: ref
+          target: extras.status
+        description:
+          type: string
+    ipam.ipaddress:
+      key:
+        address:
+          type: ip_address
+      fields:
+        address:
+          type: ip_address
+        parent:
+          type: ref
+          target: ipam.prefix
+        status:
+          type: ref
+          target: extras.status
+        description:
+          type: string
+# nautobot ships statuses and roles of its own, and apply creates the tags an
+# object's `tags` names: the inventory references two statuses and owns one role
+# and one tag, so --allow-delete leaves the rest alone.
+scope:
+  extras.tag:
+    name: "Alembic Test"
+  extras.role:
+    name: "leaf"
+  dcim.locationtype: {}
+  dcim.location: {}
+  dcim.manufacturer: {}
+  dcim.devicetype: {}
+  dcim.device: {}
+  dcim.interface: {}
+  dcim.cable: {}
+  ipam.prefix: {}
+  ipam.ipaddress: {}
+objects:
+  - uid: "3f1d2a6e-8b4c-4e7a-9d15-6c2b8e0f4a01"
+    type: extras.status
+    key:
+      name: "Active"
+
+  - uid: "3f1d2a6e-8b4c-4e7a-9d15-6c2b8e0f4a02"
+    type: extras.status
+    key:
+      name: "Connected"
+
+  - uid: "3f1d2a6e-8b4c-4e7a-9d15-6c2b8e0f4a03"
+    type: extras.tag
+    key:
+      name: "Alembic Test"
+    attrs:
+      name: "Alembic Test"
+      color: "ff0000"
+      content_types: ["dcim.device"]
+
+  - uid: "3f1d2a6e-8b4c-4e7a-9d15-6c2b8e0f4a04"
+    type: extras.role
+    key:
+      name: "leaf"
+    attrs:
+      name: "leaf"
+      content_types: ["dcim.device"]
+
+  - uid: "3f1d2a6e-8b4c-4e7a-9d15-6c2b8e0f4a05"
+    type: dcim.locationtype
+    key:
+      name: "Site"
+    attrs:
+      name: "Site"
+      content_types: ["dcim.device"]
+
+  - uid: "3f1d2a6e-8b4c-4e7a-9d15-6c2b8e0f4a06"
+    type: dcim.location
+    key:
+      name: "FRA1"
+    attrs:
+      name: "FRA1"
+      status: "3f1d2a6e-8b4c-4e7a-9d15-6c2b8e0f4a01"
+      location_type: "3f1d2a6e-8b4c-4e7a-9d15-6c2b8e0f4a05"
+      tier: "gold"
+
+  - uid: "3f1d2a6e-8b4c-4e7a-9d15-6c2b8e0f4a07"
+    type: dcim.manufacturer
+    key:
+      name: "Acme"
+    attrs:
+      name: "Acme"
+
+  - uid: "3f1d2a6e-8b4c-4e7a-9d15-6c2b8e0f4a08"
+    type: dcim.devicetype
+    key:
+      model: "leaf-switch"
+    attrs:
+      manufacturer: "3f1d2a6e-8b4c-4e7a-9d15-6c2b8e0f4a07"
+      model: "leaf-switch"
+
+  - uid: "3f1d2a6e-8b4c-4e7a-9d15-6c2b8e0f4a09"
+    type: dcim.device
+    key:
+      name: "leaf01"
+    attrs:
+      name: "leaf01"
+      location: "3f1d2a6e-8b4c-4e7a-9d15-6c2b8e0f4a06"
+      role: "3f1d2a6e-8b4c-4e7a-9d15-6c2b8e0f4a04"
+      device_type: "3f1d2a6e-8b4c-4e7a-9d15-6c2b8e0f4a08"
+      status: "3f1d2a6e-8b4c-4e7a-9d15-6c2b8e0f4a01"
+      firmware_version: "1.0.0"
+      tags:
+        - "alembic-e2e"
+
+  - uid: "3f1d2a6e-8b4c-4e7a-9d15-6c2b8e0f4a0a"
+    type: dcim.interface
+    key:
+      device: "3f1d2a6e-8b4c-4e7a-9d15-6c2b8e0f4a09"
+      name: "eth0"
+    attrs:
+      device: "3f1d2a6e-8b4c-4e7a-9d15-6c2b8e0f4a09"
+      name: "eth0"
+      type: "1000base-t"
+      status: "3f1d2a6e-8b4c-4e7a-9d15-6c2b8e0f4a01"
+      enabled: true
+
+  - uid: "3f1d2a6e-8b4c-4e7a-9d15-6c2b8e0f4a0b"
+    type: dcim.interface
+    key:
+      device: "3f1d2a6e-8b4c-4e7a-9d15-6c2b8e0f4a09"
+      name: "eth1"
+    attrs:
+      device: "3f1d2a6e-8b4c-4e7a-9d15-6c2b8e0f4a09"
+      name: "eth1"
+      type: "1000base-t"
+      status: "3f1d2a6e-8b4c-4e7a-9d15-6c2b8e0f4a01"
+      enabled: true
+
+  - uid: "3f1d2a6e-8b4c-4e7a-9d15-6c2b8e0f4a0c"
+    type: dcim.cable
+    key:
+      label: "leaf01-loop"
+    attrs:
+      label: "leaf01-loop"
+      status: "3f1d2a6e-8b4c-4e7a-9d15-6c2b8e0f4a02"
+      termination_a_type: "dcim.interface"
+      termination_a_id: "3f1d2a6e-8b4c-4e7a-9d15-6c2b8e0f4a0a"
+      termination_b_type: "dcim.interface"
+      termination_b_id: "3f1d2a6e-8b4c-4e7a-9d15-6c2b8e0f4a0b"
+
+  - uid: "3f1d2a6e-8b4c-4e7a-9d15-6c2b8e0f4a0d"
+    type: ipam.prefix
+    key:
+      prefix: "10.0.0.0/24"
+    attrs:
+      prefix: "10.0.0.0/24"
+      status: "3f1d2a6e-8b4c-4e7a-9d15-6c2b8e0f4a01"
+      description: "FRA1 leaf subnet"
+
+  - uid: "3f1d2a6e-8b4c-4e7a-9d15-6c2b8e0f4a0e"
+    type: ipam.ipaddress
+    key:
+      address: "10.0.0.10/24"
+    attrs:
+      address: "10.0.0.10/24"
+      parent: "3f1d2a6e-8b4c-4e7a-9d15-6c2b8e0f4a0d"
+      status: "3f1d2a6e-8b4c-4e7a-9d15-6c2b8e0f4a01"
+      description: "leaf01 eth0"

@@ -1,9 +1,9 @@
 name: e2e
 
-# the live-backend check: netbox and infrahub in docker, driven through the
-# cli by scripts/e2e_netbox_infrahub.sh, which also runs the docs' netbox
-# blocks. too slow for every push, so it runs weekly, on demand, and on a pull
-# request that changes what it runs.
+# the live-backend check: netbox, infrahub and nautobot in docker, driven
+# through the cli by scripts/e2e_netbox_infrahub.sh, which also runs the docs'
+# netbox blocks, and scripts/e2e_nautobot.sh. too slow for every push, so it
+# runs weekly, on demand, and on a pull request that changes what it runs.
 on:
   schedule:
     - cron: "17 4 * * 1"
@@ -13,10 +13,13 @@ on:
     paths:
       - ".github/workflows/e2e.yml"
       - "scripts/e2e_netbox_infrahub.sh"
+      - "scripts/e2e_nautobot.sh"
       - "scripts/infrahubctl_docker.sh"
       - "docker-compose.netbox.yml"
+      - "docker-compose.nautobot.yml"
       - "docker/**"
       - "examples/e2e.yaml"
+      - "examples/e2e-nautobot.yaml"
       - "examples/walkthroughs/**"
       - "docs/examples/**"
       - "docs/case-studies/**"
@@ -75,3 +78,38 @@ jobs:
           for compose in /tmp/infrahub-compose-*.yml; do
             docker compose -f "$compose" logs --tail 200 || true
           done
+
+  nautobot:
+    name: nautobot
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      RUSTFLAGS: "-C debuginfo=0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # nautobot migrates its database for minutes on first start, so it starts
+      # first and migrates while the cli builds; the script's own `up` is then
+      # a no-op.
+      - name: Start nautobot
+        run: docker compose -f docker-compose.nautobot.yml up -d
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: alembic-e2e
+
+      - name: Build the cli
+        run: cargo build -p alembic-cli
+
+      - name: e2e
+        run: scripts/e2e_nautobot.sh
+
+      - name: Backend logs
+        if: failure()
+        run: docker compose -f docker-compose.nautobot.yml logs --tail 200 || true
