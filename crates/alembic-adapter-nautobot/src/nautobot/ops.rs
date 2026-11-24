@@ -1,6 +1,6 @@
 use super::mapping::{
     build_tag_inputs, custom_field_type_for_schema, custom_field_update_payload,
-    describe_custom_field_update, merge_shared_field_properties, slugify, tags_from_value,
+    describe_custom_field_update, merge_shared_field_properties, tags_from_value,
     validation_regex_for_schema, ExistingCustomField,
 };
 use super::registry::ObjectTypeRegistry;
@@ -14,7 +14,7 @@ use alembic_core::{
     key_string, FieldSchema, FieldType, JsonMap, Key, Schema, TypeName, TypeSchema, Uid,
 };
 use alembic_engine::{
-    apply_non_delete_journaled, build_key_from_schema, collect_tag_names, query_filters_from_key,
+    apply_non_delete_journaled, build_key_from_schema, query_filters_from_key,
     resolve_nested_ref_uid, resolve_ref_keyed_identity, Adapter, Emitter, ObservedState, Observer,
     RawNode,
 };
@@ -134,22 +134,36 @@ impl NautobotAdapter {
                     }
                     None => client.list_all(&resource, None).await?,
                 };
-                let mut raw = Vec::new();
-                for object in objects {
-                    let (backend_id, attrs) = extract_attrs(object)?;
-                    raw.push(RawNode {
-                        type_name: type_name.clone(),
-                        backend_id: BackendId::String(backend_id),
-                        attrs,
-                    });
-                }
-                Ok::<Vec<RawNode>, anyhow::Error>(raw)
+                Ok::<_, anyhow::Error>((type_name, objects))
             }));
         }
 
-        let mut raw = Vec::new();
+        let mut listed = Vec::new();
         for result in futures::future::join_all(tasks).await {
-            raw.extend(result??);
+            listed.push(result??);
+        }
+
+        // an object's tags read back as briefs carrying only the tag's id.
+        let tag_names = if listed
+            .iter()
+            .flat_map(|(_, objects)| objects)
+            .any(has_unnamed_tag)
+        {
+            self.client.fetch_tag_names().await?
+        } else {
+            BTreeMap::new()
+        };
+
+        let mut raw = Vec::new();
+        for (type_name, objects) in listed {
+            for object in objects {
+                let (backend_id, attrs) = extract_attrs(object, &tag_names)?;
+                raw.push(RawNode {
+                    type_name: type_name.clone(),
+                    backend_id: BackendId::String(backend_id),
+                    attrs,
+                });
+            }
         }
 
         let observed = resolve_ref_keyed_identity(
@@ -196,19 +210,12 @@ impl Emitter for NautobotAdapter {
         }
 
         let mut created_tags = Vec::new();
-        let tag_names = collect_tag_names(ops, |tn| {
-            registry
-                .info_for(tn)
-                .map(|_| BTreeSet::from(["tags".to_string()]))
-        })?;
-        if !tag_names.is_empty() {
-            let mut existing = self.client.fetch_tags().await?;
-            let missing: Vec<String> = tag_names.difference(&existing).cloned().collect();
-            if !missing.is_empty() {
-                created_tags = self.create_tags(&missing).await?;
-                for tag in missing {
-                    existing.insert(tag);
-                }
+        let mut missing_tags = tag_content_types(ops, &registry)?;
+        if !missing_tags.is_empty() {
+            let existing = self.client.fetch_tags().await?;
+            missing_tags.retain(|tag, _| !existing.contains(tag));
+            if !missing_tags.is_empty() {
+                created_tags = self.create_tags(&missing_tags).await?;
             }
         }
 
@@ -787,15 +794,16 @@ impl NautobotAdapter {
         Ok(Some(id))
     }
 
-    /// returns the tags this call created. a tag that lost the race and already
-    /// existed is not one of them.
-    async fn create_tags(&self, tags: &[String]) -> Result<Vec<String>> {
+    /// creates each tag for the content types it is given, and returns the tags
+    /// this call created. a tag that lost the race and already existed is not one
+    /// of them.
+    async fn create_tags(&self, tags: &BTreeMap<String, BTreeSet<String>>) -> Result<Vec<String>> {
         let resource = self.client.extras().tags();
         let mut created = Vec::new();
-        for tag in tags {
+        for (tag, content_types) in tags {
             let payload = serde_json::json!({
                 "name": tag,
-                "slug": slugify(tag),
+                "content_types": content_types,
             });
             if let Err(err) = resource.create(&payload).await {
                 let existing = self.client.fetch_tags().await?;
@@ -975,7 +983,69 @@ fn custom_field_payload(content_type: &str, field_name: &str, field_schema: &Fie
     Value::Object(payload)
 }
 
-fn extract_attrs(value: Value) -> Result<(String, JsonMap)> {
+/// the tags `ops` set, each with the content types of the objects carrying it:
+/// nautobot applies a tag only to the content types it lists.
+fn tag_content_types(
+    ops: &[Op],
+    registry: &ObjectTypeRegistry,
+) -> Result<BTreeMap<String, BTreeSet<String>>> {
+    let mut by_tag: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for op in ops {
+        let (type_name, desired) = match op {
+            Op::Create {
+                type_name, desired, ..
+            }
+            | Op::Update {
+                type_name, desired, ..
+            } => (type_name, desired),
+            Op::Delete { .. } => continue,
+        };
+        let Some(tags) = desired.attrs.get("tags") else {
+            continue;
+        };
+        if registry.info_for(type_name).is_none() {
+            return Err(anyhow!("unsupported type {}", type_name));
+        }
+        for tag in tags_from_value(tags)? {
+            by_tag
+                .entry(tag)
+                .or_default()
+                .insert(type_name.as_str().to_string());
+        }
+    }
+    Ok(by_tag)
+}
+
+fn has_unnamed_tag(object: &Value) -> bool {
+    object
+        .get("tags")
+        .and_then(Value::as_array)
+        .is_some_and(|tags| {
+            tags.iter()
+                .any(|tag| tag.is_object() && tag.get("name").is_none())
+        })
+}
+
+/// `tags` with each brief nautobot returned replaced by its name from `tag_names`.
+fn name_tag_briefs(tags: Value, tag_names: &BTreeMap<String, String>) -> Value {
+    let Value::Array(items) = tags else {
+        return tags;
+    };
+    Value::Array(
+        items
+            .into_iter()
+            .map(|item| {
+                let name = item
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .and_then(|id| tag_names.get(id));
+                name.map_or(item, |name| Value::String(name.clone()))
+            })
+            .collect(),
+    )
+}
+
+fn extract_attrs(value: Value, tag_names: &BTreeMap<String, String>) -> Result<(String, JsonMap)> {
     let Value::Object(mut map) = value else {
         return Err(anyhow!("expected object payload"));
     };
@@ -984,7 +1054,7 @@ fn extract_attrs(value: Value) -> Result<(String, JsonMap)> {
         .and_then(Value::as_str)
         .ok_or_else(|| anyhow!("missing id in payload"))?
         .to_string();
-    let custom_fields = map.remove("_custom_field_data");
+    let custom_fields = map.remove("custom_fields");
     let tags = map.remove("tags");
     map.remove("id");
     map.remove("url");
@@ -996,7 +1066,7 @@ fn extract_attrs(value: Value) -> Result<(String, JsonMap)> {
         }
     }
     if let Some(tags_value) = tags {
-        let tags = tags_from_value(&tags_value)?;
+        let tags = tags_from_value(&name_tag_briefs(tags_value, tag_names))?;
         attrs.insert(
             "tags".to_string(),
             Value::Array(tags.into_iter().map(Value::String).collect()),
@@ -1144,7 +1214,7 @@ fn build_request_body(
     }
 
     if !custom.is_empty() {
-        body.insert("_custom_field_data".to_string(), Value::Object(custom));
+        body.insert("custom_fields".to_string(), Value::Object(custom));
     }
 
     Ok(Value::Object(body))
@@ -1630,7 +1700,7 @@ mod tests {
     }
 
     #[test]
-    fn test_build_request_body_null_custom_field_clears_via_custom_data() {
+    fn test_build_request_body_null_custom_field_clears_via_custom_fields() {
         let mut fields = BTreeMap::new();
         fields.insert(
             "owner".to_string(),
@@ -1660,7 +1730,7 @@ mod tests {
         )
         .unwrap();
         let custom = body
-            .get("_custom_field_data")
+            .get("custom_fields")
             .and_then(Value::as_object)
             .unwrap();
         assert_eq!(custom.get("owner").unwrap(), &json!(null));

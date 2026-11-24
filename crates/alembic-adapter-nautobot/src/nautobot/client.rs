@@ -155,6 +155,15 @@ impl NautobotClient {
         Ok(tags.into_iter().map(|t| t.name).collect())
     }
 
+    /// each tag's name, keyed by its id.
+    pub(super) async fn fetch_tag_names(&self) -> Result<BTreeMap<String, String>> {
+        let tags = self.list_all(&self.client.extras().tags(), None).await?;
+        Ok(tags
+            .into_iter()
+            .filter_map(|tag| Some((tag.id?.to_string(), tag.name)))
+            .collect())
+    }
+
     /// fetched once per client: nautobot.rs keeps the pairing for later calls.
     pub(super) async fn fetch_object_types(&self) -> Result<ObjectTypeRegistry> {
         ObjectTypeRegistry::from_object_types(&self.client.object_types().await?)

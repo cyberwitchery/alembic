@@ -37,8 +37,9 @@ token: nautobot_xxx_replace_me
 ## attrs mapping
 
 - field routing is schema-driven: native fields are sent directly, and known custom fields are
-  bundled under `_custom_field_data`.
-- `tags` in `attrs` should be a list of strings; the adapter expands them to nautobot tag inputs.
+  bundled under `custom_fields`.
+- `tags` in `attrs` should be a list of strings; the adapter sends each as a tag input naming it,
+  and reads an object's tags back by name.
 - nested references should be provided as alembic uids (string UUIDs). the adapter resolves those
   to nautobot UUIDs before sending requests, including refs nested in list and map fields.
 
@@ -69,7 +70,9 @@ no nautobot field and are refused at plan; reshape them in a map.
 
 ## custom fields and tags
 
-- observe flattens `_custom_field_data` and `tags` into `attrs` for diffing and import.
+- observe flattens `custom_fields` and `tags` into `attrs` for diffing and import. nautobot
+  returns an object's tags as briefs carrying only an id, so a read that meets one lists the
+  tags once to name them.
 - on apply, custom fields and tags are only sent when the object type advertises support
   via the `features` set.
 - provisioning creates missing custom fields on apply and converges existing ones;
@@ -100,9 +103,12 @@ no nautobot field and are refused at plan; reshape them in a map.
   property and both sides (`dcim.site.tier: validation_regex "" -> "^[a-z]+$"`),
   so an update to a field this run did not create is read before it is written.
 - tags the applied objects reference but the backend lacks are created at apply, not
-  during schema provisioning. a successful apply lists them in `provision.created_tags`;
-  a tag that already existed is not listed. they are created before the ops, so an apply
-  that fails afterwards leaves a tag no report names, in that run or the resumed one.
+  during schema provisioning, for the content types of the objects that name them. a tag
+  that already exists is left as it is, and nautobot refuses to assign it to an object
+  whose content type it does not list. a successful apply lists the tags it created in
+  `provision.created_tags`; a tag that already existed is not listed. they are created
+  before the ops, so an apply that fails afterwards leaves a tag no report names, in that
+  run or the resumed one.
 
 a declared type is provisioned as the nautobot custom field type below. `ref` and
 `list_ref` are never provisioned as custom fields.
