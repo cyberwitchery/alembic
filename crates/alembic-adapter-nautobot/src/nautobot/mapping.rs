@@ -5,14 +5,10 @@ pub(super) use alembic_engine::mapping::{
 };
 use serde_json::Value;
 
+/// nautobot tags have no slug: an input names the tag.
 pub(super) fn build_tag_inputs(tags: &[String]) -> Vec<Value> {
     tags.iter()
-        .map(|tag| {
-            serde_json::json!({
-                "name": tag,
-                "slug": slugify(tag),
-            })
-        })
+        .map(|tag| serde_json::json!({ "name": tag }))
         .collect()
 }
 
@@ -26,9 +22,6 @@ mod tests {
         let tags = vec!["Alembic Test".to_string()];
         let inputs = build_tag_inputs(&tags);
         assert_eq!(inputs.len(), 1);
-        assert_eq!(
-            inputs[0],
-            json!({"name": "Alembic Test", "slug": "alembic-test"})
-        );
+        assert_eq!(inputs[0], json!({"name": "Alembic Test"}));
     }
 }
