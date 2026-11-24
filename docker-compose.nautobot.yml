@@ -1,0 +1,51 @@
+# its own project, so its postgres and redis never replace netbox's.
+name: alembic-nautobot
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: nautobot
+      POSTGRES_USER: nautobot
+      POSTGRES_PASSWORD: nautobot
+    volumes:
+      - nautobot-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nautobot -d nautobot"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  nautobot:
+    image: ${NAUTOBOT_IMAGE:-ghcr.io/nautobot/nautobot:3.2.8}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "8002:8080"
+    environment:
+      NAUTOBOT_DB_HOST: postgres
+      NAUTOBOT_DB_NAME: nautobot
+      NAUTOBOT_DB_USER: nautobot
+      NAUTOBOT_DB_PASSWORD: nautobot
+      NAUTOBOT_REDIS_HOST: redis
+      NAUTOBOT_SECRET_KEY: "alembic-nautobot-e2e-secret-0123456789abcdef0123456789abcdef"
+      NAUTOBOT_ALLOWED_HOSTS: "*"
+      NAUTOBOT_CREATE_SUPERUSER: "true"
+      NAUTOBOT_SUPERUSER_NAME: admin
+      NAUTOBOT_SUPERUSER_EMAIL: admin@example.com
+      NAUTOBOT_SUPERUSER_PASSWORD: admin
+      NAUTOBOT_SUPERUSER_API_TOKEN: "0123456789abcdef0123456789abcdef01234567"
+
+volumes:
+  nautobot-postgres:

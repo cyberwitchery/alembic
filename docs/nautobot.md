@@ -4,6 +4,13 @@ the nautobot adapter maps alembic ir objects to nautobot REST endpoints. it uses
 `extras/content-types` endpoint to resolve a `type` like `dcim.device`, and the openapi
 schema for the endpoint that type reads from.
 
+## supported versions
+
+the weekly e2e workflow (`.github/workflows/e2e.yml`, `scripts/e2e_nautobot.sh`) runs
+against `ghcr.io/nautobot/nautobot:3.2.8`, which is the version the adapter is validated
+against. nautobot.rs v0.11.0, the client release alembic builds on, runs its integration
+ci against the same image. use that pin when reporting a compatibility issue.
+
 ## object types and endpoints
 
 - the adapter resolves `type` names (e.g. `dcim.device`) to nautobot content types.
