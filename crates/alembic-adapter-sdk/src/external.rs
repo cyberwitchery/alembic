@@ -299,6 +299,11 @@ pub fn run_external_adapter<A: ExternalAdapter>(
                     );
                 }
             }
+        } else {
+            return write_error(
+                &mut writer,
+                "invalid setup: failed to retrieve fields on config struct".to_string(),
+            );
         }
     }
 
