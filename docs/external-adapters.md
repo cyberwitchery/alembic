@@ -41,7 +41,14 @@ answer the adapter never gave. the `key` and `attrs` maps you fill stay your own
 
 the `alembic-adapter-sdk` crate ships a small helper module for external
 adapters that removes request/response boilerplate and guarantees well-formed
-responses:
+responses.
+
+for your own custom configuration struct to work, the associated type
+`Config` must be set to it. note that this struct must not use
+`[serde(flatten)]`
+(that will ruin introspection on the struct fields).
+
+here's an example that can be used as a starting point for a new external adapter:
 
 ```rust
 use alembic_adapter_sdk::{ExternalAdapter, ExternalObject};
