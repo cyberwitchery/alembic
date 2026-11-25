@@ -442,8 +442,7 @@ macro_rules! alembic_external_main {
         fn main() -> std::io::Result<()> {
             let stdin = std::io::stdin();
             let mut stdout = std::io::BufWriter::new(std::io::stdout());
-            let adapter = $adapter;
-            $crate::external::run_external_adapter(adapter, (stdin, stdout))
+            $crate::external::run_external_adapter($adapter, (stdin, stdout))
         }
     };
 }
