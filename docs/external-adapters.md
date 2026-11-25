@@ -57,7 +57,6 @@ use alembic_adapter_sdk::alembic_external_main;
 struct MyAdapter;
 
 #[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
 struct MyConfig {
     #[serde(default)]
     my_backend_variable_x: f64,
