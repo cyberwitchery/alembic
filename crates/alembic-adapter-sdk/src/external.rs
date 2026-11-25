@@ -446,9 +446,9 @@ macro_rules! alembic_external_main {
 #[cfg(test)]
 mod tests {
     use super::{
-        run_external_adapter, ExternalAdapter, ExternalCapabilities, ExternalEnvelope,
-        ExternalEnvelopeRef, ExternalObject, ExternalRequest, ExternalRequestRef, ExternalResponse,
-        ExternalRole, EXTERNAL_PROTOCOL_VERSION,
+        run_external_adapter, struct_fields, ExternalAdapter, ExternalCapabilities,
+        ExternalEnvelope, ExternalEnvelopeRef, ExternalObject, ExternalRequest, ExternalRequestRef,
+        ExternalResponse, ExternalRole, EXTERNAL_PROTOCOL_VERSION,
     };
     use crate::apply_retry::{apply_non_delete_with_requested_journal, RetryApplyDriver};
     use crate::journal::{JournalSpec, PostgresTlsMode};
@@ -760,12 +760,15 @@ mod tests {
 
     #[derive(Debug, serde::Deserialize)]
     struct Point {
+        #[allow(dead_code)]
         x: i64,
+        #[allow(dead_code)]
         y: i64,
     }
 
     #[derive(Debug, serde::Deserialize)]
     struct TestConfigWithFlatten {
+        #[allow(dead_code)]
         #[serde(default, flatten)]
         point: Point,
     }
@@ -1389,5 +1392,17 @@ mod tests {
         let response = capabilities_over_stdio(EmitOnly);
         assert!(response.ok);
         assert_eq!(response.result.unwrap().role, ExternalRole::Emitter);
+    }
+
+    #[test]
+    fn fields_for_flattened_struct() {
+        let fields = struct_fields::<TestConfigWithFlatten>();
+        assert_eq!(fields, None);
+    }
+
+    #[test]
+    fn fields_for_non_flattened_struct() {
+        let fields = struct_fields::<TestConfig>();
+        assert!(fields.is_some());
     }
 }
