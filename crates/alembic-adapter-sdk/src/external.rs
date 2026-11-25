@@ -287,10 +287,16 @@ pub fn run_external_adapter<A: ExternalAdapter>(
     };
 
     if let Some(map) = setup.as_object() {
-        let fields = struct_fields::<<A as ExternalAdapter>::Config>();
+        let expected_fields = struct_fields::<<A as ExternalAdapter>::Config>();
         for (key, _) in map {
-            if !fields.contains(&key.as_str()) {
-                return write_error(&mut writer, format!("invalid setup: unknown field `{key}`"));
+            if !expected_fields.contains(&key.as_str()) {
+                return write_error(
+                    &mut writer,
+                    format!(
+                        "invalid setup: unknown field `{key}`, expected one of: {}",
+                        expected_fields.join(", ")
+                    ),
+                );
             }
         }
     }
