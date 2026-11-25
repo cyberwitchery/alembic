@@ -93,7 +93,13 @@ fn load_recursive(
         load_recursive(&include_path, visited, objects, schema, scope)?;
     }
 
-    merge_schema(schema, inventory.schema.map(ParsedSchema::expanded))?;
+    let expanded_schema = if let Some(parsed_schema) = inventory.schema {
+        Some(ParsedSchema::expanded(parsed_schema).map_err(|e| anyhow!("{}", e))?)
+    } else {
+        None
+    };
+
+    merge_schema(schema, expanded_schema)?;
     merge_scope(scope, inventory.scope)?;
 
     // set source location on each object from this file, with line numbers.
