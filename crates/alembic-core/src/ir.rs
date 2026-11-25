@@ -587,7 +587,7 @@ impl<'de> Deserialize<'de> for FieldSchema {
     }
 }
 
-/// schema metadata for a type.
+/// schema metadata for a type (key shorthands expanded to full dictionary keys).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TypeSchema {
@@ -602,6 +602,61 @@ pub struct TypeSchema {
 pub struct Schema {
     #[serde(default)]
     pub types: BTreeMap<String, TypeSchema>,
+}
+
+/// how schemas are parsed (allows for key shorthand syntax, which is expanded immediately so that
+/// the rest of the codebase can expect full type dictionaries as keys).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ParsedSchema {
+    #[serde(default)]
+    pub types: BTreeMap<String, ParsedTypeSchema>,
+}
+
+impl ParsedSchema {
+    /// substitute schema shorthand keys for their dictionary-based version from the fields of the type definition.
+    pub fn expanded(self) -> Schema {
+        let mut schema = Schema::default();
+        for (type_name, parsed_type_schema) in &self.types {
+            let key = match &parsed_type_schema.key {
+                TypeSchemaKey::Map(map) => map.clone(),
+                TypeSchemaKey::List(shorthand_keys) => {
+                    let mut expanded = BTreeMap::new();
+                    for k in shorthand_keys.iter() {
+                        let field_schema = parsed_type_schema.fields[k].clone();
+                        expanded.insert(k.clone(), field_schema);
+                    }
+                    expanded
+                }
+            };
+            let expanded_type_schema = TypeSchema {
+                key,
+                fields: parsed_type_schema.fields.clone(),
+            };
+            schema.types.insert(type_name.clone(), expanded_type_schema);
+        }
+        schema
+    }
+}
+
+/// how schema metadata for a type is parsed (allows for key shorthand)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ParsedTypeSchema {
+    pub key: TypeSchemaKey,
+    #[serde(default)]
+    pub fields: BTreeMap<String, FieldSchema>,
+}
+
+/// keys can be described either as:
+/// - a dictionary, explicitly restating the type of each field
+/// - a list of field names, their types are copied from the fields in a later step
+/// the choice is made based on the data type (map or list) in the json/yaml schema
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum TypeSchemaKey {
+    Map(BTreeMap<String, FieldSchema>),
+    List(Vec<String>),
 }
 
 /// object envelope for the ir.

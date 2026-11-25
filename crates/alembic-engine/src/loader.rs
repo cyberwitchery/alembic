@@ -3,6 +3,7 @@
 use crate::{
     explain_parse_error, report_to_result_with_sources, validate, DocumentKind, InputError,
 };
+use alembic_core::ir::ParsedSchema;
 use alembic_core::{Inventory, Schema, Scope, SourceLocation, Uid};
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
@@ -19,7 +20,7 @@ struct InventoryFile {
     #[serde(default)]
     imports: Vec<String>,
     #[serde(default)]
-    schema: Option<Schema>,
+    schema: Option<ParsedSchema>,
     #[serde(default)]
     scope: Option<Scope>,
     #[serde(default)]
@@ -92,7 +93,7 @@ fn load_recursive(
         load_recursive(&include_path, visited, objects, schema, scope)?;
     }
 
-    merge_schema(schema, inventory.schema)?;
+    merge_schema(schema, inventory.schema.map(ParsedSchema::expanded))?;
     merge_scope(scope, inventory.scope)?;
 
     // set source location on each object from this file, with line numbers.
