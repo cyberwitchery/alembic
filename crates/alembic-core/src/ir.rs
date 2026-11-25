@@ -651,6 +651,7 @@ pub struct ParsedTypeSchema {
 /// keys can be described either as:
 /// - a dictionary, explicitly restating the type of each field
 /// - a list of field names, their types are copied from the fields in a later step
+///
 /// the choice is made based on the data type (map or list) in the json/yaml schema
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
