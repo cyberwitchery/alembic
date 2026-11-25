@@ -4,8 +4,8 @@ use crate::journal::JournalSpec;
 use crate::state::StateData;
 use crate::types::{ApplyReport, BackendId, Op, ProvisionReport};
 use alembic_core::{JsonMap, Key, Schema, TypeName};
-use serde::de::DeserializeOwned;
-use serde::{Deserialize, Serialize};
+use serde::de::{DeserializeOwned, Visitor};
+use serde::{de, Deserialize, Deserializer, Serialize};
 use std::fmt;
 use std::io::{self, BufReader, Read, Write};
 
@@ -286,6 +286,15 @@ pub fn run_external_adapter<A: ExternalAdapter>(
         Err(e) => return write_error(&mut writer, setup_error(&e, &setup)),
     };
 
+    if let Some(map) = setup.as_object() {
+        let fields = struct_fields::<<A as ExternalAdapter>::Config>();
+        for (key, _) in map {
+            if !fields.contains(&key.as_str()) {
+                return write_error(&mut writer, format!("invalid setup: unknown field `{key}`"));
+            }
+        }
+    }
+
     if let Err(e) = adapter.setup(config) {
         return write_error(&mut writer, format!("invalid setup: {e:#}"));
     }
@@ -351,6 +360,40 @@ fn value_at<'a>(
         serde_path_to_error::Segment::Seq { index } => value.get(index),
         serde_path_to_error::Segment::Enum { .. } | serde_path_to_error::Segment::Unknown => None,
     })
+}
+
+pub fn struct_fields<'de, T: Deserialize<'de>>() -> &'static [&'static str] {
+    struct FieldsDeserializer<'a> {
+        out: &'a mut Option<&'static [&'static str]>,
+    }
+
+    impl<'de, 'a> Deserializer<'de> for FieldsDeserializer<'a> {
+        type Error = de::value::Error;
+
+        fn deserialize_any<V: Visitor<'de>>(self, _: V) -> Result<V::Value, Self::Error> {
+            Err(de::Error::custom("not a struct"))
+        }
+
+        fn deserialize_struct<V: Visitor<'de>>(
+            self,
+            _name: &'static str,
+            fields: &'static [&'static str],
+            _visitor: V,
+        ) -> Result<V::Value, Self::Error> {
+            *self.out = Some(fields);
+            Err(de::Error::custom("stop"))
+        }
+
+        serde::forward_to_deserialize_any! {
+            bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
+            bytes byte_buf option unit unit_struct newtype_struct seq tuple
+            tuple_struct map enum identifier ignored_any
+        }
+    }
+
+    let mut out = None;
+    let _ = T::deserialize(FieldsDeserializer { out: &mut out });
+    out.unwrap_or(&[])
 }
 
 /// a hint for a string that YAML 1.1 reads as a boolean but YAML 1.2 keeps as a string.
@@ -694,7 +737,6 @@ mod tests {
     }
 
     #[derive(Debug, serde::Deserialize)]
-    #[serde(deny_unknown_fields)]
     struct TestConfig {
         #[serde(default)]
         x: i64,
@@ -1086,10 +1128,12 @@ mod tests {
     }
 
     #[test]
-    fn external_adapter_rejects_invalid_setup() {
+    fn external_adapter_rejects_unknown_extra_key() {
         let envelope = ExternalEnvelope {
             version: EXTERNAL_PROTOCOL_VERSION,
-            setup: json!({ "fail_setup": true }),
+            setup: json!({
+                "extra": "I'm an extra string"
+            }),
             request: ExternalRequest::Read {
                 schema: Default::default(),
                 types: vec![],
@@ -1099,8 +1143,12 @@ mod tests {
 
         let response: ExternalResponse<Vec<ExternalObject>> = send_to_test_adapter(&envelope);
         assert!(!response.ok);
+
         let error = response.error.unwrap();
-        assert!(error.contains("unknown field `fail_setup`"), "{error}");
+        assert!(
+            error.contains("invalid setup: unknown field `extra`"),
+            "{error}"
+        );
     }
 
     #[test]
