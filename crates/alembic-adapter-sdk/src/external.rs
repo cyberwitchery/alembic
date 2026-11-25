@@ -287,16 +287,17 @@ pub fn run_external_adapter<A: ExternalAdapter>(
     };
 
     if let Some(map) = setup.as_object() {
-        let expected_fields = struct_fields::<<A as ExternalAdapter>::Config>();
-        for (key, _) in map {
-            if !expected_fields.contains(&key.as_str()) {
-                return write_error(
-                    &mut writer,
-                    format!(
-                        "invalid setup: unknown field `{key}`, expected one of: {}",
-                        expected_fields.join(", ")
-                    ),
-                );
+        if let Some(expected_fields) = struct_fields::<<A as ExternalAdapter>::Config>() {
+            for (key, _) in map {
+                if !expected_fields.contains(&key.as_str()) {
+                    return write_error(
+                        &mut writer,
+                        format!(
+                            "invalid setup: unknown field `{key}`, expected one of: {}",
+                            expected_fields.join(", ")
+                        ),
+                    );
+                }
             }
         }
     }
@@ -368,7 +369,7 @@ fn value_at<'a>(
     })
 }
 
-pub fn struct_fields<'de, T: Deserialize<'de>>() -> &'static [&'static str] {
+fn struct_fields<'de, T: Deserialize<'de>>() -> Option<&'static [&'static str]> {
     struct FieldsDeserializer<'a> {
         out: &'a mut Option<&'static [&'static str]>,
     }
@@ -399,7 +400,7 @@ pub fn struct_fields<'de, T: Deserialize<'de>>() -> &'static [&'static str] {
 
     let mut out = None;
     let _ = T::deserialize(FieldsDeserializer { out: &mut out });
-    out.unwrap_or(&[])
+    out
 }
 
 /// a hint for a string that YAML 1.1 reads as a boolean but YAML 1.2 keeps as a string.
@@ -755,6 +756,18 @@ mod tests {
         #[serde(default)]
         #[allow(dead_code)]
         tls: Option<TestTls>,
+    }
+
+    #[derive(Debug, serde::Deserialize)]
+    struct Point {
+        x: i64,
+        y: i64,
+    }
+
+    #[derive(Debug, serde::Deserialize)]
+    struct TestConfigWithFlatten {
+        #[serde(default, flatten)]
+        point: Point,
     }
 
     #[derive(Debug, serde::Deserialize)]
