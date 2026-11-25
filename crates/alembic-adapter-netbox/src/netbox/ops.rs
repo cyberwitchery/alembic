@@ -145,14 +145,11 @@ impl NetBoxAdapter {
     /// netbox reads a repeated `id` as an or. it is not `id__in`: netbox 4.x
     /// drops a filter it does not recognize rather than refusing it, so
     /// `id__in` reads as no filter at all and quietly returns the whole table.
-    async fn list_by_ids(&self, resource: &Resource<Value>, ids: &[u64]) -> Result<Vec<Value>> {
+    async fn list_by_ids(&self, endpoint: &str, ids: &[u64]) -> Result<Vec<Value>> {
         const CHUNK: usize = 100;
         let mut objects = Vec::new();
         for chunk in ids.chunks(CHUNK) {
-            let query = chunk.iter().fold(QueryBuilder::new(), |query, id| {
-                query.filter("id", id.to_string())
-            });
-            objects.extend(self.client.list_all(resource, Some(query)).await?);
+            objects.extend(self.client.list_all(endpoint, Some(chunk)).await?);
         }
         Ok(objects)
     }
@@ -198,7 +195,6 @@ impl NetBoxAdapter {
                 )
                 .await?;
             }
-            let resource: Resource<Value> = self.client.resource(info.endpoint.clone());
             // An unbound type cannot affect this run, so skip its listing.
             let bound = bound_only
                 .then(|| bound_int_ids(state_store, &type_name))
@@ -207,8 +203,8 @@ impl NetBoxAdapter {
                 continue;
             }
             let listing = match &bound {
-                Some(ids) => self.list_by_ids(&resource, ids).await,
-                None => self.client.list_all(&resource, None).await,
+                Some(ids) => self.list_by_ids(&info.endpoint, ids).await,
+                None => self.client.list_all(&info.endpoint, None).await,
             };
             let objects = match listing {
                 Ok(objects) => objects,

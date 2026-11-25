@@ -46,8 +46,8 @@ thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 uuid = { version = "1", features = ["serde", "v4", "v5"] }
 netbox = "0.12.0"
-nautobot = "0.10.0"
-infrahub = "0.5.0"
+nautobot = "0.11.0"
+infrahub = "0.6.0"
 reqwest = { version = "0.13", features = ["json"] }
 regex = "1"
 ipnet = "2"

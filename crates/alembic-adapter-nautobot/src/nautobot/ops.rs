@@ -1,7 +1,7 @@
 use super::mapping::{
     build_tag_inputs, custom_field_type_for_schema, custom_field_update_payload,
-    describe_custom_field_update, merge_shared_field_properties, slugify, supports_feature,
-    tags_from_value, validation_regex_for_schema, ExistingCustomField,
+    describe_custom_field_update, merge_shared_field_properties, tags_from_value,
+    validation_regex_for_schema, ExistingCustomField,
 };
 use super::registry::ObjectTypeRegistry;
 use super::state::{resolved_from_state, state_mappings};
@@ -14,7 +14,7 @@ use alembic_core::{
     key_string, FieldSchema, FieldType, JsonMap, Key, Schema, TypeName, TypeSchema, Uid,
 };
 use alembic_engine::{
-    apply_non_delete_journaled, build_key_from_schema, collect_tag_names, query_filters_from_key,
+    apply_non_delete_journaled, build_key_from_schema, query_filters_from_key,
     resolve_nested_ref_uid, resolve_ref_keyed_identity, Adapter, Emitter, ObservedState, Observer,
     RawNode,
 };
@@ -134,22 +134,36 @@ impl NautobotAdapter {
                     }
                     None => client.list_all(&resource, None).await?,
                 };
-                let mut raw = Vec::new();
-                for object in objects {
-                    let (backend_id, attrs) = extract_attrs(object)?;
-                    raw.push(RawNode {
-                        type_name: type_name.clone(),
-                        backend_id: BackendId::String(backend_id),
-                        attrs,
-                    });
-                }
-                Ok::<Vec<RawNode>, anyhow::Error>(raw)
+                Ok::<_, anyhow::Error>((type_name, objects))
             }));
         }
 
-        let mut raw = Vec::new();
+        let mut listed = Vec::new();
         for result in futures::future::join_all(tasks).await {
-            raw.extend(result??);
+            listed.push(result??);
+        }
+
+        // an object's tags read back as briefs carrying only the tag's id.
+        let tag_names = if listed
+            .iter()
+            .flat_map(|(_, objects)| objects)
+            .any(has_unnamed_tag)
+        {
+            self.client.fetch_tag_names().await?
+        } else {
+            BTreeMap::new()
+        };
+
+        let mut raw = Vec::new();
+        for (type_name, objects) in listed {
+            for object in objects {
+                let (backend_id, attrs) = extract_attrs(object, &tag_names)?;
+                raw.push(RawNode {
+                    type_name: type_name.clone(),
+                    backend_id: BackendId::String(backend_id),
+                    attrs,
+                });
+            }
         }
 
         let observed = resolve_ref_keyed_identity(
@@ -196,15 +210,12 @@ impl Emitter for NautobotAdapter {
         }
 
         let mut created_tags = Vec::new();
-        let tag_names = collect_tag_names(ops, |tn| registry.info_for(tn).map(|i| i.features))?;
-        if !tag_names.is_empty() {
-            let mut existing = self.client.fetch_tags().await?;
-            let missing: Vec<String> = tag_names.difference(&existing).cloned().collect();
-            if !missing.is_empty() {
-                created_tags = self.create_tags(&missing).await?;
-                for tag in missing {
-                    existing.insert(tag);
-                }
+        let mut missing_tags = tag_content_types(ops, &registry)?;
+        if !missing_tags.is_empty() {
+            let existing = self.client.fetch_tags().await?;
+            missing_tags.retain(|tag, _| !existing.contains(tag));
+            if !missing_tags.is_empty() {
+                created_tags = self.create_tags(&missing_tags).await?;
             }
         }
 
@@ -488,10 +499,6 @@ impl NautobotAdapter {
             let info = registry
                 .info_for(&type_name)
                 .ok_or_else(|| anyhow!("unsupported type {}", type_name))?;
-            if !supports_feature(&info.features, &["custom-fields"]) {
-                continue;
-            }
-
             let native_fields = native_fields_for_type(self, &info, type_schema).await?;
             let existing = custom_fields_by_type.get(type_name.as_str());
             let mut unjudged = Vec::new();
@@ -663,14 +670,7 @@ impl NautobotAdapter {
             .get(info.type_name.as_str())
             .cloned()
             .unwrap_or_default();
-        let body = build_request_body(
-            type_name,
-            type_schema,
-            &desired.attrs,
-            resolved,
-            &custom_fields,
-            &info.features,
-        )?;
+        let body = build_request_body(type_schema, &desired.attrs, resolved, &custom_fields)?;
         let response: Value = match resource.create(&body).await {
             Ok(response) => response,
             Err(err) if is_conflict_error(&err) => {
@@ -754,14 +754,7 @@ impl NautobotAdapter {
             .get(info.type_name.as_str())
             .cloned()
             .unwrap_or_default();
-        let body = build_request_body(
-            type_name,
-            type_schema,
-            &desired.attrs,
-            resolved,
-            &custom_fields,
-            &info.features,
-        )?;
+        let body = build_request_body(type_schema, &desired.attrs, resolved, &custom_fields)?;
         let _response = resource.patch(&id, &body).await?;
         Ok(id)
     }
@@ -801,15 +794,16 @@ impl NautobotAdapter {
         Ok(Some(id))
     }
 
-    /// returns the tags this call created. a tag that lost the race and already
-    /// existed is not one of them.
-    async fn create_tags(&self, tags: &[String]) -> Result<Vec<String>> {
+    /// creates each tag for the content types it is given, and returns the tags
+    /// this call created. a tag that lost the race and already existed is not one
+    /// of them.
+    async fn create_tags(&self, tags: &BTreeMap<String, BTreeSet<String>>) -> Result<Vec<String>> {
         let resource = self.client.extras().tags();
         let mut created = Vec::new();
-        for tag in tags {
+        for (tag, content_types) in tags {
             let payload = serde_json::json!({
                 "name": tag,
-                "slug": slugify(tag),
+                "content_types": content_types,
             });
             if let Err(err) = resource.create(&payload).await {
                 let existing = self.client.fetch_tags().await?;
@@ -989,7 +983,69 @@ fn custom_field_payload(content_type: &str, field_name: &str, field_schema: &Fie
     Value::Object(payload)
 }
 
-fn extract_attrs(value: Value) -> Result<(String, JsonMap)> {
+/// the tags `ops` set, each with the content types of the objects carrying it:
+/// nautobot applies a tag only to the content types it lists.
+fn tag_content_types(
+    ops: &[Op],
+    registry: &ObjectTypeRegistry,
+) -> Result<BTreeMap<String, BTreeSet<String>>> {
+    let mut by_tag: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for op in ops {
+        let (type_name, desired) = match op {
+            Op::Create {
+                type_name, desired, ..
+            }
+            | Op::Update {
+                type_name, desired, ..
+            } => (type_name, desired),
+            Op::Delete { .. } => continue,
+        };
+        let Some(tags) = desired.attrs.get("tags") else {
+            continue;
+        };
+        if registry.info_for(type_name).is_none() {
+            return Err(anyhow!("unsupported type {}", type_name));
+        }
+        for tag in tags_from_value(tags)? {
+            by_tag
+                .entry(tag)
+                .or_default()
+                .insert(type_name.as_str().to_string());
+        }
+    }
+    Ok(by_tag)
+}
+
+fn has_unnamed_tag(object: &Value) -> bool {
+    object
+        .get("tags")
+        .and_then(Value::as_array)
+        .is_some_and(|tags| {
+            tags.iter()
+                .any(|tag| tag.is_object() && tag.get("name").is_none())
+        })
+}
+
+/// `tags` with each brief nautobot returned replaced by its name from `tag_names`.
+fn name_tag_briefs(tags: Value, tag_names: &BTreeMap<String, String>) -> Value {
+    let Value::Array(items) = tags else {
+        return tags;
+    };
+    Value::Array(
+        items
+            .into_iter()
+            .map(|item| {
+                let name = item
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .and_then(|id| tag_names.get(id));
+                name.map_or(item, |name| Value::String(name.clone()))
+            })
+            .collect(),
+    )
+}
+
+fn extract_attrs(value: Value, tag_names: &BTreeMap<String, String>) -> Result<(String, JsonMap)> {
     let Value::Object(mut map) = value else {
         return Err(anyhow!("expected object payload"));
     };
@@ -998,7 +1054,7 @@ fn extract_attrs(value: Value) -> Result<(String, JsonMap)> {
         .and_then(Value::as_str)
         .ok_or_else(|| anyhow!("missing id in payload"))?
         .to_string();
-    let custom_fields = map.remove("_custom_field_data");
+    let custom_fields = map.remove("custom_fields");
     let tags = map.remove("tags");
     map.remove("id");
     map.remove("url");
@@ -1010,7 +1066,7 @@ fn extract_attrs(value: Value) -> Result<(String, JsonMap)> {
         }
     }
     if let Some(tags_value) = tags {
-        let tags = tags_from_value(&tags_value)?;
+        let tags = tags_from_value(&name_tag_briefs(tags_value, tag_names))?;
         attrs.insert(
             "tags".to_string(),
             Value::Array(tags.into_iter().map(Value::String).collect()),
@@ -1123,21 +1179,16 @@ fn resolve_ref_uid(
 }
 
 fn build_request_body(
-    type_name: &TypeName,
     type_schema: &TypeSchema,
     attrs: &JsonMap,
     resolved: &BTreeMap<Uid, String>,
     custom_fields: &BTreeSet<String>,
-    features: &BTreeSet<String>,
 ) -> Result<Value> {
     let mut body = Map::new();
     let mut custom = Map::new();
 
     for (key, value) in attrs.iter() {
         if key == "tags" {
-            if !supports_feature(features, &["tags"]) {
-                return Err(anyhow!("{} does not support tags", type_name));
-            }
             let tags = tags_from_value(value)?;
             let tag_inputs = build_tag_inputs(&tags);
             body.insert(key.clone(), Value::Array(tag_inputs));
@@ -1156,9 +1207,6 @@ fn build_request_body(
         };
 
         if custom_fields.contains(key) {
-            if !supports_feature(features, &["custom-fields"]) {
-                return Err(anyhow!("{} does not support custom fields", type_name));
-            }
             custom.insert(key.clone(), encoded);
         } else {
             body.insert(key.clone(), encoded);
@@ -1166,7 +1214,7 @@ fn build_request_body(
     }
 
     if !custom.is_empty() {
-        body.insert("_custom_field_data".to_string(), Value::Object(custom));
+        body.insert("custom_fields".to_string(), Value::Object(custom));
     }
 
     Ok(Value::Object(body))
@@ -1619,15 +1667,7 @@ mod tests {
         let mut resolved = BTreeMap::new();
         resolved.insert(site_uid, "site-uuid".to_string());
 
-        let body = build_request_body(
-            &TypeName::new("dcim.device"),
-            &type_schema,
-            &attrs,
-            &resolved,
-            &BTreeSet::new(),
-            &BTreeSet::new(),
-        )
-        .unwrap();
+        let body = build_request_body(&type_schema, &attrs, &resolved, &BTreeSet::new()).unwrap();
         assert_eq!(body.get("site").unwrap(), &json!("site-uuid"));
     }
 
@@ -1654,20 +1694,13 @@ mod tests {
         let mut attrs = JsonMap::default();
         attrs.insert("rack".to_string(), json!(null));
 
-        let body = build_request_body(
-            &TypeName::new("dcim.device"),
-            &type_schema,
-            &attrs,
-            &BTreeMap::new(),
-            &BTreeSet::new(),
-            &BTreeSet::new(),
-        )
-        .unwrap();
+        let body =
+            build_request_body(&type_schema, &attrs, &BTreeMap::new(), &BTreeSet::new()).unwrap();
         assert_eq!(body.get("rack").unwrap(), &json!(null));
     }
 
     #[test]
-    fn test_build_request_body_null_custom_field_clears_via_custom_data() {
+    fn test_build_request_body_null_custom_field_clears_via_custom_fields() {
         let mut fields = BTreeMap::new();
         fields.insert(
             "owner".to_string(),
@@ -1690,16 +1723,14 @@ mod tests {
         attrs.insert("owner".to_string(), json!(null));
 
         let body = build_request_body(
-            &TypeName::new("dcim.device"),
             &type_schema,
             &attrs,
             &BTreeMap::new(),
             &BTreeSet::from(["owner".to_string()]),
-            &BTreeSet::from(["custom-fields".to_string()]),
         )
         .unwrap();
         let custom = body
-            .get("_custom_field_data")
+            .get("custom_fields")
             .and_then(Value::as_object)
             .unwrap();
         assert_eq!(custom.get("owner").unwrap(), &json!(null));
@@ -1738,15 +1769,8 @@ mod tests {
         assert!(!attrs.contains_key("if_type"));
 
         // write: it goes back out under its own name, with no `if_type` remap.
-        let body = build_request_body(
-            &TypeName::new("dcim.interface"),
-            &type_schema,
-            &attrs,
-            &BTreeMap::new(),
-            &BTreeSet::new(),
-            &BTreeSet::new(),
-        )
-        .unwrap();
+        let body =
+            build_request_body(&type_schema, &attrs, &BTreeMap::new(), &BTreeSet::new()).unwrap();
         assert_eq!(body.get("type").unwrap(), &json!("1000base-t"));
         assert!(body.get("if_type").is_none());
     }
@@ -2033,7 +2057,6 @@ mod tests {
         let info = super::super::registry::ObjectTypeInfo {
             type_name: TypeName::new("dcim.locationtype"),
             endpoint: "dcim/location-types/".to_string(),
-            features: BTreeSet::new(),
         };
         let type_schema = TypeSchema {
             key: BTreeMap::new(),
@@ -2067,7 +2090,6 @@ mod tests {
         let info = super::super::registry::ObjectTypeInfo {
             type_name: TypeName::new("dcim.locationtype"),
             endpoint: "dcim/location-types/".to_string(),
-            features: BTreeSet::new(),
         };
         let type_schema = TypeSchema {
             key: BTreeMap::new(),
@@ -2095,7 +2117,6 @@ mod tests {
         let info = super::super::registry::ObjectTypeInfo {
             type_name: TypeName::new("dcim.platform"),
             endpoint: "dcim/platforms/".to_string(),
-            features: BTreeSet::new(),
         };
         let string = FieldSchema {
             r#type: FieldType::String,
@@ -2165,7 +2186,6 @@ mod tests {
         let info = super::super::registry::ObjectTypeInfo {
             type_name: TypeName::new(type_name),
             endpoint: endpoint.to_string(),
-            features: BTreeSet::new(),
         };
         let type_schema = TypeSchema {
             key: BTreeMap::new(),

@@ -1,0 +1,1 @@
+- infrahub: a response in an unexpected shape now fails the read (#558)

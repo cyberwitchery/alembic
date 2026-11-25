@@ -1,18 +1,14 @@
 pub(super) use alembic_engine::mapping::{
     custom_field_type_for_schema, custom_field_update_payload, describe_custom_field_update,
-    merge_shared_field_properties, slugify, supports_feature, tags_from_value,
-    validation_regex_for_schema, ExistingCustomField,
+    merge_shared_field_properties, slugify, tags_from_value, validation_regex_for_schema,
+    ExistingCustomField,
 };
 use serde_json::Value;
 
+/// nautobot tags have no slug: an input names the tag.
 pub(super) fn build_tag_inputs(tags: &[String]) -> Vec<Value> {
     tags.iter()
-        .map(|tag| {
-            serde_json::json!({
-                "name": tag,
-                "slug": slugify(tag),
-            })
-        })
+        .map(|tag| serde_json::json!({ "name": tag }))
         .collect()
 }
 
@@ -26,9 +22,6 @@ mod tests {
         let tags = vec!["Alembic Test".to_string()];
         let inputs = build_tag_inputs(&tags);
         assert_eq!(inputs.len(), 1);
-        assert_eq!(
-            inputs[0],
-            json!({"name": "Alembic Test", "slug": "alembic-test"})
-        );
+        assert_eq!(inputs[0], json!({"name": "Alembic Test"}));
     }
 }

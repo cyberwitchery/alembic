@@ -55,7 +55,7 @@ jobs:
       - name: sdk without the postgres feature
         run: cargo test -p alembic-adapter-sdk --lib
 
-      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+      - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
         with:
           tool: cargo-deny
 
@@ -132,7 +132,7 @@ jobs:
           shared-key: alembic-ci
 
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
         with:
           tool: cargo-llvm-cov
 
@@ -226,7 +226,7 @@ jobs:
         with:
           shared-key: alembic-ci
 
-      - uses: cyberwitchery/unsafe-budget@1b02eea5f921a703c510f790236c07b26e4aee8a # v0.5.5
+      - uses: cyberwitchery/unsafe-budget@cae2a755e7dbfa48f96f887b6012bf60d1446f2e # v0.6.0
         with:
           mode: check
 

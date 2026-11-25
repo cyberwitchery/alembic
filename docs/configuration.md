@@ -33,3 +33,39 @@ the same setting as an environment variable:
 ```bash
 export ALEMBIC_PLUGINS_DIR="/home/user/alembic_plugins"
 ```
+
+## proxies
+
+the http adapters (netbox, nautobot, infrahub, generic, peeringdb) reach their
+backend through the proxy the environment names. for each scheme the first of
+these that is set wins:
+
+1. `HTTP_PROXY` for `http://` urls, `HTTPS_PROXY` for `https://` ones
+2. on macos and windows, the system proxy settings
+3. `ALL_PROXY`
+
+of the system settings, macos gives only the http and https proxy host and
+port: its "bypass proxy settings for these hosts & domains" list and "exclude
+simple hostnames" are not read, so a host listed only there goes through the
+proxy and belongs in `NO_PROXY`. windows also gives its bypass list
+(`ProxyOverride`), which is used when `NO_PROXY` is unset, and its proxy
+(`ProxyServer`) only as one `host:port` for every protocol: a per-protocol
+list (`http=...;https=...`) is ignored, and a single `http=`, `https=` or
+`socks=` entry fails the run. set `HTTP_PROXY` and `HTTPS_PROXY` instead.
+
+a proxy url must be `http://` or `https://`. the adapters are built without
+socks support, so if `HTTP_PROXY`, `HTTPS_PROXY` or `ALL_PROXY` gives a backend
+a `socks4://`, `socks4a://`, `socks5://` or `socks5h://` proxy, the run fails
+before anything is sent: exit `69` with `unsupported scheme`, or exit `1` from
+peeringdb. to keep such a url set, add the backend to `NO_PROXY`.
+
+`NO_PROXY` lists what is reached directly, comma-separated: hosts, domains (a
+domain covers its subdomains), ip addresses and cidr ranges; `*` covers every
+host name, but not an ip address. each variable is also read in lowercase when
+the uppercase one is unset. external adapters inherit the environment and
+decide for themselves.
+
+```bash
+export HTTPS_PROXY="http://proxy.example.com:3128"
+export NO_PROXY="localhost,127.0.0.1,.corp.example.com"
+```

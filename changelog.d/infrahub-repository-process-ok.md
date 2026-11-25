@@ -1,0 +1,1 @@
+- infrahub adapter: repository-mode schema provisioning waits for the `InfrahubRepositoryProcess` import task and fails if it is not queued, does not complete, or runs past 60s

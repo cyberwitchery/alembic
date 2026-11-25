@@ -1,0 +1,1 @@
+- nautobot adapter: tags and custom field values now apply and read back on nautobot 3.2.8 (#565)
