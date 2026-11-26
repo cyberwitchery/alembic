@@ -187,12 +187,11 @@ pub trait ExternalAdapter {
     /// error returned by the adapter's methods; only its `Display` reaches the host.
     type Error: fmt::Display;
 
-    /// the type passed to `setup` if `CHECK_SETUP_KEYS` is true.
+    /// the type passed to `setup`.
     type Config: DeserializeOwned;
 
-    /// set this to false in derived adapters to use manual key checking.
-    /// when using the default (true), the `Config` type is automatically checked for matching keys
-    /// and types, but can't handle some features (such as flattened structs).
+    /// set this to false in derived adapters to use manual key checking of the `Config` type passed
+    /// to `setup` (useful when using a `Value` config).
     const CHECK_SETUP_KEYS: bool = true;
 
     /// initial configuration of the adapter
@@ -1544,7 +1543,7 @@ mod tests {
     }
 
     #[test]
-    fn error_when_external_adapter_with_value_config() {
+    fn value_config_with_check_turned_off_receives_setup() {
         let (in_reader, mut in_writer) = std::io::pipe().unwrap();
         let (out_reader, out_writer) = std::io::pipe().unwrap();
 

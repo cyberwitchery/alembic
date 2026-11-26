@@ -168,8 +168,8 @@ impl ExternalAdapter for MyAdapter {
     type Config = MyConfig;
 
     fn setup(&mut self, configuration: MyConfig) -> Result<(), String> {
-        if let Some(err) = Self::check_for_error(configuration) {
-            return Err(anyhow!("invalid configuration: {}", err))
+        if configuration.my_backend_variable_x < 0.0 {
+            return Err("`x` can't be negative".into());
         }
         Ok(())
     }
