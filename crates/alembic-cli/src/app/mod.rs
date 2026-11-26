@@ -107,8 +107,8 @@ enum Command {
         /// to a file. exits 2 on drift. mutually exclusive with --dry-run.
         #[arg(long, default_value_t = false, conflicts_with = "dry_run")]
         report: bool,
-        /// allow the plan to include deletes (objects, and destructive schema
-        /// provisioning) for objects present on the backend but not declared.
+        /// allow the plan to include deletes for objects present on the backend
+        /// but not declared.
         #[arg(long, default_value_t = false)]
         allow_delete: bool,
         /// do not adopt backend objects by key match: state-known objects still
@@ -301,7 +301,7 @@ fn schema_preview_failure(err: anyhow::Error) -> Result<()> {
 }
 
 /// how a `plan` run holds the state lock. a run that saves nothing needs no more
-/// than a reader's share; `--provision` writes backend schema, so it is not one.
+/// than a reader's share
 fn state_lock_for_plan(report: bool, dry_run: bool) -> StateLock {
     if report || dry_run {
         StateLock::Shared
@@ -381,15 +381,15 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<ExitCode> {
             print_state_context(&state_context);
             // a drift report asserts what the backend holds; one that observes
             // nothing would report every declared object absent, so refuse it
-            // before provisioning or a backend read or write.
+            // before a backend read or write.
             if report {
                 guard_drift_report(&backend)?;
             }
             // read-only schema preview: what apply's ensure_schema would provision,
-            // writing nothing. skipped when --provision actually provisions now, and
-            // for a read-only backend, which cannot provision schema at all. all
-            // preview output goes to stderr so it never pollutes a --dry-run/--report
-            // stdout; the machine-readable copy rides in the plan's schema_preview.
+            // writing nothing. skipped for a read-only backend, which cannot provision
+            // schema at all. all preview output goes to stderr so it never pollutes
+            // a --dry-run/--report stdout; the machine-readable copy rides in the plan's
+            // schema_preview.
             let mut schema_preview = None;
             if let Ok(emitter) = backend.emitter() {
                 match emitter.preview_schema(&inventory.schema).await {
