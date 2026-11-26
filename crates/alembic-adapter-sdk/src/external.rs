@@ -836,15 +836,6 @@ mod tests {
 
     #[test]
     fn external_adapter_communication_over_stdio() {
-        let adapter = TestExternalAdapter::default();
-
-        let (in_reader, mut in_writer) = std::io::pipe().unwrap();
-        let (out_reader, out_writer) = std::io::pipe().unwrap();
-
-        let t = std::thread::spawn(move || {
-            assert!(run_external_adapter(adapter, (in_reader, out_writer)).is_ok());
-        });
-
         let dummy_type_schema = TypeSchema {
             key: [].into(),
             fields: [].into(),
@@ -865,33 +856,16 @@ mod tests {
             request,
         };
 
-        writeln!(in_writer, "{}", serde_json::to_string(&envelope).unwrap()).unwrap();
-        drop(in_writer);
-
-        let mut response = String::new();
-        BufReader::new(out_reader).read_line(&mut response).unwrap();
-
-        let response: ExternalResponse<ProvisionReport> = serde_json::from_str(&response).unwrap();
+        let response: ExternalResponse<ProvisionReport> = send_to_test_adapter(&envelope);
         assert!(response.ok);
         assert_eq!(
             response.result.unwrap().created_fields,
             vec!["a".to_string(), "b".to_string()]
         );
-
-        t.join().unwrap();
     }
 
     #[test]
     fn external_adapter_preview_schema_roundtrip() {
-        let adapter = TestExternalAdapter::default();
-
-        let (in_reader, mut in_writer) = std::io::pipe().unwrap();
-        let (out_reader, out_writer) = std::io::pipe().unwrap();
-
-        let t = std::thread::spawn(move || {
-            assert!(run_external_adapter(adapter, (in_reader, out_writer)).is_ok());
-        });
-
         let dummy_type_schema = TypeSchema {
             key: [].into(),
             fields: [].into(),
@@ -911,22 +885,13 @@ mod tests {
             request,
         };
 
-        writeln!(in_writer, "{}", serde_json::to_string(&envelope).unwrap()).unwrap();
-        drop(in_writer);
-
-        let mut response = String::new();
-        BufReader::new(out_reader).read_line(&mut response).unwrap();
-
-        let response: ExternalResponse<Option<ProvisionReport>> =
-            serde_json::from_str(&response).unwrap();
+        let response: ExternalResponse<Option<ProvisionReport>> = send_to_test_adapter(&envelope);
         assert!(response.ok);
         // preview returned Some(report) with the same fields ensure_schema would create.
         assert_eq!(
             response.result.flatten().unwrap().created_fields,
             vec!["a".to_string(), "b".to_string()]
         );
-
-        t.join().unwrap();
     }
 
     #[test]
@@ -1379,25 +1344,12 @@ mod tests {
     fn capabilities_over_stdio<A: ExternalAdapter + Send + 'static>(
         adapter: A,
     ) -> ExternalResponse<ExternalCapabilities> {
-        let (in_reader, mut in_writer) = std::io::pipe().unwrap();
-        let (out_reader, out_writer) = std::io::pipe().unwrap();
-
-        let t = std::thread::spawn(move || {
-            assert!(run_external_adapter(adapter, (in_reader, out_writer)).is_ok());
-        });
-
         let envelope = ExternalEnvelope {
             version: EXTERNAL_PROTOCOL_VERSION,
             setup: Default::default(),
             request: ExternalRequest::Capabilities,
         };
-        writeln!(in_writer, "{}", serde_json::to_string(&envelope).unwrap()).unwrap();
-        drop(in_writer);
-
-        let mut response = String::new();
-        BufReader::new(out_reader).read_line(&mut response).unwrap();
-        t.join().unwrap();
-        serde_json::from_str(&response).unwrap()
+        send_to_adapter(adapter, &envelope)
     }
 
     #[test]
@@ -1509,30 +1461,13 @@ mod tests {
 
     #[test]
     fn error_when_external_adapter_config_has_no_fields() {
-        let (in_reader, mut in_writer) = std::io::pipe().unwrap();
-        let (out_reader, out_writer) = std::io::pipe().unwrap();
-
-        let adapter = TestExternalAdapterWithFlatten;
-
-        let t = std::thread::spawn(move || {
-            assert!(run_external_adapter(adapter, (in_reader, out_writer)).is_ok());
-        });
-
         let envelope = ExternalEnvelope {
             version: EXTERNAL_PROTOCOL_VERSION,
             setup: json!({ "x": 1, "y": 2 }),
             request: ExternalRequest::Capabilities,
         };
-        writeln!(in_writer, "{}", serde_json::to_string(&envelope).unwrap()).unwrap();
-        drop(in_writer);
-
-        let mut raw_response = String::new();
-        BufReader::new(out_reader)
-            .read_line(&mut raw_response)
-            .unwrap();
-        t.join().unwrap();
         let external_response: ExternalResponse<ExternalCapabilities> =
-            serde_json::from_str(&raw_response).unwrap();
+            send_to_adapter(TestExternalAdapterWithFlatten, &envelope);
 
         assert!(!external_response.ok);
         assert!(external_response.error.is_some());
@@ -1582,33 +1517,17 @@ mod tests {
 
     #[test]
     fn value_config_with_check_turned_off_receives_setup() {
-        let (in_reader, mut in_writer) = std::io::pipe().unwrap();
-        let (out_reader, out_writer) = std::io::pipe().unwrap();
-
         let setup = json!({ "x": 123, "s": "foo" });
         let adapter = TestExternalAdapterWithValueConfig {
             expected_setup_value: setup.clone(),
         };
-
-        let t = std::thread::spawn(move || {
-            assert!(run_external_adapter(adapter, (in_reader, out_writer)).is_ok());
-        });
-
         let envelope = ExternalEnvelope {
             version: EXTERNAL_PROTOCOL_VERSION,
             setup,
             request: ExternalRequest::Capabilities,
         };
-        writeln!(in_writer, "{}", serde_json::to_string(&envelope).unwrap()).unwrap();
-        drop(in_writer);
-
-        let mut raw_response = String::new();
-        BufReader::new(out_reader)
-            .read_line(&mut raw_response)
-            .unwrap();
-        t.join().unwrap();
         let external_response: ExternalResponse<ExternalCapabilities> =
-            serde_json::from_str(&raw_response).unwrap();
+            send_to_adapter(adapter, &envelope);
 
         assert!(external_response.ok);
     }
