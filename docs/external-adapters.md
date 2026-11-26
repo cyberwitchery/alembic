@@ -332,8 +332,8 @@ unavailable for this backend` and the provisioning paths refuse outright. answer
 either way, unless you declare the `observer` role: leaving it to the unknown-method
 branch fails the built-in `protocol/preview-schema-empty` check.
 
-this report is also the destructive-provisioning gate. before `plan --provision` or
-`apply` calls `ensure_schema`, the host previews and refuses the run with
+this report is also the destructive-provisioning gate. before `apply --provision`
+calls `ensure_schema`, the host previews and refuses the run with
 `provisioning would delete schema; re-run with --allow-delete:` followed by a bullet
 per entry, when `deleted_object_types` or `deleted_object_fields` is non-empty. schema
 deletes cascade to their objects on the backend, so an adapter that drops a type
@@ -341,8 +341,8 @@ without listing it here takes the objects with it and never prompts. list what y
 would delete, even if the same call also creates: what you list is what the
 operator is shown.
 
-a `null` result refuses the run rather than skipping the gate: `plan --provision` and
-`apply` stop with `this backend cannot preview schema`, since a delete nobody can see
+a `null` result refuses the run rather than skipping the gate: `apply --provision`
+stops with `this backend cannot preview schema`, since a delete nobody can see
 is the case the gate is for. so `null` is a capability statement, not a default to
 fall through: an adapter that provisions anything must answer a report, and an
 operator who wants the run without one passes `--allow-delete`. the rust sdk's default
@@ -380,7 +380,7 @@ the host calls this once when it constructs the backend, to learn which side of
 the adapter contract the adapter implements. the result carries a `role`:
 
 - `observer`: read-only. the host calls `read` but never `write` or either
-  provisioning method; `apply` and `plan --provision` reject the backend up front.
+  provisioning method; `apply` rejects the backend up front.
 - `emitter`: write-only. the host calls `write` but never `read`; plain `plan`
   plans every declared object as a create against an empty observation, while
   `import` and `plan --report` reject the backend up front instead of

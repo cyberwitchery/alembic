@@ -1,0 +1,1 @@
+- **breaking** plan, apply: schema is provisioned by `apply --provision` instead of `plan --provision`; a plain `apply` provisions nothing and refuses a plan whose schema preview lists changes (#552)

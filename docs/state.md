@@ -83,8 +83,7 @@ for the local backend, a run that loads identity state takes an advisory lock on
 a sidecar `<state>.lock` file next to the state file and holds it for its whole
 lifetime, so two runs cannot load it and race to save, silently clobbering each
 other's mappings. `import`, `plan --report`, and `plan --dry-run` take it shared
-because they never save state; adding `--provision` to a report makes the lock
-exclusive because that run writes backend schema. a plan that writes a plan file
+because they never save state. a plan that writes a plan file
 and `apply` take it exclusive and save state. `validate`, `map`, and stateless
 import do not load state or take its lock. neither lock kind starts while an
 incompatible holder has it: the refused run fails fast with `another alembic run
