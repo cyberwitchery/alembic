@@ -187,7 +187,13 @@ pub trait ExternalAdapter {
     /// error returned by the adapter's methods; only its `Display` reaches the host.
     type Error: fmt::Display;
 
+    /// the type passed to `setup` if `CHECK_SETUP_KEYS` is true.
     type Config: DeserializeOwned;
+
+    /// set this to false in derived adapters to use manual key checking.
+    /// when using the default (true), the `Config` type is automatically checked for matching keys
+    /// and types, but can't handle some features (such as flattened structs).
+    const CHECK_SETUP_KEYS: bool = true;
 
     /// initial configuration of the adapter
     fn setup(&mut self, configuration: Self::Config) -> Result<(), Self::Error>;
@@ -287,7 +293,9 @@ pub fn run_external_adapter<A: ExternalAdapter>(
     };
 
     if let Some(map) = setup.as_object() {
-        if let Some(expected_fields) = struct_fields::<<A as ExternalAdapter>::Config>() {
+        if !A::CHECK_SETUP_KEYS {
+            // perform no checking
+        } else if let Some(expected_fields) = struct_fields::<<A>::Config>() {
             for (key, _) in map {
                 if !expected_fields.contains(&key.as_str()) {
                     return write_error(
@@ -1473,5 +1481,76 @@ mod tests {
             .error
             .unwrap()
             .contains("invalid setup: failed to retrieve fields on config struct"));
+    }
+
+    #[derive(Debug, Default)]
+    struct TestExternalAdapterWithValueConfig {
+        expected_setup_value: serde_json::Value,
+    }
+
+    impl ExternalAdapter for TestExternalAdapterWithValueConfig {
+        type Error = String;
+        type Config = serde_json::Value;
+
+        const CHECK_SETUP_KEYS: bool = false;
+
+        fn setup(&mut self, configuration: Self::Config) -> Result<(), Self::Error> {
+            if configuration == self.expected_setup_value {
+                Ok(())
+            } else {
+                Err(format!("invalid configuration value: {}", configuration))
+            }
+        }
+
+        fn read(
+            &mut self,
+            _schema: &Schema,
+            _types: &[TypeName],
+            _state: &StateData,
+        ) -> Result<Vec<ExternalObject>, Self::Error> {
+            unreachable!()
+        }
+
+        fn write(
+            &mut self,
+            _schema: &Schema,
+            _ops: &[Op],
+            _state: &StateData,
+        ) -> Result<ApplyReport, Self::Error> {
+            unreachable!()
+        }
+    }
+
+    #[test]
+    fn error_when_external_adapter_with_value_config() {
+        let (in_reader, mut in_writer) = std::io::pipe().unwrap();
+        let (out_reader, out_writer) = std::io::pipe().unwrap();
+
+        let setup = json!({ "x": 123, "s": "foo" });
+        let adapter = TestExternalAdapterWithValueConfig {
+            expected_setup_value: setup.clone(),
+        };
+
+        let t = std::thread::spawn(move || {
+            assert!(run_external_adapter(adapter, (in_reader, out_writer)).is_ok());
+        });
+
+        let envelope = ExternalEnvelope {
+            version: EXTERNAL_PROTOCOL_VERSION,
+            setup,
+            request: ExternalRequest::Capabilities,
+        };
+        writeln!(in_writer, "{}", serde_json::to_string(&envelope).unwrap()).unwrap();
+        drop(in_writer);
+
+        let mut raw_response = String::new();
+        BufReader::new(out_reader)
+            .read_line(&mut raw_response)
+            .unwrap();
+        t.join().unwrap();
+        let external_response: ExternalResponse<ExternalCapabilities> =
+            serde_json::from_str(&raw_response).unwrap();
+
+        assert!(external_response.ok);
     }
 }

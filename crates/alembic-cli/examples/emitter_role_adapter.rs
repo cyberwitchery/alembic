@@ -13,6 +13,7 @@ pub struct EmitterRoleAdapter {}
 impl ExternalAdapter for EmitterRoleAdapter {
     type Error = anyhow::Error;
     type Config = serde_json::Value;
+    const CHECK_SETUP_KEYS: bool = false;
 
     fn setup(&mut self, _configuration: serde_json::Value) -> Result<()> {
         Ok(())

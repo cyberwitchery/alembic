@@ -45,10 +45,18 @@ responses.
 
 for your own custom configuration struct to work, the associated type
 `Config` must be set to it. note that this struct must be a plain
-struct and cannot use `#[serde(flatten)]` (which will ruin introspection
-on its struct fields).
+struct and cannot use `#[serde(flatten)]` (which will make introspection
+on its struct fields fail). to turn off checking of the `Config`
+struct and use a manual `serde_json::Value` instead, set the trait
+const bool `CHECK_SETUP_KEYS` to false in your external adapter
+implementation.
 
-here's an example that can be used as a starting point for a new external adapter:
+note that when checking is enabled, all top level keys will be
+automatically checked by the sdk, no extra annotations needed. for
+full checking of nested values in the config,
+`#[serde(deny_unknown_fields)]` must be set on each struct.
+
+here's an example that can be used as a starting point for a new (checked) external adapter:
 
 ```rust
 use alembic_adapter_sdk::{ExternalAdapter, ExternalObject};
