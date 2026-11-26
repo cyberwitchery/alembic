@@ -138,6 +138,10 @@ enum Command {
         /// allow delete ops (object and destructive schema deletes) in the plan.
         #[arg(long, default_value_t = false)]
         allow_delete: bool,
+        /// run adapter schema provisioning (ensure_schema) before writing;
+        /// gated by --allow-delete when it would delete schema.
+        #[arg(long, default_value_t = false)]
+        provision: bool,
         /// prompt for confirmation per operation, applying only approved ops;
         /// cannot be combined with `--plan -`, since stdin carries the plan.
         #[arg(short = 'i', long, default_value_t = false)]
@@ -461,6 +465,7 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<ExitCode> {
             backend,
             backend_config,
             allow_delete,
+            provision,
             interactive,
             only,
             only_file,
@@ -545,7 +550,7 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<ExitCode> {
             if !no_stale_check {
                 guard_stale_plan(&backend, &plan, &state).await?;
             }
-            let report = apply_plan(&backend, &plan, &mut state, allow_delete).await?;
+            let report = apply_plan(&backend, &plan, &mut state, allow_delete, provision).await?;
             state.save_async().await?;
             print_apply_report(&report);
             if !skipped.is_empty() {

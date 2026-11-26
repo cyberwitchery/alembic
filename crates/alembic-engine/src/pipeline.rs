@@ -193,6 +193,7 @@ pub(crate) async fn apply(
     plan: &Plan,
     state: &mut StateStore,
     allow_delete: bool,
+    provision: bool,
 ) -> Result<ApplyReport> {
     guard_effects(backend, plan)?;
     if !allow_delete {
@@ -203,43 +204,50 @@ pub(crate) async fn apply(
             ));
         }
     }
-    // schema provisioning can delete custom object types/fields the inventory no
-    // longer declares, cascading to their objects on the backend; gate it behind
-    // the same flag as object deletes. the plan's schema_preview is only a cheap
-    // early gate when a caller populated it: planner::plan hard-codes None and the
-    // interactive/library apply paths rebuild with None, so it cannot be the
-    // authoritative gate. the self-preview below is.
-    if let Some(preview) = &plan.schema_preview {
-        guard_schema_deletes(preview, allow_delete)?;
-    }
 
-    // errors for an observer; every backend that can write can also provision,
-    // so read+write and write-only take the same path from here.
     let emitter = backend.emitter()?;
-    // authoritative gate: self-preview at the chokepoint before ensure_schema, so
-    // no caller can forget (mirrors `plan --provision`). an Err fails closed
-    // rather than provision blind, and so does a `None` preview.
-    if !allow_delete {
-        guard_schema_provisioning(emitter.preview_schema(&plan.schema).await?, allow_delete)?;
-    }
-    let provision = emitter.ensure_schema(&plan.schema).await?;
+
+    let provision_report = if provision {
+        // schema provisioning can delete custom object types/fields the inventory no
+        // longer declares, cascading to their objects on the backend; gate it behind
+        // the same flag as object deletes. the plan's schema_preview is only a cheap
+        // early gate when a caller populated it: planner::plan hard-codes None and the
+        // interactive/library apply paths rebuild with None, so it cannot be the
+        // authoritative gate. the self-preview below is.
+        if let Some(preview) = &plan.schema_preview {
+            guard_schema_deletes(preview, allow_delete)?;
+        }
+
+        // authoritative gate: self-preview at the chokepoint before ensure_schema, so
+        // no caller can forget. an Err fails closed rather than provision blind, and
+        // so does a `None` preview.
+        if !allow_delete {
+            guard_schema_provisioning(emitter.preview_schema(&plan.schema).await?, allow_delete)?;
+        }
+        Some(emitter.ensure_schema(&plan.schema).await?)
+    } else {
+        None
+    };
 
     let ordered = sort_ops_for_apply(&plan.ops, &plan.schema);
-    let mut report = emitter.write(&plan.schema, &ordered, state).await?;
-    // write provisions too: tags come from the plan's ops, so only the write pass
-    // knows them. merging keeps both passes instead of the schema pass winning.
-    report.provision.merge(provision);
+    let mut apply_report = emitter.write(&plan.schema, &ordered, state).await?;
+
+    if let Some(provision_report) = provision_report {
+        // write provisions too: tags come from the plan's ops, so only the write pass
+        // knows them. merging keeps both passes instead of the schema pass winning.
+        apply_report.provision.merge(provision_report);
+    }
 
     // ops an interrupted run applied: their mappings exist nowhere else, since it
     // never reached a state save. only ever set one, never clear on a `None` -- a
     // journal written before ids were recorded has `None` throughout.
-    for applied in &report.resumed {
+    for applied in &apply_report.resumed {
         if let Some(backend_id) = &applied.backend_id {
             state.set_backend_id(applied.type_name.clone(), applied.uid, backend_id.clone());
         }
     }
 
-    for applied in &report.applied {
+    for applied in &apply_report.applied {
         if let Some(backend_id) = &applied.backend_id {
             state.set_backend_id(applied.type_name.clone(), applied.uid, backend_id.clone());
         } else {
@@ -247,5 +255,5 @@ pub(crate) async fn apply(
         }
     }
 
-    Ok(report)
+    Ok(apply_report)
 }
