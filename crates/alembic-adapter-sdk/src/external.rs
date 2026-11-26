@@ -768,6 +768,8 @@ mod tests {
         #[serde(default)]
         #[allow(dead_code)]
         tls: Option<TestTls>,
+        // note: no default on this member
+        #[allow(dead_code)]
         not_required: i64,
     }
 
