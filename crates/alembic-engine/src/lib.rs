@@ -196,8 +196,7 @@ pub(crate) fn bootstrap_state_from_observed(
     Ok(report)
 }
 
-/// apply a plan and update the state store. full adapters provision schema
-/// before writing; emitters only write.
+/// apply a plan, provision schema, and update the state store.
 pub async fn apply_plan(
     backend: &Backend,
     plan: &Plan,
