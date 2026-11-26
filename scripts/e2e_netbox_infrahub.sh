@@ -90,12 +90,11 @@ ALEMBIC_STATE_BACKEND=local ALEMBIC_STATE_PATH="$INFRAHUB_STATE_PATH" \
   -f "$ROOT/examples/e2e.yaml" \
   -o /tmp/alembic-infrahub-plan.json \
   --backend-config "$INFRAHUB_CONFIG" \
-  --provision \
   --allow-delete
 
 echo "applying infrahub plan (with schema push)..."
 ALEMBIC_STATE_BACKEND=local ALEMBIC_STATE_PATH="$INFRAHUB_STATE_PATH" \
-  cargo run -p alembic-cli -- apply \
+  cargo run -p alembic-cli -- apply --provision \
   -p /tmp/alembic-infrahub-plan.json \
   --backend-config "$INFRAHUB_CONFIG"
 
@@ -109,7 +108,7 @@ ALEMBIC_STATE_BACKEND=local ALEMBIC_STATE_PATH="$NETBOX_STATE_PATH" \
 
 echo "applying netbox plan (with custom field + tag provisioning)..."
 ALEMBIC_STATE_BACKEND=local ALEMBIC_STATE_PATH="$NETBOX_STATE_PATH" \
-  cargo run -p alembic-cli -- apply \
+  cargo run -p alembic-cli -- apply --provision \
   -p /tmp/alembic-netbox-plan.json \
   --backend-config "$NETBOX_CONFIG"
 

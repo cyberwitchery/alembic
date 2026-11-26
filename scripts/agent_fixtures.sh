@@ -46,7 +46,7 @@ seed() {
 # later edits are edits *of*.
 converge_base() {
   $ALEMBIC plan -f base.yaml -o base-plan.json --backend-config backend.yaml >/dev/null
-  $ALEMBIC apply -p base-plan.json --backend-config backend.yaml >/dev/null
+  $ALEMBIC apply -p base-plan.json --provision --backend-config backend.yaml >/dev/null
 }
 
 # the plan's op kinds, in plan order: "create", "update delete", or empty.
@@ -182,19 +182,24 @@ fi
 pass "apply refuses the delete the operator did not authorize"
 expect "and the object is still on the backend" "2" "$(store_query 'len(store["objects"])')"
 
-exercise "--report is read-only; --report --provision is not"
+exercise "plan never provisions; apply provisions only under --provision"
 seed
-converge_base
-: >calls.log
-$ALEMBIC plan -f base.yaml --report --backend-config backend.yaml >/dev/null
+$ALEMBIC plan -f base.yaml -o fresh-plan.json --backend-config backend.yaml >/dev/null
 if grep -q "^ensure_schema$" calls.log; then
-  fail "plan --report must not provision backend schema"
+  fail "plan must not provision backend schema"
 fi
-pass "plan --report never asks the backend to write schema"
+pass "plan never asks the backend to write schema"
 expect "it does ask for the read-only preview" "1" "$(grep -c '^preview_schema$' calls.log)"
+if $ALEMBIC apply -p fresh-plan.json --backend-config backend.yaml >/dev/null 2>&1; then
+  fail "applying a plan that needs schema without --provision must fail"
+fi
+pass "apply refuses a plan that needs schema it was not told to provision"
+[[ ! -e store.json ]] || fail "a refused apply must write nothing to the backend"
+pass "and nothing was written"
 : >calls.log
-$ALEMBIC plan -f base.yaml --report --provision --backend-config backend.yaml >/dev/null
-expect "adding --provision writes schema" "1" "$(grep -c '^ensure_schema$' calls.log)"
+$ALEMBIC apply -p fresh-plan.json --provision --backend-config backend.yaml >/dev/null
+expect "under --provision apply writes schema once" "1" "$(grep -c '^ensure_schema$' calls.log)"
+expect "and then the objects" "2" "$(store_query 'len(store["objects"])')"
 
 echo
 echo "--- $passed checks passed ---"
