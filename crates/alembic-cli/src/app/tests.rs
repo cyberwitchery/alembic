@@ -3346,6 +3346,54 @@ objects: []
     assert!(drift.changed.is_empty());
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn run_apply_provision_fails_closed_on_preview_error() {
+    let _cwd = CwdGuard::acquire_async().await;
+    let dir = tempdir().unwrap();
+    let state_path = dir.path().join(".alembic").join("state.json");
+    let _env = EnvVarGuard::acquire_async(&[
+        ("ALEMBIC_STATE_BACKEND", Some("local")),
+        ("ALEMBIC_STATE_PATH", Some(state_path.to_str().unwrap())),
+    ])
+    .await;
+
+    let adapter = example_binary("preview_error_adapter");
+    let plan_path = dir.path().join("plan.json");
+    std::fs::write(&plan_path, r#"{ "schema": { "types": {} }, "ops": [] }"#).unwrap();
+    let config_path = dir.path().join("backend.yaml");
+    std::fs::write(
+        &config_path,
+        format!(
+            "backend: external\ncommand: \"{}\"\ntimeout_seconds: 5\n",
+            adapter.to_str().unwrap()
+        ),
+    )
+    .unwrap();
+
+    std::env::set_current_dir(dir.path()).unwrap();
+    let cli = Cli {
+        command: Command::Apply {
+            plan: plan_path,
+            output: None,
+            backend: Some("external".to_string()),
+            backend_config: Some(config_path),
+            allow_delete: false,
+            provision: true,
+            interactive: false,
+            only: vec![],
+            only_file: None,
+            no_stale_check: false,
+        },
+    };
+    let result = run(cli, AppConfig::load().unwrap()).await;
+
+    let err = result.expect_err("a preview error must abort provisioning, not fall through");
+    assert!(
+        err.to_string().contains("preview failed for test"),
+        "expected the propagated preview error, got: {err:#}"
+    );
+}
+
 // an external adapter declaring the emitter role, without --provision: the
 // read-only preview is what a plain plan carries, so a write-only backend that
 // can preview must fill it in.
