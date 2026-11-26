@@ -305,7 +305,8 @@ pub fn run_external_adapter<A: ExternalAdapter>(
         } else {
             return write_error(
                 &mut writer,
-                "invalid setup: failed to retrieve fields on config struct".to_string(),
+                "adapter `Config` is not a plain struct; set `CHECK_SETUP_KEYS = false`"
+                    .to_string(),
             );
         }
     }
@@ -1503,7 +1504,7 @@ mod tests {
         assert!(external_response
             .error
             .unwrap()
-            .contains("invalid setup: failed to retrieve fields on config struct"));
+            .contains("adapter `Config` is not a plain struct; set `CHECK_SETUP_KEYS = false`"));
     }
 
     #[derive(Debug, Default)]

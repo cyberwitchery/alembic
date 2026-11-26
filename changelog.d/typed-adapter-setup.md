@@ -1,1 +1,1 @@
-- `alembic-adapter-sdk`: add a `Config` type that the sdk deserializes `setup` into before calling `setup` for external adapters. top-level keys of the configuration type are checked by default. (#548)
+- `alembic-adapter-sdk`: add a `Config` type that the sdk deserializes `setup` into before calling `setup` for external adapters; the sdk rejects unknown top-level setup keys, naming the accepted ones (#548)

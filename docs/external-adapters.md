@@ -74,8 +74,7 @@ impl ExternalAdapter for MyAdapter {
     type Error = anyhow::Error;
     type Config = MyConfig;
 
-    fn setup(&mut self, configuration: MyConfig) -> anyhow::Result<()> {
-        let _ = configuration.my_backend_variable_x;
+    fn setup(&mut self, _configuration: MyConfig) -> anyhow::Result<()> {
         Ok(())
     }
 
@@ -174,7 +173,7 @@ impl ExternalAdapter for MyAdapter {
         Ok(())
     }
 
-    // read, write, check_for_error...
+    // read, write, ...
 }
 ```
 
