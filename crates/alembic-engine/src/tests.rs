@@ -1814,6 +1814,56 @@ fn apply_plan_allows_schema_deletes_with_flag() {
     futures::executor::block_on(apply_plan(&backend, &plan, &mut state, true, true)).unwrap();
 }
 
+/// an adapter whose write would map uid 1, so an empty state shows it never ran.
+fn mapping_adapter() -> TestAdapter {
+    TestAdapter {
+        observed: ObservedState::default(),
+        report: ApplyReport {
+            applied: vec![AppliedOp {
+                uid: uid(1),
+                type_name: t("dcim.site"),
+                backend_id: Some(BackendId::Int(55)),
+            }],
+            ..Default::default()
+        },
+    }
+}
+
+#[test]
+fn apply_plan_without_provision_refuses_a_plan_that_previewed_schema_changes() {
+    let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
+    let plan = Plan {
+        schema_preview: Some(ProvisionReport {
+            created_fields: vec!["dcim.site.tier".to_string()],
+            ..Default::default()
+        }),
+        ..empty_plan()
+    };
+    let backend = Backend::Adapter(Box::new(mapping_adapter()));
+    let err = futures::executor::block_on(apply_plan(&backend, &plan, &mut state, false, false))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("re-run with --provision"), "{err}");
+    assert!(err.contains("dcim.site.tier"), "{err}");
+    // refused before the write, so no op landed.
+    assert!(state.all_mappings().is_empty());
+}
+
+#[test]
+fn apply_plan_without_provision_accepts_a_plan_that_previewed_no_schema_changes() {
+    let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
+    let plan = Plan {
+        schema_preview: Some(ProvisionReport::default()),
+        ..empty_plan()
+    };
+    let backend = Backend::Adapter(Box::new(mapping_adapter()));
+    futures::executor::block_on(apply_plan(&backend, &plan, &mut state, false, false)).unwrap();
+    assert_eq!(
+        state.backend_id(t("dcim.site"), uid(1)),
+        Some(BackendId::Int(55))
+    );
+}
+
 /// adapter whose read-only schema preview reports pending deletions, exercising
 /// apply's self-preview gate on a plan that carries no precomputed schema_preview.
 struct PreviewAdapter {

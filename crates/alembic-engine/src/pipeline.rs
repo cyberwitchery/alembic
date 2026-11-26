@@ -2,7 +2,7 @@ use crate::pretty_printing::bullet_list;
 use crate::sort_ops_for_apply;
 use crate::types::{Backend, Effects, ObservedState, Observer, Plan, CANNOT_OBSERVE};
 use crate::StateStore;
-use alembic_adapter_sdk::{ApplyReport, Op, ProvisionReport};
+use alembic_adapter_sdk::{ApplyReport, Op, ProvisionReport, Tense};
 use alembic_core::{Inventory, TypeName};
 use anyhow::{anyhow, Result};
 use std::collections::BTreeSet;
@@ -152,6 +152,24 @@ pub fn guard_schema_deletes(preview: &ProvisionReport, allow_delete: bool) -> Re
     Ok(())
 }
 
+/// refuse an apply without `--provision` whose plan previewed schema changes:
+/// its ops would be written against schema the backend does not have yet.
+fn guard_unprovisioned_schema(preview: Option<&ProvisionReport>) -> Result<()> {
+    let Some(preview) = preview.filter(|preview| !preview.is_empty()) else {
+        return Ok(());
+    };
+    let pending: Vec<String> = preview
+        .named_changes(Tense::Would)
+        .into_iter()
+        .map(|(label, name)| format!("{label} {name}"))
+        .collect();
+    Err(anyhow!(
+        "plan needs schema provisioning; re-run with --provision, or re-plan if \
+         the schema was provisioned since:\n{}",
+        bullet_list(&pending)
+    ))
+}
+
 /// refuse a plan made for the other kind of backend: an `emit` plan creates
 /// every declared object without having observed any, and a `drive` plan diffs
 /// against an observation a write-only backend cannot make. a plan without
@@ -211,9 +229,9 @@ pub(crate) async fn apply(
         // schema provisioning can delete custom object types/fields the inventory no
         // longer declares, cascading to their objects on the backend; gate it behind
         // the same flag as object deletes. the plan's schema_preview is only a cheap
-        // early gate when a caller populated it: planner::plan hard-codes None and the
-        // interactive/library apply paths rebuild with None, so it cannot be the
-        // authoritative gate. the self-preview below is.
+        // early gate when a caller populated it: planner::plan hard-codes None and a
+        // library caller may apply with None, so it cannot be the authoritative
+        // gate. the self-preview below is.
         if let Some(preview) = &plan.schema_preview {
             guard_schema_deletes(preview, allow_delete)?;
         }
@@ -226,6 +244,7 @@ pub(crate) async fn apply(
         }
         Some(emitter.ensure_schema(&plan.schema).await?)
     } else {
+        guard_unprovisioned_schema(plan.schema_preview.as_ref())?;
         None
     };
 

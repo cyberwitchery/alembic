@@ -525,7 +525,7 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<ExitCode> {
                     schema: plan.schema,
                     ops: approved,
                     summary: None,
-                    schema_preview: None,
+                    schema_preview: plan.schema_preview,
                     effects: plan.effects,
                     adopt_by_key: plan.adopt_by_key,
                 }
@@ -538,7 +538,6 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<ExitCode> {
                     let plan = Plan {
                         ops: selected,
                         summary: None,
-                        schema_preview: None,
                         ..plan
                     };
                     (plan, skipped.iter().map(SkippedOp::from).collect())
