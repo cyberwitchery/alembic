@@ -9,9 +9,9 @@ mod version;
 
 use alembic_adapter_registry::{create_backend, Plugin};
 use alembic_engine::{
-    apply_plan, build_plan, guard_drift_report, guard_schema_provisioning, guard_stale_plan,
-    load_inventory, load_inventory_unvalidated, plan_write_only, render_plan, select_ops, Backend,
-    DriftReport, InputError, Plan, StateLock, StateStore,
+    apply_plan, build_plan, guard_drift_report, guard_stale_plan, load_inventory,
+    load_inventory_unvalidated, plan_write_only, render_plan, select_ops, Backend, DriftReport,
+    InputError, Plan, StateLock, StateStore,
 };
 use anyhow::{anyhow, Context, Result};
 use clap::{CommandFactory, Parser, Subcommand};

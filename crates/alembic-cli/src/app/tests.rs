@@ -489,7 +489,6 @@ fn output_path_is_the_one_place_every_write_site_is_named() {
             output: Some(out.clone()),
             backend: None,
             backend_config: None,
-            provision: false,
             dry_run: false,
             report: false,
             allow_delete: false,
@@ -951,7 +950,6 @@ objects:
             output: Some(dir.path().join("out.json")),
             backend: Some("netbox".to_string()),
             backend_config: None,
-            provision: false,
             dry_run: false,
             report: false,
             allow_delete: false,
@@ -1829,7 +1827,6 @@ objects:
             output: Some(out.clone()),
             backend: None,
             backend_config: Some(config),
-            provision: false,
             dry_run: false,
             report: false,
             allow_delete: false,
@@ -1855,15 +1852,10 @@ objects:
 
 #[test]
 fn plan_takes_a_shared_lock_only_when_it_saves_nothing() {
-    assert_eq!(state_lock_for_plan(true, false, false), StateLock::Shared);
-    assert_eq!(state_lock_for_plan(false, true, false), StateLock::Shared);
-    // --provision writes backend schema, so it is not a read-only run
-    assert_eq!(state_lock_for_plan(true, false, true), StateLock::Exclusive);
+    assert_eq!(state_lock_for_plan(true, false), StateLock::Shared);
+    assert_eq!(state_lock_for_plan(false, true), StateLock::Shared);
     // the write path saves state
-    assert_eq!(
-        state_lock_for_plan(false, false, false),
-        StateLock::Exclusive
-    );
+    assert_eq!(state_lock_for_plan(false, false), StateLock::Exclusive);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1947,7 +1939,6 @@ async fn a_saving_plan_run_is_refused_while_a_report_runs() {
             output: Some(dir.path().join("plan.json")),
             backend: None,
             backend_config: Some(config.clone()),
-            provision: false,
             dry_run: false,
             report: false,
             allow_delete: false,
@@ -1955,23 +1946,13 @@ async fn a_saving_plan_run_is_refused_while_a_report_runs() {
         },
     };
     let refused = run(saving, AppConfig::load().unwrap()).await;
-    // --provision writes schema, so it stays exclusive even under --report
-    let mut provisioning = report_cli(inventory, config);
-    if let Command::Plan { provision, .. } = &mut provisioning.command {
-        *provision = true;
-    }
-    let refused_provision = run(provisioning, AppConfig::load().unwrap()).await;
     drop(reader);
 
-    for err in [
-        refused.expect_err("a saving run must not start under a reader"),
-        refused_provision.expect_err("--provision must not start under a reader"),
-    ] {
-        assert!(
-            err.to_string().contains("state lock"),
-            "expected a state-lock error, got: {err}"
-        );
-    }
+    let err = refused.expect_err("a saving run must not start under a reader");
+    assert!(
+        err.to_string().contains("state lock"),
+        "expected a state-lock error, got: {err}"
+    );
 }
 
 fn write_device_inventory(path: &Path) {
@@ -2006,7 +1987,6 @@ fn report_cli(file: PathBuf, config: PathBuf) -> Cli {
             output: None,
             backend: None,
             backend_config: Some(config),
-            provision: false,
             dry_run: false,
             report: true,
             allow_delete: false,
@@ -2071,7 +2051,6 @@ objects:
             output: Some(out.clone()),
             backend: None,
             backend_config: Some(config),
-            provision: false,
             dry_run: false,
             report: true,
             allow_delete: false,
@@ -2173,7 +2152,6 @@ objects:
             output: Some(out.clone()),
             backend: None,
             backend_config: Some(config),
-            provision: false,
             dry_run: false,
             report: true,
             allow_delete: false,
@@ -2227,7 +2205,6 @@ async fn run_plan_report_carries_an_empty_schema_preview_for_a_backend_that_prov
             output: Some(out.clone()),
             backend: Some("external".to_string()),
             backend_config: Some(config),
-            provision: false,
             dry_run: false,
             report: true,
             allow_delete: false,
@@ -2294,7 +2271,6 @@ async fn run_plan_report_rejects_a_bad_output_path_before_observing() {
             output: Some(blocker.join("drift.json")),
             backend: None,
             backend_config: Some(config),
-            provision: false,
             dry_run: false,
             report: true,
             allow_delete: false,
@@ -2361,7 +2337,6 @@ async fn run_plan_rejects_an_unwritable_existing_output_file_before_observing() 
             output: Some(target.clone()),
             backend: None,
             backend_config: Some(config),
-            provision: false,
             dry_run: false,
             report: false,
             allow_delete: false,
@@ -2432,7 +2407,6 @@ async fn run_plan_rejects_an_output_path_that_is_a_directory_before_observing() 
             output: Some(target),
             backend: None,
             backend_config: Some(config),
-            provision: false,
             dry_run: false,
             report: false,
             allow_delete: false,
@@ -2488,7 +2462,6 @@ async fn run_plan_leaves_no_output_directory_when_observing_fails() {
             output: Some(out_dir.join("plan.json")),
             backend: None,
             backend_config: Some(config),
-            provision: false,
             dry_run: false,
             report: false,
             allow_delete: false,
@@ -2528,7 +2501,6 @@ async fn run_plan_report_refuses_a_write_only_backend() {
             output: Some(out.clone()),
             backend: Some("django".to_string()),
             backend_config: None,
-            provision: false,
             dry_run: false,
             report: true,
             allow_delete: false,
@@ -2584,7 +2556,6 @@ async fn run_plan_report_reports_an_unwritable_output_ahead_of_the_refusal() {
             output: Some(out.clone()),
             backend: Some("django".to_string()),
             backend_config: None,
-            provision: false,
             dry_run: false,
             report: true,
             allow_delete: false,
@@ -2633,7 +2604,6 @@ async fn run_plan_report_refuses_an_external_adapter_declaring_emitter() {
             output: None,
             backend: Some("external".to_string()),
             backend_config: Some(config),
-            provision: false,
             dry_run: false,
             report: true,
             allow_delete: false,
@@ -2700,14 +2670,13 @@ async fn run_refuses_to_write_an_external_adapter_declaring_observer() {
     let plan_path = dir.path().join("does-not-exist.json");
 
     std::env::set_current_dir(dir.path()).unwrap();
-    let provision = run(
+    let _result = run(
         Cli {
             command: Command::Plan {
                 file: inventory,
                 output: Some(dir.path().join("provisioned.json")),
                 backend: Some("external".to_string()),
                 backend_config: Some(config.clone()),
-                provision: true,
                 dry_run: false,
                 report: false,
                 allow_delete: false,
@@ -2735,16 +2704,15 @@ async fn run_refuses_to_write_an_external_adapter_declaring_observer() {
     )
     .await;
 
-    for (command, result) in [("plan --provision", provision), ("apply", applied)] {
-        let err = format!(
-            "{:#}",
-            result.expect_err("a declared observer cannot be written to")
-        );
-        assert!(
-            err.contains("backend is read-only; it cannot apply changes"),
-            "{command}: {err}"
-        );
-    }
+    let err = format!(
+        "{:#}",
+        applied.expect_err("a declared observer cannot be written to")
+    );
+    assert!(
+        err.contains("backend is read-only; it cannot apply changes"),
+        "\"apply\": {err}"
+    );
+
     // the refusal comes before the request, not from an error the adapter raised
     let methods = methods_without_provisioning(&log);
     assert!(!methods.contains("write"), "nothing was written: {methods}");
@@ -2770,7 +2738,6 @@ async fn run_plan_and_import_an_external_adapter_declaring_observer() {
                 output: Some(dir.path().join("plan.json")),
                 backend: Some("external".to_string()),
                 backend_config: Some(config.clone()),
-                provision: false,
                 dry_run: false,
                 report: false,
                 allow_delete: false,
@@ -2914,7 +2881,6 @@ async fn run_plan_adopts_a_backend_whose_keys_hold_refs() {
                 output: Some(out.clone()),
                 backend: Some("external".to_string()),
                 backend_config: Some(config),
-                provision: false,
                 dry_run: false,
                 report: false,
                 allow_delete: false,
@@ -2969,7 +2935,6 @@ async fn run_plan_refuses_an_adapter_that_reports_refs_as_backend_ids() {
                 output: Some(out.clone()),
                 backend: Some("external".to_string()),
                 backend_config: Some(config),
-                provision: false,
                 dry_run: false,
                 report: false,
                 allow_delete: false,
@@ -3031,7 +2996,6 @@ async fn planned(
             output: Some(out.clone()),
             backend: Some(backend.to_string()),
             backend_config,
-            provision: false,
             dry_run: false,
             report: false,
             allow_delete: false,
@@ -3244,49 +3208,6 @@ fn map_transform_rejects_the_inventory_flow_args() {
 }
 
 #[test]
-fn provision_conflicts_with_dry_run_but_not_report() {
-    use clap::Parser;
-    // --provision runs ensure_schema (a real backend schema write). --dry-run
-    // promises a non-writing preview, so combining them is a footgun and is
-    // rejected at parse time. --report --provision, by contrast, is the
-    // documented "provision schema, then preview drift" workflow (docs/cli.md)
-    // and must still parse.
-    let conflict = Cli::try_parse_from([
-        "alembic",
-        "plan",
-        "-f",
-        "inventory.yaml",
-        "-o",
-        "plan.json",
-        "--provision",
-        "--dry-run",
-    ]);
-    // `Cli` is not `Debug`, so unwrap the error via `Option` rather than `expect_err`.
-    let err = conflict
-        .err()
-        .expect("--provision and --dry-run must conflict");
-    assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
-
-    // the documented provision-then-preview combo must keep parsing (it fails
-    // later on the backend requirement, not here).
-    let report = Cli::try_parse_from([
-        "alembic",
-        "plan",
-        "-f",
-        "inventory.yaml",
-        "-o",
-        "plan.json",
-        "--provision",
-        "--report",
-    ]);
-    assert!(
-        report.is_ok(),
-        "--report --provision must still parse: {:?}",
-        report.err()
-    );
-}
-
-#[test]
 fn plan_report_output_optional() {
     use clap::Parser;
     // --report prints its summary either way, so -o/--output is not required.
@@ -3412,56 +3333,6 @@ objects: []
     assert!(drift.changed.is_empty());
 }
 
-// drives the real run() for `plan --provision` against an external adapter whose
-// preview_schema errors (ensure_schema stays defaulted/Ok). the provision guard
-// must propagate a preview Err and abort before ensure_schema.
-#[tokio::test(flavor = "multi_thread")]
-async fn run_plan_provision_fails_closed_on_preview_error() {
-    let _cwd = CwdGuard::acquire_async().await;
-    let dir = tempdir().unwrap();
-    let state_path = dir.path().join(".alembic").join("state.json");
-    let _env = EnvVarGuard::acquire_async(&[
-        ("ALEMBIC_STATE_BACKEND", Some("local")),
-        ("ALEMBIC_STATE_PATH", Some(state_path.to_str().unwrap())),
-    ])
-    .await;
-
-    let adapter = example_binary("preview_error_adapter");
-    let inventory = write_minimal_inventory(dir.path());
-    let out_path = dir.path().join("plan.json");
-    let config_path = dir.path().join("backend.yaml");
-    std::fs::write(
-        &config_path,
-        format!(
-            "backend: external\ncommand: \"{}\"\ntimeout_seconds: 5\n",
-            adapter.to_str().unwrap()
-        ),
-    )
-    .unwrap();
-
-    std::env::set_current_dir(dir.path()).unwrap();
-    let cli = Cli {
-        command: Command::Plan {
-            file: inventory,
-            output: Some(out_path),
-            backend: Some("external".to_string()),
-            backend_config: Some(config_path),
-            provision: true,
-            dry_run: false,
-            report: false,
-            allow_delete: false,
-            no_adopt: false,
-        },
-    };
-    let result = run(cli, AppConfig::load().unwrap()).await;
-
-    let err = result.expect_err("a preview error must abort provisioning, not fall through");
-    assert!(
-        err.to_string().contains("preview failed for test"),
-        "expected the propagated preview error, got: {err:#}"
-    );
-}
-
 // an external adapter declaring the emitter role, without --provision: the
 // read-only preview is what a plain plan carries, so a write-only backend that
 // can preview must fill it in.
@@ -3496,7 +3367,6 @@ async fn run_plan_previews_schema_over_a_write_only_backend() {
             output: Some(out_path.clone()),
             backend: Some("external".to_string()),
             backend_config: Some(config_path),
-            provision: false,
             dry_run: false,
             report: false,
             allow_delete: false,
@@ -3598,7 +3468,6 @@ async fn run_applies_a_converged_hand_written_adapter_that_omits_applied() {
                         output: Some(plan_path.clone()),
                         backend: Some("external".to_string()),
                         backend_config: Some(config.clone()),
-                        provision: false,
                         dry_run: false,
                         report: false,
                         allow_delete: false,
