@@ -42,11 +42,17 @@ fn apply_names_every_schema_change() {
 
     let mut cmd = Command::new(bin_path());
     cmd.env("ALEMBIC_STATE_PATH", dir.path().join("state.json"));
-    cmd.args(["apply", "--backend", "external", "--allow-delete"])
-        .arg("--backend-config")
-        .arg(&config)
-        .arg("--plan")
-        .arg(fixture_path("minimal_plan.json"));
+    cmd.args([
+        "apply",
+        "--backend",
+        "external",
+        "--provision",
+        "--allow-delete",
+    ])
+    .arg("--backend-config")
+    .arg(&config)
+    .arg("--plan")
+    .arg(fixture_path("minimal_plan.json"));
     let (ok, stdout, stderr) = run(&mut cmd);
 
     assert!(ok, "apply failed; stdout:\n{stdout}\nstderr:\n{stderr}");
@@ -75,7 +81,7 @@ fn the_delete_gate_names_what_it_refuses_over() {
 
     let mut cmd = Command::new(bin_path());
     cmd.env("ALEMBIC_STATE_PATH", dir.path().join("state.json"));
-    cmd.args(["apply", "--backend", "external"])
+    cmd.args(["apply", "--backend", "external", "--provision"])
         .arg("--backend-config")
         .arg(&config)
         .arg("--plan")
@@ -118,11 +124,17 @@ fn apply_names_what_it_provisioned() {
 
     let mut cmd = Command::new(bin_path());
     cmd.env("ALEMBIC_STATE_PATH", &state);
-    cmd.args(["apply", "--backend", "external", "--allow-delete"])
-        .arg("--backend-config")
-        .arg(&config)
-        .arg("--plan")
-        .arg(&plan);
+    cmd.args([
+        "apply",
+        "--backend",
+        "external",
+        "--provision",
+        "--allow-delete",
+    ])
+    .arg("--backend-config")
+    .arg(&config)
+    .arg("--plan")
+    .arg(&plan);
     let (ok, stdout, stderr) = run(&mut cmd);
 
     assert!(ok, "apply failed; stdout:\n{stdout}\nstderr:\n{stderr}");

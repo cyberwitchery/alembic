@@ -33,6 +33,7 @@ fn apply(env: &[(&str, &str)]) -> (bool, String, String) {
         cmd.env(key, value);
     }
     cmd.arg("apply")
+        .arg("--provision")
         .arg("--plan")
         .arg(&plan)
         .arg("--backend-config")
