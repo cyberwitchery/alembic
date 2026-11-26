@@ -45,8 +45,8 @@ responses.
 
 for your own custom configuration struct to work, the associated type
 `Config` must be set to it. note that this struct must be a plain
-struct and cannot use `[serde(flatten)]` (which will ruin introspection
-on the struct fields).
+struct and cannot use `#[serde(flatten)]` (which will ruin introspection
+on its struct fields).
 
 here's an example that can be used as a starting point for a new external adapter:
 
