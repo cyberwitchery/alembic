@@ -168,10 +168,13 @@ impl ExternalAdapter for MyAdapter {
     type Config = MyConfig;
 
     fn setup(&mut self, configuration: MyConfig) -> Result<(), String> {
-        let _ = configuration.my_backend_variable_x;
+        if let Some(err) = Self::check_for_error(configuration) {
+            return Err(anyhow!("invalid configuration: {}", err))
+        }
         Ok(())
     }
-    // read, write, ...
+
+    // read, write, check_for_error...
 }
 ```
 
