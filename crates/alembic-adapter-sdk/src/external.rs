@@ -287,10 +287,6 @@ pub fn run_external_adapter<A: ExternalAdapter>(
             )
         }
     };
-    let config = match serde_path_to_error::deserialize(&setup) {
-        Ok(config) => config,
-        Err(e) => return write_error(&mut writer, setup_error(&e, &setup)),
-    };
 
     if let Some(map) = setup.as_object() {
         if !A::CHECK_SETUP_KEYS {
@@ -314,6 +310,11 @@ pub fn run_external_adapter<A: ExternalAdapter>(
             );
         }
     }
+
+    let config = match serde_path_to_error::deserialize(&setup) {
+        Ok(config) => config,
+        Err(e) => return write_error(&mut writer, setup_error(&e, &setup)),
+    };
 
     if let Err(e) = adapter.setup(config) {
         return write_error(&mut writer, format!("invalid setup: {e:#}"));
@@ -768,6 +769,7 @@ mod tests {
         #[serde(default)]
         #[allow(dead_code)]
         tls: Option<TestTls>,
+        not_required: i64,
     }
 
     #[derive(Debug, serde::Deserialize)]
@@ -972,6 +974,7 @@ mod tests {
     impl ExternalAdapter for JournalingAdapter {
         type Error = anyhow::Error;
         type Config = Value;
+        const CHECK_SETUP_KEYS: bool = false;
 
         fn setup(&mut self, _configuration: Value) -> anyhow::Result<()> {
             Ok(())
@@ -1191,6 +1194,24 @@ mod tests {
         );
     }
 
+    #[test]
+    fn external_adapter_with_misspelled_non_default_key() {
+        let envelope = ExternalEnvelope {
+            version: EXTERNAL_PROTOCOL_VERSION,
+            setup: json!({ "x": 123, "not_requried": false }), // intentional misspelling
+            request: ExternalRequest::Read {
+                schema: Default::default(),
+                types: vec![],
+                state: Default::default(),
+            },
+        };
+
+        let response: ExternalResponse<Vec<ExternalObject>> = send_to_test_adapter(&envelope);
+        assert!(!response.ok);
+        let error = response.error.unwrap();
+        assert!(error.contains("unknown field `not_requried`"), "{error}");
+    }
+
     fn read_with_setup(setup: Value) -> ExternalResponse<Vec<ExternalObject>> {
         send_to_test_adapter(&ExternalEnvelope {
             version: EXTERNAL_PROTOCOL_VERSION,
@@ -1359,6 +1380,7 @@ mod tests {
         impl ExternalAdapter for EmitOnly {
             type Error = anyhow::Error;
             type Config = Value;
+            const CHECK_SETUP_KEYS: bool = false;
 
             fn setup(&mut self, _configuration: Value) -> anyhow::Result<()> {
                 Ok(())
@@ -1453,7 +1475,7 @@ mod tests {
         let (in_reader, mut in_writer) = std::io::pipe().unwrap();
         let (out_reader, out_writer) = std::io::pipe().unwrap();
 
-        let adapter = TestExternalAdapterWithFlatten::default();
+        let adapter = TestExternalAdapterWithFlatten;
 
         let t = std::thread::spawn(move || {
             assert!(run_external_adapter(adapter, (in_reader, out_writer)).is_ok());
