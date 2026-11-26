@@ -763,21 +763,6 @@ mod tests {
     }
 
     #[derive(Debug, serde::Deserialize)]
-    struct Point {
-        #[allow(dead_code)]
-        x: i64,
-        #[allow(dead_code)]
-        y: i64,
-    }
-
-    #[derive(Debug, serde::Deserialize)]
-    struct TestConfigWithFlatten {
-        #[allow(dead_code)]
-        #[serde(default, flatten)]
-        point: Point,
-    }
-
-    #[derive(Debug, serde::Deserialize)]
     #[serde(deny_unknown_fields)]
     struct TestTls {
         #[allow(dead_code)]
@@ -1398,6 +1383,51 @@ mod tests {
         assert_eq!(response.result.unwrap().role, ExternalRole::Emitter);
     }
 
+    #[derive(Debug, Default)]
+    struct TestExternalAdapterWithFlatten;
+
+    impl ExternalAdapter for TestExternalAdapterWithFlatten {
+        type Error = String;
+        type Config = TestConfigWithFlatten;
+
+        fn setup(&mut self, _configuration: Self::Config) -> Result<(), Self::Error> {
+            Ok(())
+        }
+
+        fn read(
+            &mut self,
+            _schema: &Schema,
+            _types: &[TypeName],
+            _state: &StateData,
+        ) -> Result<Vec<ExternalObject>, Self::Error> {
+            unreachable!()
+        }
+
+        fn write(
+            &mut self,
+            _schema: &Schema,
+            _ops: &[Op],
+            _state: &StateData,
+        ) -> Result<ApplyReport, Self::Error> {
+            unreachable!()
+        }
+    }
+
+    #[derive(Default, Debug, serde::Deserialize)]
+    struct Point {
+        #[allow(dead_code)]
+        x: i64,
+        #[allow(dead_code)]
+        y: i64,
+    }
+
+    #[derive(Debug, serde::Deserialize)]
+    struct TestConfigWithFlatten {
+        #[allow(dead_code)]
+        #[serde(default, flatten)]
+        point: Point,
+    }
+
     #[test]
     fn fields_for_flattened_struct() {
         let fields = struct_fields::<TestConfigWithFlatten>();
@@ -1408,5 +1438,40 @@ mod tests {
     fn fields_for_non_flattened_struct() {
         let fields = struct_fields::<TestConfig>();
         assert!(fields.is_some());
+    }
+
+    #[test]
+    fn error_when_external_adapter_config_has_no_fields() {
+        let (in_reader, mut in_writer) = std::io::pipe().unwrap();
+        let (out_reader, out_writer) = std::io::pipe().unwrap();
+
+        let adapter = TestExternalAdapterWithFlatten::default();
+
+        let t = std::thread::spawn(move || {
+            assert!(run_external_adapter(adapter, (in_reader, out_writer)).is_ok());
+        });
+
+        let envelope = ExternalEnvelope {
+            version: EXTERNAL_PROTOCOL_VERSION,
+            setup: json!({ "x": 1, "y": 2 }),
+            request: ExternalRequest::Capabilities,
+        };
+        writeln!(in_writer, "{}", serde_json::to_string(&envelope).unwrap()).unwrap();
+        drop(in_writer);
+
+        let mut raw_response = String::new();
+        BufReader::new(out_reader)
+            .read_line(&mut raw_response)
+            .unwrap();
+        t.join().unwrap();
+        let external_response: ExternalResponse<ExternalCapabilities> =
+            serde_json::from_str(&raw_response).unwrap();
+
+        assert!(!external_response.ok);
+        assert!(external_response.error.is_some());
+        assert!(external_response
+            .error
+            .unwrap()
+            .contains("invalid setup: failed to retrieve fields on config struct"));
     }
 }
