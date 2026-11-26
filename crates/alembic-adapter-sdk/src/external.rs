@@ -769,9 +769,6 @@ mod tests {
         #[serde(default)]
         #[allow(dead_code)]
         tls: Option<TestTls>,
-        // note: no default on this member
-        #[allow(dead_code)]
-        not_required: i64,
     }
 
     #[derive(Debug, serde::Deserialize)]
@@ -1088,8 +1085,14 @@ mod tests {
     fn send_to_test_adapter<T: serde::de::DeserializeOwned>(
         envelope: &ExternalEnvelope,
     ) -> ExternalResponse<T> {
-        let adapter = TestExternalAdapter::default();
+        send_to_adapter(TestExternalAdapter::default(), envelope)
+    }
 
+    /// sends `envelope` to `adapter` over stdio and returns its response.
+    fn send_to_adapter<A: ExternalAdapter + Send + 'static, T: serde::de::DeserializeOwned>(
+        adapter: A,
+        envelope: &ExternalEnvelope,
+    ) -> ExternalResponse<T> {
         let (in_reader, mut in_writer) = std::io::pipe().unwrap();
         let (out_reader, out_writer) = std::io::pipe().unwrap();
 
@@ -1196,22 +1199,54 @@ mod tests {
         );
     }
 
+    struct RequiredKeyAdapter;
+
+    #[derive(Debug, serde::Deserialize)]
+    struct RequiredKeyConfig {
+        #[allow(dead_code)]
+        url: String,
+    }
+
+    impl ExternalAdapter for RequiredKeyAdapter {
+        type Error = String;
+        type Config = RequiredKeyConfig;
+
+        fn setup(&mut self, _configuration: Self::Config) -> Result<(), Self::Error> {
+            Ok(())
+        }
+
+        fn read(
+            &mut self,
+            _schema: &Schema,
+            _types: &[TypeName],
+            _state: &StateData,
+        ) -> Result<Vec<ExternalObject>, Self::Error> {
+            unreachable!()
+        }
+
+        fn write(
+            &mut self,
+            _schema: &Schema,
+            _ops: &[Op],
+            _state: &StateData,
+        ) -> Result<ApplyReport, Self::Error> {
+            unreachable!()
+        }
+    }
+
     #[test]
     fn external_adapter_with_misspelled_non_default_key() {
         let envelope = ExternalEnvelope {
             version: EXTERNAL_PROTOCOL_VERSION,
-            setup: json!({ "x": 123, "not_requried": false }), // intentional misspelling
-            request: ExternalRequest::Read {
-                schema: Default::default(),
-                types: vec![],
-                state: Default::default(),
-            },
+            setup: json!({ "urll": "x" }),
+            request: ExternalRequest::Capabilities,
         };
 
-        let response: ExternalResponse<Vec<ExternalObject>> = send_to_test_adapter(&envelope);
+        let response: ExternalResponse<Value> = send_to_adapter(RequiredKeyAdapter, &envelope);
         assert!(!response.ok);
         let error = response.error.unwrap();
-        assert!(error.contains("unknown field `not_requried`"), "{error}");
+        assert!(error.contains("unknown field `urll`"), "{error}");
+        assert!(!error.contains("missing field"), "{error}");
     }
 
     fn read_with_setup(setup: Value) -> ExternalResponse<Vec<ExternalObject>> {
