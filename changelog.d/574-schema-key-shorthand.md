@@ -1,0 +1,1 @@
+- core: schema definition allows for just mentioning the keys instead of explicit type dictionaries#574

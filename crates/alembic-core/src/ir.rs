@@ -1,5 +1,6 @@
 //! data model types for alembic.
 
+use crate::ir::ParsedSchemaExpansionError::FieldNotFound;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -587,7 +588,7 @@ impl<'de> Deserialize<'de> for FieldSchema {
     }
 }
 
-/// schema metadata for a type.
+/// schema metadata for a type (key shorthands expanded to full dictionary keys).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TypeSchema {
@@ -602,6 +603,80 @@ pub struct TypeSchema {
 pub struct Schema {
     #[serde(default)]
     pub types: BTreeMap<String, TypeSchema>,
+}
+
+/// how schemas are parsed (allows for key shorthand syntax, which is expanded immediately so that
+/// the rest of the codebase can expect full type dictionaries as keys).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ParsedSchema {
+    #[serde(default)]
+    pub types: BTreeMap<String, ParsedTypeSchema>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ParsedSchemaExpansionError {
+    FieldNotFound(String),
+}
+
+impl fmt::Display for ParsedSchemaExpansionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            FieldNotFound(field_name) => f.write_str(&format!("field `{}` not found", field_name)),
+        }
+    }
+}
+
+impl std::error::Error for ParsedSchemaExpansionError {}
+
+impl ParsedSchema {
+    /// substitute schema shorthand keys for their dictionary-based version from the fields of the type definition.
+    pub fn expanded(self) -> Result<Schema, ParsedSchemaExpansionError> {
+        let mut schema = Schema::default();
+        for (type_name, parsed_type_schema) in &self.types {
+            let key = match &parsed_type_schema.key {
+                TypeSchemaKey::Map(map) => map.clone(),
+                TypeSchemaKey::List(shorthand_keys) => {
+                    let mut expanded = BTreeMap::new();
+                    for k in shorthand_keys.iter() {
+                        if let Some(found_schema) = parsed_type_schema.fields.get(k) {
+                            expanded.insert(k.clone(), found_schema.clone());
+                        } else {
+                            return Err(FieldNotFound(k.clone()));
+                        }
+                    }
+                    expanded
+                }
+            };
+            let expanded_type_schema = TypeSchema {
+                key,
+                fields: parsed_type_schema.fields.clone(),
+            };
+            schema.types.insert(type_name.clone(), expanded_type_schema);
+        }
+        Ok(schema)
+    }
+}
+
+/// how schema metadata for a type is parsed (allows for key shorthand)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ParsedTypeSchema {
+    pub key: TypeSchemaKey,
+    #[serde(default)]
+    pub fields: BTreeMap<String, FieldSchema>,
+}
+
+/// keys can be described either as:
+/// - a dictionary, explicitly restating the type of each field
+/// - a list of field names, their types are copied from the fields in a later step
+///
+/// the choice is made based on the data type (map or list) in the json/yaml schema
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum TypeSchemaKey {
+    Map(BTreeMap<String, FieldSchema>),
+    List(Vec<String>),
 }
 
 /// object envelope for the ir.
@@ -1373,5 +1448,47 @@ mod tests {
             k.insert("id".to_string(), serde_json::json!(id));
             assert_eq!(key_string(&Key::from(k)), expected);
         }
+    }
+
+    #[test]
+    fn shorthand_key_expands_to_type_dictionary_key() {
+        let schema_json = serde_json::json!({
+            "types": {
+                "dcim.site": {
+                    "key": ["name", "version"],
+                    "fields": { "name": {"type": "string"}, "unrelated": {"type": "bool"}, "version": {"type": "int"} },
+                }
+            }
+        });
+        let parsed_schema: ParsedSchema = serde_json::from_value(schema_json).unwrap();
+        let schema = ParsedSchema::expanded(parsed_schema).unwrap();
+        assert_eq!(schema.types.len(), 1);
+        assert_eq!(
+            schema.types["dcim.site"].key,
+            serde_json::from_value(
+                serde_json::json!({ "name": { "type": "string" }, "version": { "type": "int" } })
+            )
+            .unwrap()
+        );
+    }
+
+    #[test]
+    fn shorthand_key_not_found() {
+        let schema_json = serde_json::json!({
+            "types": {
+                "dcim.site": {
+                    "key": ["name"],
+                    "fields": {},
+                }
+            }
+        });
+        let parsed_schema: ParsedSchema = serde_json::from_value(schema_json).unwrap();
+        let err = ParsedSchema::expanded(parsed_schema);
+
+        assert!(err.is_err());
+        assert!(err
+            .unwrap_err()
+            .to_string()
+            .contains("field `name` not found"));
     }
 }
