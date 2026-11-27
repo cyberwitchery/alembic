@@ -372,11 +372,14 @@ pub struct RawNode {
 ///
 /// an object's uid derives from its key, which may itself hold references (an
 /// interface keyed by `(device, name)`), so this runs to a fixpoint: each round
-/// settles the nodes whose key refs are already known, seeding the next, until
-/// nothing new resolves. state is authoritative for the identity of an object
-/// it already maps and derivation only fills the gaps, so an inventory uid that
-/// is not the derived one keeps converging. a reference cycle leaves the
-/// stragglers on backend ids, still internally consistent.
+/// settles the nodes whose key refs are settled, seeding the next, until
+/// nothing new resolves. a key ref is settled once it maps to a uid, or when it
+/// names no node of this read: no round can map that one, so the node takes
+/// the uid of whatever key `normalize` makes of it. state is authoritative for
+/// the identity of an object it already maps and derivation only fills the
+/// gaps, so an inventory uid that is not the derived one keeps converging. a
+/// reference cycle leaves the stragglers on backend ids, still internally
+/// consistent. import settles the uids it reads by the same fixpoint.
 ///
 /// `normalize` rewrites a node's refs through the mappings learned so far and
 /// `build_key` reads the key out of the result: the id space and the error
@@ -393,44 +396,14 @@ where
     N: Fn(&RawNode, &TypeSchema, &M) -> JsonMap,
     K: Fn(&RawNode, &TypeSchema, &JsonMap) -> Result<Key>,
 {
-    let type_schema = |node: &RawNode| {
-        schema
-            .types
-            .get(node.type_name.as_str())
-            .ok_or_else(|| anyhow!("missing schema for {}", node.type_name))
-    };
-
-    let mut resolved = vec![false; raw.len()];
-    loop {
-        let mut progressed = false;
-        for (i, node) in raw.iter().enumerate() {
-            if resolved[i] {
-                continue;
-            }
-            let type_schema = type_schema(node)?;
-            if !key_refs_resolved(type_schema, &node.attrs, mappings) {
-                continue;
-            }
-            let attrs = normalize(node, type_schema, mappings);
-            let key = build_key(node, type_schema, &attrs)?;
-            let uid = uid_v5(node.type_name.as_str(), &key_string(&key));
-            if mappings
-                .uid_of(node.type_name.as_str(), &node.backend_id)
-                .is_none()
-            {
-                mappings.learn(node.type_name.as_str(), node.backend_id.clone(), uid);
-            }
-            resolved[i] = true;
-            progressed = true;
-        }
-        if !progressed {
-            break;
-        }
-    }
+    settle_ref_keyed_uids(raw, schema, mappings, &normalize, &build_key)?;
 
     raw.iter()
         .map(|node| {
-            let type_schema = type_schema(node)?;
+            let type_schema = schema
+                .types
+                .get(node.type_name.as_str())
+                .ok_or_else(|| anyhow!("missing schema for {}", node.type_name))?;
             let attrs = normalize(node, type_schema, mappings);
             Ok(ObservedObject {
                 key: build_key(node, type_schema, &attrs)?,
@@ -442,13 +415,120 @@ where
         .collect()
 }
 
-/// whether every reference-typed *key* field of `attrs` already resolves to a
-/// canonical uid in `mappings`, so the node's own uid can be derived. a key
-/// field that is absent or not a reference imposes no constraint.
-fn key_refs_resolved<M: RefMappings>(
+/// a node of one read, as settling sees it: an adapter's [`RawNode`], or an
+/// object import got back from the adapter.
+pub(crate) trait ReadNode {
+    fn type_name(&self) -> &TypeName;
+    fn backend_id(&self) -> Option<&BackendId>;
+    fn attrs(&self) -> &JsonMap;
+}
+
+impl ReadNode for RawNode {
+    fn type_name(&self) -> &TypeName {
+        &self.type_name
+    }
+
+    fn backend_id(&self) -> Option<&BackendId> {
+        Some(&self.backend_id)
+    }
+
+    fn attrs(&self) -> &JsonMap {
+        &self.attrs
+    }
+}
+
+impl ReadNode for ObservedObject {
+    fn type_name(&self) -> &TypeName {
+        &self.type_name
+    }
+
+    fn backend_id(&self) -> Option<&BackendId> {
+        self.backend_id.as_ref()
+    }
+
+    fn attrs(&self) -> &JsonMap {
+        &self.attrs
+    }
+}
+
+/// learn `backend id -> uid` for every node of one read whose uid derives from
+/// its key: the fixpoint behind [`resolve_ref_keyed_identity`], and the one
+/// import runs over the objects it reads.
+///
+/// a key ref holds its node back only while it names a node of this read that
+/// has no uid yet. one naming nothing the read returned is settled like a
+/// mapped one, since no round can map it: the node takes the uid of whatever
+/// key `normalize` makes of it, which is the right uid when `normalize`
+/// resolves the ref some other way or the ref already holds one. a reference
+/// cycle never settles and keeps its backend ids. a node `mappings` already
+/// holds keeps its uid, and one with no backend id, or of a type the schema
+/// does not declare, learns nothing. both callers refuse an undeclared type
+/// afterwards.
+pub(crate) fn settle_ref_keyed_uids<T, M, N, K>(
+    nodes: &[T],
+    schema: &Schema,
+    mappings: &mut M,
+    normalize: N,
+    build_key: K,
+) -> Result<()>
+where
+    T: ReadNode,
+    M: RefMappings,
+    N: Fn(&T, &TypeSchema, &M) -> JsonMap,
+    K: Fn(&T, &TypeSchema, &JsonMap) -> Result<Key>,
+{
+    let mut read_ids: BTreeMap<&str, BTreeSet<&BackendId>> = BTreeMap::new();
+    for node in nodes {
+        if let Some(backend_id) = node.backend_id() {
+            read_ids
+                .entry(node.type_name().as_str())
+                .or_default()
+                .insert(backend_id);
+        }
+    }
+
+    let mut pending: Vec<_> = nodes
+        .iter()
+        .filter_map(|node| {
+            let backend_id = node.backend_id()?;
+            let type_schema = schema.types.get(node.type_name().as_str())?;
+            Some((node, backend_id, type_schema))
+        })
+        .collect();
+    loop {
+        let before = pending.len();
+        let mut waiting = Vec::new();
+        for (node, backend_id, type_schema) in pending {
+            let type_name = node.type_name().as_str();
+            if mappings.uid_of(type_name, backend_id).is_some() {
+                continue;
+            }
+            if !key_refs_settled(type_schema, node.attrs(), mappings, &read_ids) {
+                waiting.push((node, backend_id, type_schema));
+                continue;
+            }
+            let attrs = normalize(node, type_schema, mappings);
+            let key = build_key(node, type_schema, &attrs)?;
+            mappings.learn(
+                type_name,
+                backend_id.clone(),
+                uid_v5(type_name, &key_string(&key)),
+            );
+        }
+        if waiting.len() == before {
+            return Ok(());
+        }
+        pending = waiting;
+    }
+}
+
+/// whether no reference-typed *key* field of `attrs` waits on another round:
+/// each backend id in one maps to a uid already, or is not in `read_ids`.
+fn key_refs_settled<M: RefMappings>(
     type_schema: &TypeSchema,
     attrs: &JsonMap,
     mappings: &M,
+    read_ids: &BTreeMap<&str, BTreeSet<&BackendId>>,
 ) -> bool {
     for (field, schema) in &type_schema.key {
         let target = match &schema.r#type {
@@ -463,10 +543,15 @@ fn key_refs_resolved<M: RefMappings>(
             other => std::slice::from_ref(other),
         };
         for item in items {
-            if let Some(bid) = backend_id_from_value(item) {
-                if mappings.uid_of(target, &bid).is_none() {
-                    return false;
-                }
+            let Some(backend_id) = backend_id_from_value(item) else {
+                continue;
+            };
+            if mappings.uid_of(target, &backend_id).is_none()
+                && read_ids
+                    .get(target.as_str())
+                    .is_some_and(|ids| ids.contains(&backend_id))
+            {
+                return false;
             }
         }
     }

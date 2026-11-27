@@ -1,14 +1,13 @@
 //! import of canonical inventory from backend state.
 
 use crate::adapter_ops::{
-    backend_id_from_value, build_key_from_schema, normalize_attrs_refs, state_mappings_from_state,
+    build_key_from_schema, normalize_attrs_refs, settle_ref_keyed_uids, state_mappings_from_state,
 };
 use crate::state::StateStore;
 use crate::types::{ObservedObject, Observer};
 use alembic_adapter_sdk::{BackendId, StateMappings};
 use alembic_core::{
-    key_string, uid_v5, FieldType, Inventory, JsonMap, Key, Object, Schema, TypeName, TypeSchema,
-    Uid,
+    key_string, uid_v5, Inventory, JsonMap, Key, Object, Schema, TypeName, TypeSchema, Uid,
 };
 use anyhow::{anyhow, Result};
 use serde_json::Value;
@@ -49,7 +48,7 @@ pub async fn import_inventory(
     let objects: Vec<ObservedObject> = observed.into_objects();
     let observed_ids = observed_backend_ids(&objects);
     let mut mappings = state_mappings_from_state(state);
-    bootstrap_mappings(schema, &objects, &observed_ids, &mut mappings);
+    bootstrap_mappings(schema, &objects, &mut mappings)?;
 
     let mut inventory_objects = Vec::new();
     let mut dropped = DroppedAttrs::new();
@@ -105,95 +104,21 @@ fn observed_backend_ids(objects: &[ObservedObject]) -> BTreeMap<String, BTreeSet
 
 /// fill the `backend id -> uid` index out of the observation, so refs the
 /// adapter left as backend ids can be rewritten into the uid space the imported
-/// objects live in. mirrors the phase 2 the infrahub adapter runs locally for
-/// its own read.
-///
-/// the index arrives seeded from state, which is authoritative for every object
-/// it already maps; derivation only fills the gaps. an unmapped object's uid
-/// derives from its key, and a key field may itself be a ref, so resolve to a
-/// fixpoint: each round settles the objects whose key refs are already known,
-/// seeding the next round, until nothing new resolves. objects in a reference
-/// cycle never settle and keep their backend ids.
+/// objects live in. the index arrives seeded from state and settles by the
+/// fixpoint adapter reads run (`resolve_ref_keyed_identity`), so a read and an
+/// import derive the same uids.
 fn bootstrap_mappings(
     schema: &Schema,
     objects: &[ObservedObject],
-    observed_ids: &BTreeMap<String, BTreeSet<BackendId>>,
     mappings: &mut StateMappings,
-) {
-    // an object with no backend id seeds nothing, and one whose type the schema
-    // omits is refused later as an undeclared type, so it seeds nothing either.
-    let mut pending: Vec<_> = objects
-        .iter()
-        .filter_map(|object| {
-            let backend_id = object.backend_id.as_ref()?;
-            let type_schema = schema.types.get(object.type_name.as_str())?;
-            Some((object, backend_id, type_schema))
-        })
-        .collect();
-
-    loop {
-        let before = pending.len();
-        pending.retain(|(object, backend_id, type_schema)| {
-            if !key_refs_settled(type_schema, &object.attrs, mappings, observed_ids) {
-                return true;
-            }
-            if mappings
-                .uid_for(object.type_name.as_str(), backend_id)
-                .is_none()
-            {
-                let attrs = normalize_attrs_refs(&object.attrs, type_schema, mappings);
-                let key = derive_key(type_schema, &attrs, &object.key);
-                mappings.insert(
-                    object.type_name.as_str(),
-                    (*backend_id).clone(),
-                    uid_v5(object.type_name.as_str(), &key_string(&key)),
-                );
-            }
-            false
-        });
-        if pending.len() == before {
-            break;
-        }
-    }
-}
-
-/// whether every reference-typed *key* field of `attrs` is settled, so the
-/// object's own uid can be derived without baking a backend id into it. only a
-/// ref naming an observed object that is not indexed yet blocks: one the adapter
-/// already resolved canonically, or one pointing outside the observation, will
-/// never resolve and so imposes no constraint.
-fn key_refs_settled(
-    type_schema: &TypeSchema,
-    attrs: &JsonMap,
-    mappings: &StateMappings,
-    observed_ids: &BTreeMap<String, BTreeSet<BackendId>>,
-) -> bool {
-    for (field, field_schema) in &type_schema.key {
-        let target = match &field_schema.r#type {
-            FieldType::Ref { target } | FieldType::ListRef { target } => target,
-            _ => continue,
-        };
-        let Some(value) = attrs.get(field) else {
-            continue;
-        };
-        let items = match value {
-            Value::Array(items) => items.as_slice(),
-            other => std::slice::from_ref(other),
-        };
-        for item in items {
-            let Some(backend_id) = backend_id_from_value(item) else {
-                continue;
-            };
-            if mappings.uid_for(target, &backend_id).is_none()
-                && observed_ids
-                    .get(target.as_str())
-                    .is_some_and(|ids| ids.contains(&backend_id))
-            {
-                return false;
-            }
-        }
-    }
-    true
+) -> Result<()> {
+    settle_ref_keyed_uids(
+        objects,
+        schema,
+        mappings,
+        |object, type_schema, mappings| normalize_attrs_refs(&object.attrs, type_schema, mappings),
+        |object, type_schema, attrs| Ok(derive_key(type_schema, attrs, &object.key)),
+    )
 }
 
 /// materialize one observed object against the full index: refs normalized, key
@@ -971,6 +896,162 @@ mod tests {
                 "{error}"
             );
         }
+    }
+
+    #[test]
+    fn an_adapter_read_and_import_settle_the_same_uids() {
+        // the same rows through both callers: an adapter read resolving them,
+        // and import getting them from an adapter that left every ref a backend
+        // id. children come first so the fixpoint needs every round. net.a and
+        // net.b are keyed on each other, and device 6 on a site the read did not
+        // return.
+        let string_field = typed_field(FieldType::String);
+        let schema = Schema {
+            types: BTreeMap::from([
+                (
+                    "dcim.site".to_string(),
+                    typed_type(&[("slug", string_field.clone())], &[]),
+                ),
+                (
+                    "dcim.device".to_string(),
+                    typed_type(
+                        &[
+                            ("site", ref_field("dcim.site")),
+                            ("name", string_field.clone()),
+                        ],
+                        &[],
+                    ),
+                ),
+                (
+                    "dcim.interface".to_string(),
+                    typed_type(
+                        &[("device", ref_field("dcim.device")), ("name", string_field)],
+                        &[],
+                    ),
+                ),
+                (
+                    "net.a".to_string(),
+                    typed_type(&[("peer", ref_field("net.b"))], &[]),
+                ),
+                (
+                    "net.b".to_string(),
+                    typed_type(&[("peer", ref_field("net.a"))], &[]),
+                ),
+            ]),
+        };
+        let raw: Vec<crate::RawNode> = [
+            ("dcim.interface", 3, json!({ "device": 2, "name": "eth0" })),
+            ("dcim.device", 2, json!({ "site": 1, "name": "leaf01" })),
+            ("dcim.site", 1, json!({ "slug": "fra1" })),
+            ("net.a", 4, json!({ "peer": 5 })),
+            ("net.b", 5, json!({ "peer": 4 })),
+            ("dcim.interface", 7, json!({ "device": 6, "name": "eth0" })),
+            ("dcim.device", 6, json!({ "site": 9, "name": "leaf02" })),
+        ]
+        .into_iter()
+        .map(|(type_name, id, attrs)| crate::RawNode {
+            type_name: TypeName::new(type_name),
+            backend_id: BackendId::Int(id),
+            attrs: attrs_map(attrs),
+        })
+        .collect();
+
+        let mut read_index = StateMappings::default();
+        let read = crate::resolve_ref_keyed_identity(
+            &raw,
+            &schema,
+            &mut read_index,
+            |node, type_schema, mappings| normalize_attrs_refs(&node.attrs, type_schema, mappings),
+            |_, type_schema, attrs| build_key_from_schema(type_schema, attrs),
+        )
+        .unwrap();
+
+        let objects: Vec<ObservedObject> = raw
+            .iter()
+            .map(|node| ObservedObject {
+                type_name: node.type_name.clone(),
+                key: build_key_from_schema(&schema.types[node.type_name.as_str()], &node.attrs)
+                    .unwrap(),
+                attrs: node.attrs.clone(),
+                backend_id: Some(node.backend_id.clone()),
+            })
+            .collect();
+        let mut import_index = StateMappings::default();
+        bootstrap_mappings(&schema, &objects, &mut import_index).unwrap();
+
+        for (node, (object, observed)) in raw.iter().zip(objects.iter().zip(&read)) {
+            let label = format!("{} {}", node.type_name, node.backend_id);
+            assert_eq!(
+                import_index.uid_for(node.type_name.as_str(), &node.backend_id),
+                read_index.uid_for(node.type_name.as_str(), &node.backend_id),
+                "{label}: both callers learn the same uid"
+            );
+            let (key, attrs) = materialize(&schema, object, &import_index);
+            assert_eq!(
+                key, observed.key,
+                "{label}: both callers build the same key"
+            );
+            assert_eq!(
+                attrs, observed.attrs,
+                "{label}: both callers write the same refs"
+            );
+        }
+
+        let derived_uid = |type_name: &str, key: serde_json::Value| {
+            let attrs = attrs_map(key);
+            uid_v5(
+                type_name,
+                &key_string(&build_key_from_schema(&schema.types[type_name], &attrs).unwrap()),
+            )
+        };
+        let site = derived_uid("dcim.site", json!({ "slug": "fra1" }));
+        let device = derived_uid(
+            "dcim.device",
+            json!({ "site": site.to_string(), "name": "leaf01" }),
+        );
+        let interface = derived_uid(
+            "dcim.interface",
+            json!({ "device": device.to_string(), "name": "eth0" }),
+        );
+        for (type_name, id, uid) in [
+            ("dcim.site", 1, site),
+            ("dcim.device", 2, device),
+            ("dcim.interface", 3, interface),
+        ] {
+            assert_eq!(
+                read_index.uid_for(type_name, &BackendId::Int(id)),
+                Some(uid),
+                "{type_name} {id} derives from its resolved key"
+            );
+        }
+        let read_of = |id: u64| {
+            read.iter()
+                .find(|object| object.backend_id == Some(BackendId::Int(id)))
+                .unwrap()
+        };
+        for (id, peer) in [(4, 5), (5, 4)] {
+            let node = read_of(id);
+            assert_eq!(
+                read_index.uid_for(node.type_name.as_str(), &BackendId::Int(id)),
+                None,
+                "{} {id} is in a cycle and never settles",
+                node.type_name
+            );
+            assert_eq!(
+                node.key.get("peer"),
+                Some(&json!(peer)),
+                "{} {id} stays keyed on a backend id",
+                node.type_name
+            );
+        }
+        let leaf02 = read_index
+            .uid_for("dcim.device", &BackendId::Int(6))
+            .expect("no round can map site 9, so device 6 does not wait on it");
+        assert_eq!(
+            read_of(7).key.get("device"),
+            Some(&json!(leaf02.to_string())),
+            "the interface keyed on device 6 settles after it"
+        );
     }
 
     #[test]
