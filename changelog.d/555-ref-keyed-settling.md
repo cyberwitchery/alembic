@@ -1,0 +1,1 @@
+- netbox and nautobot adapters: an object keyed on a reference the read did not return (left out by object permissions, or created between two listings) is adopted, with what is keyed on it, instead of the plan being refused; generic and infrahub adapters: the refusal of such a plan names only that reference, not the references to the object keyed on it (#555)

@@ -373,13 +373,11 @@ pub struct RawNode {
 /// an object's uid derives from its key, which may itself hold references (an
 /// interface keyed by `(device, name)`), so this runs to a fixpoint: each round
 /// settles the nodes whose key refs are settled, seeding the next, until
-/// nothing new resolves. a key ref is settled once it maps to a uid, or when it
-/// names no node of this read: no round can map that one, so the node takes
-/// the uid of whatever key `normalize` makes of it. state is authoritative for
-/// the identity of an object it already maps and derivation only fills the
-/// gaps, so an inventory uid that is not the derived one keeps converging. a
-/// reference cycle leaves the stragglers on backend ids, still internally
-/// consistent. import settles the uids it reads by the same fixpoint.
+/// nothing new resolves. `settle_ref_keyed_uids`, which import runs too, says
+/// when a key ref is settled. state is authoritative for the identity of an
+/// object it already maps and derivation only fills the gaps, so an inventory
+/// uid that is not the derived one keeps converging. a reference cycle leaves
+/// the stragglers on backend ids, still internally consistent.
 ///
 /// `normalize` rewrites a node's refs through the mappings learned so far and
 /// `build_key` reads the key out of the result: the id space and the error
@@ -459,11 +457,13 @@ impl ReadNode for ObservedObject {
 /// has no uid yet. one naming nothing the read returned is settled like a
 /// mapped one, since no round can map it: the node takes the uid of whatever
 /// key `normalize` makes of it, which is the right uid when `normalize`
-/// resolves the ref some other way or the ref already holds one. a reference
-/// cycle never settles and keeps its backend ids. a node `mappings` already
-/// holds keeps its uid, and one with no backend id, or of a type the schema
-/// does not declare, learns nothing. both callers refuse an undeclared type
-/// afterwards.
+/// resolves the ref some other way or the ref already holds one. when that ref
+/// is a brief, `normalize` may derive its uid from the briefs it carries for
+/// its target's key, as [`resolve_nested_ref_uid`] does, so those are held to
+/// the same rule. a reference cycle never settles and keeps its backend ids. a
+/// node `mappings` already holds keeps its uid, and one with no backend id, or
+/// of a type the schema does not declare, learns nothing. both callers refuse
+/// an undeclared type afterwards.
 pub(crate) fn settle_ref_keyed_uids<T, M, N, K>(
     nodes: &[T],
     schema: &Schema,
@@ -503,7 +503,7 @@ where
             if mappings.uid_of(type_name, backend_id).is_some() {
                 continue;
             }
-            if !key_refs_settled(type_schema, node.attrs(), mappings, &read_ids) {
+            if !key_refs_settled(type_schema, node.attrs(), schema, mappings, &read_ids) {
                 waiting.push((node, backend_id, type_schema));
                 continue;
             }
@@ -522,16 +522,16 @@ where
     }
 }
 
-/// whether no reference-typed *key* field of `attrs` waits on another round:
-/// each backend id in one maps to a uid already, or is not in `read_ids`.
+/// whether no reference-typed *key* field of `attrs` waits on another round.
 fn key_refs_settled<M: RefMappings>(
     type_schema: &TypeSchema,
     attrs: &JsonMap,
+    schema: &Schema,
     mappings: &M,
     read_ids: &BTreeMap<&str, BTreeSet<&BackendId>>,
 ) -> bool {
-    for (field, schema) in &type_schema.key {
-        let target = match &schema.r#type {
+    for (field, field_schema) in &type_schema.key {
+        let target = match &field_schema.r#type {
             FieldType::Ref { target } | FieldType::ListRef { target } => target,
             _ => continue,
         };
@@ -543,19 +543,54 @@ fn key_refs_settled<M: RefMappings>(
             other => std::slice::from_ref(other),
         };
         for item in items {
-            let Some(backend_id) = backend_id_from_value(item) else {
-                continue;
-            };
-            if mappings.uid_of(target, &backend_id).is_none()
-                && read_ids
-                    .get(target.as_str())
-                    .is_some_and(|ids| ids.contains(&backend_id))
-            {
+            if !ref_settled(target, item, schema, mappings, read_ids) {
                 return false;
             }
         }
     }
     true
+}
+
+/// whether one ref to `target` waits on no other round: its backend id maps to
+/// a uid already or is not in `read_ids`, and, when it is a brief outside the
+/// read, the same holds for each brief [`resolve_nested_ref_uid`] would derive
+/// its uid from.
+fn ref_settled<M: RefMappings>(
+    target: &str,
+    value: &Value,
+    schema: &Schema,
+    mappings: &M,
+    read_ids: &BTreeMap<&str, BTreeSet<&BackendId>>,
+) -> bool {
+    let Some(backend_id) = backend_id_from_value(value) else {
+        return true;
+    };
+    if mappings.uid_of(target, &backend_id).is_some() {
+        return true;
+    }
+    if read_ids
+        .get(target)
+        .is_some_and(|ids| ids.contains(&backend_id))
+    {
+        return false;
+    }
+    let (Value::Object(brief), Some(target_schema)) = (value, schema.types.get(target)) else {
+        return true;
+    };
+    let key = &target_schema.key;
+    // `resolve_nested_ref_uid` derives nothing from a brief missing a key field.
+    if !key.keys().all(|field| brief.contains_key(field)) {
+        return true;
+    }
+    key.iter().all(|(field, field_schema)| {
+        let nested = brief.get(field).filter(|value| value.is_object());
+        match (&field_schema.r#type, nested) {
+            (FieldType::Ref { target } | FieldType::ListRef { target }, Some(nested)) => {
+                ref_settled(target, nested, schema, mappings, read_ids)
+            }
+            _ => true,
+        }
+    })
 }
 
 /// project the state store into a flat `uid -> backend-id` map, keeping every
@@ -1344,6 +1379,176 @@ mod tests {
             resolve_nested_ref_uid(&partial, Some("dcim.site"), &schema, no_lookup, no_endpoint),
             None
         );
+    }
+
+    // --- settle_ref_keyed_uids ---
+
+    fn keyed(key: Vec<(&str, FieldType)>, fields: Vec<(&str, FieldType)>) -> TypeSchema {
+        let schemas = |pairs: Vec<(&str, FieldType)>| {
+            pairs
+                .into_iter()
+                .map(|(name, r#type)| (name.to_string(), field_schema(r#type)))
+                .collect()
+        };
+        TypeSchema {
+            key: schemas(key),
+            fields: schemas(fields),
+        }
+    }
+
+    fn ref_to(target: &str) -> FieldType {
+        FieldType::Ref {
+            target: target.to_string(),
+        }
+    }
+
+    /// refs as netbox's and nautobot's reads normalize them: a brief resolves
+    /// through `resolve_nested_ref_uid` and keeps its bare id when that finds
+    /// nothing.
+    fn normalize_briefs(
+        node: &RawNode,
+        type_schema: &TypeSchema,
+        schema: &Schema,
+        mappings: &StateMappings,
+    ) -> JsonMap {
+        let type_for_endpoint = |url: &str| {
+            [
+                ("/api/dcim/sites/", "dcim.site"),
+                ("/api/dcim/devices/", "dcim.device"),
+                ("/api/dcim/interfaces/", "dcim.interface"),
+                ("/api/net/bindings/", "net.binding"),
+            ]
+            .into_iter()
+            .find(|(prefix, _)| url.starts_with(prefix))
+            .map(|(_, type_name)| type_name.to_string())
+        };
+        let mut attrs = node.attrs.clone();
+        for (field, field_schema) in type_schema.key.iter().chain(&type_schema.fields) {
+            let (FieldType::Ref { target }, Some(Value::Object(brief))) =
+                (&field_schema.r#type, node.attrs.get(field))
+            else {
+                continue;
+            };
+            let uid = resolve_nested_ref_uid(
+                brief,
+                Some(target),
+                schema,
+                |type_name, backend_id| mappings.uid_for(type_name, backend_id),
+                type_for_endpoint,
+            );
+            let value = uid.map_or_else(|| brief["id"].clone(), |uid| json!(uid.to_string()));
+            attrs.insert(field.clone(), value);
+        }
+        attrs
+    }
+
+    #[test]
+    fn a_node_keyed_on_a_brief_outside_the_read_waits_on_the_briefs_it_nests() {
+        // netbox-style rows, types in the order netbox lists them, and
+        // interface 3 left out of the listing. binding 10 is keyed on it, and
+        // its brief nests device 2, which only maps after site 1: the binding's
+        // key is final once device 2 has a uid, so that is when it settles.
+        let schema = schema_with(vec![
+            (
+                "dcim.device",
+                keyed(
+                    vec![("site", ref_to("dcim.site")), ("name", FieldType::String)],
+                    vec![],
+                ),
+            ),
+            (
+                "dcim.interface",
+                keyed(
+                    vec![
+                        ("device", ref_to("dcim.device")),
+                        ("name", FieldType::String),
+                    ],
+                    vec![],
+                ),
+            ),
+            ("dcim.site", keyed(vec![("slug", FieldType::Slug)], vec![])),
+            (
+                "net.binding",
+                keyed(
+                    vec![
+                        ("interface", ref_to("dcim.interface")),
+                        ("name", FieldType::String),
+                    ],
+                    vec![],
+                ),
+            ),
+            (
+                "net.peer",
+                keyed(
+                    vec![("name", FieldType::String)],
+                    vec![("binding", ref_to("net.binding"))],
+                ),
+            ),
+            (
+                "net.sub",
+                keyed(
+                    vec![
+                        ("binding", ref_to("net.binding")),
+                        ("name", FieldType::String),
+                    ],
+                    vec![],
+                ),
+            ),
+        ]);
+        let binding = json!({ "id": 10, "url": "/api/net/bindings/10/", "name": "b1" });
+        let raw: Vec<RawNode> = [
+            (
+                "dcim.device",
+                2,
+                json!({
+                    "site": { "id": 1, "url": "/api/dcim/sites/1/", "slug": "fra1" },
+                    "name": "leaf01",
+                }),
+            ),
+            ("dcim.site", 1, json!({ "slug": "fra1" })),
+            (
+                "net.binding",
+                10,
+                json!({
+                    "interface": {
+                        "id": 3,
+                        "url": "/api/dcim/interfaces/3/",
+                        "name": "eth0",
+                        "device": { "id": 2, "url": "/api/dcim/devices/2/", "name": "leaf01" },
+                    },
+                    "name": "b1",
+                }),
+            ),
+            ("net.peer", 12, json!({ "name": "p1", "binding": binding })),
+            ("net.sub", 11, json!({ "binding": binding, "name": "s1" })),
+        ]
+        .into_iter()
+        .map(|(type_name, id, value)| RawNode {
+            type_name: TypeName::new(type_name),
+            backend_id: BackendId::Int(id),
+            attrs: JsonMap::from(brief(value).into_iter().collect::<BTreeMap<_, _>>()),
+        })
+        .collect();
+
+        let mut mappings = StateMappings::default();
+        let read = resolve_ref_keyed_identity(
+            &raw,
+            &schema,
+            &mut mappings,
+            |node, type_schema, mappings| normalize_briefs(node, type_schema, &schema, mappings),
+            |_, type_schema, attrs| build_key_from_schema(type_schema, attrs),
+        )
+        .unwrap();
+
+        for object in &read {
+            let type_name = object.type_name.as_str();
+            let backend_id = object.backend_id.as_ref().unwrap();
+            assert_eq!(
+                mappings.uid_for(type_name, backend_id),
+                Some(uid_v5(type_name, &key_string(&object.key))),
+                "{type_name} {backend_id} learns the uid its final key derives"
+            );
+        }
     }
 
     // --- collect_tag_names ---
