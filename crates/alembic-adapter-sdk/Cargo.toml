@@ -13,6 +13,7 @@ readme = "../../README.md"
 serde.workspace = true
 serde_json.workspace = true
 serde-saphyr = { workspace = true, features = ["deserialize", "serialize"] }
+serde_path_to_error.workspace = true
 alembic-core.workspace = true
 uuid.workspace = true
 tempfile.workspace = true

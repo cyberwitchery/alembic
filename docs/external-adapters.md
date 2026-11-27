@@ -41,7 +41,22 @@ answer the adapter never gave. the `key` and `attrs` maps you fill stay your own
 
 the `alembic-adapter-sdk` crate ships a small helper module for external
 adapters that removes request/response boilerplate and guarantees well-formed
-responses:
+responses.
+
+for your own custom configuration struct to work, the associated type
+`Config` must be set to it. note that this struct must be a plain
+struct and cannot use `#[serde(flatten)]` (which will make introspection
+on its struct fields fail). to turn off checking of the `Config`
+struct and use a manual `serde_json::Value` instead, set the trait
+const bool `CHECK_SETUP_KEYS` to false in your external adapter
+implementation.
+
+note that when checking is enabled, all top level keys will be
+automatically checked by the sdk, no extra annotations needed. for
+full checking of nested values in the config,
+`#[serde(deny_unknown_fields)]` must be set on each struct.
+
+here's an example that can be used as a starting point for a new (checked) external adapter:
 
 ```rust
 use alembic_adapter_sdk::{ExternalAdapter, ExternalObject};
@@ -49,15 +64,17 @@ use alembic_adapter_sdk::alembic_external_main;
 
 struct MyAdapter;
 
+#[derive(serde::Deserialize)]
+struct MyConfig {
+    #[serde(default)]
+    my_backend_variable_x: f64,
+}
+
 impl ExternalAdapter for MyAdapter {
     type Error = anyhow::Error;
+    type Config = MyConfig;
 
-    fn setup(&mut self, configuration: &serde_json::Value) -> anyhow::Result<()> {
-        if let Some(x) = configuration
-            .get("my_backend_variable_x")
-            .and_then(serde_json::Value::as_f64) {
-            ...
-        }
+    fn setup(&mut self, _configuration: MyConfig) -> anyhow::Result<()> {
         Ok(())
     }
 
@@ -147,13 +164,15 @@ formatted with `{:#}`, as `error`; nothing else about the error reaches alembic.
 ```rust
 impl ExternalAdapter for MyAdapter {
     type Error = String;
+    type Config = MyConfig;
 
-    fn setup(&mut self, configuration: &serde_json::Value) -> Result<(), String> {
-        configuration
-            .get("my_backend_variable_x")
-            .ok_or_else(|| "setup needs `my_backend_variable_x`".to_string())?;
+    fn setup(&mut self, configuration: MyConfig) -> Result<(), String> {
+        if configuration.my_backend_variable_x < 0.0 {
+            return Err("`x` can't be negative".into());
+        }
         Ok(())
     }
+
     // read, write, ...
 }
 ```
