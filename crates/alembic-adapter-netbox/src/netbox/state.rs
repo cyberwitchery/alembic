@@ -3,7 +3,7 @@ use alembic_core::Uid;
 use alembic_engine::{resolved_ids_from_state, state_mappings_by_id, RefMappings, StateStore};
 use std::collections::BTreeMap;
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub(super) struct StateMappings {
     pub(super) by_type: BTreeMap<String, BTreeMap<u64, Uid>>,
 }
