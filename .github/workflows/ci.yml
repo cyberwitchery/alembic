@@ -95,6 +95,17 @@ jobs:
           sudo docker image prune --all --force
           df -h /
 
+      # a cold build compiles nautobot-openapi and netbox-openapi side by side,
+      # 7-11 GB each, which outgrows the runner's 16 GB without swap.
+      - name: Add swap
+        run: |
+          sudo swapoff -a
+          sudo fallocate -l 16G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          free -h
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Rust
