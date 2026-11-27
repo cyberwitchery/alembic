@@ -42,11 +42,17 @@ fn apply_names_every_schema_change() {
 
     let mut cmd = Command::new(bin_path());
     cmd.env("ALEMBIC_STATE_PATH", dir.path().join("state.json"));
-    cmd.args(["apply", "--backend", "external", "--allow-delete"])
-        .arg("--backend-config")
-        .arg(&config)
-        .arg("--plan")
-        .arg(fixture_path("minimal_plan.json"));
+    cmd.args([
+        "apply",
+        "--backend",
+        "external",
+        "--provision",
+        "--allow-delete",
+    ])
+    .arg("--backend-config")
+    .arg(&config)
+    .arg("--plan")
+    .arg(fixture_path("minimal_plan.json"));
     let (ok, stdout, stderr) = run(&mut cmd);
 
     assert!(ok, "apply failed; stdout:\n{stdout}\nstderr:\n{stderr}");
@@ -75,7 +81,7 @@ fn the_delete_gate_names_what_it_refuses_over() {
 
     let mut cmd = Command::new(bin_path());
     cmd.env("ALEMBIC_STATE_PATH", dir.path().join("state.json"));
-    cmd.args(["apply", "--backend", "external"])
+    cmd.args(["apply", "--backend", "external", "--provision"])
         .arg("--backend-config")
         .arg(&config)
         .arg("--plan")
@@ -96,30 +102,42 @@ fn the_delete_gate_names_what_it_refuses_over() {
 }
 
 #[test]
-fn plan_provision_names_what_it_provisioned() {
+fn apply_names_what_it_provisioned() {
     let dir = tempdir().expect("create temp dir");
     let config = converging_backend(dir.path());
     let inventory = dir.path().join("inventory.yaml");
     std::fs::write(&inventory, "schema:\n  types: {}\nobjects: []\n").expect("write inventory");
+    let state = dir.path().join("state.json");
+    let plan = dir.path().join("plan.json");
 
     let mut cmd = Command::new(bin_path());
-    cmd.env("ALEMBIC_STATE_PATH", dir.path().join("state.json"));
+    cmd.env("ALEMBIC_STATE_PATH", &state);
+    cmd.args(["plan", "--backend", "external"])
+        .arg("-f")
+        .arg(&inventory)
+        .arg("-o")
+        .arg(&plan)
+        .arg("--backend-config")
+        .arg(&config);
+    let (ok, stdout, stderr) = run(&mut cmd);
+    assert!(ok, "plan failed; stdout:\n{stdout}\nstderr:\n{stderr}");
+
+    let mut cmd = Command::new(bin_path());
+    cmd.env("ALEMBIC_STATE_PATH", &state);
     cmd.args([
-        "plan",
+        "apply",
         "--backend",
         "external",
         "--provision",
         "--allow-delete",
     ])
-    .arg("-f")
-    .arg(&inventory)
-    .arg("-o")
-    .arg(dir.path().join("plan.json"))
     .arg("--backend-config")
-    .arg(&config);
+    .arg(&config)
+    .arg("--plan")
+    .arg(&plan);
     let (ok, stdout, stderr) = run(&mut cmd);
 
-    assert!(ok, "plan failed; stdout:\n{stdout}\nstderr:\n{stderr}");
+    assert!(ok, "apply failed; stdout:\n{stdout}\nstderr:\n{stderr}");
     for line in ["  created dcim.widget", "  deleted dcim.fossil.age"] {
         assert!(
             stdout.contains(line),

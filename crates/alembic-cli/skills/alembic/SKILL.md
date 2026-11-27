@@ -41,17 +41,13 @@ run it.
 | `import -f -o --stateless` | yes | `-o` inventory | no | no | none | no |
 | `plan --report` | yes | `-o` report, if given | no | yes | shared | no |
 | `plan --dry-run` | yes | stdout | no | yes | shared | no |
-| `plan --report --provision` | yes | `-o` report, if given | **schema** | yes | exclusive | no |
 | `plan -o` | yes | plan | no | yes | exclusive | yes |
-| `plan -o --provision` | yes | plan | **schema** | yes | exclusive | yes |
-| `apply -p` | yes | journal, `-o` report | **objects and schema** | yes | exclusive | yes |
+| `apply -p` | yes | journal, `-o` report | **objects** | yes | exclusive | yes |
+| `apply -p --provision` | yes | journal, `-o` report | **objects and schema** | yes | exclusive | yes |
 
 state loading, locking, and saving are separate properties. a shared lock means
 the run may load identity memory but cannot persist changes to it. `validate` and
-`map` do not touch state at all; stateless import deliberately does not. adding
-`--provision` to `plan --report` changes its lock to exclusive because the run
-writes backend schema, but the report path still does not save identity state.
-`--dry-run --provision` is rejected at argument parsing.
+`map` do not touch state at all; stateless import deliberately does not.
 
 ## invariants
 
@@ -77,10 +73,9 @@ these hold whatever the task is.
    a plan the backend has moved away from since; under `--no-stale-check` a
    backend edit made after the plan was written is converged back. approving an
    update means approving that whole write.
-5. **`plan --report` is read-only only without `--provision`.** `--provision`
-   runs the adapter's `ensure_schema` against the backend before the report is
-   computed, which issues schema writes. `--report --provision` is a writing run
-   wearing a report's name. for a read-only look, `--report` alone.
+5. **only `apply --provision` writes schema.** `plan` only previews it. a plain
+   `apply` of a plan whose preview lists schema changes is refused before it
+   writes anything.
 6. **planning can persist identity.** when no state mapping answers for a
    declared object, `plan` adopts the backend object sharing its key and saves
    that binding, which later authorizes updates and deletes of that row. the run
@@ -142,8 +137,8 @@ into a silent answer. none of them belongs in a retry:
   dropped, is answered either by the operator confirming those exact objects
   should go or by leaving them alone. `plan --report` names them under `extra`
   without planning anything.
-- `--provision` — writes backend schema. if a field is missing on the backend,
-  say so; do not provision under a `--report` and call the run read-only.
+- `--provision` — writes backend schema (invariant 5). if apply refuses a plan
+  for needing schema, say what is missing; provisioning is the operator's call.
 - `--no-adopt` — refuses to identify backend objects by key, so everything
   unmatched plans as a create. it is the cautious mode for first contact with a
   populated backend, not a way to quiet an adoption you did not expect. an
@@ -172,7 +167,7 @@ alembic plan --backend netbox -f inventory.yaml --report -o drift.json
 reads the backend, writes no plan, saves no state. the report groups into
 `changed` (declared, present, diverging), `missing` (declared, absent), and
 `extra` (present, undeclared — populated whether or not `--allow-delete` was
-passed). three empty lists mean no drift. do not add `--provision` (invariant 5).
+passed). three empty lists mean no drift.
 
 ### add an object
 

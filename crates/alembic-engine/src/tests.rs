@@ -1710,7 +1710,7 @@ fn apply_plan_blocks_deletes_without_flag() {
         adopt_by_key: None,
     };
     let backend = Backend::Adapter(Box::new(adapter));
-    let err = futures::executor::block_on(apply_plan(&backend, &plan, &mut state, false))
+    let err = futures::executor::block_on(apply_plan(&backend, &plan, &mut state, false, false))
         .unwrap_err()
         .to_string();
     assert!(err.contains("--allow-delete"), "{err}");
@@ -1785,7 +1785,7 @@ fn apply_plan_blocks_schema_deletes_without_flag() {
         adopt_by_key: None,
     };
     let backend = Backend::Adapter(Box::new(adapter));
-    let result = futures::executor::block_on(apply_plan(&backend, &plan, &mut state, false));
+    let result = futures::executor::block_on(apply_plan(&backend, &plan, &mut state, false, true));
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("--allow-delete"));
 }
@@ -1811,7 +1811,57 @@ fn apply_plan_allows_schema_deletes_with_flag() {
         adopt_by_key: None,
     };
     let backend = Backend::Adapter(Box::new(adapter));
-    futures::executor::block_on(apply_plan(&backend, &plan, &mut state, true)).unwrap();
+    futures::executor::block_on(apply_plan(&backend, &plan, &mut state, true, true)).unwrap();
+}
+
+/// an adapter whose write would map uid 1, so an empty state shows it never ran.
+fn mapping_adapter() -> TestAdapter {
+    TestAdapter {
+        observed: ObservedState::default(),
+        report: ApplyReport {
+            applied: vec![AppliedOp {
+                uid: uid(1),
+                type_name: t("dcim.site"),
+                backend_id: Some(BackendId::Int(55)),
+            }],
+            ..Default::default()
+        },
+    }
+}
+
+#[test]
+fn apply_plan_without_provision_refuses_a_plan_that_previewed_schema_changes() {
+    let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
+    let plan = Plan {
+        schema_preview: Some(ProvisionReport {
+            created_fields: vec!["dcim.site.tier".to_string()],
+            ..Default::default()
+        }),
+        ..empty_plan()
+    };
+    let backend = Backend::Adapter(Box::new(mapping_adapter()));
+    let err = futures::executor::block_on(apply_plan(&backend, &plan, &mut state, false, false))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("re-run with --provision"), "{err}");
+    assert!(err.contains("dcim.site.tier"), "{err}");
+    // refused before the write, so no op landed.
+    assert!(state.all_mappings().is_empty());
+}
+
+#[test]
+fn apply_plan_without_provision_accepts_a_plan_that_previewed_no_schema_changes() {
+    let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
+    let plan = Plan {
+        schema_preview: Some(ProvisionReport::default()),
+        ..empty_plan()
+    };
+    let backend = Backend::Adapter(Box::new(mapping_adapter()));
+    futures::executor::block_on(apply_plan(&backend, &plan, &mut state, false, false)).unwrap();
+    assert_eq!(
+        state.backend_id(t("dcim.site"), uid(1)),
+        Some(BackendId::Int(55))
+    );
 }
 
 /// adapter whose read-only schema preview reports pending deletions, exercising
@@ -1876,7 +1926,7 @@ fn apply_plan_self_previews_and_blocks_schema_deletes() {
         adopt_by_key: None,
     };
     let backend = Backend::Adapter(Box::new(adapter));
-    let result = futures::executor::block_on(apply_plan(&backend, &plan, &mut state, false));
+    let result = futures::executor::block_on(apply_plan(&backend, &plan, &mut state, false, true));
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("--allow-delete"));
 }
@@ -1901,7 +1951,7 @@ fn apply_plan_self_preview_allows_schema_deletes_with_flag() {
         adopt_by_key: None,
     };
     let backend = Backend::Adapter(Box::new(adapter));
-    futures::executor::block_on(apply_plan(&backend, &plan, &mut state, true)).unwrap();
+    futures::executor::block_on(apply_plan(&backend, &plan, &mut state, true, true)).unwrap();
 }
 
 /// write-only backend that provisions schema, counting the calls: provisioning
@@ -1962,7 +2012,7 @@ fn apply_plan_provisions_over_a_write_only_backend() {
     let (backend, provisioned) = provisioning_emitter(creates.clone(), Some(creates));
     let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
     let report =
-        futures::executor::block_on(apply_plan(&backend, &empty_plan(), &mut state, false))
+        futures::executor::block_on(apply_plan(&backend, &empty_plan(), &mut state, false, true))
             .unwrap();
     assert_eq!(provisioned.load(std::sync::atomic::Ordering::SeqCst), 1);
     assert_eq!(report.provision.created_fields, vec!["dcim.site.tier"]);
@@ -1979,7 +2029,7 @@ fn apply_plan_self_previews_a_write_only_backend_before_provisioning() {
     );
     let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
     let result =
-        futures::executor::block_on(apply_plan(&backend, &empty_plan(), &mut state, false));
+        futures::executor::block_on(apply_plan(&backend, &empty_plan(), &mut state, false, true));
     assert!(result.unwrap_err().to_string().contains("--allow-delete"));
     // refused before the schema write, not after it.
     assert_eq!(provisioned.load(std::sync::atomic::Ordering::SeqCst), 0);
@@ -1993,7 +2043,7 @@ fn apply_plan_over_a_write_only_backend_that_provisions_nothing() {
         provisioning_emitter(ProvisionReport::default(), Some(ProvisionReport::default()));
     let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
     let report =
-        futures::executor::block_on(apply_plan(&backend, &empty_plan(), &mut state, false))
+        futures::executor::block_on(apply_plan(&backend, &empty_plan(), &mut state, false, true))
             .unwrap();
     assert_eq!(provisioned.load(std::sync::atomic::Ordering::SeqCst), 1);
     assert!(report.provision.is_empty());
@@ -2011,8 +2061,9 @@ fn apply_plan_refuses_an_emitter_that_cannot_preview() {
         None,
     );
     let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
-    let err = futures::executor::block_on(apply_plan(&backend, &empty_plan(), &mut state, false))
-        .unwrap_err();
+    let err =
+        futures::executor::block_on(apply_plan(&backend, &empty_plan(), &mut state, false, true))
+            .unwrap_err();
     assert!(err.to_string().contains("cannot preview schema"), "{err}");
     assert!(
         err.to_string().contains("implement preview_schema"),
@@ -2032,7 +2083,8 @@ fn apply_plan_provisions_when_the_gate_ran_or_was_waived() {
     // the adapter previews, so the gate runs on what it reported and passes.
     let (backend, _) = provisioning_emitter(clean.clone(), Some(clean));
     let mut state = StateStore::load(dir.path().join("previewed.json")).unwrap();
-    futures::executor::block_on(apply_plan(&backend, &empty_plan(), &mut state, false)).unwrap();
+    futures::executor::block_on(apply_plan(&backend, &empty_plan(), &mut state, false, true))
+        .unwrap();
 
     // --allow-delete short-circuits the gate, so the unpreviewable one provisions.
     let (backend, provisioned) = provisioning_emitter(
@@ -2044,7 +2096,8 @@ fn apply_plan_provisions_when_the_gate_ran_or_was_waived() {
     );
     let mut state = StateStore::load(dir.path().join("waived.json")).unwrap();
     let report =
-        futures::executor::block_on(apply_plan(&backend, &empty_plan(), &mut state, true)).unwrap();
+        futures::executor::block_on(apply_plan(&backend, &empty_plan(), &mut state, true, true))
+            .unwrap();
     assert_eq!(provisioned.load(std::sync::atomic::Ordering::SeqCst), 1);
     assert_eq!(report.provision.deleted_object_types, vec!["dcim.fossil"]);
 }
@@ -2068,7 +2121,7 @@ fn an_emitter_overriding_neither_provisioning_method_passes_the_gate() {
     let backend = Backend::Emitter(Box::new(NoProvisioning));
     let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
     let report =
-        futures::executor::block_on(apply_plan(&backend, &empty_plan(), &mut state, false))
+        futures::executor::block_on(apply_plan(&backend, &empty_plan(), &mut state, false, true))
             .unwrap();
     assert!(report.provision.is_empty());
 }
@@ -2094,7 +2147,8 @@ fn apply_plan_updates_state() {
     ];
     for backend in backends {
         let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
-        futures::executor::block_on(apply_plan(&backend, &empty_plan(), &mut state, true)).unwrap();
+        futures::executor::block_on(apply_plan(&backend, &empty_plan(), &mut state, true, false))
+            .unwrap();
         assert_eq!(
             state.backend_id(t("dcim.site"), uid(1)),
             Some(BackendId::Int(55))
@@ -2139,7 +2193,8 @@ fn apply_plan_refuses_a_plan_made_for_the_other_kind_of_backend() {
             ..empty_plan()
         };
         let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
-        let result = futures::executor::block_on(apply_plan(&backend, &plan, &mut state, true));
+        let result =
+            futures::executor::block_on(apply_plan(&backend, &plan, &mut state, true, false));
         match (accepted, result) {
             (true, result) => {
                 result.unwrap();
@@ -2181,7 +2236,7 @@ fn apply_plan_clears_state_for_deleted_op() {
         adopt_by_key: None,
     };
     let backend = Backend::Adapter(Box::new(adapter));
-    futures::executor::block_on(apply_plan(&backend, &plan, &mut state, true)).unwrap();
+    futures::executor::block_on(apply_plan(&backend, &plan, &mut state, true, false)).unwrap();
     assert_eq!(state.backend_id(t("dcim.site"), uid(1)), None);
 }
 
@@ -2214,7 +2269,7 @@ fn apply_plan_recovers_state_mappings_for_resumed_ops() {
         adopt_by_key: None,
     };
     let backend = Backend::Adapter(Box::new(adapter));
-    futures::executor::block_on(apply_plan(&backend, &plan, &mut state, true)).unwrap();
+    futures::executor::block_on(apply_plan(&backend, &plan, &mut state, true, false)).unwrap();
     assert_eq!(
         state.backend_id(t("dcim.site"), uid(1)),
         Some(BackendId::Int(55))
@@ -2250,7 +2305,7 @@ fn apply_plan_keeps_the_mapping_a_resumed_op_has_no_id_for() {
         adopt_by_key: None,
     };
     let backend = Backend::Adapter(Box::new(adapter));
-    futures::executor::block_on(apply_plan(&backend, &plan, &mut state, true)).unwrap();
+    futures::executor::block_on(apply_plan(&backend, &plan, &mut state, true, false)).unwrap();
     assert_eq!(
         state.backend_id(t("dcim.site"), uid(1)),
         Some(BackendId::Int(55))
@@ -2321,7 +2376,8 @@ fn apply_plan_merges_both_provision_passes() {
     let mut state = StateStore::load(tempdir().unwrap().path().join("state.json")).unwrap();
     let backend = Backend::Adapter(Box::new(TwoPassAdapter));
     let report =
-        futures::executor::block_on(apply_plan(&backend, &empty_plan(), &mut state, true)).unwrap();
+        futures::executor::block_on(apply_plan(&backend, &empty_plan(), &mut state, true, true))
+            .unwrap();
     // the write pass survives instead of being overwritten by ensure_schema's report,
     assert_eq!(report.provision.created_tags, vec!["fabric".to_string()]);
     // and ensure_schema's categories still come through.
@@ -2338,7 +2394,8 @@ fn apply_plan_merges_both_provision_passes_over_a_write_only_backend() {
     // whether the schema pass runs at all.
     let backend = Backend::Emitter(Box::new(TwoPassAdapter));
     let report =
-        futures::executor::block_on(apply_plan(&backend, &empty_plan(), &mut state, true)).unwrap();
+        futures::executor::block_on(apply_plan(&backend, &empty_plan(), &mut state, true, true))
+            .unwrap();
     assert_eq!(report.provision.created_tags, vec!["fabric".to_string()]);
     assert_eq!(
         report.provision.created_fields,
@@ -2364,7 +2421,7 @@ fn apply_plan_rejects_read_only_observer() {
         adopt_by_key: None,
     };
     let backend = Backend::Observer(Box::new(adapter));
-    let err = futures::executor::block_on(apply_plan(&backend, &plan, &mut state, true))
+    let err = futures::executor::block_on(apply_plan(&backend, &plan, &mut state, true, false))
         .unwrap_err()
         .to_string();
     assert!(err.contains("read-only"));

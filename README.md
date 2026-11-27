@@ -108,13 +108,13 @@ alembic works like a compiler: many frontends, many backends, and some adapters 
 
 netbox and nautobot adapters are schema-driven and resolve types dynamically via their content type/object type APIs.
 the infrahub adapter uses graphql and can optionally provision missing types/fields by generating
-an infrahub schema file and applying it during `apply`.
+an infrahub schema file and applying it during `apply --provision`.
 
 - any `type` with a REST endpoint can be observed and applied
 - `attrs` are passed through using backend field names
 - `ref`/`list_ref` fields are resolved via state mappings during apply
 - custom fields and tags are mapped by adapters when supported by the backend
-- netbox custom object types can be provisioned on apply when the netbox custom objects plugin is installed
+- netbox custom object types can be provisioned by `apply --provision` when the netbox custom objects plugin is installed
 
 relationships are validated strictly by schema and `uid` references.
 

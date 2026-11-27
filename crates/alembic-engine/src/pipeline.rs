@@ -2,7 +2,7 @@ use crate::pretty_printing::bullet_list;
 use crate::sort_ops_for_apply;
 use crate::types::{Backend, Effects, ObservedState, Observer, Plan, CANNOT_OBSERVE};
 use crate::StateStore;
-use alembic_adapter_sdk::{ApplyReport, Op, ProvisionReport};
+use alembic_adapter_sdk::{ApplyReport, Op, ProvisionReport, Tense};
 use alembic_core::{Inventory, TypeName};
 use anyhow::{anyhow, Result};
 use std::collections::BTreeSet;
@@ -152,6 +152,24 @@ pub fn guard_schema_deletes(preview: &ProvisionReport, allow_delete: bool) -> Re
     Ok(())
 }
 
+/// refuse an apply without `--provision` whose plan previewed schema changes:
+/// its ops would be written against schema the backend does not have yet.
+fn guard_unprovisioned_schema(preview: Option<&ProvisionReport>) -> Result<()> {
+    let Some(preview) = preview.filter(|preview| !preview.is_empty()) else {
+        return Ok(());
+    };
+    let pending: Vec<String> = preview
+        .named_changes(Tense::Would)
+        .into_iter()
+        .map(|(label, name)| format!("{label} {name}"))
+        .collect();
+    Err(anyhow!(
+        "plan needs schema provisioning; re-run with --provision, or re-plan if \
+         the schema was provisioned since:\n{}",
+        bullet_list(&pending)
+    ))
+}
+
 /// refuse a plan made for the other kind of backend: an `emit` plan creates
 /// every declared object without having observed any, and a `drive` plan diffs
 /// against an observation a write-only backend cannot make. a plan without
@@ -193,6 +211,7 @@ pub(crate) async fn apply(
     plan: &Plan,
     state: &mut StateStore,
     allow_delete: bool,
+    provision: bool,
 ) -> Result<ApplyReport> {
     guard_effects(backend, plan)?;
     if !allow_delete {
@@ -203,43 +222,51 @@ pub(crate) async fn apply(
             ));
         }
     }
-    // schema provisioning can delete custom object types/fields the inventory no
-    // longer declares, cascading to their objects on the backend; gate it behind
-    // the same flag as object deletes. the plan's schema_preview is only a cheap
-    // early gate when a caller populated it: planner::plan hard-codes None and the
-    // interactive/library apply paths rebuild with None, so it cannot be the
-    // authoritative gate. the self-preview below is.
-    if let Some(preview) = &plan.schema_preview {
-        guard_schema_deletes(preview, allow_delete)?;
-    }
 
-    // errors for an observer; every backend that can write can also provision,
-    // so read+write and write-only take the same path from here.
     let emitter = backend.emitter()?;
-    // authoritative gate: self-preview at the chokepoint before ensure_schema, so
-    // no caller can forget (mirrors `plan --provision`). an Err fails closed
-    // rather than provision blind, and so does a `None` preview.
-    if !allow_delete {
-        guard_schema_provisioning(emitter.preview_schema(&plan.schema).await?, allow_delete)?;
-    }
-    let provision = emitter.ensure_schema(&plan.schema).await?;
+
+    let provision_report = if provision {
+        // schema provisioning can delete custom object types/fields the inventory no
+        // longer declares, cascading to their objects on the backend; gate it behind
+        // the same flag as object deletes. the plan's schema_preview is only a cheap
+        // early gate when a caller populated it: planner::plan hard-codes None and a
+        // library caller may apply with None, so it cannot be the authoritative
+        // gate. the self-preview below is.
+        if let Some(preview) = &plan.schema_preview {
+            guard_schema_deletes(preview, allow_delete)?;
+        }
+
+        // authoritative gate: self-preview at the chokepoint before ensure_schema, so
+        // no caller can forget. an Err fails closed rather than provision blind, and
+        // so does a `None` preview.
+        if !allow_delete {
+            guard_schema_provisioning(emitter.preview_schema(&plan.schema).await?, allow_delete)?;
+        }
+        Some(emitter.ensure_schema(&plan.schema).await?)
+    } else {
+        guard_unprovisioned_schema(plan.schema_preview.as_ref())?;
+        None
+    };
 
     let ordered = sort_ops_for_apply(&plan.ops, &plan.schema);
-    let mut report = emitter.write(&plan.schema, &ordered, state).await?;
-    // write provisions too: tags come from the plan's ops, so only the write pass
-    // knows them. merging keeps both passes instead of the schema pass winning.
-    report.provision.merge(provision);
+    let mut apply_report = emitter.write(&plan.schema, &ordered, state).await?;
+
+    if let Some(provision_report) = provision_report {
+        // write provisions too: tags come from the plan's ops, so only the write pass
+        // knows them. merging keeps both passes instead of the schema pass winning.
+        apply_report.provision.merge(provision_report);
+    }
 
     // ops an interrupted run applied: their mappings exist nowhere else, since it
     // never reached a state save. only ever set one, never clear on a `None` -- a
     // journal written before ids were recorded has `None` throughout.
-    for applied in &report.resumed {
+    for applied in &apply_report.resumed {
         if let Some(backend_id) = &applied.backend_id {
             state.set_backend_id(applied.type_name.clone(), applied.uid, backend_id.clone());
         }
     }
 
-    for applied in &report.applied {
+    for applied in &apply_report.applied {
         if let Some(backend_id) = &applied.backend_id {
             state.set_backend_id(applied.type_name.clone(), applied.uid, backend_id.clone());
         } else {
@@ -247,5 +274,5 @@ pub(crate) async fn apply(
         }
     }
 
-    Ok(report)
+    Ok(apply_report)
 }

@@ -105,25 +105,41 @@ fn plan_over_a_backend_that_provisions_nothing_reports_no_capability_gap() {
     assert_eq!(plan["schema_preview"], serde_json::json!({}), "{stdout}");
 }
 
-fn plan_provision(adapter: &str, allow_delete: bool) -> (bool, String, String) {
+fn apply_provision(adapter: &str, allow_delete: bool) -> (bool, String, String) {
     let dir = tempdir().expect("create temp dir");
     let inventory = dir.path().join("inventory.yaml");
     std::fs::write(&inventory, "schema:\n  types: {}\nobjects: []\n").expect("write inventory");
     let config = external_backend(dir.path(), adapter);
+    let state = dir.path().join("state.json");
+    let plan = dir.path().join("plan.json");
 
     let mut cmd = Command::new(bin_path());
-    cmd.env("ALEMBIC_STATE_PATH", dir.path().join("state.json"));
-    cmd.args(["plan", "--backend", "external", "--provision"])
+    cmd.env("ALEMBIC_STATE_PATH", &state);
+    cmd.args(["plan", "--backend", "external"])
         .arg("-f")
         .arg(&inventory)
         .arg("-o")
-        .arg(dir.path().join("plan.json"))
+        .arg(&plan)
+        .arg("--backend-config")
+        .arg(&config);
+    let output = cmd.output().expect("run alembic plan");
+    assert!(
+        output.status.success(),
+        "plan failed; stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let mut cmd = Command::new(bin_path());
+    cmd.env("ALEMBIC_STATE_PATH", &state);
+    cmd.args(["apply", "--backend", "external", "--provision"])
+        .arg("--plan")
+        .arg(&plan)
         .arg("--backend-config")
         .arg(&config);
     if allow_delete {
         cmd.arg("--allow-delete");
     }
-    let output = cmd.output().expect("run alembic plan");
+    let output = cmd.output().expect("run alembic apply");
     (
         output.status.success(),
         String::from_utf8_lossy(&output.stdout).into_owned(),
@@ -135,10 +151,10 @@ fn plan_provision(adapter: &str, allow_delete: bool) -> (bool, String, String) {
 /// nothing to gate on, so the run is refused rather than provisioned blind, and
 /// the message names both ways out.
 #[test]
-fn plan_provision_refuses_an_adapter_that_cannot_preview() {
-    let (ok, stdout, stderr) = plan_provision("unpreviewable_emitter_adapter", false);
+fn apply_provision_refuses_an_adapter_that_cannot_preview() {
+    let (ok, stdout, stderr) = apply_provision("unpreviewable_emitter_adapter", false);
 
-    assert!(!ok, "plan succeeded; stdout:\n{stdout}\nstderr:\n{stderr}");
+    assert!(!ok, "apply succeeded; stdout:\n{stdout}\nstderr:\n{stderr}");
     assert!(
         stderr.contains("cannot preview schema")
             && stderr.contains("implement preview_schema")
@@ -152,9 +168,9 @@ fn plan_provision_refuses_an_adapter_that_cannot_preview() {
 /// an adapter overriding neither provisioning method, which is what every
 /// emit-only adapter ships: it provisions nothing, previews that, and passes.
 #[test]
-fn plan_provision_passes_an_adapter_that_overrides_neither_method() {
-    let (ok, stdout, stderr) = plan_provision("emitter_role_adapter", false);
-    assert!(ok, "plan failed; stdout:\n{stdout}\nstderr:\n{stderr}");
+fn apply_provision_passes_an_adapter_that_overrides_neither_method() {
+    let (ok, stdout, stderr) = apply_provision("emitter_role_adapter", false);
+    assert!(ok, "apply failed; stdout:\n{stdout}\nstderr:\n{stderr}");
     assert!(
         !stderr.contains("cannot preview schema"),
         "stderr:\n{stderr}"
@@ -162,10 +178,10 @@ fn plan_provision_passes_an_adapter_that_overrides_neither_method() {
 }
 
 #[test]
-fn plan_provision_still_refuses_a_previewed_delete_and_allow_delete_waives_both() {
+fn apply_provision_still_refuses_a_previewed_delete_and_allow_delete_waives_both() {
     // the adapter previews a delete, so the gate runs on it and refuses as before.
-    let (ok, stdout, stderr) = plan_provision("converging_emitter_adapter", false);
-    assert!(!ok, "plan succeeded; stdout:\n{stdout}\nstderr:\n{stderr}");
+    let (ok, stdout, stderr) = apply_provision("converging_emitter_adapter", false);
+    assert!(!ok, "apply succeeded; stdout:\n{stdout}\nstderr:\n{stderr}");
     assert!(
         stderr.contains("provisioning would delete schema"),
         "stderr:\n{stderr}"
@@ -177,7 +193,7 @@ fn plan_provision_still_refuses_a_previewed_delete_and_allow_delete_waives_both(
         "converging_emitter_adapter",
         "emitter_role_adapter",
     ] {
-        let (ok, stdout, stderr) = plan_provision(adapter, true);
+        let (ok, stdout, stderr) = apply_provision(adapter, true);
         assert!(ok, "{adapter} failed; stdout:\n{stdout}\nstderr:\n{stderr}");
     }
 }

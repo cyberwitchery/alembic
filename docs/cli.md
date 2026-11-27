@@ -153,13 +153,11 @@ NETBOX_URL=https://netbox.example.com NETBOX_TOKEN=$NETBOX_TOKEN \
 - prints how declared objects matched, under the operation counts: `matching: 12 by state, 3 by key (3 adopted), 2 to create`, also in `summary.matching` (`by_state`, `by_key`, `adopted`, `to_create`). `adopted` is the part of `by_key` the run bound by key; a state binding that no longer resolves can still match by key without one. a write-only backend matches nothing and omits `matching`
 - reports what bootstrapping wrote into identity memory, on stderr like the schema preview so `--dry-run`'s stdout stays raw json: `adopted N existing object(s) by key` names each backend object the run bound to a declared uid, and `superseded:` names any binding an adoption displaced. adoption persists with the plan's state save, so it is never silent; `--no-adopt` disables key adoption (state-known objects still match, everything else plans as a create). it conflicts with `--allow-delete` at parse time: refusing to identify a backend object by key is refusing to know enough to replace it, and their combination would plan the unidentified twin of every declared object as a delete beside its create
 - a uid planned as one create and one delete under two types renders as a `retype`: one logical object re-materialized (see `docs/identity.md`), created under the new type before the old one is deleted
-- without `--provision`, plan asks the backend for a read-only schema preview (what `apply`'s `ensure_schema` would create/delete, writing nothing) and prints it to stderr as `schema preview: ...`; the machine-readable copy rides in the plan's `schema_preview`, and under `--report` (which writes no plan) in the drift report's. backends that cannot preview report `schema preview: unavailable for this backend`, and a preview that fails is reported as `schema preview failed: ...` while the plan goes on. a preview that finds a schema the backend will reject (a netbox custom object field name outside `[A-Za-z0-9_]`) fails the plan instead, since apply would refuse it
-- `--provision` runs adapter provisioning (`ensure_schema`) before observing backend state; provisioning that would delete custom object types/fields the inventory no longer declares is blocked unless `--allow-delete` is also given (such deletes cascade to their objects on the backend)
+- plan never writes schema. it asks the backend for a read-only schema preview (what `apply --provision` would create/delete, writing nothing) and prints it to stderr as `schema preview: ...`; the machine-readable copy rides in the plan's `schema_preview`, and under `--report` (which writes no plan) in the drift report's. backends that cannot preview report `schema preview: unavailable for this backend`, and a preview that fails is reported as `schema preview failed: ...` while the plan goes on. a preview that finds a schema the backend will reject (a netbox custom object field name outside `[A-Za-z0-9_]`) fails the plan instead, since apply would refuse it
 - `--dry-run` prints the raw plan json instead of writing it; it writes no file, so `-o`/`--output` is rejected with it at parse time rather than accepted and ignored
 - `--report` prints a read-only drift report and exits without writing a plan file or saving state; `-o`/`--output` writes that report as json, or yaml for a `.yaml`/`.yml` path (optional: without it the report is the printed summary only). it exits `2` when the report finds drift and `0` when it finds none; an error exits with one of the other [exit codes](#exit-codes)
-- saving nothing, `--report` and `--dry-run` take the state lock shared (see [state](state.md)), so two of them can run at once in the same directory; adding `--provision` makes the run exclusive again, since it writes backend schema
+- saving nothing, `--report` and `--dry-run` take the state lock shared (see [state](state.md)), so two of them can run at once in the same directory
 - `--report` and `--dry-run` are mutually exclusive (both exit without applying); passing both is rejected at parse time
-- `--provision` cannot be combined with `--dry-run` (rejected at parse time): a `--dry-run` preview promises not to write, but `--provision` still writes backend schema (`ensure_schema`). combining `--provision` with `--report` stays allowed as the documented "provision schema, then preview drift" workflow (see below)
 - accepts any type string and arbitrary attrs (schema validation is required)
 
 ### drift report
@@ -189,7 +187,7 @@ store.
 every category is an assertion about observed backend state, so `--report`
 requires a backend that can observe, and refuses a write-only (emitter) one in
 the terms `import` refuses it (`backend is write-only; it cannot observe
-state`), before provisioning and before any backend read or write. an `-o` that
+state`), before any backend read or write. an `-o` that
 cannot be written is still reported first, since that check runs for every
 command before any backend is built. such a backend is planned against an empty
 observation, so the report would otherwise list every declared object as
@@ -237,20 +235,13 @@ of `no drift: observed backend state matches declared intent`. `schema_preview`
 is not a category and so does not follow that rule: it is the same preview the
 plan file carries (shape in `docs/external-adapters.md`), copied here because
 `--report` writes no plan, and it is omitted entirely when the backend cannot
-preview, or was not asked to (under `--provision` a preview would describe work
-the run already did), rather than written as an empty object, which would claim
+preview, rather than written as an empty object, which would claim
 there is nothing to provision. it describes pending schema work, not object
 divergence, so it counts towards neither the summary's counts nor "no drift".
 `extra` is populated whether or not `--allow-delete` was passed: report mode
 forces delete-detection on so unmanaged backend objects surface. reading the
 file back is a read of a diff, not a way to adopt observed state: there is
 deliberately no write-back mode (#56).
-
-note that combining `--report` with `--provision` is not fully read-only:
-`--provision` still runs adapter provisioning (`ensure_schema`) against the
-backend before the report is computed, which can issue schema writes (e.g.
-creating netbox custom fields). the report itself remains read-only; the
-schema writes come from `--provision`, not from the report.
 
 ## apply
 
@@ -293,10 +284,13 @@ alembic plan -f examples/inventory.yaml --dry-run \
   be combined with `--interactive`; that combination is rejected before backend
   setup. drop `--interactive` to apply the whole plan
 - the `peeringdb` backend is read-only; apply will return an error
-- apply runs adapter provisioning (`ensure_schema`) before writes on any backend
+- schema is provisioned only by `apply --provision`,
+  which runs adapter provisioning (`ensure_schema`) before writes on any backend
   that can write, read+write or write-only; for netbox this can create custom
   fields, custom object types, and custom object type fields when supported. a
-  backend that provisions nothing (django) reports nothing
+  backend that provisions nothing (django) reports nothing. without
+  `--provision`, a plan whose `schema_preview` lists changes is refused before
+  anything is written
 - infrahub provisioning can generate and load a schema file when
   configured in the backend config
 - `-o`/`--output` writes the apply report as json, or yaml for a `.yaml`/`.yml` path (optional; without it apply writes no artifact, as before)
@@ -323,8 +317,8 @@ the backend id the write returned (an integer or a string, whichever the backend
 uses), plus the `provision` report of what this apply provisioned. that report
 covers both passes: what `ensure_schema` created or deleted, and the tags the
 write created. tags are derived from the plan's ops rather than from the schema,
-so only the write pass knows them and `plan --provision`'s schema preview cannot
-report them.
+so only the write pass knows them and `plan`'s schema preview cannot report
+them. the write creates them with or without `--provision`.
 `backend_id` is absent when the write returns none: a delete, which leaves no
 object behind, or an emitter backend such as `django`, which assigns no ids of
 its own and keys the emitted objects by uid. `previously_applied_count` is

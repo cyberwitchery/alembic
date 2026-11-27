@@ -25,7 +25,7 @@ publishes without making either host layout canonical.
   creates a different object
 - removing an attr stops managing it; setting it to `null` clears it
 - an update writes the full declared projection, not only the plan's `changes`
-- `plan --report` is read-only only without `--provision`
+- `plan` never writes schema; `apply` does only under `--provision`
 - planning can persist identity adoption unless `--report` or `--dry-run`
 - `--allow-delete` asserts the inventory is complete inside its top-level
   `scope:`; without one it covers every declared type on the backend. it is not a
@@ -84,8 +84,7 @@ it needs `python3` and a built cli; set `ALEMBIC` to run something other than
 rename (and the same rename with a recomputed uid, which is a create beside a
 delete), a ref holding a backend id failing validation, an absent attr against a
 null one, an undeclared object surfacing as `extra` while its delete is refused,
-and `--report --provision` reaching `ensure_schema` where `--report` alone does
-not.
+and `apply` reaching `ensure_schema` only under `--provision`.
 
 ## scope
 

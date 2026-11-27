@@ -9,9 +9,9 @@ mod version;
 
 use alembic_adapter_registry::{create_backend, Plugin};
 use alembic_engine::{
-    apply_plan, build_plan, guard_drift_report, guard_schema_provisioning, guard_stale_plan,
-    load_inventory, load_inventory_unvalidated, plan_write_only, render_plan, select_ops, Backend,
-    DriftReport, InputError, Plan, StateLock, StateStore,
+    apply_plan, build_plan, guard_drift_report, guard_stale_plan, load_inventory,
+    load_inventory_unvalidated, plan_write_only, render_plan, select_ops, Backend, DriftReport,
+    InputError, Plan, StateLock, StateStore,
 };
 use anyhow::{anyhow, Context, Result};
 use clap::{CommandFactory, Parser, Subcommand};
@@ -99,10 +99,6 @@ enum Command {
         /// path to a backend config file instead of --backend plus env vars.
         #[arg(long)]
         backend_config: Option<PathBuf>,
-        /// run adapter schema provisioning (ensure_schema) now, before observing;
-        /// gated by --allow-delete when it would delete schema.
-        #[arg(long, default_value_t = false, conflicts_with = "dry_run")]
-        provision: bool,
         /// print the raw json plan to stdout instead of writing it to a file.
         #[arg(long, default_value_t = false)]
         dry_run: bool,
@@ -111,8 +107,8 @@ enum Command {
         /// to a file. exits 2 on drift. mutually exclusive with --dry-run.
         #[arg(long, default_value_t = false, conflicts_with = "dry_run")]
         report: bool,
-        /// allow the plan to include deletes (objects, and destructive schema
-        /// provisioning) for objects present on the backend but not declared.
+        /// allow the plan to include deletes for objects present on the backend
+        /// but not declared.
         #[arg(long, default_value_t = false)]
         allow_delete: bool,
         /// do not adopt backend objects by key match: state-known objects still
@@ -142,6 +138,10 @@ enum Command {
         /// allow delete ops (object and destructive schema deletes) in the plan.
         #[arg(long, default_value_t = false)]
         allow_delete: bool,
+        /// run adapter schema provisioning (ensure_schema) before writing;
+        /// gated by --allow-delete when it would delete schema.
+        #[arg(long, default_value_t = false)]
+        provision: bool,
         /// prompt for confirmation per operation, applying only approved ops;
         /// cannot be combined with `--plan -`, since stdin carries the plan.
         #[arg(short = 'i', long, default_value_t = false)]
@@ -301,9 +301,9 @@ fn schema_preview_failure(err: anyhow::Error) -> Result<()> {
 }
 
 /// how a `plan` run holds the state lock. a run that saves nothing needs no more
-/// than a reader's share; `--provision` writes backend schema, so it is not one.
-fn state_lock_for_plan(report: bool, dry_run: bool, provision: bool) -> StateLock {
-    if (report || dry_run) && !provision {
+/// than a reader's share
+fn state_lock_for_plan(report: bool, dry_run: bool) -> StateLock {
+    if report || dry_run {
         StateLock::Shared
     } else {
         StateLock::Exclusive
@@ -366,7 +366,6 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<ExitCode> {
             output,
             backend,
             backend_config,
-            provision,
             dry_run,
             report,
             allow_delete,
@@ -376,43 +375,23 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<ExitCode> {
             let plugins = search_for_plugins(&config)?;
             let (backend, backend_identity) =
                 create_backend(&plugins, backend.as_deref(), backend_config)?;
-            let (mut state, state_context) = load_state_with_context(
-                state_lock_for_plan(report, dry_run, provision),
-                &backend_identity,
-            )
-            .await?;
+            let (mut state, state_context) =
+                load_state_with_context(state_lock_for_plan(report, dry_run), &backend_identity)
+                    .await?;
             print_state_context(&state_context);
             // a drift report asserts what the backend holds; one that observes
             // nothing would report every declared object absent, so refuse it
-            // before provisioning or a backend read or write.
+            // before a backend read or write.
             if report {
                 guard_drift_report(&backend)?;
             }
             // read-only schema preview: what apply's ensure_schema would provision,
-            // writing nothing. skipped when --provision actually provisions now, and
-            // for a read-only backend, which cannot provision schema at all. all
-            // preview output goes to stderr so it never pollutes a --dry-run/--report
-            // stdout; the machine-readable copy rides in the plan's schema_preview.
+            // writing nothing. skipped for a read-only backend, which cannot provision
+            // schema at all. all preview output goes to stderr so it never pollutes
+            // a --dry-run/--report stdout; the machine-readable copy rides in the plan's
+            // schema_preview.
             let mut schema_preview = None;
-            if provision {
-                let emitter = backend.emitter()?;
-                // provisioning can delete custom object types/fields the inventory
-                // no longer declares; gate it behind --allow-delete like apply,
-                // checking the read-only preview before writing schema.
-                if !allow_delete {
-                    guard_schema_provisioning(
-                        emitter.preview_schema(&inventory.schema).await?,
-                        allow_delete,
-                    )?;
-                }
-                let provision_report = emitter.ensure_schema(&inventory.schema).await?;
-                if !provision_report.is_empty() {
-                    println!("provision: {provision_report}");
-                    for (label, name) in provision_report.named_changes(Tense::Past) {
-                        println!("  {label} {name}");
-                    }
-                }
-            } else if let Ok(emitter) = backend.emitter() {
+            if let Ok(emitter) = backend.emitter() {
                 match emitter.preview_schema(&inventory.schema).await {
                     Ok(Some(report)) => {
                         if !report.is_empty() {
@@ -486,6 +465,7 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<ExitCode> {
             backend,
             backend_config,
             allow_delete,
+            provision,
             interactive,
             only,
             only_file,
@@ -545,7 +525,7 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<ExitCode> {
                     schema: plan.schema,
                     ops: approved,
                     summary: None,
-                    schema_preview: None,
+                    schema_preview: plan.schema_preview,
                     effects: plan.effects,
                     adopt_by_key: plan.adopt_by_key,
                 }
@@ -558,7 +538,6 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<ExitCode> {
                     let plan = Plan {
                         ops: selected,
                         summary: None,
-                        schema_preview: None,
                         ..plan
                     };
                     (plan, skipped.iter().map(SkippedOp::from).collect())
@@ -570,7 +549,7 @@ pub(crate) async fn run(cli: Cli, config: AppConfig) -> Result<ExitCode> {
             if !no_stale_check {
                 guard_stale_plan(&backend, &plan, &state).await?;
             }
-            let report = apply_plan(&backend, &plan, &mut state, allow_delete).await?;
+            let report = apply_plan(&backend, &plan, &mut state, allow_delete, provision).await?;
             state.save_async().await?;
             print_apply_report(&report);
             if !skipped.is_empty() {

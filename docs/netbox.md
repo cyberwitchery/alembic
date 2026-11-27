@@ -122,13 +122,12 @@ dcim.site:
       values: [core, edge, colo]
 ```
 
-`plan --provision` against netbox 4.7.4 creates the set `fabric_tier` with the choices
+`apply --provision` against netbox 4.7.4 creates the set `fabric_tier` with the choices
 `core`, `edge` and `colo`, and a `select` field over it:
 
 ```
 provision: 1 fields created
   created dcim.site.fabric_tier
-plan: 1 to create, 0 to update, 0 to delete
 ```
 
 netbox then refuses a value outside the set, written through its api:

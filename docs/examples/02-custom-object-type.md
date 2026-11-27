@@ -33,20 +33,20 @@ reference.
 
 ## commands
 
-`--provision` creates the custom object type and its fields before planning, so
-the plan can then create objects against it:
+`--provision` creates the custom object type and its fields as part of
+applying the plan:
 
 <!-- ci: netbox -->
 ```bash
 BACKEND_CONFIG=/path/to/backend-netbox.yaml
 
-alembic plan --provision -f examples/walkthroughs/custom-model.yaml \
+alembic plan -f examples/walkthroughs/custom-model.yaml \
   -o /tmp/plan.json --backend-config "$BACKEND_CONFIG"
 
-alembic apply -p /tmp/plan.json --backend-config "$BACKEND_CONFIG"
+alembic apply --provision -p /tmp/plan.json --backend-config "$BACKEND_CONFIG"
 ```
 
-`--provision` prints what it created, as counts:
+`apply --provision` prints what it created, as counts:
 
 ```
 provision: 1 object types created, 4 object fields created
@@ -57,7 +57,7 @@ provision: 1 object types created, 4 object fields created
 - this needs the netbox custom objects plugin and its REST API; native types are
   unaffected, only the types netbox lacks are provisioned as custom objects.
 - removing the type from your schema later deletes the custom object type on the
-  next apply, which cascades to its objects, so that path is gated behind
-  `--allow-delete`.
-- an adapter that cannot provision (or a plain `apply` without a live plugin) will
-  fail on the custom type while still applying the native ones; provision first.
+  next `apply --provision`, which cascades to its objects, so that
+  path is gated behind `--allow-delete`.
+- a plain `apply` of a plan whose schema preview lists the custom type is refused
+  before anything is written, native types included; re-run with `--provision`.
