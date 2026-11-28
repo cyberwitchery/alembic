@@ -89,18 +89,20 @@ fn shape_case(name: &str, request: serde_json::Value, result: Option<serde_json:
     }
 }
 
+/// a read of `a.thing`, keyed by `name`, declaring `fields`.
+fn thing_with(fields: serde_json::Value) -> serde_json::Value {
+    json!({
+        "version": 1, "setup": {}, "method": "read",
+        "schema": { "types": { "a.thing": {
+            "key": { "name": { "type": "string" } },
+            "fields": fields
+        }}},
+        "types": ["a.thing"], "state": { "mappings": {} }
+    })
+}
+
 #[test]
 fn a_case_answer_outside_the_protocol_fails_naming_why() {
-    let thing_with = |field: serde_json::Value| {
-        json!({
-            "version": 1, "setup": {}, "method": "read",
-            "schema": { "types": { "a.thing": {
-                "key": { "name": { "type": "string" } },
-                "fields": field
-            }}},
-            "types": ["a.thing"], "state": { "mappings": {} }
-        })
-    };
     let empty_write = json!({
         "version": 1, "setup": {}, "method": "write",
         "schema": { "types": {} }, "ops": [], "state": {}
@@ -131,6 +133,36 @@ fn a_case_answer_outside_the_protocol_fails_naming_why() {
             r#"cat >/dev/null; printf '{"ok":true,"result":[{"type_name":"a.thing","key":{"name":"x"},"attrs":{"when":"2026-02-30"}}]}\n'"#,
             "leaves alembic's value space",
         ),
+        // `plan` adopts by the key as read, so a key under a field the type is not
+        // keyed by matches no declared object.
+        (
+            shape_case("read-key-under-wrong-field", thing_with(json!({})), None),
+            r#"cat >/dev/null; printf '{"ok":true,"result":[{"type_name":"a.thing","key":{"slug":"x"},"backend_id":1}]}\n'"#,
+            "missing key field a.thing.name; extra key field a.thing.slug",
+        ),
+        (
+            shape_case(
+                "read-required-attr-missing",
+                thing_with(json!({ "status": { "type": "string", "required": true } })),
+                None,
+            ),
+            r#"cat >/dev/null; printf '{"ok":true,"result":[{"type_name":"a.thing","key":{"name":"x"},"backend_id":1}]}\n'"#,
+            "missing attr field a.thing.status",
+        ),
+        // an object needs a key whatever its type, though a type the schema does
+        // not declare passes otherwise.
+        (
+            shape_case(
+                "read-keyless",
+                json!({
+                    "version": 1, "setup": {}, "method": "read",
+                    "schema": { "types": {} }, "types": [], "state": {}
+                }),
+                None,
+            ),
+            r#"cat >/dev/null; printf '{"ok":true,"result":[{"type_name":"dcim.site","key":{}}]}\n'"#,
+            "missing key on object",
+        ),
         // refs in observed attrs are uids; a backend id there fails conformance the
         // way `plan` would refuse it.
         (
@@ -140,14 +172,14 @@ fn a_case_answer_outside_the_protocol_fails_naming_why() {
                 None,
             ),
             r#"cat >/dev/null; printf '{"ok":true,"result":[{"type_name":"a.thing","key":{"name":"x"},"attrs":{"peer":7}}]}\n'"#,
-            "leaves alembic's value space",
+            "reference(s) as backend ids",
         ),
         // the check has to reach inside `applied`: a typo'd backend_id deserializes
         // to None, which apply reads as remove rather than unchanged.
         (
             shape_case("nested", empty_write.clone(), None),
             r#"cat >/dev/null; printf '{"ok":true,"result":{"applied":[{"uid":"11111111-1111-1111-1111-111111111111","type_name":"dcim.site","backend_ids":1}]}}\n'"#,
-            "applied[0].backend_ids",
+            "unknown field `backend_ids`",
         ),
         // the report nested one level too high: `result` is spelled right, so the
         // payload check walks a payload the key is not in.
@@ -264,6 +296,99 @@ fn a_case_answer_inside_the_protocol_passes() {
             outcomes[0].failure
         );
     }
+}
+
+/// what the engine treats as data in a read passes a case too: `plan` takes
+/// each of these reads.
+#[test]
+fn a_read_alembic_takes_passes() {
+    let elsewhere = "0198d3f0-0000-8000-8000-000000000000";
+    let other = alembic_core::uid_v5(
+        "b.other",
+        &alembic_core::key_string(&serde_json::from_value(json!({ "name": "y" })).unwrap()),
+    );
+    let rows = [
+        // key ambiguity is the backend's to hold; only dereferencing it fails.
+        (
+            "one key twice",
+            thing_with(json!({})),
+            r#"[{"type_name":"a.thing","key":{"name":"x"},"backend_id":1},{"type_name":"a.thing","key":{"name":"x"},"backend_id":2}]"#.to_string(),
+        ),
+        // the target may be one this read did not return.
+        (
+            "ref outside the read",
+            thing_with(json!({ "peer": { "type": "ref", "target": "a.thing" } })),
+            format!(
+                r#"[{{"type_name":"a.thing","key":{{"name":"x"}},"attrs":{{"peer":"{elsewhere}"}},"backend_id":1}}]"#
+            ),
+        ),
+        // a ref is held to being a uid, not to the type of what it names.
+        (
+            "ref to another type",
+            json!({
+                "version": 1, "setup": {}, "method": "read",
+                "schema": { "types": {
+                    "a.thing": {
+                        "key": { "name": { "type": "string" } },
+                        "fields": { "peer": { "type": "ref", "target": "a.thing" } }
+                    },
+                    "b.other": { "key": { "name": { "type": "string" } } }
+                }},
+                "types": ["a.thing", "b.other"], "state": { "mappings": {} }
+            }),
+            format!(
+                r#"[{{"type_name":"a.thing","key":{{"name":"x"}},"attrs":{{"peer":"{other}"}},"backend_id":1}},{{"type_name":"b.other","key":{{"name":"y"}},"backend_id":2}}]"#
+            ),
+        ),
+        // plan diffs declared fields only, and import drops the rest.
+        (
+            "undeclared field",
+            thing_with(json!({})),
+            r#"[{"type_name":"a.thing","key":{"name":"x"},"attrs":{"color":"red"},"backend_id":1}]"#.to_string(),
+        ),
+    ];
+    for (name, request, result) in rows {
+        let case = shape_case(name, request, None);
+        let script = format!(r#"cat >/dev/null; printf '{{"ok":true,"result":{result}}}\n'"#);
+        let outcomes = run_cases(&sh(&script), TIMEOUT, std::slice::from_ref(&case));
+        assert!(
+            outcomes[0].passed(),
+            "{name} was rejected: {:?}",
+            outcomes[0].failure
+        );
+    }
+}
+
+/// a read `plan` and `import` refuse fails its case, though every value in it
+/// is in alembic's value space.
+#[test]
+fn a_read_alembic_refuses_fails() {
+    let case = shape_case("one backend id twice", thing_with(json!({})), None);
+    let script = r#"cat >/dev/null; printf '{"ok":true,"result":[{"type_name":"a.thing","key":{"name":"x"},"backend_id":1},{"type_name":"a.thing","key":{"name":"y"},"backend_id":1}]}\n'"#;
+    let outcomes = run_cases(&sh(script), TIMEOUT, std::slice::from_ref(&case));
+    assert!(!outcomes[0].passed(), "one backend id twice was certified");
+    let msg = message(&outcomes[0]);
+    assert!(msg.contains("alembic refuses this read"), "{msg}");
+    assert!(msg.contains("backend id 1"), "{msg}");
+}
+
+/// an unknown key fails naming the line and column it sat at, here inside
+/// `applied` on the third line.
+#[test]
+fn an_unknown_key_is_named_by_line_and_column() {
+    let case = shape_case(
+        "nested",
+        json!({
+            "version": 1, "setup": {}, "method": "write",
+            "schema": { "types": {} }, "ops": [], "state": {}
+        }),
+        None,
+    );
+    let script = r#"cat >/dev/null; printf '{"ok": true,\n "result": {"applied": [\n  {"uid": "11111111-1111-1111-1111-111111111111", "type_name": "dcim.site", "backend_ids": 1}]}}\n'"#;
+    let outcomes = run_cases(&sh(script), TIMEOUT, std::slice::from_ref(&case));
+    let msg = message(&outcomes[0]);
+    assert!(msg.contains("unknown field `backend_ids`"), "{msg}");
+    assert!(msg.contains("line 3 column"), "{msg}");
 }
 
 #[test]

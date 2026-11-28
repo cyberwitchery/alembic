@@ -2,12 +2,15 @@
 
 use alembic_adapter_sdk::external::{ExternalResponse, EXTERNAL_PROTOCOL_VERSION};
 use alembic_adapter_sdk::{
-    AppliedOp, ApplyReport, BackendId, ExternalCapabilities, ExternalObject, ExternalRole,
-    ProvisionReport,
+    ApplyReport, ExternalCapabilities, ExternalObject, ExternalRole, ProvisionReport,
 };
-use alembic_core::{key_string, uid_v5, validate_inventory, Inventory, Object, Schema, TypeName};
+use alembic_core::{
+    key_string, uid_v5, validate_inventory, Inventory, Object, Schema, ValidationError,
+};
+use alembic_engine::{guard_observation, ObservedObject, ObservedState};
 use anyhow::Context;
-use serde::{Deserialize, Serialize};
+use serde::de::{DeserializeOwned, IgnoredAny};
+use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use std::io::{Read, Write};
 use std::path::Path;
@@ -250,11 +253,10 @@ fn probe_capabilities(
         match (response.ok, response.result, response.error) {
             // key-checked like the rest: a misspelled `role` would default the
             // adapter to read+write and report the fault as the `read` it then fails.
-            (true, Some(result), None) => check_payload("capabilities", &result).and_then(|()| {
-                serde_json::from_value::<ExternalCapabilities>(result)
-                    .map(|capabilities| capabilities.role)
-                    .map_err(|e| format!("bad capabilities result: {e}"))
-            }),
+            (true, Some(_), None) => {
+                typed_result::<ExternalCapabilities>("capabilities", &run.stdout)
+                    .map(|capabilities| capabilities.unwrap_or_default().role)
+            }
             (false, None, Some(error)) => {
                 if error.is_empty() {
                     Err("inconsistent envelope: error message is empty".to_string())
@@ -402,17 +404,14 @@ fn parse_response(run: &RunResult) -> Result<ExternalResponse<Value>, String> {
     // exactly one json document: whitespace and multi-line json are fine, a trailing
     // log line is not.
     let mut de = serde_json::Deserializer::from_slice(&run.stdout);
-    let value =
-        Value::deserialize(&mut de).map_err(|e| format!("stdout is not one json document: {e}"))?;
+    IgnoredAny::deserialize(&mut de)
+        .map_err(|e| format!("stdout is not one json document: {e}"))?;
     de.end()
         .map_err(|_| "stdout has trailing output after the json document".to_string())?;
 
     // [`check_payload`]'s rule at the outer level: `result` misspelled deserializes
     // to `None`, which for preview_schema refuses the provisioning run it should pass.
-    reject_unknown_keys(&as_template(response_envelope())?, &value, "")
-        .map_err(|e| format!("bad response envelope: {e}"))?;
-
-    serde_json::from_value(value).map_err(|e| format!("not a response envelope: {e}"))
+    serde_json::from_slice(&run.stdout).map_err(|e| format!("bad response envelope: {e}"))
 }
 
 /// validate what the adapter wrote against the protocol and the expectation.
@@ -456,8 +455,8 @@ fn validate(run: &RunResult, method: &str, expectation: &Expectation) -> Result<
                     "a valid request must succeed, but the adapter returned an error: {error}"
                 ));
             }
-            if let Some(result) = &response.result {
-                check_payload(method, result)?;
+            if response.result.is_some() {
+                check_payload(method, &run.stdout)?;
             }
         }
         Expectation::Case { expect, request } => {
@@ -466,9 +465,10 @@ fn validate(run: &RunResult, method: &str, expectation: &Expectation) -> Result<
             }
             match (&response.result, &response.error) {
                 (Some(result), _) => {
-                    check_payload(method, result)?;
                     if method == "read" {
-                        check_read_values(request, result)?;
+                        check_read(request, &run.stdout)?;
+                    } else {
+                        check_payload(method, &run.stdout)?;
                     }
                     if let Some(want) = &expect.result {
                         if result != want {
@@ -498,178 +498,146 @@ fn validate(run: &RunResult, method: &str, expectation: &Expectation) -> Result<
     Ok(())
 }
 
-/// reject a key the method's type does not own, then deserialize the payload into
-/// that type. the walk goes first because it names where the key sat, which the
-/// typed parse cannot. [`Expect`]'s rule, other channel.
-fn check_payload(method: &str, result: &Value) -> Result<(), String> {
-    type Parse = fn(Value) -> serde_json::Result<()>;
-    let (template, parse): (Value, Parse) = match method {
-        "read" => (as_template(vec![observed_object()])?, |value| {
-            serde_json::from_value::<Vec<ExternalObject>>(value).map(drop)
-        }),
-        "write" => (as_template(apply_report())?, |value| {
-            serde_json::from_value::<ApplyReport>(value).map(drop)
-        }),
-        "ensure_schema" => (as_template(provision_report())?, |value| {
-            serde_json::from_value::<ProvisionReport>(value).map(drop)
-        }),
-        "preview_schema" => (as_template(provision_report())?, |value| {
-            serde_json::from_value::<Option<ProvisionReport>>(value).map(drop)
-        }),
-        "capabilities" => (
-            as_template(ExternalCapabilities {
-                role: ExternalRole::default(),
-            })?,
-            |value| serde_json::from_value::<ExternalCapabilities>(value).map(drop),
-        ),
-        other => return Err(format!("unknown method {other}")),
-    };
-    reject_unknown_keys(&template, result, "").map_err(|e| format!("bad {method} result: {e}"))?;
-    parse(result.clone()).map_err(|e| format!("bad {method} result: {e}"))
+/// deserialize the response into the method's sdk type, whose `deny_unknown_fields`
+/// rejects a key the protocol does not define. [`Expect`]'s rule, other channel.
+fn check_payload(method: &str, stdout: &[u8]) -> Result<(), String> {
+    match method {
+        "read" => typed_result::<Vec<ExternalObject>>(method, stdout).map(drop),
+        "write" => typed_result::<ApplyReport>(method, stdout).map(drop),
+        "ensure_schema" | "preview_schema" => {
+            typed_result::<ProvisionReport>(method, stdout).map(drop)
+        }
+        "capabilities" => typed_result::<ExternalCapabilities>(method, stdout).map(drop),
+        other => Err(format!("unknown method {other}")),
+    }
 }
 
-/// the read half of the value-space contract (`docs/external-adapters.md`): the
-/// objects a read answers must validate against the schema the request carried,
-/// under the same rules `plan` and `import` will hold them to. uids are minted
-/// the way the engine mints first-sight identity, so a ref that names its target
-/// by `(type, key)`-derived uid resolves and a backend id in a ref field fails.
-/// objects of types the schema does not declare are the tolerated superset an
-/// adapter may answer with, so they are not held to a schema they were not sent.
-fn check_read_values(request: &Value, result: &Value) -> Result<(), String> {
+/// the response's `result` as the sdk type `T`. parsed from stdout rather than from
+/// a `Value`, so serde names the line and column of a key `T` does not define.
+fn typed_result<T: DeserializeOwned>(method: &str, stdout: &[u8]) -> Result<Option<T>, String> {
+    serde_json::from_slice::<ExternalResponse<T>>(stdout)
+        .map(|response| response.result)
+        .map_err(|e| format!("bad {method} result: {e}"))
+}
+
+/// a read case passes when `plan` takes the read, by the engine's own
+/// [`guard_observation`], and each object holds up under core's validation on
+/// its own (`docs/external-adapters.md`). key ambiguity and refs to objects the
+/// read does not hold are data there, so they pass here.
+fn check_read(request: &Value, stdout: &[u8]) -> Result<(), String> {
+    let objects = typed_result::<Vec<ExternalObject>>("read", stdout)?.unwrap_or_default();
     let schema = request
         .get("schema")
         .cloned()
         .ok_or_else(|| "read case request carries no schema".to_string())?;
     let schema: Schema = serde_json::from_value(schema)
         .map_err(|e| format!("read case request schema does not parse: {e}"))?;
-    let objects: Vec<ExternalObject> =
-        serde_json::from_value(result.clone()).map_err(|e| format!("bad read result: {e}"))?;
-    let objects: Vec<Object> = objects
-        .into_iter()
-        .filter(|object| schema.types.contains_key(object.type_name.as_str()))
+    // the host validates the schema before it reads, so a case that sends an
+    // invalid one tests a request alembic never makes.
+    let schema_report = validate_inventory(&Inventory {
+        schema: schema.clone(),
+        scope: None,
+        objects: Vec::new(),
+    });
+    if schema_report.is_err() {
+        return Err(format!(
+            "read case request schema does not validate: {}",
+            rendered(&schema_report.errors)
+        ));
+    }
+
+    let refused = |e: anyhow::Error| format!("alembic refuses this read: {e:#}");
+    let mut observed = ObservedState::default();
+    for object in objects {
+        observed
+            .insert(ObservedObject {
+                type_name: object.type_name,
+                key: object.key,
+                attrs: object.attrs,
+                backend_id: object.backend_id,
+            })
+            .map_err(refused)?;
+    }
+    guard_observation(&observed, &schema).map_err(refused)?;
+    check_value_space(schema, &observed)
+}
+
+/// each object a read answers holds up under core's validation on its own: an
+/// error [`fails_read`] keeps fails the case.
+fn check_value_space(schema: Schema, observed: &ObservedState) -> Result<(), String> {
+    let objects = observed
+        .objects()
         .map(|object| Object {
             uid: uid_v5(object.type_name.as_str(), &key_string(&object.key)),
-            type_name: object.type_name,
-            key: object.key,
-            attrs: object.attrs,
+            type_name: object.type_name.clone(),
+            key: object.key.clone(),
+            attrs: object.attrs.clone(),
             source: None,
         })
         .collect();
-    let inventory = Inventory {
+    let report = validate_inventory(&Inventory {
         schema,
         scope: None,
         objects,
-    };
-    let report = validate_inventory(&inventory);
-    if report.is_err() {
-        let rendered: Vec<String> = report
-            .with_sources(&inventory.objects)
-            .into_iter()
-            .map(|error| error.to_string())
-            .collect();
-        return Err(format!(
-            "read result leaves alembic's value space: {}",
-            rendered.join("; ")
-        ));
+    });
+    let failing: Vec<&ValidationError> = report
+        .errors
+        .iter()
+        .filter(|error| fails_read(error))
+        .collect();
+    if failing.is_empty() {
+        return Ok(());
     }
-    Ok(())
+    Err(format!(
+        "read result leaves alembic's value space: {}",
+        rendered(failing)
+    ))
 }
 
-/// serialize a payload into the template [`reject_unknown_keys`] walks. the host
-/// rejects an unknown key too; the walk names where it is.
-fn as_template<T: Serialize>(populated: T) -> Result<Value, String> {
-    serde_json::to_value(populated).map_err(|e| format!("building the template: {e}"))
-}
-
-/// the templates. every literal is exhaustive and every field carries a value, so
-/// a field added to one of these types stops the build here rather than defaulting
-/// past `skip_serializing_if` into a key the runner would then reject.
-///
-/// `result` is null, so [`check_payload`] stays the one owner of what is inside it.
-fn response_envelope() -> ExternalResponse<Value> {
-    ExternalResponse {
-        ok: true,
-        result: Some(Value::Null),
-        error: Some(String::new()),
-    }
-}
-
-fn provision_report() -> ProvisionReport {
-    let one = || vec![String::new()];
-    ProvisionReport {
-        created_fields: one(),
-        updated_fields: one(),
-        created_tags: one(),
-        created_object_types: one(),
-        created_object_fields: one(),
-        updated_object_fields: one(),
-        deprecated_object_types: one(),
-        deprecated_object_fields: one(),
-        deleted_object_types: one(),
-        deleted_object_fields: one(),
-    }
-}
-
-fn apply_report() -> ApplyReport {
-    ApplyReport {
-        applied: vec![applied_op()],
-        resumed: vec![applied_op()],
-        previously_applied_count: Some(0),
-        provision: provision_report(),
+/// whether a validation error fails a read case. exhaustive on purpose (no `_`):
+/// a variant core adds has to be sorted here rather than pass in silence.
+fn fails_read(error: &ValidationError) -> bool {
+    match error {
+        // about one object on its own, so no fuller read could clear it.
+        ValidationError::MissingType
+        | ValidationError::MissingKey
+        | ValidationError::MissingKeyField { .. }
+        | ValidationError::ExtraKeyField { .. }
+        | ValidationError::MissingAttrField { .. }
+        | ValidationError::InvalidValue { .. } => true,
+        // `import` drops an undeclared attr, and `plan` diffs declared ones only.
+        ValidationError::ExtraAttrField { .. } => false,
+        // how objects relate to each other or to the rest of the backend, which
+        // `plan` takes as data.
+        ValidationError::DuplicateUid(_)
+        | ValidationError::DuplicateKey(_)
+        | ValidationError::MissingReference { .. }
+        | ValidationError::ReferenceTypeMismatch { .. } => false,
+        // the tolerated superset (`docs/external-adapters.md`), which `plan` takes.
+        ValidationError::UnknownType(_) => false,
+        // the request's schema validated before the read was judged, and no scope
+        // is checked here, so none comes from the objects; one that did fails closed.
+        ValidationError::UnknownRefTarget { .. }
+        | ValidationError::InvalidSchemaPattern { .. }
+        | ValidationError::ConstraintOnNonStringField { .. }
+        | ValidationError::ConflictingFormat { .. }
+        | ValidationError::EmptyEnum { .. }
+        | ValidationError::NonScalarKeyField { .. }
+        | ValidationError::NullableKeyField { .. }
+        | ValidationError::KeyFieldDisagreement { .. }
+        | ValidationError::ScopeUnknownType { .. }
+        | ValidationError::ScopeNonKeyField { .. }
+        | ValidationError::ScopeInvalidValue { .. } => true,
     }
 }
 
-fn applied_op() -> AppliedOp {
-    AppliedOp {
-        uid: Default::default(),
-        type_name: TypeName::new(""),
-        backend_id: Some(BackendId::Int(0)),
-    }
-}
-
-/// `key` and `attrs` stay empty on purpose: they are the adapter's own maps, and
-/// an empty template object is open.
-fn observed_object() -> ExternalObject {
-    ExternalObject {
-        type_name: TypeName::new(""),
-        key: Default::default(),
-        attrs: Default::default(),
-        backend_id: Some(BackendId::Int(0)),
-    }
-}
-
-/// reject a key the payload's type does not own, walking template and payload
-/// together. an empty template object is open: it stands for a free-form map.
-fn reject_unknown_keys(template: &Value, payload: &Value, path: &str) -> Result<(), String> {
-    match (template, payload) {
-        (Value::Object(known), Value::Object(got)) if !known.is_empty() => {
-            for (key, value) in got {
-                let path = at(path, key);
-                let nested = known
-                    .get(key)
-                    .ok_or_else(|| format!("unknown key {path}"))?;
-                reject_unknown_keys(nested, value, &path)?;
-            }
-            Ok(())
-        }
-        // one template element stands for every payload element.
-        (Value::Array(known), Value::Array(got)) => match known.first() {
-            Some(element) => got.iter().enumerate().try_for_each(|(index, value)| {
-                reject_unknown_keys(element, value, &format!("{path}[{index}]"))
-            }),
-            None => Ok(()),
-        },
-        _ => Ok(()),
-    }
-}
-
-/// where a key sits in the payload, for the failure message.
-fn at(path: &str, key: &str) -> String {
-    if path.is_empty() {
-        key.to_string()
-    } else {
-        format!("{path}.{key}")
-    }
+/// validation errors on one line, for a failure message.
+fn rendered<'a>(errors: impl IntoIterator<Item = &'a ValidationError>) -> String {
+    errors
+        .into_iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 /// what the adapter process produced for one request.
