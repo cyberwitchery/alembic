@@ -133,6 +133,36 @@ fn a_case_answer_outside_the_protocol_fails_naming_why() {
             r#"cat >/dev/null; printf '{"ok":true,"result":[{"type_name":"a.thing","key":{"name":"x"},"attrs":{"when":"2026-02-30"}}]}\n'"#,
             "leaves alembic's value space",
         ),
+        // `plan` adopts by the key as read, so a key under a field the type is not
+        // keyed by matches no declared object.
+        (
+            shape_case("read-key-under-wrong-field", thing_with(json!({})), None),
+            r#"cat >/dev/null; printf '{"ok":true,"result":[{"type_name":"a.thing","key":{"slug":"x"},"backend_id":1}]}\n'"#,
+            "missing key field a.thing.name; extra key field a.thing.slug",
+        ),
+        (
+            shape_case(
+                "read-required-attr-missing",
+                thing_with(json!({ "status": { "type": "string", "required": true } })),
+                None,
+            ),
+            r#"cat >/dev/null; printf '{"ok":true,"result":[{"type_name":"a.thing","key":{"name":"x"},"backend_id":1}]}\n'"#,
+            "missing attr field a.thing.status",
+        ),
+        // an object needs a key whatever its type, though a type the schema does
+        // not declare passes otherwise.
+        (
+            shape_case(
+                "read-keyless",
+                json!({
+                    "version": 1, "setup": {}, "method": "read",
+                    "schema": { "types": {} }, "types": [], "state": {}
+                }),
+                None,
+            ),
+            r#"cat >/dev/null; printf '{"ok":true,"result":[{"type_name":"dcim.site","key":{}}]}\n'"#,
+            "missing key on object",
+        ),
         // refs in observed attrs are uids; a backend id there fails conformance the
         // way `plan` would refuse it.
         (
@@ -273,6 +303,10 @@ fn a_case_answer_inside_the_protocol_passes() {
 #[test]
 fn a_read_alembic_takes_passes() {
     let elsewhere = "0198d3f0-0000-8000-8000-000000000000";
+    let other = alembic_core::uid_v5(
+        "b.other",
+        &alembic_core::key_string(&serde_json::from_value(json!({ "name": "y" })).unwrap()),
+    );
     let rows = [
         // key ambiguity is the backend's to hold; only dereferencing it fails.
         (
@@ -286,6 +320,24 @@ fn a_read_alembic_takes_passes() {
             thing_with(json!({ "peer": { "type": "ref", "target": "a.thing" } })),
             format!(
                 r#"[{{"type_name":"a.thing","key":{{"name":"x"}},"attrs":{{"peer":"{elsewhere}"}},"backend_id":1}}]"#
+            ),
+        ),
+        // a ref is held to being a uid, not to the type of what it names.
+        (
+            "ref to another type",
+            json!({
+                "version": 1, "setup": {}, "method": "read",
+                "schema": { "types": {
+                    "a.thing": {
+                        "key": { "name": { "type": "string" } },
+                        "fields": { "peer": { "type": "ref", "target": "a.thing" } }
+                    },
+                    "b.other": { "key": { "name": { "type": "string" } } }
+                }},
+                "types": ["a.thing", "b.other"], "state": { "mappings": {} }
+            }),
+            format!(
+                r#"[{{"type_name":"a.thing","key":{{"name":"x"}},"attrs":{{"peer":"{other}"}},"backend_id":1}},{{"type_name":"b.other","key":{{"name":"y"}},"backend_id":2}}]"#
             ),
         ),
         // plan diffs declared fields only, and import drops the rest.

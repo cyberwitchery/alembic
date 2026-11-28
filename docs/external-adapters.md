@@ -573,11 +573,14 @@ runner only checks the payload shape; present, it compares the returned json
 structurally. a read case's result is additionally held to what `plan` takes, by
 the check `plan` runs on every read: two objects of one type with one backend id,
 or a backend id in a ref field, fail the case with the error `plan` would stop on.
-its values are held to the value-space contract above, as `import` holds them, so
-an out-of-space value fails it too. both apply even when `expect.result` is
-omitted. what `plan` treats as data passes: objects sharing a key, a ref to an
-object the read did not return, and types and fields the schema does not
-declare. `error` pins the exact message an `ok: false` case must come back with.
+each object is also held to the request's schema on its own: one with an empty
+type or key fails, and so does one of a declared type whose key does not hold
+exactly the type's key fields, that leaves out a required attr, or that holds a
+value outside the value-space contract above. both apply even when
+`expect.result` is omitted. what `plan` treats as data passes: objects sharing a
+key, a ref to an object the read did not return or to one of another type, attrs
+the schema does not declare, and objects of types it does not declare. `error`
+pins the exact message an `ok: false` case must come back with.
 a key that is none of those three is a parse error naming it, and so is a
 stray key beside `name`/`request`/`expect`: `result` and `error` are the assertions, so
 a typo in one would drop it and report the case as passing. the runner exits `0` when

@@ -521,9 +521,9 @@ fn typed_result<T: DeserializeOwned>(method: &str, stdout: &[u8]) -> Result<Opti
 }
 
 /// a read case passes when `plan` takes the read, by the engine's own
-/// [`guard_observation`], and its values land in alembic's value space
-/// (`docs/external-adapters.md`). key ambiguity and refs to objects the read does
-/// not hold are data there, so they pass here.
+/// [`guard_observation`], and each object holds up under core's validation on
+/// its own (`docs/external-adapters.md`). key ambiguity and refs to objects the
+/// read does not hold are data there, so they pass here.
 fn check_read(request: &Value, stdout: &[u8]) -> Result<(), String> {
     let objects = typed_result::<Vec<ExternalObject>>("read", stdout)?.unwrap_or_default();
     let schema = request
@@ -562,10 +562,8 @@ fn check_read(request: &Value, stdout: &[u8]) -> Result<(), String> {
     check_value_space(schema, &observed)
 }
 
-/// a value a read answers for a field the schema declares validates under core's
-/// rules, as `import` holds it to them (`plan` diffs it instead). only values are
-/// judged: how objects relate, and what the schema does not declare, is left to
-/// [`guard_observation`].
+/// each object a read answers holds up under core's validation on its own: an
+/// error [`fails_read`] keeps fails the case.
 fn check_value_space(schema: Schema, observed: &ObservedState) -> Result<(), String> {
     let objects = observed
         .objects()
@@ -582,18 +580,55 @@ fn check_value_space(schema: Schema, observed: &ObservedState) -> Result<(), Str
         scope: None,
         objects,
     });
-    let invalid: Vec<&ValidationError> = report
+    let failing: Vec<&ValidationError> = report
         .errors
         .iter()
-        .filter(|error| matches!(error, ValidationError::InvalidValue { .. }))
+        .filter(|error| fails_read(error))
         .collect();
-    if invalid.is_empty() {
+    if failing.is_empty() {
         return Ok(());
     }
     Err(format!(
         "read result leaves alembic's value space: {}",
-        rendered(invalid)
+        rendered(failing)
     ))
+}
+
+/// whether a validation error fails a read case. exhaustive on purpose (no `_`):
+/// a variant core adds has to be sorted here rather than pass in silence.
+fn fails_read(error: &ValidationError) -> bool {
+    match error {
+        // about one object on its own, so no fuller read could clear it.
+        ValidationError::MissingType
+        | ValidationError::MissingKey
+        | ValidationError::MissingKeyField { .. }
+        | ValidationError::ExtraKeyField { .. }
+        | ValidationError::MissingAttrField { .. }
+        | ValidationError::InvalidValue { .. } => true,
+        // `import` drops an undeclared attr, and `plan` diffs declared ones only.
+        ValidationError::ExtraAttrField { .. } => false,
+        // how objects relate to each other or to the rest of the backend, which
+        // `plan` takes as data.
+        ValidationError::DuplicateUid(_)
+        | ValidationError::DuplicateKey(_)
+        | ValidationError::MissingReference { .. }
+        | ValidationError::ReferenceTypeMismatch { .. } => false,
+        // the tolerated superset (`docs/external-adapters.md`), which `plan` takes.
+        ValidationError::UnknownType(_) => false,
+        // the request's schema validated before the read was judged, and no scope
+        // is checked here, so none comes from the objects; one that did fails closed.
+        ValidationError::UnknownRefTarget { .. }
+        | ValidationError::InvalidSchemaPattern { .. }
+        | ValidationError::ConstraintOnNonStringField { .. }
+        | ValidationError::ConflictingFormat { .. }
+        | ValidationError::EmptyEnum { .. }
+        | ValidationError::NonScalarKeyField { .. }
+        | ValidationError::NullableKeyField { .. }
+        | ValidationError::KeyFieldDisagreement { .. }
+        | ValidationError::ScopeUnknownType { .. }
+        | ValidationError::ScopeNonKeyField { .. }
+        | ValidationError::ScopeInvalidValue { .. } => true,
+    }
 }
 
 /// validation errors on one line, for a failure message.
