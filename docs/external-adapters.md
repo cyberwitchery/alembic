@@ -509,10 +509,10 @@ expected to error whatever the role. answering `capabilities` itself with the
 unknown-method error stays conformant and means the default read+write role.
 
 "right-shaped" also means only the keys the protocol defines: a response
-carrying an unknown one fails, naming where it sat, from the envelope beside
-`result` down to inside `applied` and `provision`. your own `key` and `attrs`
-maps are not checked. the host rejects the same keys but names only the key, so
-a failure here is the one that says where to look.
+carrying an unknown one fails, naming the key and the line and column it sat at,
+from the envelope beside `result` down to inside `applied` and `provision`. your
+own `key` and `attrs` maps are not checked. the host rejects the same keys but
+names only the key, so a failure here is the one that says where to look.
 
 two built-ins write. the empty schema provisioning is a real `ensure_schema`,
 which a converging adapter reads as "delete everything you own", and the empty
@@ -570,9 +570,14 @@ an expectation:
 
 `expect` takes `ok` plus `result` or `error`, both optional. `result` omitted, the
 runner only checks the payload shape; present, it compares the returned json
-structurally. a read case's result is additionally validated against the
-request's schema (the value-space contract above), so an out-of-space value or a
-backend id in a ref field fails the case even when `expect.result` is omitted. `error` pins the exact message an `ok: false` case must come back with.
+structurally. a read case's result is additionally held to what `plan` takes, by
+the check `plan` runs on every read: two objects of one type with one backend id,
+or a backend id in a ref field, fail the case with the error `plan` would stop on.
+its values are held to the value-space contract above, as `import` holds them, so
+an out-of-space value fails it too. both apply even when `expect.result` is
+omitted. what `plan` treats as data passes: objects sharing a key, a ref to an
+object the read did not return, and types and fields the schema does not
+declare. `error` pins the exact message an `ok: false` case must come back with.
 a key that is none of those three is a parse error naming it, and so is a
 stray key beside `name`/`request`/`expect`: `result` and `error` are the assertions, so
 a typo in one would drop it and report the case as passing. the runner exits `0` when

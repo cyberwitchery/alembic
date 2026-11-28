@@ -1,0 +1,1 @@
+- `alembic-adapter-test`: a read case is held to the check `plan` runs on every read, so two objects of one type with one backend id fail it, and objects sharing a key, refs to objects the read did not return and attrs the schema does not declare pass; an unknown response key is named by line and column (#554)

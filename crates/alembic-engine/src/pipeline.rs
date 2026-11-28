@@ -57,7 +57,7 @@ pub(crate) async fn observe_validated(
     } else {
         adapter.read(&inventory.schema, &types_vec, state).await?
     };
-    crate::refs::refuse_backend_id_refs(&observed, &inventory.schema)?;
+    guard_observation(&observed, &inventory.schema)?;
 
     // refs to an object unbound at read time carry the uid its key derives.
     // adoption binds declared uids, so point those refs at them, and adopt again
@@ -87,6 +87,15 @@ pub(crate) async fn observe_validated(
         bootstrap.superseded.extend(more.superseded);
     }
     Ok((observed, bootstrap))
+}
+
+/// refuse a read plan and apply cannot take: a ref-typed field holding a backend
+/// id. an [`ObservedState`] holds one object per type and backend id by
+/// construction; key ambiguity, refs to objects the read left out, and types or
+/// fields the schema does not declare are data. the conformance runner holds
+/// adapter reads to this too.
+pub fn guard_observation(observed: &ObservedState, schema: &alembic_core::Schema) -> Result<()> {
+    crate::refs::refuse_backend_id_refs(observed, schema)
 }
 
 /// gate provisioning on the adapter's schema preview, for both `plan --provision`

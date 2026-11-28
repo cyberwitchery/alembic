@@ -192,7 +192,10 @@ fn report(outcomes: &[Outcome]) -> ExitCode {
 
 /// print the indented diagnostics for a failed check.
 fn print_failure(failure: &Failure) {
-    println!("    error:  {}", failure.message);
+    println!(
+        "    error:  {}",
+        failure.message.replace('\n', "\n            ")
+    );
     println!("    status: {}", failure.status);
     print_stream("stdout", &failure.stdout);
     print_stream("stderr", &failure.stderr);
