@@ -193,6 +193,17 @@ jobs:
     env:
       RUSTFLAGS: "-C debuginfo=0"
     steps:
+      # a cold build compiles nautobot-openapi and netbox-openapi side by side,
+      # 7-11 GB each, which outgrows the runner's 16 GB without swap.
+      - name: Add swap
+        run: |
+          sudo swapoff -a
+          sudo fallocate -l 16G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          free -h
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Rust
@@ -210,10 +221,8 @@ jobs:
         with:
           shared-key: alembic-agents
 
-      # one job at a time: nautobot-openapi and netbox-openapi each take 7-11 GB
-      # to compile, and side by side they outgrow the runner's 16 GB.
       - name: Build the cli
-        run: cargo build -p alembic-cli -j 1
+        run: cargo build -p alembic-cli
 
       - name: Agent fixtures
         run: ALEMBIC="$PWD/target/debug/alembic" scripts/agent_fixtures.sh
